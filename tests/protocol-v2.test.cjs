@@ -95,11 +95,11 @@ test('FRAME packet worst cases stay within budgets', () => {
   assert.ok(wireBytes('config/set', { ...config, config: vent }) < PacketPolicy.CHUNK_TARGET);
   const report = { v: 2, bootId: 4294967295, revision: 4294967295,
     part: 99, done: true, config: { field: 'x'.repeat(700) } };
-  assert.ok(Buffer.byteLength(JSON.stringify(report)) + Buffer.byteLength(JSON.stringify({v:1,channel:'config/reported',payload:null,deliveryId:2147483647})) - 4 < PacketPolicy.CHUNK_TARGET);
+  assert.ok(Buffer.byteLength(JSON.stringify(report)) + Buffer.byteLength(JSON.stringify({v:1,channel:'config/reported',payload:null})) - 4 < PacketPolicy.CHUNK_TARGET);
   const history = { v: 2, bootId: 4294967295, requestId: `hist-${'a'.repeat(20)}`,
     windowMin: 1440, intervalSec: 300, cursor: 288, done: true,
     samples: Array.from({ length: 12 }, (_, i) => [4294967295 - i * 300, -20.0]) };
-  assert.ok(Buffer.byteLength(JSON.stringify(history)) + Buffer.byteLength(JSON.stringify({v:1,channel:'history/reported',payload:null,deliveryId:2147483647})) - 4 < PacketPolicy.CHUNK_TARGET);
+  assert.ok(Buffer.byteLength(JSON.stringify(history)) + Buffer.byteLength(JSON.stringify({v:1,channel:'history/reported',payload:null})) - 4 < PacketPolicy.CHUNK_TARGET);
   const snapshot = { bootId: 4294967295, revision: 4294967295, runtime: {
     temperature: 100, humidity: 100, machineState: 4294967295,
     batchRunning: true, currentDay: 200, heaterOn: true, heaterPower: 100,
@@ -108,14 +108,14 @@ test('FRAME packet worst cases stay within budgets', () => {
     autoTuneState: 255, autoTuneProgress: 100, resumeConfirmationRequired: true,
     batchOverdueConfirmationPending: true,
     activeFaults: Array.from({ length: 12 }, () => ({ code: 65535, severity: 255 })) } };
-  assert.ok(Buffer.byteLength(JSON.stringify(snapshot)) + Buffer.byteLength(JSON.stringify({v:1,channel:'snapshot',payload:null,deliveryId:2147483647})) - 4 < PacketPolicy.CHUNK_TARGET);
+  assert.ok(Buffer.byteLength(JSON.stringify(snapshot)) + Buffer.byteLength(JSON.stringify({v:1,channel:'snapshot',payload:null})) - 4 < PacketPolicy.CHUNK_TARGET);
   const response = { v: 2, requestId: `cmd-${'a'.repeat(20)}`,
     operation: 'batch.overdue.continue', phase: 'completed', ok: false,
     code: 'BATCH_HEATER_SWITCH_OFF', bootId: 4294967295,
     result: 'rejected', message: 'Hãy bật công tắc thanh nhiệt trước',
     revision: 4294967295, tDeviceReceived: 4294967295,
     tDeviceCompleted: 4294967295, sig: 'a'.repeat(64) };
-  assert.ok(Buffer.byteLength(JSON.stringify(response)) + Buffer.byteLength(JSON.stringify({v:1,channel:'ack',payload:null,deliveryId:2147483647})) - 4 < PacketPolicy.SMALL_TARGET);
+  assert.ok(Buffer.byteLength(JSON.stringify(response)) + Buffer.byteLength(JSON.stringify({v:1,channel:'ack',payload:null})) - 4 < PacketPolicy.SMALL_TARGET);
 });
 
 test('all eight config forms use patches within the shared packet policy', () => {
@@ -152,7 +152,7 @@ test('all eight config forms use patches within the shared packet policy', () =>
 
 test('humidifier thresholds preserve the config record layout and legacy default', () => {
   const machine = readFileSync(require.resolve('../MAYAP_INDUSTRIAL_v1_0_0/machine_control.h'), 'utf8');
-  const firmware = readFileSync(require.resolve('../MAYAP_INDUSTRIAL_v1_0_0/realtime_link.h'), 'utf8');
+  const firmware = readFileSync(require.resolve('../MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h'), 'utf8');
   assert.match(machine, /humidityAlarmDelaySec & 0x03FFU/);
   assert.match(machine, /humidifierHysteresisRh & 0x0FU/);
   assert.match(machine, /humidityGap \? humidityGap : MachineConfig\{\}\.humidifierHysteresisRh/);
@@ -179,7 +179,7 @@ test('ACK HMAC binds result, reason and request identity', async () => {
 });
 
 test('firmware guards the replay, EEPROM, safety and packet boundaries', () => {
-  const realtime = readFileSync(require.resolve('../MAYAP_INDUSTRIAL_v1_0_0/realtime_link.h'), 'utf8');
+  const realtime = readFileSync(require.resolve('../MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h'), 'utf8');
   const hmi = readFileSync(require.resolve('../MAYAP_INDUSTRIAL_v1_0_0/hmi.h'), 'utf8');
   const machine = readFileSync(require.resolve('../MAYAP_INDUSTRIAL_v1_0_0/machine_control.h'), 'utf8');
   const web = readFileSync(require.resolve('../app.js'), 'utf8');
@@ -192,11 +192,9 @@ test('firmware guards the replay, EEPROM, safety and packet boundaries', () => {
   assert.match(realtime, /checkReplaySequence\(bodyDoc\)/);
   assert.match(realtime, /bodyDoc\["bootId"\]\.as<uint32_t>\(\) != bootId/);
   assert.match(realtime, /expiry < static_cast<unsigned long>\(now\)/);
-  assert.match(realtime, /WebClientLease webClientLeases\[8\]/);
   assert.match(realtime, /forceSnapshotPublish = true/);
   assert.match(realtime, /mayap-mqtt-ack:v2/);
-  assert.match(realtime, /const uint32_t postLoopNow = millis\(\)/);
-  assert.match(realtime, /expirePendingCommands\(postLoopNow\)/);
+  assert.match(realtime, /expirePendingCommands\(now\)/);
   assert.match(realtime, /timeReached\(now, slot\.queuedAt\)/);
   assert.match(realtime, /timeReached\(now, pendingConfigSave\.queuedAt\)/);
   assert.doesNotMatch(realtime, /pendingReminderSave/);

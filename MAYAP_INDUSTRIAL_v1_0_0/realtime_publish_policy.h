@@ -4,7 +4,7 @@
 #include <math.h>
 #include <string.h>
 
-namespace MayapWebRealtime {
+namespace MayapRealtimePublish {
 constexpr uint32_t BOOTSTRAP_MIN_INTERVAL_MS = 2000U;
 constexpr uint32_t BOOTSTRAP_HEARTBEAT_MS = 30000U;
 constexpr size_t BOOTSTRAP_PACKET_BUDGET = 512U;
@@ -60,4 +60,4 @@ class BootstrapCadence {
   uint32_t lastAttempt_ = 0, lastPublish_ = 0;
   BootstrapState last_;
 };
-} // namespace MayapWebRealtime
+} // namespace MayapRealtimePublish

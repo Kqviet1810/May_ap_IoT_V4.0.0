@@ -24,7 +24,7 @@ function database(){
 async function setup(){
   const [worker,auth,jose]=await modules, {DB,sql}=database();
   const env={DB,ALLOWED_ORIGIN:frontend,MAYAP_SESSION_PEPPER:'random-session-test-only',DEVICE_KEY_PEPPER:'random-device-test-only',
-    GOOGLE_CLIENT_ID:'google-client', DEVICE_HUB:{idFromName:id=>id,get:()=>({})}};
+    GOOGLE_CLIENT_ID:'google-client'};
   async function login(sub){return auth.createSession(env,{sub,email:sub+'@example.test',name:sub});}
   async function device(n){const id='MAP-'+n.toString(16).toUpperCase().padStart(12,'0');
     sql.prepare('INSERT INTO devices(device_id,device_key_hash,created_at,web_pin_hash) VALUES(?,?,?,?)')
@@ -85,13 +85,12 @@ test('verified account picture persists safely and token expiry stays bounded',a
   h.sql.prepare('UPDATE user_sessions SET expires_at=? WHERE id=?').run(Date.now()-1,s.id);
   assert.equal((await h.call('/api/account/session',s)).status,401);
 });
-test('claim checks PIN, refuses takeover, and ownership protects status/history/config/grant',async()=>{
+test('claim checks PIN, refuses takeover, and ownership protects status/history/config',async()=>{
   const h=await setup(), A=await h.login('user-A'), B=await h.login('user-B'), id=await h.device(1);
   assert.equal((await h.call('/api/account/devices/claim',B,{device_id:id,pin:'000000'})).status,403);
   assert.equal((await h.call('/api/account/devices/claim',A,{device_id:id,pin:'123456'})).status,200);
   assert.equal((await h.call('/api/account/devices/claim',B,{device_id:id,pin:'123456'})).status,409);
   for(const route of ['status','history','config'])assert.equal((await h.call(`/api/device/${id}/${route}`,B)).status,403);
-  assert.equal((await h.call('/api/device/realtime-session',B,{device_id:id,control_client_id:'w-browserB123'})).status,403);
   for(const route of ['rename','change-pin'])assert.equal((await h.call('/api/device/'+route,B,{device_id:id,name:'bad',old_pin:'123456',new_pin:'999999'})).status,403);
   assert.equal((await h.call(`/api/device/${id}/status`,A)).status,200);
   assert.equal((await h.call(`/api/device/${id}/status`,null)).status,401);
@@ -117,7 +116,7 @@ test('account session uses Google sub and bearer auth, rejects cross origin, log
   h.sql.prepare('UPDATE user_sessions SET expires_at=? WHERE id=?').run(Date.now()-1,B.id);
   assert.equal((await h.call('/api/account/session',B)).status,401);
 });
-test('10 customers x 3 devices list only their own machines and receive exact existing HMAC V2 grants',async()=>{
+test('10 customers x 3 devices list only their own machines',async()=>{
   const h=await setup(), accounts=[],ids=[];
   for(let user=0;user<10;user++){
     const s=await h.login('google-'+user);accounts.push(s);ids[user]=[];
@@ -126,27 +125,12 @@ test('10 customers x 3 devices list only their own machines and receive exact ex
       assert.equal((await h.call('/api/account/devices/claim',s,{device_id:id,pin:'123456'},'POST',{'CF-Connecting-IP':'192.0.2.'+user})).status,200);
     }
     const rows=await (await h.call('/api/account/session',s)).json();assert.equal(rows.devices.length,3);
-    const result=await (await h.call('/api/device/realtime-session',s,{device_id:ids[user][0],control_client_id:'w-browser'+user+'000'})).json();
-    assert.equal(result.success,true);
-    assert.equal(new URL(result.realtime.url).pathname,'/realtime/browser/'+ids[user][0]);
-    assert.ok(result.realtime.ticket); assert.equal(result.mqtt,undefined);
-    const bytes=Buffer.from(await h.auth.hmacHex(h.env.DEVICE_KEY_PEPPER,'mayap-command-key:v1:'+ids[user][0]),'hex');
-    assert.equal(result.control.grantSig,await h.auth.hmacHex(bytes,`mayap-control-grant:v2\n${ids[user][0]}\n${result.control.grant}`));
-    assert.equal(result.control.sessionKey,await h.auth.hmacHex(bytes,`mayap-control-session:v2\n${ids[user][0]}\n${result.control.grant}`));
-    assert.match(result.control.grant,new RegExp('^w-browser'+user+'000\\|'));
 
   }
   for(let i=0;i<10;i++)for(let j=0;j<10;j++)if(i!==j){
     assert.equal((await h.call(`/api/device/${ids[j][0]}/status`,accounts[i])).status,403);
-    assert.equal((await h.call('/api/device/realtime-session',accounts[i],{device_id:ids[j][1],control_client_id:'w-cross12345'})).status,403);
   }
   assert.equal(h.sql.prepare('SELECT COUNT(*) AS n FROM user_devices').get().n,30);
-});
-test('realtime admission requires account membership and configured DeviceHub binding',async()=>{
-  const h=await setup(),A=await h.login('A'),id=await h.device(8);
-  await h.call('/api/account/devices/claim',A,{device_id:id,pin:'123456'});
-  h.env.DEVICE_HUB=undefined;
-  assert.equal((await h.call('/api/device/realtime-session',A,{device_id:id,control_client_id:'w-client000'})).status,503);
 });
 test('Google RS256 identity validates signature, audience, issuer, expiry, nonce, azp and sub',async()=>{
   const [,auth,jose]=await modules, pair=await jose.generateKeyPair('RS256');
@@ -197,29 +181,20 @@ test('exact-origin CORS preflight allows bearer JSON API calls, denies other ori
   assert.equal((await h.call('/api/account/session',null,undefined,'OPTIONS',{Origin:'https://attacker.example','Access-Control-Request-Method':'GET'})).status,403);
   assert.equal((await h.call('/api/account/session',null,undefined,'OPTIONS',{'Access-Control-Request-Method':'POST','Access-Control-Request-Headers':'x-unexpected'})).status,403);
 });
-test('viewer receives scoped realtime ticket but cannot obtain control grant or change devices via API',async()=>{
+test('viewer cannot change devices via API',async()=>{
   const h=await setup(),owner=await h.login('owner'),viewer=await h.login('viewer'),id=await h.device(50);
   await h.call('/api/account/devices/claim',owner,{device_id:id,pin:'123456'});
   h.sql.prepare("INSERT INTO user_devices(user_sub,device_id,role,created_at) VALUES(?,?,'viewer',?)").run('viewer',id,Date.now());
-  const data=await (await h.call('/api/device/realtime-session',viewer,{device_id:id,control_client_id:'w-viewer000'})).json();
-  assert.equal(data.control,null);
-  assert.ok(data.realtime.ticket); assert.equal(data.mqtt,undefined); // Hub enforces viewer isolation.
   assert.equal((await h.call('/api/device/rename',viewer,{device_id:id,name:'bad'})).status,403);
   assert.equal((await h.call('/api/device/change-pin',viewer,{device_id:id,old_pin:'123456',new_pin:'999999'})).status,403);
 });
-test('reviewed single-C512 firmware bridge and 300-second WARM stay protected',()=>{
-  const crypto=require('node:crypto');
-  // V1.0.0 baseline reset reviewed: config content change is version-only; storage geometry/history remains protected.
-  // Account auth/grants and signed transaction bodies retain their other guards.
-  // Network plumbing changed; storage/controller preservation is guarded by
-  // runtime-preservation.json and actual EEPROM power-cut tests, not a whole
-  // transport file hash that would forbid the requested migration.
-  const manifest=JSON.parse(fs.readFileSync('tests/runtime-preservation.json','utf8'));
+test('protected EEPROM, thermal and ATtiny sources match the V3 baseline',()=>{
+  const {execFileSync}=require('node:child_process');
   for(const file of ['history_store.h','thermal_control.h','attiny_bus.h']){
-    const entry=manifest.entries.find(e=>e.file.endsWith('/'+file));
-    assert.equal(crypto.createHash('sha256').update(fs.readFileSync(entry.file,'utf8')).digest('hex'),entry.sha256);
+    const source=`MAYAP_INDUSTRIAL_v1_0_0/${file}`;
+    assert.equal(fs.readFileSync(source,'utf8').replace(/\r\n/g,'\n'),
+      execFileSync('git',['show',`52f10af:${source}`],{encoding:'utf8'}));
   }
-  assert.match(fs.readFileSync('app.js','utf8'),/WARM_BACKGROUND_MS = 300000/);
   assert.ok(!fs.readFileSync('config.js','utf8').includes('session-check'));
   assert.ok(!fs.existsSync('mqtt-gateway/server.js'));
 });

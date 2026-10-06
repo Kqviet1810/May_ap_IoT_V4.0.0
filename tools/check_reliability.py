@@ -30,7 +30,7 @@ hmi = read("MAYAP_INDUSTRIAL_v1_0_0/hmi.h")
 ota = read("MAYAP_INDUSTRIAL_v1_0_0/ota_update.h")
 service_recovery = read("MAYAP_INDUSTRIAL_v1_0_0/service_recovery.h")
 runtime_recovery = read("MAYAP_INDUSTRIAL_v1_0_0/runtime_recovery_policy.h")
-realtime = read("MAYAP_INDUSTRIAL_v1_0_0/realtime_link.h")
+realtime = read("MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h")
 ino = read("MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino")
 wrangler = read("cloudflare/wrangler.toml")
 wrapper = read("cloudflare/src/reliability-wrapper.js")
@@ -38,37 +38,59 @@ security = read("cloudflare/src/security-wrapper.js")
 safety = read("doc/SAFETY_HARDWARE_REQUIREMENTS.md")
 build_workflow = read(".github/workflows/build-firmware.yml")
 
+# Keep Phase 1 production code free of the removed transport and compatibility
+# API. Tests and historical audit text are excluded so they can assert absence
+# or preserve evidence without becoming runtime dependencies.
+production_paths = [
+    ROOT / "MAYAP_INDUSTRIAL_v1_0_0",
+    ROOT / "cloudflare" / "src",
+]
+production_files = [
+    ROOT / "app.js", ROOT / "index.html", ROOT / "sw.js",
+    ROOT / "config.js", ROOT / "config.production.example.js",
+]
+production_text = ""
+for production_path in production_paths:
+    for path in production_path.rglob("*"):
+        if path.is_file() and path.suffix.lower() in {".h", ".ino", ".cpp", ".c", ".js", ".toml"}:
+            production_text += path.read_text(encoding="utf-8", errors="ignore")
+for path in production_files:
+    production_text += path.read_text(encoding="utf-8", errors="ignore")
+
+for obsolete in (
+    "WebSocketTransport", "MayapWebSocket", "DeviceHub", "DEVICE_HUB",
+    "MayapRealtime.Client", "mayap.v1", "/realtime/device/",
+    "/realtime/browser/", "/api/device/realtime-session", "WebClientLease",
+    "deliveryId", "mayapWebLinkBegin", "mayapWebLinkUpdate",
+    "mayapWebSetRuntime", "mayapWebSetConfig", "mayapWebConfirmCommand",
+    "mayapWebConfirmConfigSave", "mayapWebPushEventLog",
+):
+    if obsolete in production_text:
+        raise SystemExit("FAIL: obsolete realtime production identifier: " + obsolete)
+if (ROOT / "MAYAP_INDUSTRIAL_v1_0_0" / "realtime_link.h").exists():
+    raise SystemExit("FAIL: realtime_link.h compatibility wrapper still exists")
+
 release = json.loads(read("release-manifest.json"))["firmware"]
 require_re(config, rf'MAYAP_FIRMWARE_VERSION\[\]\s*=\s*"{re.escape(release)}"', "firmware version")
 
-# Per-device NVS identity replaces fleet broker credentials. Admission is
-# asynchronous and retains the existing memory/recovery gate.
-transport = read("MAYAP_INDUSTRIAL_v1_0_0/websocket_transport.h")
-hub = read("cloudflare/src/device-hub.js")
-require(transport, "dns_gethostbyname_addrtype", "nonblocking DNS")
-poll = read("MAYAP_INDUSTRIAL_v1_0_0/esp_tls_async_poll.h")
-require(transport, "MayapEspTlsPoll::connectAsync(ip_", "repaired nonblocking TLS polling")
-require(poll, "esp_tls_conn_new_async", "SDK TLS handshake and verification")
-require(transport, "cfg_.timeout_ms = 1", "bounded async TLS select")
-require(transport, "cfg_.common_name = host_", "TLS hostname and SNI")
-require(transport, "QUEUE_CAP = 8", "bounded TX queue")
-require(hub, "acceptWebSocket(server)", "hibernating GA Durable Object sockets")
-if "blockConcurrencyWhile" in hub:
-    raise SystemExit("FAIL: external validation must not block all DeviceHub events")
-require(hub, "this.serial(ws,", "per-browser serialized anti-replay checks")
-require(hub, "this.authorized(ws, epoch)", "post-await authorization fence")
-require(hub, "this.queued >= 80", "Hub-wide bound including stalled old sockets")
-require(hub, "realtime_replay", "durable exact-retry fence across reconnect")
-require(hub, "SLOW_CONSUMER", "bounded peer receive credit")
-require(wrangler, "new_sqlite_classes", "GA SQLite Durable Object migration")
+# The Phase 1 baseline retains application validation with no transport owner.
+require(realtime, "checkReplaySequence(bodyDoc)", "signed application replay fence")
+require(realtime, "terminalCache[16]", "bounded terminal result cache")
+require(realtime, "PublishCallback publishCallback = nullptr", "disabled publisher")
+require(ino, "void mqttTask(void *parameter)", "reserved MQTT service")
+for obsolete in ("DEVICE_HUB", "/realtime/", "MayapRealtime.Client"):
+    if obsolete in wrangler + app + read("cloudflare/src/account-worker.js"):
+        raise SystemExit("FAIL: old realtime architecture remains: " + obsolete)
 if "PubSubClient" in build_workflow or "MAYAP_MQTT_" in build_workflow:
     raise SystemExit("FAIL: obsolete production broker dependency")
 require(build_workflow, "github.event_name == 'workflow_dispatch'", "manual test artifact gate")
 require(build_workflow, "firmware-test-${{ github.sha }}", "test artifact tied to commit SHA")
-require(app, "runtimeRealtime = { ...result.realtime, deviceId: device.id }", "device-scoped realtime session")
-require(app, "state.realtimeSessionState = 'ready';", "realtime ready state")
-require(app, "state.realtimeSessionState === 'auth-required' && device", "explicit auth status without false device offline")
-require(app, "state.realtimeSessionState === 'error' && !state.realtime", "visible realtime/auth retry status")
+require(build_workflow, 'test "$FLASH" -le 1380000', "V4 clean Flash budget")
+require(build_workflow, 'test "$STATIC_RAM" -le 145000', "V4 clean static RAM budget")
+require(ino, '"[HEAP] free=%lu min=%lu largest=%lu', "DEV/PILOT heap diagnostics")
+require(ino, "heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)", "largest allocatable heap diagnostic")
+require(ino, '"[TASK] stack ctrl=%u hmi=%u sup=%u net=%u mqtt=%u cloud=%u ota=%u', "all task stack diagnostics")
+require(ino, "constexpr size_t MQTT_TASK_STACK_BYTES = 4096U", "reserved MQTT task stack")
 require(app, "device.presenceEpoch === state.subscriptionEpoch && device.presence?.online === false", "device offline requires current presence")
 require(app, "Date.now() - device.snapshotAt > WEB.staleAfterMs", "snapshot freshness independent of presence/config")
 
@@ -271,12 +293,6 @@ for source in firmware_sources:
             raise SystemExit("FAIL: bounded Serial writer must preserve debug gate")
         require(source_text, "inline void mayapSerialDrain()", "sole bounded Serial writer")
         require(source_text, "criticalDropped", "Serial loss accounting")
-    elif source.name == "websocket_transport.h":
-        if direct_serial:
-            raise SystemExit("FAIL: WebSocket diagnostics must use bounded Serial mailbox")
-        forced = re.findall(r'mayapSerialPrintf\(true,\s*"([^"\n]*)"', source_text)
-        if forced != ["[WS-CONNECT] arduino=%s idf=%s\\n"]:
-            raise SystemExit("FAIL: only the one-time WebSocket SDK version line may bypass LOG/EXIT")
     elif direct_serial or "mayapSerialPrintf(true" in source_text:
         raise SystemExit(f"FAIL: ungated Serial output in {source.name}")
 require(config, "HEALTH_HEAP_SAMPLE_INTERVAL_MS = 1000UL", "bounded heap sampling")

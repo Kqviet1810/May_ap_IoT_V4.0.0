@@ -32,13 +32,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
     start = network.index('inline void mayapRequestWifiDeepRecovery()')
     end = network.index('inline void mayapSetWifiPortalOtaQuiesced', start)
     (out / 'actual-network.inc').write_text(network[start:end], encoding='utf-8')
-    realtime = (root / 'MAYAP_INDUSTRIAL_v1_0_0/realtime_link.h').read_text(encoding='utf-8')
-    transport = (root / 'MAYAP_INDUSTRIAL_v1_0_0/websocket_transport.h').read_text(encoding='utf-8')
-    transport = '\n'.join(line for line in transport.splitlines() if not line.startswith('#include'))
-    (out / 'actual-websocket-transport.inc').write_text(transport, encoding='utf-8')
-    poll = (root / 'MAYAP_INDUSTRIAL_v1_0_0/esp_tls_async_poll.h').read_text(encoding='utf-8')
-    poll = '\n'.join(line for line in poll.splitlines() if not line.startswith('#include'))
-    (out / 'actual-esp-tls-poll.inc').write_text(poll, encoding='utf-8')
+    realtime = (root / 'MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h').read_text(encoding='utf-8')
     ota = (root / 'MAYAP_INDUSTRIAL_v1_0_0/ota_update.h').read_text(encoding='utf-8')
     ota = '\n'.join(line for line in ota.splitlines() if not line.startswith('#include'))
     (out / 'actual-ota.inc').write_text(ota, encoding='utf-8')
@@ -61,31 +55,10 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
     start = cloud.index('  servicePinReset();')
     end = cloud.index('\n}', start)
     (out / 'actual-cloud-dispatch.inc').write_text(cloud[start:end], encoding='utf-8')
-    realtime = (root / 'MAYAP_INDUSTRIAL_v1_0_0/realtime_link.h').read_text(encoding='utf-8')
+    realtime = (root / 'MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h').read_text(encoding='utf-8')
     start = realtime.index('inline void serviceEventLogPublish()')
     end = realtime.index('}  // namespace MayapRealtimeInternal', start)
     (out / 'actual-event-publish.inc').write_text(realtime[start:end], encoding='utf-8')
-    start = realtime.index('  if (mayapCloudTlsYieldRequested(now))')
-    end = realtime.index('  const NetworkStatus status', start)
-    (out / 'actual-cloud-yield.inc').write_text(realtime[start:end], encoding='utf-8')
-    parts = []
-    for begin, end in (('inline bool publishBootstrap(', 'struct TerminalResult {'),
-                       ('inline void handleSessionMessage(', 'inline void realtimeMessageCallback('),
-                       ('inline void serviceSessionTimeout(', 'inline void serviceConfigPublish()'),
-                       ('inline void serviceSnapshotPublish(', 'inline void serviceEventLogPublish(')):
-        start = realtime.index(begin)
-        stop = realtime.index(end, start)
-        # The session callback is followed by other message helpers; extract its
-        # balanced body only, so tests use the actual lease/sync implementation.
-        if 'handleSessionMessage' in begin:
-            brace = realtime.index('{', start)
-            depth = 1
-            stop = brace + 1
-            while depth:
-                depth += (realtime[stop] == '{') - (realtime[stop] == '}')
-                stop += 1
-        parts.append(realtime[start:stop])
-    (out / 'actual-web-connect.inc').write_text('\n'.join(parts), encoding='utf-8')
     # Extract actual admission/confirmation/history implementations; no model copy.
     def function(source, signature):
         start = source.index(signature)
@@ -114,7 +87,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
         function(realtime, 'inline bool publishAck(const char *requestId') + '\n' +
         function(realtime, 'inline bool replayTerminal('), encoding='utf-8')
     (out / 'actual-transaction-confirm.inc').write_text('\n'.join(function(realtime, sig) for sig in
-        ('inline void mayapWebConfirmCommand(', 'inline void mayapWebConfirmConfigSave(',)), encoding='utf-8')
+        ('inline void mayapRealtimeConfirmCommand(', 'inline void mayapRealtimeConfirmConfigSave(',)), encoding='utf-8')
     json_candidates = [Path(os.environ.get('MAYAP_ARDUINOJSON', 'missing')),
                        Path.home() / 'Arduino/libraries/ArduinoJson/src',
                        Path.home() / 'Documents/Arduino/libraries/ArduinoJson/src']
@@ -122,7 +95,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
     if json_include is None:
         raise SystemExit('ArduinoJson 7 required for actual retained bootstrap/session tests')
     cfg = (root / 'MAYAP_INDUSTRIAL_v1_0_0/config.h').read_text(encoding='utf-8')
-    cadence_names = ('WEB_SNAPSHOT_ACTIVE_INTERVAL_MS', 'WEB_SNAPSHOT_IDLE_INTERVAL_MS')
+    cadence_names = ('REALTIME_SNAPSHOT_ACTIVE_INTERVAL_MS', 'REALTIME_SNAPSHOT_IDLE_INTERVAL_MS')
     (out / 'actual-web-cadence-config.inc').write_text('\n'.join(
         re.search(r'constexpr [^;]*\b' + name + r'\b[^;]*;', cfg)[0]
         for name in cadence_names), encoding='utf-8')
@@ -147,12 +120,12 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
                  'mayapBootAcknowledgeHomeFrame'):
         mailbox += re.search(r'inline (?:bool|void) ' + name + r'\(\) \{[^}]*\}', boot)[0] + '\n'
     (out / 'actual-boot-mailbox.inc').write_text(mailbox, encoding='utf-8')
-    for test in ('runtime-buses', 'runtime-network', 'runtime-ota', 'runtime-attiny', 'runtime-attiny-state', 'runtime-stability', 'runtime-cloud-alert', 'runtime-websocket', 'runtime-esp-tls-poll', 'runtime-web-connect', 'runtime-transactions', 'runtime-online-isolation'):
+    for test in ('runtime-buses', 'runtime-network', 'runtime-ota', 'runtime-attiny', 'runtime-attiny-state', 'runtime-stability', 'runtime-cloud-alert', 'runtime-web-connect', 'runtime-transactions', 'runtime-online-isolation'):
         executable = out / (test + ('.exe' if __import__('os').name == 'nt' else ''))
         command = [args.cxx, '-std=c++11', '-Wall', '-Wextra', '-Werror', '-I', str(out),
                    str(root / ('tests/' + test + '.cpp')), '-o', str(executable)]
         if test in ('runtime-transactions','runtime-cloud-alert'): command[1] = '-std=c++17'
-        if test in ('runtime-web-connect', 'runtime-transactions', 'runtime-online-isolation','runtime-cloud-alert'):
+        if test in ('runtime-transactions', 'runtime-online-isolation','runtime-cloud-alert'):
             command += ['-I', str(json_include)]
         if args.sanitize:
             command += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
@@ -198,31 +171,6 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
         regression = subprocess.run([str(executable)], capture_output=True, text=True)
         assert regression.returncode != 0, 'Missing HIGH guard was not detected'
         print('Regression proof: legal >30 ms final LOW fails without production HIGH guard, as expected')
-        poll_header = out / 'actual-esp-tls-poll.inc'
-        original_poll = poll_header.read_text(encoding='utf-8')
-        rearm = 'FD_ZERO(&tls->wset); FD_SET(tls->sockfd, &tls->wset);'
-        assert rearm in original_poll
-        poll_header.write_text(original_poll.replace(rearm, 'FD_ZERO(&tls->wset);'), encoding='utf-8')
-        executable = out / 'runtime-esp-tls-poll-regression'
-        subprocess.run([args.cxx, '-std=c++11', '-Wall', '-Wextra', '-Werror', '-I', str(out),
-                        str(root / 'tests/runtime-esp-tls-poll.cpp'), '-o', str(executable)], check=True)
-        result = subprocess.run([str(executable)], capture_output=True, text=True)
-        poll_header.write_text(original_poll, encoding='utf-8')
-        assert result.returncode != 0, 'Missing TCP readiness re-arm was not detected'
-        print('Regression proof: actual IDF TCP polling stalls without write fd_set re-arm, as expected')
-        snapshot_header = out / 'actual-web-connect.inc'
-        original_snapshot = snapshot_header.read_text(encoding='utf-8')
-        edge_gate = '!forceSnapshotPublish && !lightChanged &&'
-        assert edge_gate in original_snapshot
-        snapshot_header.write_text(original_snapshot.replace(edge_gate,
-            '!forceSnapshotPublish && (!lightChanged || true) &&'), encoding='utf-8')
-        executable = out / 'runtime-web-connect-regression'
-        subprocess.run([args.cxx, '-std=c++11', '-Wall', '-Wextra', '-Werror', '-I', str(out),
-                        '-I', str(json_include), str(root / 'tests/runtime-web-connect.cpp'), '-o', str(executable)], check=True)
-        result = subprocess.run([str(executable)], capture_output=True, text=True)
-        snapshot_header.write_text(original_snapshot, encoding='utf-8')
-        assert result.returncode != 0 and 'snapshots.size() == 3' in result.stderr, 'Missing lamp edge publication was not detected'
-        print('Regression proof: stale forced sample delays actual lamp state without edge publication, as expected')
         # Each targeted mutation restores one of the review's actual failure
         # windows. Compilation must pass and the runtime assertions must fail.
         for name, replacement, label in (

@@ -62,7 +62,7 @@ static bool radioActive = false;
 static uint32_t connectionStartedAt = 0U;
 // Mains-powered controller: only networkTask applies fixed awake STA policy.
 static bool wifiPowerModeAppliedValid = false;
-// Backoff RIENG cua STA Wi-Fi, doc lap voi backoff cua MQTT (realtime_link.h)
+// Backoff RIENG cua STA Wi-Fi, doc lap voi backoff cua MQTT (transaction_bridge.h)
 // va Cloud Push (cloud_alert_link.h) - loi/reset o tang nao khong dung cham
 // tang khac. Khong con dung 2 bien lastRetryAt/lastStartAttemptAt + hang so co
 // dinh nhu truoc: moi that bai lien tiep se tu keo gian khoang cho ra thay vi
@@ -320,8 +320,8 @@ inline String buildWifiOptions() {
 }
 
 // Dinh danh thiet bi theo dung dinh dang "MAP-XXXXXXXXXXXX" ma web dung
-// (xem realtime_link.h::ensureIdentity). File nay duoc include TRUOC
-// realtime_link.h trong .ino nen tu tinh rieng, khong dung chung bien -
+// (xem transaction_bridge.h::ensureIdentity). File nay duoc include TRUOC
+// transaction_bridge.h trong .ino nen tu tinh rieng, khong dung chung bien -
 // cung ly do elapsedMs/timeReached o dau file nay phai co ban rieng.
 inline String mayapDeviceIdText() {
   const uint64_t mac = ESP.getEfuseMac();
@@ -617,7 +617,7 @@ inline void servicePortal(uint32_t now) {
   if (portalPhase == PortalPhase::Quiescing) {
     publish(NetworkStateCode::Connecting, false);
     const bool otaQuiesced = __atomic_load_n(&portalOtaQuiescedFlag, __ATOMIC_ACQUIRE) != 0U;
-    // Cho it nhat 1 network tick de mayapWebLinkUpdate() dong MQTT sau khi
+    // Cho it nhat 1 network tick de mayapRealtimeUpdate() dong MQTT sau khi
     // publishedConnected=false, ke ca khi otaTask da ack rat nhanh.
     if (otaQuiesced && mayapOnlineOwnersDrained() && elapsedMs(now, portalQuiesceStartedAt_) >= NETWORK_TASK_PERIOD_MS) {
       portalBeginStarting(now);
@@ -699,7 +699,7 @@ inline void servicePortal(uint32_t now) {
 }
 
 // --------------------------- Dong bo gio qua NTP (v3.8.0) --------------------
-// Mailbox rieng, cung mo hinh voi webMux/pendingConfigSave (realtime_link.h):
+// Mailbox rieng, cung mo hinh voi realtimeMux/pendingConfigSave (transaction_bridge.h):
 // GHI boi networkTask (serviceNtpSync(), khi Wi-Fi da ket noi va toi chu ky
 // dong bo), DOC+XOA boi controlTask qua mayapTakePendingNtpTime() trong
 // serviceI2cDeviceRecovery() (machine_control.h). Vung critical section chi
@@ -760,7 +760,7 @@ inline void serviceNtpSync(uint32_t now) {
 
 // Doc boi controlTask (MachineController::serviceI2cDeviceRecovery()) - lay va
 // xoa 1 lan gio moi nhat tu NTP neu co (giong het pattern pendingConfigSave.used
-// o realtime_link.h). Tra ve true + dien du 6 truong neu co du lieu moi.
+// o transaction_bridge.h). Tra ve true + dien du 6 truong neu co du lieu moi.
 inline bool mayapTakePendingNtpTime(uint16_t &year, uint8_t &month, uint8_t &day,
                                      uint8_t &hour, uint8_t &minute,
                                      uint8_t &second) {

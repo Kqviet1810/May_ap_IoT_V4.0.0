@@ -1,6 +1,6 @@
 # 05 — REGRESSION AGAINST THE PRIOR AUDIT
 
-The prior report (`audit/ARCHIVE_PRIOR_AUDIT_REPORT.md`, a verbatim copy of the
+The prior V3 report (removed from the V4 clean baseline, formerly a verbatim copy of the
 `audit/FINAL_AUDIT_REPORT.md` that existed before this pass) was **read only after**
 the independent re-audit of the current source was complete, and is used strictly as
 a regression checklist. All line numbers in it were re-verified against commit

@@ -47,9 +47,6 @@ jobs:
           node --check app.js
           node --check notes.js
           node --check protocol_v2.js
-          node --check realtime_transport.js
-          node --check cloudflare/src/device-hub.js
-          node --check cloudflare/src/realtime-auth.js
           node --check config.js
           node --check push.js
           node --check sw.js
@@ -70,10 +67,7 @@ jobs:
         working-directory: cloudflare
         run: npx pnpm@11.19.0 exec playwright install --with-deps chromium
 
-      - name: Real Cloudflare runtime and native browser realtime
-        run: python3 tools/test_realtime_workerd.py --browser
-
-      - name: Browser connection and UX regression
+      - name: Browser UX regression
         run: |
           python3 -m http.server 8765 --bind 127.0.0.1 > /tmp/mayap-qa-http.log 2>&1 &
           qa_server_pid=$!
@@ -93,7 +87,6 @@ jobs:
               return 1
             fi
           }
-          run_browser_qa tools/test_web_connection.cjs /tmp/mayap-connection-qa
           run_browser_qa tools/test_web_experience.cjs /tmp/mayap-web-qa
 
       - name: AT24C512 driver regression

@@ -1,4 +1,4 @@
-> Tài liệu lịch sử của baseline V1.0.0/PR #24. Hosting, broker và read-isolation mô tả dưới đây đã được thay thế bởi [migration Cloudflare realtime](CLOUDFLARE_REALTIME_MIGRATION.md); luồng Google account/ownership/claim vẫn là nền tảng hiện hành.
+> Tài liệu lịch sử của baseline V1.0.0/PR #24. Luồng Google account/ownership/claim vẫn là nền tảng hiện hành; mô tả transport cũ bên dưới không áp dụng cho V4 clean baseline.
 
 # Google Account + ownership — phạm vi tối giản của PR #24
 

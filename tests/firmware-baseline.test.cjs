@@ -6,10 +6,9 @@ const read = (name) => fs.readFileSync(path.resolve(__dirname, '..', name), 'utf
 const ota = read('MAYAP_INDUSTRIAL_v1_0_0/ota_web_update.h');
 const hmi = read('MAYAP_INDUSTRIAL_v1_0_0/hmi.h');
 
-test('three transient TLS users share nonblocking admission with memory budget', () => {
+test('Cloud and OTA transient TLS users share nonblocking admission with memory budget', () => {
   for (const name of ['cloud_alert_link.h', 'ota_web_update.h'])
     assert.match(read(`MAYAP_INDUSTRIAL_v1_0_0/${name}`), /MayapTlsOperation tlsOperation/);
-  assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/websocket_transport.h'), /new\s*\(std::nothrow\) MayapTlsOperation/);
   const gate = read('MAYAP_INDUSTRIAL_v1_0_0/network_io_guard.h');
   assert.match(gate, /__atomic_compare_exchange_n/);
   assert.match(gate, /49152U : 73728U/);
@@ -46,7 +45,7 @@ test('Wi-Fi guide uses HMI, and ArduinoOTA has one empty tracked password source
 test('production dependencies contain no broker library, fleet credential or MQTT browser bundle',()=>{
  assert.equal(fs.existsSync(path.resolve(__dirname,'../vendor/mqtt.min.js')),false);
  assert.equal(fs.existsSync(path.resolve(__dirname,'../MAYAP_INDUSTRIAL_v1_0_0/mqtt_transport.h')),false);
- assert.doesNotMatch(read('MAYAP_INDUSTRIAL_v1_0_0/realtime_link.h'),/PubSubClient|MqttTransport|MQTT_BROKER/);
+ assert.doesNotMatch(read('MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h'),/PubSubClient|MqttTransport|MQTT_BROKER/);
  assert.doesNotMatch(read('.github/workflows/build-firmware.yml'),/PubSubClient|MAYAP_MQTT_/);
  assert.doesNotMatch(read('index.html'),/mqtt.min.js/);
 });

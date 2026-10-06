@@ -6,7 +6,7 @@ root = Path(__file__).resolve().parent.parent
 destination = root / "cloudflare/public"
 destination.mkdir(parents=True, exist_ok=True)
 files = ["index.html", "styles.css", "notes.css", "notes.js", "landing.css", "account.js", "config.js", "app.js",
-         "protocol_v2.js", "realtime_transport.js", "push.js", "sw.js", "manifest.webmanifest",
+         "protocol_v2.js", "push.js", "sw.js", "manifest.webmanifest",
          "vendor/jsQR.min.js", "docs/MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.pdf"]
 files += [str(path.relative_to(root)) for path in (root / "icons").glob("*.png")]
 allowed = set(files) | {"_headers"}

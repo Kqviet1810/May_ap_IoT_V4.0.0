@@ -1,3 +1,5 @@
+> **V3 LEGACY:** This document describes the pre-V4 realtime stack. The V4 clean network baseline has no WebSocket/DeviceHub runtime and no MQTT implementation yet.
+
 # Online isolation from local control
 
 Online is auxiliary. Handled Wi-Fi/DNS/TLS/WebSocket/HTTPS/service failures never call the controller restart API. `networkTask` is the sole Wi-Fi driver/STA/AP/reconnect/power-policy owner; realtime presence/diagnostics use cached IP/RSSI snapshots. Arduino auto-reconnect is disabled so it cannot silently bypass the transaction.
@@ -24,7 +26,7 @@ No software can guarantee availability through arbitrary ESP-IDF driver/lwIP pan
 
 ## Changed files
 
-- Firmware: `MAYAP_INDUSTRIAL_v1_0_0.ino`, `online_isolation.h`, `service_recovery.h`, `network_service.h`, `realtime_link.h` (cached IP/RSSI only), `machine_control.h` (heap health only), `hmi.h` (bounded Online notices only).
+- Firmware: `MAYAP_INDUSTRIAL_v1_0_0.ino`, `online_isolation.h`, `service_recovery.h`, `network_service.h`, `transaction_bridge.h` (cached IP/RSSI only), `machine_control.h` (heap health only), `hmi.h` (bounded Online notices only).
 - Regression: `tests/runtime-network.cpp`, `tests/runtime-online-isolation.cpp`, `tests/runtime-websocket.cpp`, `tests/runtime-recovery.test.cjs`, `tests/runtime-preservation.json` (four narrowly reviewed fingerprints).
 - Tooling/documentation: `tools/test_runtime_buses.py`, `tools/check_reliability.py`, this document.
 

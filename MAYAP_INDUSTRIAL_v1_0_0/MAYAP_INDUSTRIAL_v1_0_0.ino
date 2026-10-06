@@ -1,5 +1,6 @@
 #include "config.h"
 #include "boot_diagnostic.h"
+#include <esp_heap_caps.h>
 #include <esp_timer.h>
 
 static volatile bool gMayapSystemTripLatched = false;
@@ -34,9 +35,7 @@ void mayapI2cUnlock() {
 #include "ota_rollback.h"
 #include "hmi.h"
 #include "history_store.h"
-#define MQTT_USE_TLS MAYAP_MQTT_USE_TLS
-#include "realtime_link.h"
-#undef MQTT_USE_TLS
+#include "transaction_bridge.h"
 #include "cloud_alert_link.h"
 #include "attiny_bus.h"
 #include "machine_control.h"
@@ -44,14 +43,14 @@ void mayapI2cUnlock() {
 using namespace Mayap;
 
 // Core 1 chay dieu khien an toan va HMI (uu tien thap hon control). Core 0 tach cac task
-// I/O doc lap de HTTPS/NTP/OTA khong the chan mqtt.loop(). Tat ca stack tinh,
+// I/O doc lap de HTTPS/NTP/OTA khong chan dieu khien. Tat ca stack tinh,
 // khong tao/xoa task trong runtime.
 constexpr uint32_t NETWORK_FAST_TASK_PERIOD_MS = 50UL;
 constexpr uint32_t MQTT_TASK_PERIOD_MS = 20UL;
 constexpr uint32_t CLOUD_TASK_PERIOD_MS = 100UL;
 // Controller availability outranks connectivity. Heap pressure remains visible
 // through E401/E402, but an online workload may not reboot the machine.
-constexpr size_t MQTT_TASK_STACK_BYTES = 12288U;
+constexpr size_t MQTT_TASK_STACK_BYTES = 4096U; // Phase 1 reserved service, no network client.
 constexpr size_t CLOUD_TASK_STACK_BYTES = 12288U;
 
 static StaticTask_t controlTaskTcb;
@@ -201,6 +200,11 @@ void controlTask(void *parameter) {
           static_cast<unsigned long>(__atomic_load_n(&controlMaxCycleUs, __ATOMIC_ACQUIRE)),
           static_cast<unsigned long>(__atomic_load_n(&hmiLastCycleUs, __ATOMIC_ACQUIRE)),
           static_cast<unsigned long>(__atomic_load_n(&hmiMaxCycleUs, __ATOMIC_ACQUIRE)));
+      mayapSerialPrintf(false,
+          "[HEAP] free=%lu min=%lu largest=%lu\n",
+          static_cast<unsigned long>(ESP.getFreeHeap()),
+          static_cast<unsigned long>(ESP.getMinFreeHeap()),
+          static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
     }
 #endif
 
@@ -298,82 +302,18 @@ void networkTask(void *parameter) {
   }
 }
 
-// Task realtime doc lap: Cloud HTTPS/NTP/portal web co block bao lau cung
-// khong lam mqtt.loop() doi. PubSubClient + WiFiClientSecure chi duoc cham boi
-// task nay, khong co truy cap dong thoi tu task khac.
+// Reserved MQTT service. No broker or transport runs in Phase 1.
 void mqttTask(void *parameter) {
   (void)parameter;
   mayapServiceAdmit(MayapRecovery::Service::Mqtt);
-  mayapWebLinkBegin();
+  mayapRealtimeBegin();
   __atomic_store_n(&mqttReady, 1U, __ATOMIC_RELEASE);
   TickType_t lastWake = xTaskGetTickCount();
-#if MAYAP_DIAGNOSTIC_SERIAL
-  uint32_t lastMqttDiagAt = 0U;
-#endif
   for (;;) {
-    const uint32_t now = millis();
-
-    if (mayapServiceRecoveryRequested(MayapRecovery::Service::Mqtt)) {
-      __atomic_store_n(&mqttIoBusy, 1U, __ATOMIC_RELEASE);
-      mayapMqttRecover(now);
-      __atomic_store_n(&mqttConnected, 0U, __ATOMIC_RELEASE);
-      mayapSetRealtimeOnline(false);
-      __atomic_store_n(&mqttIoBusy, 0U, __ATOMIC_RELEASE);
+    if (mayapServiceRecoveryRequested(MayapRecovery::Service::Mqtt))
       mayapServiceRecoveryComplete(MayapRecovery::Service::Mqtt);
-    }
-    if (mayapWifiPortalExclusiveRequested() || mayapRadioRecoveryRequested() ||
-        mayapServiceIsolated(MayapRecovery::Service::Mqtt, now)) {
-      __atomic_store_n(&mqttIoBusy, 1U, __ATOMIC_RELEASE);
-      if (MayapRealtimeInternal::socketTransport.busy()) MayapRealtimeInternal::socketTransport.disconnect();
-      __atomic_store_n(&mqttConnected, 0U, __ATOMIC_RELEASE);
-      mayapSetRealtimeOnline(false);
-      __atomic_store_n(&mqttIoBusy, 0U, __ATOMIC_RELEASE);
-      mayapOnlineOwnerQuiet(MayapRecovery::Service::Mqtt);
-      mayapServiceBeat(MayapRecovery::Service::Mqtt);
-      vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(MQTT_TASK_PERIOD_MS));
-      continue;
-    }
-
-    if (!mayapOnlineIoEnter(MayapRecovery::Service::Mqtt)) {
-      mayapServiceBeat(MayapRecovery::Service::Mqtt);
-      vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(MQTT_TASK_PERIOD_MS));
-      continue;
-    }
-    __atomic_store_n(&mqttIoBusy, 1U, __ATOMIC_RELEASE);
-    // Dong cua so race: portal co the vua duoc controlTask yeu cau sau phep
-    // kiem tra o tren nhung truoc khi ta danh dau busy.
-    if (!mayapWifiPortalExclusiveRequested() && !mayapRadioRecoveryRequested()) {
-      mayapWebLinkUpdate(now);
-#if MAYAP_DIAGNOSTIC_SERIAL
-      if (mayapSerialDebugEnabled() &&
-          (lastMqttDiagAt == 0U || elapsedMs(now, lastMqttDiagAt) >= 5000UL)) {
-        lastMqttDiagAt = now;
-        const NetworkStatus netStatus = mayapGetRawNetworkStatus();
-        const int mqttState = MayapRealtimeInternal::socketTransport.state();
-        const uint32_t retryInMs = MayapRealtimeInternal::linkBackoff.ready(now)
-            ? 0U
-            : static_cast<uint32_t>(MayapRealtimeInternal::linkBackoff.nextAttemptAt - now);
-        mayapSerialPrintf(false,
-            "[WS-DIAG] wifi=%u rssi=%d websocket=%u state=%d(%s) tcp=%u "
-            "backoff=%u retry=%lums heap=%u min=%u largest=%u\n",
-            netStatus.connected ? 1U : 0U,
-            netStatus.connected ? netStatus.rssiDbm : 0,
-            MayapRealtimeInternal::socketTransport.connected() ? 1U : 0U,
-            mqttState,
-            "WEBSOCKET",
-            MayapRealtimeInternal::socketTransport.busy() ? 1U : 0U,
-            static_cast<unsigned>(MayapRealtimeInternal::linkBackoff.step),
-            static_cast<unsigned long>(retryInMs),
-            static_cast<unsigned>(ESP.getFreeHeap()),
-            static_cast<unsigned>(ESP.getMinFreeHeap()),
-            static_cast<unsigned>(ESP.getMaxAllocHeap()));
-      }
-#endif
-    }
-    __atomic_store_n(&mqttIoBusy, 0U, __ATOMIC_RELEASE);
-    mayapOnlineIoLeave(MayapRecovery::Service::Mqtt);
-    __atomic_store_n(&mqttConnected, MayapRealtimeInternal::socketTransport.connected() ? 1U : 0U, __ATOMIC_RELEASE);
-    mayapSetRealtimeOnline(MayapRealtimeInternal::socketTransport.connected());
+    __atomic_store_n(&mqttConnected, 0U, __ATOMIC_RELEASE);
+    mayapSetRealtimeOnline(false);
     mayapServiceBeat(MayapRecovery::Service::Mqtt);
     vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(MQTT_TASK_PERIOD_MS));
   }
@@ -610,8 +550,8 @@ static void stagedStartupUpdate(uint32_t now) {
       case Stage::Hmi:
         hmiSetConfig(Machine.config());
         hmiSetRuntime(Machine.runtime());
-        mayapWebSetConfig(Machine.config());
-        mayapWebSetRuntime(Machine.runtime());
+        mayapRealtimeSetConfig(Machine.config());
+        mayapRealtimeSetRuntime(Machine.runtime());
         mayapCloudSetRuntime(Machine.runtime());
         hmiBegin();
         __atomic_store_n(&hmiHeartbeatMs, millis(), __ATOMIC_RELEASE);

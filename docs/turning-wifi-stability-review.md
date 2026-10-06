@@ -1,3 +1,5 @@
+> **V3 LEGACY:** This document describes the pre-V4 realtime stack. The V4 clean network baseline has no WebSocket/DeviceHub runtime and no MQTT implementation yet.
+
 # Turning / Wi-Fi stability review
 
 Branch: `codex/turning-wifi-stability`; base: `main` `412be80` (2026-10-05).
@@ -85,7 +87,7 @@ or physical accuracy claims; thermal code and acceptance thresholds were retaine
 ## Changed files
 
 Firmware: `machine_control.h`, `network_service.h`, new `wifi_stable_state.h`,
-`config.h` (declaration only), `MAYAP_INDUSTRIAL_v1_0_0.ino`, `realtime_link.h`,
+`config.h` (declaration only), `MAYAP_INDUSTRIAL_v1_0_0.ino`, `transaction_bridge.h`,
 `web_realtime_policy.h`, `cloud_alert_link.h`, `ota_update.h`, `ota_web_update.h`.
 The Cloud/OTA files only switch network I/O admission to the raw snapshot.
 

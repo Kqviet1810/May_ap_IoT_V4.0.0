@@ -81,20 +81,12 @@ static_assert(sizeof(NETWORK_WIFI_HOSTNAME) <= 33U,
 constexpr char OTA_PASSWORD[] = MAYAP_OTA_PASSWORD;
 static_assert(sizeof(OTA_PASSWORD) <= 64U, "Mat khau OTA toi da 63 ky tu");
 
-// ------------------------- Cloudflare WebSocket realtime ----------------------
-// Each device authenticates with its own NVS device key; no fleet broker secret.
-// Reconnect MQTT dung BackoffTimer dung chung (xem phia duoi file) thay vi
-// chu ky co dinh - khong con hang so rieng o day.
-// Web bao "active" (tab dang mo) qua topic session voi ttlMs rieng; day la
-// tran an toan tranh mot phien "active" treo vinh vien neu web ngung gui ma
-// khong kip bao "active:false" (mat mang dot ngot, tat trinh duyet...).
-constexpr uint32_t WEB_SESSION_MAX_TTL_MS = 60000UL;
-// Toc do phat snapshot: nhanh khi co web dang mo (foreground), cham lai khi
-// khong ai theo doi de tiet kiem song/nang luong nhung van giu "con song".
-constexpr uint32_t WEB_SNAPSHOT_ACTIVE_INTERVAL_MS = 1000UL;
-constexpr uint32_t WEB_SNAPSHOT_IDLE_INTERVAL_MS = 120000UL;
-constexpr uint32_t WEB_COMMAND_ACK_TIMEOUT_MS = 8000UL;
-constexpr uint32_t WEB_CONFIG_SAVE_ACK_TIMEOUT_MS = 8000UL;
+// ------------------------- Application transaction cadence -------------------
+// Generic bounded publication intervals for a future transport owner.
+constexpr uint32_t REALTIME_SNAPSHOT_ACTIVE_INTERVAL_MS = 1000UL;
+constexpr uint32_t REALTIME_SNAPSHOT_IDLE_INTERVAL_MS = 120000UL;
+constexpr uint32_t REALTIME_COMMAND_ACK_TIMEOUT_MS = 8000UL;
+constexpr uint32_t REALTIME_CONFIG_SAVE_ACK_TIMEOUT_MS = 8000UL;
 
 // --------------------------- Cloud Push (Cloudflare Worker, doc lap voi Web) ---
 // KENH RIENG, KHONG DI QUA MQTT/WEB: cloud_alert_link.h tu mo ket noi HTTPS
@@ -161,11 +153,7 @@ constexpr uint32_t FIRMWARE_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;  // 
 // hien mat dien/mat mang (xem cloudflare/src/index.js::checkDeviceConnectivity,
 // nguong DEVICE_OFFLINE_THRESHOLD_MS) - giu ty le >=4-5 lan nhip/nguong de
 // tranh bao nham khi mang chi chap chon vai chuc giay. 15s la muc nhanh nhat
-// hop ly cho kenh HTTPS dinh ky kieu nay (khac MQTT keepalive/LWT o
-// realtime_link.h - kenh do da phat hien mat ket noi GAN NHU TUC THI qua
-// broker cho trang web dang mo, nhung KHONG the dung lam nguon cho Cloud
-// Push vi Cloudflare Worker khong giu duoc ket noi MQTT thuong truc/khong
-// nhan duoc su kien LWT khi khong co request nao toi). Cron kiem tra phia
+// hop ly cho kenh HTTPS dinh ky kieu nay. Cron kiem tra phia
 // Worker toi da 1 phut/lan (san co, gioi han cua nen tang) nen day la do
 // tre nhanh nhat dat duoc cho kenh bao qua dien thoai voi kien truc hien tai.
 constexpr uint32_t CLOUD_HEARTBEAT_INTERVAL_MS = 60000UL;
@@ -714,11 +702,7 @@ constexpr size_t SUPERVISOR_TASK_STACK_BYTES = 4096U;
 // cua no. Dat bang networkTask de du du phong, tranh tran stack (co the la
 // nguyen nhan gay treo/khoi dong lai lien tuc da gap thuc te).
 constexpr size_t OTA_TASK_STACK_BYTES = 12288U;
-// Tang tu 6144 len 12288: networkTask gio con chay them MQTT client
-// (PubSubClient) + ArduinoJson cho lop web realtime (realtime_link.h), dung
-// buffer JSON tren stack toi da ~1.5KB (khop config/set - payload lon nhat,
-// 28 truong cau hinh) canh WebServer/DNSServer cua cong doi Wi-Fi da co san.
-// Du du phong tranh tran stack.
+// Network task retains its tested margin for Wi-Fi portal HTTP/DNS handling.
 constexpr size_t NETWORK_TASK_STACK_BYTES = 12288U;
 constexpr uint32_t TASK_STACK_MONITOR_MS = 60000UL;
 // 5 s: du bien cho giao dich I2C huu han nhung van phat hien task bi treo.
@@ -1321,7 +1305,7 @@ enum class HmiCommandType : uint8_t {
 // dung tu xa co the xoa loi dao trung (can kiem tra co khi that su) hoac tam
 // tat coi khan cap lien tuc ma khong ai o canh may kiem tra. Nguon mac dinh
 // la Local de moi noi trong hmi.h goi queueCommand() KHONG can sua (dung y
-// dinh vat ly nhu truoc gio); chi realtime_link.h::handleCommandMessage()
+// dinh vat ly nhu truoc gio); chi transaction_bridge.h::handleCommandMessage()
 // truyen rieng Remote.
 enum class HmiCommandSource : uint8_t { Local, Remote };
 struct HmiCommand {

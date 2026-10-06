@@ -7,7 +7,7 @@ const CACHE = 'mayap-web-v1.1.6';
 const REQUIRED_SHELL = [
   './', './styles.css', './landing.css', './account.js?v=1.1.6', './config.js?v=1.1.6',
   './app.js?v=1.1.6', './protocol_v2.js?v=1.1.6', './push.js?v=1.1.6',
-  './manifest.webmanifest', './vendor/jsQR.min.js', './realtime_transport.js?v=1.1.6',
+  './manifest.webmanifest', './vendor/jsQR.min.js',
   './notes.js?v=1.1.6', './notes.css', './icons/icon-192.png', './icons/icon-512.png'
 ];
 const OPTIONAL_SHELL = [
@@ -111,8 +111,7 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin ||
       url.pathname.startsWith('/api/') ||
-      url.pathname.startsWith('/auth/') ||
-      url.pathname.startsWith('/realtime/')) return;
+      url.pathname.startsWith('/auth/')) return;
 
   const accept = event.request.headers?.get?.('accept') || '';
   const isNavigation = event.request.mode === 'navigate' ||
