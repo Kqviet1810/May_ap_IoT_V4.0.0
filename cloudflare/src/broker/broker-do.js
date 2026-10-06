@@ -151,6 +151,9 @@ export class MqttBrokerDO {
     // must not keep the connection alive indefinitely.
     if (packets.length > 0) att.lastRxMs = Date.now();
     for (const pkt of packets) {
+      // A handler may have closed the socket (DISCONNECT, violation): packets that
+      // arrived coalesced behind it must not be processed.
+      if (ws.readyState !== undefined && ws.readyState !== 1) break;
       try {
         await this._handlePacket(ws, att, pkt);
       } catch (err) {
@@ -192,7 +195,9 @@ export class MqttBrokerDO {
   }
 
   async webSocketError(ws, err) {
-    try { await this.webSocketClose(ws, 1011, String(err && err.message || err), false); } catch {}
+    // A non-disconnection error must not fire the will. Close the socket so the
+    // runtime's webSocketClose runs once and publishes the will exactly once.
+    try { ws.close(1011, 'WS_ERROR'); } catch {}
   }
 
   async alarm() {
@@ -344,16 +349,17 @@ export class MqttBrokerDO {
       return;
     }
 
-    // Phase 2B.1 §4 — a PUBLISH with retain=1 to a retain-forbidden control
-    // topic (command/config.set/reminders.set/history.request) is a protocol
-    // misuse. Transport-ACK it to avoid leaking role structure, then DROP:
-    // no retain store, no fanout, no execution. Legitimate publishers never
-    // set retain=1 on these topics.
-    if (pkt.retain && RETAIN_FORBIDDEN.has(parsed.suffix)) {
+    // The retain bit must match the topic table exactly (contract section 2):
+    // retained state topics (presence, reminders/reported) require retain=1, every
+    // other topic - including all control topics - requires retain=0. A mismatch
+    // is protocol misuse: transport-ACK to avoid leaking role structure, then DROP
+    // (no retain store, no fanout, no execution). Dropping a retain=0 state publish
+    // also keeps an older retained value from silently going stale.
+    if (pkt.retain !== RETAIN_ALLOWED.has(parsed.suffix)) {
       if (pkt.qos > 0) ws.send(encodePuback(pkt.packetId));
       att.violations = (att.violations || 0) + 1;
       ws.serializeAttachment(att);
-      if (att.violations >= 2) return this._closeFatal(ws, 1008, 'RETAIN_FORBIDDEN');
+      if (att.violations >= 2) return this._closeFatal(ws, 1008, 'RETAIN_MISMATCH');
       return;
     }
 

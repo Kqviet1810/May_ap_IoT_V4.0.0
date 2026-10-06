@@ -220,16 +220,22 @@ jobs:
             --verbose \
             MAYAP_INDUSTRIAL_v1_0_0 2>&1 | tee /tmp/mayap-compile.log
 
-      - name: Enforce V4 clean firmware size budgets
+      - name: Enforce V4 network-phase firmware size budgets
         shell: bash
         run: |
+          # Phase 1 (no transport) measured Flash=1359805 / static RAM=142184.
+          # esp-mqtt/WSS + Transaction V2 owner measured Flash=1366545 / RAM=154544:
+          # the RAM delta is the MQTT owner task stack 4096->12288 (V2 budget, +8192)
+          # plus the 2-slot inbound ring (+4144). Ceilings below are the measured
+          # network-phase values with a small margin; lower them after the stack
+          # high-water mark is measured on hardware.
           FLASH=$(sed -n 's/.*Sketch uses \([0-9][0-9]*\) bytes.*/\1/p' /tmp/mayap-compile.log | tail -n 1)
           STATIC_RAM=$(sed -n 's/.*Global variables use \([0-9][0-9]*\) bytes.*/\1/p' /tmp/mayap-compile.log | tail -n 1)
           test -n "$FLASH" || { echo "::error::Cannot read ESP32 Flash size"; exit 1; }
           test -n "$STATIC_RAM" || { echo "::error::Cannot read ESP32 static RAM size"; exit 1; }
-          echo "V4 clean baseline: Flash=${FLASH}/1380000 bytes; static RAM=${STATIC_RAM}/145000 bytes"
-          test "$FLASH" -le 1380000 || { echo "::error::ESP32 Flash exceeds V4 clean budget: ${FLASH} > 1380000"; exit 1; }
-          test "$STATIC_RAM" -le 145000 || { echo "::error::ESP32 static RAM exceeds V4 clean budget: ${STATIC_RAM} > 145000"; exit 1; }
+          echo "V4 network phase: Flash=${FLASH}/1380000 bytes; static RAM=${STATIC_RAM}/155000 bytes"
+          test "$FLASH" -le 1380000 || { echo "::error::ESP32 Flash exceeds V4 budget: ${FLASH} > 1380000"; exit 1; }
+          test "$STATIC_RAM" -le 155000 || { echo "::error::ESP32 static RAM exceeds V4 budget: ${STATIC_RAM} > 155000"; exit 1; }
 
       - name: Verify linked GPIO ISR cache safety
         shell: bash

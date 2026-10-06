@@ -3,11 +3,12 @@ main = "src/broker/broker-entry.js"
 compatibility_date = "2026-10-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Phase 2B fixture credentials. Replace with Worker-managed resolver in 2E.
-# These vars let the broker start without wiring to the Push Worker yet.
-[vars]
-BROKER_FIXTURE_DEVICE_PASSWORD = ""
-BROKER_FIXTURE_WEB_PASSWORD = ""
+# MVP fixture credentials are SECRETS, never committed and never declared under
+# [vars] (an empty var could shadow a secret):
+#   wrangler secret put BROKER_FIXTURE_DEVICE_PASSWORD -c wrangler-broker.toml
+#   wrangler secret put BROKER_FIXTURE_WEB_PASSWORD    -c wrangler-broker.toml
+# Without them the broker fails closed (no client can authenticate).
+# `wrangler dev` takes them with --var (see tools/e2e/run_mvp.cjs).
 
 [[durable_objects.bindings]]
 name = "MQTT_BROKER"

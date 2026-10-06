@@ -24,6 +24,7 @@ class StubWebSocket {
     this._attachment = null;
     this._accepted = false;
   }
+  get readyState() { return this.closed ? 3 : 1; }
   send(data) {
     if (this.closed) return;
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);

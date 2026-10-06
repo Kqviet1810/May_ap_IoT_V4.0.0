@@ -23,6 +23,14 @@
 // credential supplied at build time (-D...), never tracked; production auth
 // replaces it without changing the topic contract.
 
+// Optional local, untracked override (see doc/MVP_BRINGUP.md): plain #defines, so
+// the Arduino IDE needs no -D escaping and no secret ever enters Git.
+#if defined(__has_include)
+#if __has_include("build_local.h")
+#include "build_local.h"
+#endif
+#endif
+
 #ifndef MAYAP_BROKER_HOST
 #define MAYAP_BROKER_HOST ""
 #endif

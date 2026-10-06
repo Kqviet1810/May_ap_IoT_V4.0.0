@@ -502,3 +502,64 @@ test('§7 web→device session publish fanouts to device', async () => {
   assert.equal(pub.qos, 0);
   assert.equal(pub.payload.toString('utf-8'), '{"ttl":60}');
 });
+
+// --------------------------------------------------------------------------
+// Codex round 2 (blocker-class only): LWT exactly once, retain must match the
+// topic table, nothing runs after a terminal close.
+// --------------------------------------------------------------------------
+test('§Codex2 webSocketError closes the socket and does not fire the will by itself', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const w = await web(b.broker);
+  await harness.feed(b.broker, w.server, wire.subscribe({
+    packetId: 1, filters: [{ filter: `mayap/v1/${DEV}/presence`, qos: 1 }],
+  }));
+  await harness.clientReceive(w.client);
+  const d = await dev(b.broker);
+  await b.broker.webSocketError(d.server, new Error('transient'));
+  assert.equal(d.server.closed, true);
+  assert.deepEqual(await harness.clientReceive(w.client), [], 'will must wait for webSocketClose');
+  assert.equal(await b.state.storage.get('retained:presence'), undefined);
+  // The runtime then calls webSocketClose once: exactly one will.
+  await b.broker.webSocketClose(d.server, 1011, 'WS_ERROR', false);
+  const frames = await harness.clientReceive(w.client);
+  assert.equal(frames.length, 1);
+  assert.equal(wire.parsePublish(frames[0]).payload.toString('utf-8'), '{"online":false}');
+});
+
+test('§Codex2 presence published with retain=0 is dropped and the retained value is untouched', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const d = await dev(b.broker);
+  await harness.feed(b.broker, d.server, wire.publish({
+    topic: `mayap/v1/${DEV}/presence`, qos: 1, retain: true, packetId: 1, payload: '{"online":true,"n":1}',
+  }));
+  await harness.clientReceive(d.client);
+  const w = await web(b.broker);
+  await harness.feed(b.broker, w.server, wire.subscribe({
+    packetId: 1, filters: [{ filter: `mayap/v1/${DEV}/presence`, qos: 1 }],
+  }));
+  await harness.clientReceive(w.client);   // SUBACK + retained
+  await harness.feed(b.broker, d.server, wire.publish({
+    topic: `mayap/v1/${DEV}/presence`, qos: 1, retain: false, packetId: 2, payload: '{"online":true,"n":2}',
+  }));
+  assert.equal(wire.parsePuback((await harness.clientReceive(d.client))[0]).packetId, 2);
+  assert.deepEqual(await harness.clientReceive(w.client), [], 'no fanout of a mismatched publish');
+  const stored = await b.state.storage.get('retained:presence');
+  assert.equal(Buffer.from(stored.payloadB64, 'base64').toString('utf-8'), '{"online":true,"n":1}');
+});
+
+test('§Codex2 packets coalesced behind DISCONNECT are not processed', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const d = await dev(b.broker);
+  await harness.feed(b.broker, d.server, wire.subscribe({
+    packetId: 1, filters: [{ filter: `mayap/v1/${DEV}/command`, qos: 1 }],
+  }));
+  await harness.clientReceive(d.client);
+  const w = await web(b.broker);
+  const disconnect = wire.disconnect();
+  const command = wire.publish({ topic: `mayap/v1/${DEV}/command`, qos: 1, packetId: 9, payload: '{"op":"x"}' });
+  const merged = new Uint8Array(disconnect.length + command.length);
+  merged.set(disconnect, 0); merged.set(command, disconnect.length);
+  await harness.feed(b.broker, w.server, merged);
+  assert.equal(w.server.closed, true);
+  assert.deepEqual(await harness.clientReceive(d.client), [], 'a command after DISCONNECT must never reach the device');
+});
