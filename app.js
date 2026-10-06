@@ -1748,7 +1748,7 @@
 
   function publish(route, payload, options = {}) {
     const wire = JSON.stringify(payload);
-    const bytes = encoder.encode(wire).length + encoder.encode(route.channel).length + PACKET_POLICY.MQTT_OVERHEAD;
+    const bytes = encoder.encode(wire).length + encoder.encode(route.channel).length + PACKET_POLICY.FRAME_OVERHEAD;
     if (bytes > PACKET_POLICY.NORMAL_CAP) {
       const error = new Error(`Gói MQTT vượt giới hạn ${PACKET_POLICY.NORMAL_CAP} B (${bytes} B)`);
       error.code = 'PROTOCOL_ERROR';
@@ -2971,7 +2971,9 @@
     }
     if (token !== realtimeToken) return;
     state.realtimeExpiresAt = Number(reply.mqtt.expiresAt || 0) * 1000;
-    const transport = window.MayapMqttTransport.create({
+    let transport;
+    try {
+    transport = window.MayapMqttTransport.create({
       deviceId: device.id, url: reply.mqtt.url, username: reply.mqtt.username, password: reply.mqtt.password,
       clientId: `mayap-web-${Array.from(crypto.getRandomValues(new Uint8Array(6)),
         (b) => b.toString(16).padStart(2, '0')).join('')}`,
@@ -3013,6 +3015,13 @@
               : error ? 'Kết nối máy chủ gặp lỗi. Đang thử lại…' : 'Kết nối bị gián đoạn');
       },
     });
+    } catch (error) {
+      console.error(error);
+      connectingDeviceId = '';
+      setRealtimeStatus('error', 'Kết nối máy chủ gặp lỗi. Đang thử lại…');
+      retryLater();
+      return;
+    }
     state.realtime = transport;
   }
 

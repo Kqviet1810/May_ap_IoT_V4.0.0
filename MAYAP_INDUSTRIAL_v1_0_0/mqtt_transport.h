@@ -188,9 +188,12 @@ inline void buildIdentity() {
 inline void stopClient(bool graceful) {
   if (!client) { connected = false; return; }
   if (graceful && connected) {
-    MayapRealtimeInternal::publishPresence(false);  // clean DISCONNECT suppresses the LWT
-    esp_mqtt_client_disconnect(client);
-    vTaskDelay(pdMS_TO_TICKS(150));
+    // A clean DISCONNECT suppresses the LWT, so only send it when the offline
+    // presence was really queued; otherwise drop the link and let the LWT fire.
+    if (MayapRealtimeInternal::publishPresence(false)) {
+      esp_mqtt_client_disconnect(client);
+      vTaskDelay(pdMS_TO_TICKS(150));
+    }
   }
   esp_mqtt_client_stop(client);
   esp_mqtt_client_destroy(client);

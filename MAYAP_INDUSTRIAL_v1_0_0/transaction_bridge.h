@@ -262,7 +262,7 @@ inline void serviceHistoryResponse() {
   }
 }
 
-inline void publishPresence(bool online) {
+inline bool publishPresence(bool online) {
   JsonDocument doc;
   doc["online"] = online;
   doc["bootId"] = bootId;
@@ -277,7 +277,7 @@ inline void publishPresence(bool online) {
   caps.add("transactions"); caps.add("config.patch");
   caps.add("control.session"); caps.add("history.chunk");
   doc["hw"] = MAYAP_HARDWARE_REVISION;
-  publishJson("presence", doc, true);
+  return publishJson("presence", doc, true);
 }
 
 inline bool publishConfigReport(const MachineConfig &cfg, uint32_t revision) {
