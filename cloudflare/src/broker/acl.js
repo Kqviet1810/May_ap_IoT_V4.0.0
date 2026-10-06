@@ -116,8 +116,11 @@ export function evaluateSubscribe(role, deviceId, filter, requestedQos) {
 
 // Credential resolution. Returns { role: 'device'|'web' } or null.
 //
-// device: MVP fixture (shared secret, username must equal this DO's device id).
-//         Replace with a per-device derived secret before production.
+// device: per-device password derived statelessly from a server secret:
+//           password = hex HMAC-SHA256(secret, 'mayap-mqtt-device:v1\n<deviceId>')
+//         The account Worker hands it to the device at /api/device/register (the
+//         device keeps it in NVS); the broker recomputes it, so no D1 lookup and
+//         no shared password. Username must equal this DO's device id.
 // web:    a signed token bound to BOTH the device and the user, so a credential
 //         issued for one device is useless on every other device DO:
 //           password = "v1.<exp>.<hex HMAC-SHA256(secret,
@@ -149,12 +152,26 @@ export async function verifyWebToken(secret, deviceId, username, token, nowMs = 
     textEncoder.encode(`mayap-mqtt-web:v1\n${deviceId}\n${username}\n${expiresAt}`));
 }
 
-export function makeCredentialResolver({ devicePassword, webTokenSecret } = {}) {
-  const dev = devicePassword == null || devicePassword === '' ? null : String(devicePassword);
+export async function deriveDevicePassword(secret, deviceId) {
+  const mac = await crypto.subtle.sign('HMAC', await hmacKey(secret, ['sign']),
+    textEncoder.encode(`mayap-mqtt-device:v1\n${deviceId}`));
+  return bytesToHex(new Uint8Array(mac));
+}
+
+function constantTimeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+export function makeCredentialResolver({ deviceSecret, webTokenSecret } = {}) {
+  const devSecret = deviceSecret == null || deviceSecret === '' ? null : String(deviceSecret);
   const secret = webTokenSecret == null || webTokenSecret === '' ? null : String(webTokenSecret);
   return async function resolve(deviceId, username, passwordBytes) {
     const pwd = passwordBytes ? new TextDecoder('utf-8', { fatal: false }).decode(passwordBytes) : '';
-    if (dev && username === deviceId && pwd === dev) return { role: 'device' };
+    if (devSecret && username === deviceId && /^[0-9a-f]{64}$/.test(pwd) &&
+        constantTimeEqual(pwd, await deriveDevicePassword(devSecret, deviceId))) return { role: 'device' };
     if (secret && await verifyWebToken(secret, deviceId, username, pwd)) return { role: 'web' };
     return null;
   };

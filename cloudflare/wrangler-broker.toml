@@ -5,7 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 # Credentials are SECRETS, never committed and never declared under [vars] (an
 # empty var could shadow a secret):
-#   wrangler secret put BROKER_FIXTURE_DEVICE_PASSWORD -c wrangler-broker.toml   (ESP32, MVP fixture)
+#   wrangler secret put BROKER_DEVICE_SECRET           -c wrangler-broker.toml   (derives each ESP32's password; same value as Worker MQTT_DEVICE_SECRET)
 #   wrangler secret put BROKER_WEB_TOKEN_SECRET        -c wrangler-broker.toml   (verifies Web tokens)
 # Without them the broker fails closed (no client can authenticate).
 # `wrangler dev` takes them with --var (see tools/e2e/run_mvp.cjs).

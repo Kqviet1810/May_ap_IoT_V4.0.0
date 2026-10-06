@@ -22,7 +22,10 @@ fs.mkdirSync(out, { recursive: true });
 const BROKER_PORT = Number(process.env.E2E_BROKER_PORT || 8798);
 const WEB_PORT = Number(process.env.E2E_WEB_PORT || 8766);
 const DEVICE_ID = 'MAP-1234567890AB';
-const DEVICE_PASSWORD = 'e2e-device-fixture';
+const DEVICE_SECRET = 'e2e-device-secret';
+// Same derivation as cloudflare/src/broker/acl.js deriveDevicePassword().
+const DEVICE_PASSWORD = require('node:crypto').createHmac('sha256', DEVICE_SECRET)
+  .update(`mayap-mqtt-device:v1\n${DEVICE_ID}`).digest('hex');
 const WEB_TOKEN_SECRET = 'e2e-web-token-secret';
 const PEPPER = 'e2e-device-key-pepper';
 const hmacHex = (key, text) => crypto.createHmac('sha256', key).update(text).digest('hex');
@@ -86,7 +89,7 @@ async function main() {
   try {
     const broker = spawnLogged(path.join(root, 'cloudflare/node_modules/.bin/wrangler'), [
       'dev', '--config', 'wrangler-broker.toml', '--port', String(BROKER_PORT), '--local',
-      '--var', `BROKER_FIXTURE_DEVICE_PASSWORD:${DEVICE_PASSWORD}`,
+      '--var', `BROKER_DEVICE_SECRET:${DEVICE_SECRET}`,
       '--var', `BROKER_WEB_TOKEN_SECRET:${WEB_TOKEN_SECRET}`],
     { cwd: path.join(root, 'cloudflare') }, 'broker.log');
     children.push(broker);

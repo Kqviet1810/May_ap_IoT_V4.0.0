@@ -7,7 +7,10 @@ const wire = require('./fixtures/mqtt-wire.cjs');
 const harness = require('./fixtures/mqtt-broker-harness.cjs');
 
 const DEV = 'MAP-001122334455';
-const DEV_PWD = 'dev-pass-A';
+// Per-device password: same derivation as cloudflare/src/broker/acl.js deriveDevicePassword().
+const DEV_SECRET = 'device-secret-test';
+const devicePasswordFor = (id) => require('node:crypto').createHmac('sha256', DEV_SECRET).update(`mayap-mqtt-device:v1\n${id}`).digest('hex');
+const DEV_PWD = devicePasswordFor(DEV);
 const crypto = require('node:crypto');
 const WEB_TOKEN_SECRET = 'web-token-secret-test';
 // Same construction as cloudflare/src/broker/acl.js signWebToken().
@@ -20,7 +23,7 @@ function webToken(username = 'web:u1', deviceId = DEV, ttlSec = 600) {
 
 function envFixture() {
   return {
-    BROKER_FIXTURE_DEVICE_PASSWORD: DEV_PWD,
+    BROKER_DEVICE_SECRET: DEV_SECRET,
     BROKER_WEB_TOKEN_SECRET: WEB_TOKEN_SECRET,
   };
 }

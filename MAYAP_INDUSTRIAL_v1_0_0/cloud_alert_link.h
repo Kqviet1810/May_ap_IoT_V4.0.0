@@ -604,6 +604,11 @@ inline void storeProvisioningFromResponse(const String &response) {
       mayapSerialPrintf(false, "[CLOUD] command_key khong hop le/khong luu duoc\n");
     }
   }
+  // Per-device MQTT broker credential (NVS); absent when the Worker has none.
+  const char *mqttPassword = parsed["mqtt_password"] | "";
+  if (mqttPassword[0] && !mayapStoreMqttKey(mqttPassword)) {
+    mayapSerialPrintf(false, "[CLOUD] mqtt_password khong hop le/khong luu duoc\n");
+  }
 }
 
 inline bool rotateLegacyDeviceKey() {

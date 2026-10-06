@@ -154,36 +154,6 @@ jobs:
           path.write_text(text.replace(needle, replacement, 1), encoding="utf-8")
           PYOTA
 
-      - name: Nap thong so broker MQTT (build_local.h, khong commit)
-        env:
-          MQTT_DEVICE_FIXTURE_PASSWORD: ${{ secrets.MQTT_DEVICE_FIXTURE_PASSWORD }}
-          MQTT_BROKER_HOST: mayap-mqtt-broker.vietk-mayaptrung.workers.dev
-        shell: bash
-        run: |
-          # build_local.h nam trong .gitignore; mat khau chi ton tai trong runner.
-          # PR (khong co secret) dung host/mat khau gia KHONG nhay cam de van bien
-          # dich du duong MQTT (host/mat khau rong lam compiler dead-strip MQTT
-          # va do size budget sai). Firmware PR khong duoc nap len may.
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
-            printf '#define MAYAP_BROKER_HOST "ci-dummy.invalid"\n#define MAYAP_BROKER_FIXTURE_PASSWORD "ci-dummy-password"\n' > MAYAP_INDUSTRIAL_v1_0_0/build_local.h
-            echo "PR build: dummy non-secret broker host/password (full MQTT path compiled)."
-          elif [[ -z "$MQTT_DEVICE_FIXTURE_PASSWORD" ]]; then
-            if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" || "$GITHUB_REF" == refs/tags/* ]]; then
-              echo "::error::Thieu GitHub secret MQTT_DEVICE_FIXTURE_PASSWORD - firmware se tat MQTT"; exit 1
-            fi
-            echo "::warning::Thieu GitHub secret MQTT_DEVICE_FIXTURE_PASSWORD - firmware nay tat MQTT"
-          else
-            python3 - <<'PYMQTT'
-          import json, os
-          host = os.environ["MQTT_BROKER_HOST"]
-          pwd = os.environ["MQTT_DEVICE_FIXTURE_PASSWORD"]
-          with open("MAYAP_INDUSTRIAL_v1_0_0/build_local.h", "w", encoding="utf-8") as f:
-              f.write("#define MAYAP_BROKER_HOST " + json.dumps(host) + "\n")
-              f.write("#define MAYAP_BROKER_FIXTURE_PASSWORD " + json.dumps(pwd) + "\n")
-          print("build_local.h written (host=" + host + ", password masked)")
-          PYMQTT
-          fi
-
       - name: Kiem tra JavaScript
         run: |
           node --check app.js
@@ -254,8 +224,8 @@ jobs:
         shell: bash
         run: |
           # Phase 1 (no transport) measured Flash=1359805 / static RAM=142184.
-          # Full esp-mqtt/WSS path (real or dummy credentials, so nothing is
-          # dead-stripped) measured on main: Flash=1439981 / static RAM=161024.
+          # Full esp-mqtt/WSS path (host is tracked, password comes from NVS at runtime,
+          # so nothing is dead-stripped) measured on main: Flash=1439981 / static RAM=161024.
           # Ceilings = measured + ~1.4% Flash / ~1.8% RAM margin; lower them
           # after the stack high-water mark is measured on hardware.
           FLASH=$(sed -n 's/.*Sketch uses \([0-9][0-9]*\) bytes.*/\1/p' /tmp/mayap-compile.log | tail -n 1)

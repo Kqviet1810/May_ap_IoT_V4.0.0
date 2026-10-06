@@ -24,7 +24,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CF_DIR = path.resolve(__dirname, '..');
 const PORT = Number(process.env.WRANGLER_PORT || 8795);
 const DEV = 'MAP-AABBCCDDEEFF';
-const DEV_PWD = 'dev-pass-A';
+const DEV_SECRET = 'dev-secret-A';
+const DEV_PWD = createHmac('sha256', DEV_SECRET).update(`mayap-mqtt-device:v1\n${DEV}`).digest('hex');
 const WEB_TOKEN_SECRET = 'web-token-secret-B';
 // Same construction as cloudflare/src/broker/acl.js signWebToken().
 function webToken(username) {
@@ -75,7 +76,7 @@ async function main() {
     '--yes', 'wrangler', 'dev',
     '--config', 'wrangler-broker.toml',
     '--port', String(PORT),
-    '--var', `BROKER_FIXTURE_DEVICE_PASSWORD:${DEV_PWD}`,
+    '--var', `BROKER_DEVICE_SECRET:${DEV_SECRET}`,
     '--var', `BROKER_WEB_TOKEN_SECRET:${WEB_TOKEN_SECRET}`,
     '--local', '--log-level', 'warn',
   ], { cwd: CF_DIR, stdio: ['ignore', 'pipe', 'pipe'] });
