@@ -1,0 +1,18 @@
+name = "mayap-mqtt-broker"
+main = "src/broker/broker-entry.js"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Phase 2B fixture credentials. Replace with Worker-managed resolver in 2E.
+# These vars let the broker start without wiring to the Push Worker yet.
+[vars]
+BROKER_FIXTURE_DEVICE_PASSWORD = ""
+BROKER_FIXTURE_WEB_PASSWORD = ""
+
+[[durable_objects.bindings]]
+name = "MQTT_BROKER"
+class_name = "MqttBrokerDO"
+
+[[migrations]]
+tag = "v1-mqtt-broker"
+new_sqlite_classes = ["MqttBrokerDO"]
