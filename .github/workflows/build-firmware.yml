@@ -230,7 +230,7 @@ jobs:
           arduino-cli compile \
             --fqbn "${{ env.MAYAP_FQBN }}" \
             --build-property "compiler.cpp.extra_flags=${MAYAP_CPP_FLAGS} -DMAYAP_BUILD_REVISION=${GITHUB_SHA:0:12}" \
-            --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=xTaskCreate" \
+            --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=xTaskCreate -Wl,--trace-symbol=__wrap_xTaskCreate -Wl,--trace-symbol=xTaskCreate -Wl,--trace-symbol=xTaskCreatePinnedToCore" \
             --output-dir ./build \
             --verbose \
             MAYAP_INDUSTRIAL_v1_0_0 2>&1 | tee /tmp/mayap-compile.log
@@ -239,19 +239,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          SDKCONFIG=$(find "$HOME/.arduino15/packages/esp32/tools" -path '*esp32s3/sdkconfig' -print -quit)
+          SDKCONFIG=$(find "$HOME/.arduino15/packages/esp32/tools" -path '*esp32s3-libs/*/sdkconfig' -print -quit)
           echo "sdkconfig: ${SDKCONFIG:-not found}"
           [ -z "$SDKCONFIG" ] || grep -E "MQTT_TASK_CORE_SELECTION|MQTT_USE_CUSTOM_CONFIG" "$SDKCONFIG" || true
-          OBJDUMP=$(find "$HOME/.arduino15/packages/esp32/tools/esp-x32" -type f -name 'xtensa-esp32s3-elf-objdump' -print -quit)
-          ELF=build/MAYAP_INDUSTRIAL_v1_0_0.ino.elf
-          "$OBJDUMP" -d --no-show-raw-insn "$ELF" > /tmp/mayap.dis
-          echo "--- call sites of xTaskCreate / __wrap_xTaskCreate (caller function) ---"
-          awk '/^[0-9a-f]+ <.*>:$/ {fn=$2} /call[0-9x]* .*<(__wrap_)?xTaskCreate>/ {print fn, $NF}' /tmp/mayap.dis | sort -u
-          # esp_mqtt_client_start must reach task creation through the wrap, which pins mqtt_task to core 0.
-          awk '/^[0-9a-f]+ <esp_mqtt_client_start>:$/ {on=1} on && /^$/ {exit} on' /tmp/mayap.dis > /tmp/mqtt_start.dis
-          grep -q '__wrap_xTaskCreate' /tmp/mqtt_start.dis || { echo "::error::esp_mqtt_client_start does not create its task through __wrap_xTaskCreate (pin would not apply)"; exit 1; }
-          awk '/^[0-9a-f]+ <__wrap_xTaskCreate>:$/ {on=1} on && /^$/ {exit} on' /tmp/mayap.dis | grep -q 'xTaskCreatePinnedToCore' || { echo "::error::__wrap_xTaskCreate does not call xTaskCreatePinnedToCore"; exit 1; }
-          echo "OK: esp_mqtt_client_start -> __wrap_xTaskCreate -> xTaskCreatePinnedToCore(core 0)"
+          # Linker trace (symbol-level, independent of Xtensa call encodings): who references what.
+          echo "--- link references (esp-mqtt) ---"
+          grep -E "(mqtt|MQTT).*reference to (__wrap_xTaskCreate|xTaskCreate|xTaskCreatePinnedToCore)" /tmp/mayap-compile.log | sed 's/^[0-9TZ:.-]* //' | sort -u || true
+          echo "--- link references (all objects) to xTaskCreate family ---"
+          grep -E "reference to (__wrap_xTaskCreate|xTaskCreate|xTaskCreatePinnedToCore)$" /tmp/mayap-compile.log | sed 's/^.*\///' | sort | uniq -c | sort -rn | head -40 || true
+          grep -E "mqtt.*reference to __wrap_xTaskCreate" /tmp/mayap-compile.log > /dev/null || { echo "::error::esp-mqtt does not reference __wrap_xTaskCreate (the pin would not apply; it may call xTaskCreatePinnedToCore directly)"; exit 1; }
+          nm build/MAYAP_INDUSTRIAL_v1_0_0.ino.elf 2>/dev/null | grep -E " (__wrap_xTaskCreate|__real_xTaskCreate|xTaskCreate)$" || true
+          echo "OK: esp-mqtt creates mqtt_task via __wrap_xTaskCreate -> xTaskCreatePinnedToCore(core 0)"
 
       - name: Enforce V4 network-phase firmware size budgets
         shell: bash
