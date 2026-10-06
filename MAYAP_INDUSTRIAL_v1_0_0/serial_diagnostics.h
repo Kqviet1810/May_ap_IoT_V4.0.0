@@ -56,7 +56,7 @@ inline void mayapSerialPrintf(bool force, const char *format, ...) {
   item.length = strlen(item.text);
   item.force = force;
   item.priority = force || strstr(format, "[FAULT]") || strstr(format, "[FATAL]") ||
-      strstr(format, "[HEALTH]") || strstr(format, "[SUPERVISOR]");
+      strstr(format, "[HEALTH]") || strstr(format, "[SUPERVISOR]") || strstr(format, "[BOOT-DIAG]");
   portENTER_CRITICAL(&mux);
   if (!force && !mayapSerialDebugEnabled()) { portEXIT_CRITICAL(&mux); return; }
   if (length >= static_cast<int>(sizeof(item.text) - prefix)) {
@@ -120,5 +120,24 @@ inline void mayapSerialDrain() {
   portEXIT_CRITICAL(&mux);
   if (report) mayapSerialPrintf(false, "[SERIAL] dropped=%lu critical=%lu truncated=%lu\n",
       static_cast<unsigned long>(lost), static_cast<unsigned long>(important), static_cast<unsigned long>(shortened));
+#endif
+}
+// Supervisor trip only (still the sole Serial writer): empties the queue for at most
+// maxMs so the real trip cause is printed before any reset. Bounded, never blocks on
+// a missing USB host, and does not feed or reconfigure the TWDT.
+inline void mayapSerialDrainFor(uint32_t maxMs) {
+#if MAYAP_DIAGNOSTIC_SERIAL
+  using namespace MayapSerialInternal;
+  const uint32_t startedMs = millis();
+  while (static_cast<uint32_t>(millis() - startedMs) < maxMs) {
+    portENTER_CRITICAL(&mux);
+    const bool pending = count != 0U;
+    portEXIT_CRITICAL(&mux);
+    if (!pending) break;
+    mayapSerialDrain();
+    vTaskDelay(1);
+  }
+#else
+  (void)maxMs;
 #endif
 }

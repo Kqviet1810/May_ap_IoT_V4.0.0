@@ -6,7 +6,7 @@
   "entries": [
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/boot_policy.h",
-      "sha256": "e09223c248322bafb4169b4457d0cf878b94b85e99997eeca96b59c625f366f8"
+      "sha256": "34cc4c14e5398f8672e377ad694e65e931238d55cf77f6a4191e4fdd5367c1b3"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/boot_diagnostic.h",
@@ -129,7 +129,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino",
-      "sha256": "9f17bf589a4b4b723a4ed1e934a02c3598190747adb265881b5678d7ce3ed21b",
+      "sha256": "44fd8781ce966d952af978114a9d148444c4aec3d63cdbbd8e6d300208ef2579",
       "signature": "void setup()"
     },
     {
@@ -139,7 +139,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino",
-      "sha256": "953fbaca7a0aa6d821a34f2d3ca90989737a3bf40e3a25cba01c82932b584cad",
+      "sha256": "47515bcdb1ec1bf80dd907814b760977140447755b859cc72ca99c4438a688e3",
       "signature": "void supervisorTask(",
       "filter": "supervisor"
     },

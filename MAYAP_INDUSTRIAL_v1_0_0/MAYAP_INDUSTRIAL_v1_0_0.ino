@@ -438,24 +438,45 @@ void supervisorTask(void *parameter) {
     const bool deadlineTrip = controlExpected && slowCycles >= CONTROL_CYCLE_TRIP_COUNT;
 
     if (!controlHealthy || deadlineTrip) {
+      // Snapshot the evidence first: it is what the next boot reports.
+      const char *reasonText = !controlHealthy ? "HEARTBEAT" : "DEADLINE";
+      const uint32_t heartbeatAgeMs = ctrlBeat != 0U ? elapsedMs(now, ctrlBeat) : 0U;
+      const uint32_t cycleUs = __atomic_load_n(&controlLastCycleUs, __ATOMIC_ACQUIRE);
+      const char *stageText = MayapBoot::stageText(mayapBootStage());
+      const MayapBoot::RestartReason tripReason = !controlHealthy ?
+          MayapBoot::RestartReason::ControlHeartbeat : MayapBoot::RestartReason::ControlDeadline;
       mayapLatchSystemTrip();
       if (controlTaskHandle) vTaskSuspend(controlTaskHandle);
       mayapSafeOutputsEarly();
-      mayapSerialPrintf(false,
-          "[SUPERVISOR] TRIP reason=%s cycle=%luus count=%u\n",
-          !controlHealthy ? "HEARTBEAT" : "DEADLINE",
-          static_cast<unsigned long>(__atomic_load_n(&controlLastCycleUs, __ATOMIC_ACQUIRE)),
-          static_cast<unsigned>(slowCycles));
+      char detail[sizeof(MayapBoot::Diagnostic::restartDetail)];
+      // Persist reason/age/cycle/slow/stage BEFORE any heap walk or Serial work, so
+      // even a TWDT reset leaves the cause in RTC for [BOOT-DIAG].
+      snprintf(detail, sizeof(detail), "%s age=%lums cyc=%luus slow=%u stg=%s",
+               reasonText, static_cast<unsigned long>(heartbeatAgeMs),
+               static_cast<unsigned long>(cycleUs), static_cast<unsigned>(slowCycles), stageText);
+      mayapBootPlanRestart(tripReason, detail);
+      const unsigned long heapFree = ESP.getFreeHeap();
+      const unsigned long heapMin = ESP.getMinFreeHeap();
+      const unsigned long heapLargest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+      snprintf(detail, sizeof(detail), "%s age=%lums cyc=%luus slow=%u stg=%s h=%lu/%lu/%lu",
+               reasonText, static_cast<unsigned long>(heartbeatAgeMs),
+               static_cast<unsigned long>(cycleUs), static_cast<unsigned>(slowCycles), stageText,
+               heapFree, heapMin, heapLargest);
+      mayapBootPlanRestart(tripReason, detail);
+      mayapSerialPrintf(true,
+          "[SUPERVISOR] TRIP reason=%s hbAge=%lums cycleUs=%lu slow=%u stage=%s heap=%lu/%lu/%lu\n",
+          reasonText, static_cast<unsigned long>(heartbeatAgeMs), static_cast<unsigned long>(cycleUs),
+          static_cast<unsigned>(slowCycles), stageText, heapFree, heapMin, heapLargest);
+      // Print now: the fallback below outlives the 5 s TWDT, so a queued line would
+      // otherwise be lost. Bounded (<150 ms); TWDT timeout and membership unchanged.
+      mayapSerialDrainFor(150U);
       const uint32_t tripAt = now;
-      // Save before the fallback wait: TWDT may reset us before esp_restart.
-      mayapBootPlanRestart(!controlHealthy ? MayapBoot::RestartReason::ControlHeartbeat :
-          MayapBoot::RestartReason::ControlDeadline, "Supervisor control trip");
       while (elapsedMs(millis(), tripAt) < SUPERVISOR_RESTART_FALLBACK_MS) {
         mayapSafeOutputsEarly();
+        mayapSerialDrain();
         vTaskDelay(pdMS_TO_TICKS(20));
       }
-      mayapRestart(!controlHealthy ? MayapBoot::RestartReason::ControlHeartbeat :
-          MayapBoot::RestartReason::ControlDeadline, "Supervisor fallback");
+      mayapRestart(tripReason, detail);  // keep the evidence, not a generic label
     }
 
     if (hmiBeat != 0U && hmiHealthy != previousHmiHealthy) {
@@ -672,7 +693,7 @@ void setup() {
   Serial.begin(115200);
 
   const MayapBoot::Diagnostic diagnostic = mayapBootDiagnosticSnapshot();
-  mayapSerialPrintf(false,
+  mayapSerialPrintf(true,
       "[BOOT-DIAG] reset=%lu previousReset=%lu previousStage=%s planned=%s detail=%s failed=%lu level=%lu\n",
       static_cast<unsigned long>(diagnostic.resetReason),
       static_cast<unsigned long>(diagnostic.previousResetReason),
