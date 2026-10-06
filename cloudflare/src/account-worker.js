@@ -3,8 +3,6 @@ import legacy from './index.js';
 import { randomToken, verifyDeviceKey, timingSafeEqual } from './auth.js';
 import { hash, json, session,
   deviceList, permission, createSession, verifyGoogle, controlGrant } from './account-auth.js';
-import { DEVICE_ID, CLIENT_ID, issueTicket, verifyTicket, livePermission } from './realtime-auth.js';
-export { DeviceHub } from './device-hub.js';
 
 const idRe = /^MAP-[A-F0-9]{12}$/;
 const physical = new Set(['/api/device/register','/api/device/heartbeat','/api/device/reset-pin',
@@ -219,26 +217,11 @@ async function loginGoogle(request,env) {
   const own=await createSession(env,identity,request.headers.get('User-Agent') || '');
   return json({success:true,token:own.token,expiresAt:own.expiry});
 }
-async function invalidateBrowsers(env, devices, userSub, sessionId) {
-  if (!env.DEVICE_HUB) return; // Existing non-realtime account fixture/worker.
-  for (let offset = 0; offset < devices.length; offset += 8) {
-    await Promise.all(devices.slice(offset, offset + 8).map(async deviceId => {
-      const response = await env.DEVICE_HUB.get(env.DEVICE_HUB.idFromName(deviceId))
-        .fetch(new Request('https://device-hub/invalidate-browser', { method:'POST',
-          headers:{'Content-Type':'application/json'}, body:JSON.stringify({userSub, sessionId}) }));
-      if (!response.ok) throw new Error('REALTIME_REVOCATION_FAILED');
-    }));
-  }
-}
 async function revoke(env,id,sub) {
-  const devices = env.DEVICE_HUB ? (await env.DB.prepare('SELECT device_id FROM user_devices WHERE user_sub=?')
-    .bind(sub).all()).results.map(row => row.device_id) : [];
   await env.DB.batch([
     env.DB.prepare('UPDATE user_sessions SET revoked_at=? WHERE id=? AND user_sub=?').bind(Date.now(),id,sub),
     env.DB.prepare('DELETE FROM push_subscriptions WHERE user_session_id=? AND user_sub=?').bind(id,sub),
   ]);
-  // Do not report success until every corresponding Hub fenced and closed reads.
-  await invalidateBrowsers(env, devices, sub, id);
 }
 async function claim(request, env, auth, data) {
   const id=String(data.device_id || '').toUpperCase(), pin=String(data.pin || '');
@@ -265,46 +248,11 @@ async function claim(request, env, auth, data) {
   if (owner?.user_sub!==auth.user_sub) return json({success:false,error:'Thiết bị đã thuộc một tài khoản khác.'},409);
   return json({success:true,device_id:id,device_name:device.device_name || id});
 }
-async function openRealtime(request, env) {
-  const url=new URL(request.url), parts=url.pathname.split('/');
-  const kind=parts[2], id=parts[3];
-  if (request.method!=='GET' || request.headers.get('Upgrade')?.toLowerCase()!=='websocket' ||
-      parts.length!==4 || !DEVICE_ID.test(id) || !env.DEVICE_HUB) return deny();
-  let claims;
-  if(kind==='device') {
-    if(request.headers.has('Origin') || !env.DEVICE_KEY_PEPPER) return deny();
-    const key=(request.headers.get('Authorization') || '').replace(/^Bearer /,'');
-    const bootId=Number(request.headers.get('X-Mayap-Boot'));
-    if(!/^[A-Fa-f0-9]{64}$/.test(key) || !Number.isInteger(bootId) || bootId<=0 || bootId>0xffffffff) return deny(401);
-    const device=await env.DB.prepare(`SELECT d.device_key_hash FROM devices d LEFT JOIN device_inventory i
-      ON i.device_id=d.device_id WHERE d.device_id=? AND COALESCE(i.enabled,1)=1`).bind(id).first();
-    if(!device || !await verifyDeviceKey(key,env.DEVICE_KEY_PEPPER,device.device_key_hash)) return deny(401);
-    claims={kind:'device',deviceId:id,bootId,keyHash:device.device_key_hash};
-  } else if(kind==='browser') {
-    if(request.headers.get('Origin')!==allowedOrigin(env)) return deny();
-    const protocols=(request.headers.get('Sec-WebSocket-Protocol') || '').split(',').map(v=>v.trim());
-    if(protocols.length!==2 || protocols[0]!=='mayap.v1' || !protocols[1].startsWith('ticket.')) return deny(401);
-    const ticket=await verifyTicket(env,protocols[1].slice(7));
-    if(!ticket || ticket.deviceId!==id || !await livePermission(env,ticket)) return deny();
-    claims={...ticket,kind:'browser'};
-  } else return deny();
-  const headers=new Headers({Upgrade:'websocket','X-Mayap-Admission':JSON.stringify(claims)});
-  const stub=env.DEVICE_HUB.get(env.DEVICE_HUB.idFromName(id));
-  return stub.fetch(new Request('https://device-hub/connect',{headers}));
-}
 async function fetchAccount(request, env, ctx) {
   const url=new URL(request.url), path=url.pathname, method=request.method;
-  if (path.startsWith('/realtime/')) return openRealtime(request, env);
   // Existing physical-device authentication and task architecture stay unchanged.
   if ((method==='POST' && physical.has(path)) || (method==='GET' && /^\/api\/firmware\/download\//.test(path))) {
-    const copy = path === '/api/device/rotate-key' && env.DEVICE_HUB ? request.clone() : null;
-    const response = await physicalWorker.fetch(request,env,ctx);
-    if (copy && response.ok) {
-      const data = await body(copy);
-      await env.DEVICE_HUB.get(env.DEVICE_HUB.idFromName(String(data.device_id).trim()))
-        .fetch(new Request('https://device-hub/invalidate-device', {method:'POST'}));
-    }
-    return response;
+    return physicalWorker.fetch(request,env,ctx);
   }
   const origin=request.headers.get('Origin'), allowed=allowedOrigin(env);
   // Browsers may omit Origin on same-origin reads; preflight and writes still require it.
@@ -362,16 +310,6 @@ async function fetchAccount(request, env, ctx) {
     return json({success:true,exists:true,device_id:id,device_name:device.device_name,status:device.status,last_seen:device.last_seen,
       batch_running:!!device.batch_running,subscription_count:subs.n});
   }
-  if (path==='/api/device/realtime-session' && method==='POST') {
-    const device=await permission(env,auth.user_sub,id), cid=String(data.control_client_id || '');
-    if (!device) return deny();
-    if (!CLIENT_ID.test(cid)) return json({success:false,error:'INVALID_CLIENT'},400);
-    if (!env.DEVICE_HUB) return json({success:false,error:'REALTIME_NOT_CONFIGURED'},503);
-    const ticket=await issueTicket(env,{aud:'browser',deviceId:id,clientId:cid,
-      sessionId:auth.id,userSub:auth.user_sub,role:device.role,sessionExpiresAt:auth.expires_at});
-    return json({success:true,realtime:{url:`${url.origin.replace(/^http/, 'ws')}/realtime/browser/${id}`,ticket},
-      control:device.role==='viewer' ? null : await controlGrant(env,id,cid)});
-  }
   if (path==='/api/device/revoke-access' && method==='POST') {
     const owner=await permission(env,auth.user_sub,id,true);
     if (!owner || owner.role!=='owner') return deny();
@@ -383,8 +321,6 @@ async function fetchAccount(request, env, ctx) {
       env.DB.prepare("DELETE FROM user_devices WHERE device_id=? AND user_sub=? AND role!='owner'").bind(id,target),
       env.DB.prepare('DELETE FROM push_subscriptions WHERE device_id=? AND user_sub=?').bind(id,target),
     ]);
-    // Idempotent: a retry still invalidates sockets if membership was deleted.
-    await invalidateBrowsers(env,[id],target);
     return json({success:true});
   }
   if (path==='/api/device/rename' && method==='POST') {
@@ -431,7 +367,7 @@ async function fetchAccount(request, env, ctx) {
 export default {
   async fetch(request,env,ctx) {
     if (!new URL(request.url).pathname.startsWith('/api/') &&
-        !new URL(request.url).pathname.startsWith('/realtime/') && env.ASSETS)
+        env.ASSETS)
       return env.ASSETS.fetch(request);
     let response;
     try {response=await fetchAccount(request,env,ctx);} catch(error) {
@@ -439,7 +375,6 @@ export default {
       response=json({success:false,error:bad?'INVALID_REQUEST':'SERVICE_UNAVAILABLE'},bad?400:503);
     }
     // Account APIs use exact-origin CORS + explicit bearer authorization; no third-party cookies.
-    if(response.status===101) return response;
     if(request.headers.get('Origin')===env.ALLOWED_ORIGIN) {
       const headers=new Headers(response.headers);headers.set('Access-Control-Allow-Origin',env.ALLOWED_ORIGIN);
       headers.set('Vary','Origin');return new Response(response.body,{status:response.status,headers});

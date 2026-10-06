@@ -1,3 +1,5 @@
+> **V3 LEGACY:** This document describes the pre-V4 realtime stack. The V4 clean network baseline has no WebSocket/DeviceHub runtime and no MQTT implementation yet.
+
 # MAYAP Web 12.1 — giao diện và kết nối
 
 Tiếp nối `feat/adaptive-staged-boot`, firmware/HMI vẫn là 1.0.0. Thay đổi

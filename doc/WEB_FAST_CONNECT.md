@@ -1,3 +1,5 @@
+> **V3 LEGACY:** This document describes the pre-V4 realtime stack. The V4 clean network baseline has no WebSocket/DeviceHub runtime and no MQTT implementation yet.
+
 > Lịch sử tối ưu kết nối MQTT ở baseline. Transport hiện hành dùng [Cloudflare WebSocket/DeviceHub](CLOUDFLARE_REALTIME_MIGRATION.md); cache, UX và transaction semantics được giữ.
 
 # Web 12.1.10: cache first and stable MQTT lifecycle

@@ -119,7 +119,7 @@ test('UI/core scripts share one release-qualified asset set and cache',()=>{
  const html=fs.readFileSync(require.resolve('../index.html'),'utf8'),sw=fs.readFileSync(require.resolve('../sw.js'),'utf8');
  const version=JSON.parse(fs.readFileSync(require.resolve('../release-manifest.json'),'utf8')).web;
  assert.ok(sw.includes(`mayap-web-v${version}`));
- for(const name of ['app','realtime_transport','notes','protocol_v2']){
+ for(const name of ['app','notes','protocol_v2']){
   assert.ok(html.includes(`./${name}.js?v=${version}`));assert.ok(sw.includes(`./${name}.js?v=${version}`));
  }
 });

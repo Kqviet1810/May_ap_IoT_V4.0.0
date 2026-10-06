@@ -1,3 +1,5 @@
+> **V3 LEGACY:** This document describes the pre-V4 realtime stack. The V4 clean network baseline has no WebSocket/DeviceHub runtime and no MQTT implementation yet.
+
 # Online isolation from local control
 
 Online is auxiliary. Handled Wi-Fi/DNS/TLS/WebSocket/HTTPS/service failures never call the controller restart API. `networkTask` is the sole Wi-Fi driver/STA/AP/reconnect/power-policy owner; realtime presence/diagnostics use cached IP/RSSI snapshots. Arduino auto-reconnect is disabled so it cannot silently bypass the transaction.

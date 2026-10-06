@@ -1,3 +1,5 @@
+> **V3 LEGACY:** This document describes the pre-V4 realtime stack. The V4 clean network baseline has no WebSocket/DeviceHub runtime and no MQTT implementation yet.
+
 # Realtime review: verification and fixes
 
 Reviewed against migration commit `3cb9c0b` (PR #1), 2026-10-02. All nine observations have a basis in that code. Rows 1/2/4/5 are transaction defects; row 3 is a Hub concurrency defect; row 6 describes the original five-minute authorization contract; rows 7–9 are valid hardening gaps. The Reminder/queue handoff and ignored history send result also existed before the WebSocket migration.

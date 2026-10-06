@@ -191,21 +191,11 @@ test('config and batch state reconcile without hiding a later signed rejection',
   assert.equal(h.state.uncertain.has('cmd-batch'), true);
 });
 
-test('Hub forwarding receipt is browser-clock timing; retries use identical signed envelope and request ID', async () => {
+test('disabled publisher leaves Transaction V2 unsettled', async () => {
   const h = browser();
-  const { pending } = await start(h, 'cmd-retry');
-  h.state.realtimeConnected = true;
-  const calls = [];
-  h.state.realtime = { connected: true, send(topic, wire, callback) {
-    calls.push({ topic, wire }); callback?.();
-  } };
-  const envelope = { body: '{"requestId":"cmd-retry"}', sig: 'signed' };
-  h.retrySameRequest('cmd-retry', { deviceId: h.device.id, channel: 'command' }, envelope);
-  for (const fn of [...h.timers.values()]) fn();
-  await Promise.resolve();
-  assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].wire, envelope);
-  assert.equal(pending.tHubForwarded, 0);
+  const { pending } = await start(h, 'disabled-publisher');
+  await assert.rejects(h.publish({ deviceId:h.device.id, channel:'command' }, {requestId:'disabled-publisher'}, {awaitAck:true}), {code:'TRANSPORT_ERROR'});
+  assert.equal(pending.phase, 'CREATED');
 });
 
 test('session HMAC binds channel/body; expired session requires refresh; firmware replay gates remain', async () => {
@@ -226,7 +216,7 @@ test('session HMAC binds channel/body; expired session requires refresh; firmwar
   session.expiresAt = Math.floor(Date.now() / 1000) - 1;
   await assert.rejects(h.signRealtimeWrite(h.device, 'command',
     { v: 2, requestId: 'cmd-expired-local' }), { code: 'AUTH_ERROR' });
-  const firmware = readFileSync(require.resolve('../MAYAP_INDUSTRIAL_v1_0_0/realtime_link.h'), 'utf8');
+  const firmware = readFileSync(require.resolve('../MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h'), 'utf8');
   assert.match(firmware, /expiry < static_cast<unsigned long>\(now\)/);
   assert.match(firmware, /if \(expired\)[\s\S]*?SESSION_EXPIRED/);
   assert.match(firmware, /if \(replayTerminal\(id\)\)/);
@@ -260,24 +250,6 @@ test('humidifier form is hardware gated and maps two thresholds to one bounded h
   assert.equal(h.elements.get('humidifierSetting').hidden, true);
 });
 
-test('retry during socket loss retains the exact wire and resumes after reconnect even when UNCERTAIN',async()=>{
- const h=browser(),{pending}=await start(h,'resume-wire'),wire={body:'{"requestId":"resume-wire","bootId":123}',sig:'original'};
- h.state.selectedId=h.device.id;const calls=[];h.state.realtime={deviceId:h.device.id,connected:true,send(route,envelope,callback){calls.push(envelope);callback?.();}};
- h.retrySameRequest('resume-wire',{deviceId:h.device.id,channel:'command'},wire);
- h.state.realtimeConnected=false;for(const fn of [...h.timers.values()])fn();assert.equal(calls.length,0);assert.ok(h.timers.size);
- pending.onTimeout();assert.equal(h.state.uncertain.has('resume-wire'),true);
- h.state.realtimeConnected=true;h.resumeExactRetries();await Promise.resolve();assert.equal(calls.length,1);assert.deepEqual(calls[0],wire);
- h.clearPending('resume-wire');h.state.uncertain.delete('resume-wire');for(const fn of [...h.timers.values()])fn();assert.equal(calls.length,1);
-});
-test('reconnect retry never re-signs, extends expiry or crosses device/boot scope',async()=>{
- for(const reason of ['boot','device','expiry']){
-  const h=browser();await start(h,'bounded-retry');h.state.selectedId=h.device.id;
-  let calls=0;h.state.realtimeConnected=true;h.state.realtime={deviceId:h.device.id,connected:true,send(){calls++;}};
-  h.retrySameRequest('bounded-retry',{deviceId:h.device.id,channel:'command'},{body:'{"requestId":"bounded-retry","bootId":123}',sig:'original'});
-  if(reason==='boot')h.device.bootId=124;else if(reason==='device')h.state.realtime.deviceId='MAP-000000000000';else h.advance(120001);
-  h.resumeExactRetries();assert.equal(calls,0);
- }
-});
 test('terminal ACK cancels reconnect retry for both pending and uncertain transactions',async()=>{
  for(const uncertain of [false,true]){
   const h=browser(),{pending,key}=await start(h,'settle-retry');h.state.selectedId=h.device.id;

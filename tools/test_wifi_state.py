@@ -16,10 +16,6 @@ with tempfile.TemporaryDirectory() as name:
     (out/'actual-wifi-globals.inc').write_text(globals)
     (out/'actual-wifi-publish.inc').write_text(function('inline void publish(')+'\n'+function('inline void applyWifiPowerMode('))
     (out/'actual-wifi-getters.inc').write_text(function('inline NetworkStatus mayapGetNetworkStatus(')+'\n'+function('inline NetworkStatus mayapGetRawNetworkStatus(')+'\n'+function('inline void tickStableWifi('))
-    realtime=(root/'MAYAP_INDUSTRIAL_v1_0_0/realtime_link.h').read_text()
-    start=realtime.index('inline void mayapWebLinkUpdate(')
-    end=realtime.index('  if (!socketTransport.busy()) { connectionAnnounced', start)
-    (out/'actual-realtime-admission.inc').write_text(realtime[start:end]+'}\n')
     flags=['-fsanitize=address,undefined','-fno-omit-frame-pointer'] if args.sanitize else []
     subprocess.run(['g++','-std=c++11','-Wall','-Wextra','-Werror','-I',str(out),str(root/'tests/runtime-wifi-state.cpp'),'-o',str(out/'test')]+flags,check=True)
     subprocess.run([str(out/'test')],check=True)

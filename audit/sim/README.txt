@@ -1,3 +1,5 @@
+V3 LEGACY AUDIT — not the V4 runtime architecture.
+
 Cac file .cpp trong thu muc nay CHI la artifact kiem toan/mo phong (SIMULATED evidence).
 Chung KHONG phai production code, KHONG duoc include/bien dich vao firmware ESP32 1.1.0 va KHONG thay the regression trong tests/.
 

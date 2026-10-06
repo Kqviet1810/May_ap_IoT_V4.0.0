@@ -19,14 +19,6 @@ namespace MayapNetworkInternal {}
 #include "actual-wifi-globals.inc"
 #include "actual-wifi-publish.inc"
 #include "actual-wifi-getters.inc"
-namespace MayapRealtimeInternal {
-struct { bool active=true; unsigned closes=0; bool busy() const { return active; } void disconnect() { active=false; ++closes; } } socketTransport;
-bool connectionAnnounced=true;
-struct { void reset(uint32_t) {} } linkBackoff;
-void serviceSessionTimeout(uint32_t) {}
-}
-bool mayapCloudTlsYieldRequested(uint32_t) { return false; }
-#include "actual-realtime-admission.inc"
 void sample(uint32_t time,bool raw) {
  clockMs=time; WiFi.connected=raw; publish(raw?NetworkStateCode::Connected:NetworkStateCode::Connecting,raw,raw?-50:-127);
 }
@@ -37,9 +29,6 @@ int main() {
  // Short driver glitch must not appear in HMI/Fault/Web snapshot.
  sample(1000,false); assert(publishedConnected);
  assert(!mayapGetRawNetworkStatus().connected && mayapGetNetworkStatus().connected);
- mayapWebLinkUpdate(clockMs);
- assert(!MayapRealtimeInternal::socketTransport.active && !MayapRealtimeInternal::connectionAnnounced);
- assert(MayapRealtimeInternal::socketTransport.closes==1);
  sample(1250,false); sample(1500,false); sample(1750,true); assert(publishedConnected);
  // Continuous four-second failure is published once, not on the first poll.
  sample(2000,false);
@@ -73,7 +62,7 @@ int main() {
  WiFi.connected=false; clockMs=9*3600000U; tickStableWifi();
  assert(!mayapGetRawNetworkStatus().connected && mayapGetRawNetworkStatus().state==NetworkStateCode::Connecting);
  assert(publishedConnected); WiFi.connected=true;
- // Internet/WebSocket/owner drain can fail while the STA remains associated.
+ // Internet and owner drain can fail while the STA remains associated.
  // Presentation must remain Wi-Fi connected; network admission still closes.
  clockMs=9*3600000U; publish(NetworkStateCode::Connecting,false);
  clockMs+=4000; publish(NetworkStateCode::Connecting,false);

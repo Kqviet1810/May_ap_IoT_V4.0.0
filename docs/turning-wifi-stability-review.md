@@ -1,3 +1,5 @@
+> **V3 LEGACY:** This document describes the pre-V4 realtime stack. The V4 clean network baseline has no WebSocket/DeviceHub runtime and no MQTT implementation yet.
+
 # Turning / Wi-Fi stability review
 
 Branch: `codex/turning-wifi-stability`; base: `main` `412be80` (2026-10-05).

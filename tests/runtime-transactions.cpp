@@ -52,7 +52,7 @@ int mbedtls_md_hmac(const mbedtls_md_info_t*,const uint8_t*,size_t,const uint8_t
 #include "actual-transaction-terminal.inc"
 bool realtimeCommandChannelTrusted(){return true;}
 HmiCommandType mapCommandAction(const char*){return HmiCommandType::LightToggle;}
-static struct{bool connected()const{return true;}}socketTransport;
+static bool publishCallback=true;
 constexpr uint32_t TEMP_HISTORY_SAMPLE_SEC=300;
 struct MayapTemperatureHistoryPoint{uint32_t epoch=0;int16_t temperatureX10=375;};
 uint8_t mayapTemperatureHistoryReadStatus(uint32_t n,MayapTemperatureHistoryPoint&p){p.epoch=n*300;return 2;}

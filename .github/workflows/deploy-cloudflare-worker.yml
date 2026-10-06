@@ -27,7 +27,7 @@ jobs:
   deploy:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (vars.CLOUDFLARE_REALTIME_AUTODEPLOY == '1' &&
+      (vars.CLOUDFLARE_AUTODEPLOY == '1' &&
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_repository.full_name == github.repository)
@@ -61,9 +61,6 @@ jobs:
           node --check cloudflare/src/db.js
           node --check cloudflare/src/push.js
           node --check config.js
-          node --check realtime_transport.js
-          node --check cloudflare/src/device-hub.js
-          node --check cloudflare/src/realtime-auth.js
 
       - name: Kiem tra dong bo release
         run: python3 tools/check_release_sync.py
@@ -79,13 +76,10 @@ jobs:
           npx --yes pnpm@11.19.0 install --frozen-lockfile
           node --check src/account-worker.js
 
-      - name: Account, transaction, reconnect and hibernation regression
+      - name: Account and transaction regression
         run: |
           node --test tests/*.test.cjs
           python3 tools/test_single_eeprom.py --sanitize --check-regression
-
-      - name: Real local workerd integration before remote mutation
-        run: python3 tools/test_realtime_workerd.py
 
       - name: Stage reviewed public assets only
         run: python3 tools/build_web_assets.py

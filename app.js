@@ -2,16 +2,11 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
-  let runtimeRealtime = null;
-  const WEB = Object.freeze({ reconnectPeriodMs: 2000, connectTimeoutMs: 15000,
-    keepaliveSeconds: 30, sessionTtlMs: 45000, sessionRefreshMs: 15000,
-    staleAfterMs: 8000, offlineAfterMs: 30000, hubSilenceAfterMs: 90000,
+  const WEB = Object.freeze({ staleAfterMs: 8000, offlineAfterMs: 30000,
     commandTimeoutMs: 10000, configTimeoutMs: 15000, ...window.MAYAP_WEB_CONFIG });
 
   let STORAGE = 'mayap.web.v10';
   let RUNTIME_CACHE = `${STORAGE}.runtime.v1`;
-  const WARM_BACKGROUND_MS = 300000;
-  const WARM_SESSION_REFRESH_MS = 15000;
   const THEME_STORAGE = 'mayap.theme';
   const PROTOCOL_VERSION = 1;
   const DEVICE_ID_RE = /^MAP-[A-F0-9]{12}$/;
@@ -79,18 +74,6 @@
     realtimeCredentials: null,
     syncRetryTimers: [],
     subscriptionRetryTimer: 0,
-    authRequests: new Map(),
-    lastBrowserResumeAt: 0,
-    backgroundMode: 'visible',
-    hiddenAt: 0,
-    hiddenMonoAt: 0,
-    hiddenElapsedMs: 0,
-    backgroundTimer: 0,
-    hubProbe: null,
-    realtimeResumeProbeRequired: false,
-    authRetryAt: 0,
-    authRetryDelay: 5000,
-    sessionTimer: 0,
     staleTimer: 0,
     formFlags: new Map(),
     pending: new Map(),
@@ -125,8 +108,8 @@
   async function controlSession(device) {
     const cached = controlSessions.get(device.id);
     if (cached && cached.expiresAt > Math.floor(Date.now() / 1000) + 30) return cached;
-    // HTTP grants are prefetched/renewed by the connection lifecycle only.
-    // A click must never wait for Cloudflare or weaken command authentication.
+    // No transport issues grants during the clean baseline phase.
+    // A click must never weaken command authentication.
     const error = new Error('Đang chuẩn bị quyền điều khiển, vui lòng chờ');
     error.code = 'AUTH_ERROR';
     throw error;
@@ -138,19 +121,6 @@
 
   function controlReady(device) {
     return state.realtime?.deviceId === device?.id && isDeviceOnline(device) && controlGrantReady(device);
-  }
-
-  function prefetchControlSession() {
-    const device = currentDevice();
-    if (device?.accountRole === 'viewer' || !device?.pairingToken || !state.realtimeConnected || device.dataSource !== 'live' ||
-        !device.snapshotAt || !browserSessionActive() || state.realtimeSessionState === 'auth-required' ||
-        Date.now() < state.authRetryAt || state.authRequests.has(device.id)) return;
-    if (Number(controlSessions.get(device.id)?.expiresAt || 0) > Math.floor(Date.now() / 1000) + 60) return;
-    refreshRealtimeSession().then(() => {
-      if (device.id !== state.selectedId) return;
-      renderDevice();
-      if (document.body.dataset.page === 'batch' && controlReady(device)) loadTelemetryHistory();
-    });
   }
 
   function cachedRuntime(id) {
@@ -497,7 +467,7 @@
       }
       // Every wire body signed with the V2 domain must itself declare V2.
       // Callers may still construct legacy-shaped objects; normalize here so
-      // history cannot be signed as v1 and then rejected by DeviceHub.
+      // History must use the same signed V2 application envelope.
       body.v = 2;
       body.bootId = device.bootId;
       const pending = state.pending.get(String(body.requestId || ''));
@@ -1744,27 +1714,16 @@
   }
 
   function publish(route, payload, options = {}) {
-    if (!state.realtimeConnected || !state.realtime?.connected) {
-      const error = new Error('Chưa kết nối với máy chủ'); error.code = 'TRANSPORT_ERROR'; throw error;
-    }
-    const bytes = encoder.encode(JSON.stringify({ v: 1, channel: route.channel, payload })).length;
+    // Transaction callers retain exact request IDs and UNCERTAIN semantics.
+    // Phase 1 deliberately has no network publisher.
+    const bytes = encoder.encode(JSON.stringify(payload)).length;
     if (bytes > PACKET_POLICY.NORMAL_CAP) {
-      const error = new Error(`Gói realtime vượt giới hạn ${PACKET_POLICY.NORMAL_CAP} B (${bytes} B)`);
-      error.code = 'PROTOCOL_ERROR'; throw error;
+      const error = new Error('Gói ứng dụng vượt giới hạn'); error.code = 'PROTOCOL_ERROR'; throw error;
     }
-    if (options.awaitAck) return new Promise((resolve, reject) => {
-      try {
-        state.realtime.send(route, payload, error => {
-          if (error) { reject(error); }
-          else {
-            const pending = state.pending.get(options.requestId) || state.uncertain.get(options.requestId);
-            if (pending && pending.tHubForwarded == null) pending.tHubForwarded = performance.now();
-            resolve(); // Hub forwarding receipt; only a signed ESP32 ACK is an outcome.
-          }
-        });
-      } catch (error) { error.code = 'TRANSPORT_ERROR'; reject(error); }
-    });
-    state.realtime.send(route, payload);
+    const error = new Error('Kênh điều khiển chưa được cấu hình');
+    error.code = 'TRANSPORT_ERROR';
+    if (options.awaitAck) return Promise.reject(error);
+    throw error;
   }
 
   function startTransaction(id, pending, timeoutMs) {
@@ -1793,7 +1752,6 @@
       // hien toast nhu mot thao tac that bai do nguoi dung vua thuc hien.
       if (pending.kind !== 'history')
         toast('Chưa nhận xác nhận cuối từ máy; kết quả chưa chắc chắn', 5000);
-      if (device) sendSession(device.id, true, true);
     };
     state.pending.set(id, pending);
     return pending;
@@ -1865,9 +1823,7 @@
           performance.now() >= pending.retryDeadline || pending.retryAttempts >= 6) return;
       const device = state.devices.find(item => item.id === pending.deviceId);
       if (body.bootId && device?.bootId && body.bootId !== device.bootId) return;
-      if (state.realtimeConnected && state.realtime?.deviceId !== undefined &&
-          state.realtime.deviceId !== pending.deviceId) return;
-      if (state.realtimeConnected && !state.realtime?.pending?.has(id)) {
+      if (state.realtimeConnected) {
         ++pending.retryAttempts;
         // Never re-sign, extend expiry or invent a new requestId after uncertainty.
         publish(route, envelope, { awaitAck: true, requestId: id }).catch(error => {
@@ -1922,7 +1878,7 @@
     startTransaction(id, { kind: 'config', operation: 'config.save', deviceId: device.id,
       formId, revision, config, patch, bootId: device.bootId }, WEB.configTimeoutMs);
     try {
-      // retain:false (KHONG giu lai tren hub) - day la lenh "luu cau hinh"
+      // This command is a one-shot configuration save.
       // 1 lan, khong phai trang thai. Voi retain:true truoc day, ESP32 se
       // nhan lai CHINH payload nay moi lan subscribe lai topic config/set -
       // dieu nay xay ra o MOI lan ket noi lai WebSocket (ke ca WiFi chap chon
@@ -1953,7 +1909,6 @@
     }
     if (!device.bootId) {
       toast('Đang nhận dữ liệu từ máy. Vui lòng chờ một chút.');
-      sendSession(device.id, true, true);
       return false;
     }
 
@@ -2020,7 +1975,7 @@
   function rememberOutcome(id, ok, pending) {
     terminalOutcomes.set(id, { ok, at: performance.now(), operation: pending.operation,
       tCreated: pending.tCreated, tPublished: pending.tPublished,
-      tHubForwarded: pending.tHubForwarded });
+      tSubmitted: pending.tSubmitted });
   }
 
   function handleAck(device, ack) {
@@ -2069,7 +2024,6 @@
         device.batchUiAwaitingConfirmTarget = batchTargetForAction(pending.action);
       }
       toast('Chưa xác định kết quả thực hiện; đang đọc lại trạng thái máy', 5000);
-      sendSession(device.id, true, true);
       return;
     }
     if (phase !== 'completed' || (v2 && typeof ack.ok !== 'boolean')) {
@@ -2088,13 +2042,9 @@
     const deviceCompleted = Number(ack.tDeviceCompleted);
     console.info('[TX latency]', { operation: pending.operation, code: ack.code || result,
       late, tCreatedBrowser: pending.tCreated, tPublishBrowser: pending.tPublished,
-      tHubForwardedBrowser: pending.tHubForwarded ?? null, tAckBrowser,
+      tAckBrowser,
       tDeviceReceivedEsp: ack.tDeviceReceived, tDeviceCompletedEsp: ack.tDeviceCompleted,
       webToPublishMs: Math.round((pending.tPublished || pending.tCreated) - pending.tCreated),
-      publishToHubForwardedMs: pending.tHubForwarded && pending.tPublished
-        ? Math.round(pending.tHubForwarded - pending.tPublished) : null,
-      clickToHubForwardedMs: pending.tHubForwarded == null ? null
-        : Math.round(pending.tHubForwarded - pending.tCreated),
       publishToReceivedAckMs: pending.tDeviceReceived && pending.tPublished
         ? Math.round(pending.tDeviceReceived - pending.tPublished) : null,
       clickToTerminalAckMs: Math.round(tAckBrowser - pending.tCreated),
@@ -2246,7 +2196,7 @@
     'LUU NHAC NHO BI TU CHOI': 'Máy từ chối lưu danh sách nhắc nhở (lỗi bộ nhớ) - thử lại sau',
     'THIEU REMINDERS': 'Thiếu dữ liệu nhắc nhở gửi lên',
     // F-01 (audit truoc phat hanh v3.7.1): may tu choi lenh vi dang dung
-    // hub WebSocket cong khai mac dinh (khong xac thuc) - xem
+    // The command requires authenticated application validation.
     // realtimeCommandChannelTrusted() trong realtime_link.h.
     'BROKER CONG KHAI - LENH TU XA BI KHOA': 'Máy chưa được thiết lập kết nối điều khiển bảo mật nên lệnh điều khiển từ xa bị khoá để an toàn - vui lòng thao tác trực tiếp trên máy',
     'CHU KY LENH KHONG HOP LE': 'Yêu cầu điều khiển không có chữ ký hợp lệ - hãy xác thực lại PIN nếu vừa đổi hoặc đặt lại PIN'
@@ -2373,7 +2323,6 @@
     if (device.presence?.online === false) device.presence = { ...device.presence, online: true };
     persistRuntimeCache(device);
     feedTelemetrySnapshot(device, snapshot);
-    prefetchControlSession();
     device.bootId = Number(snapshot.bootId || device.bootId || 0);
     if (Number(snapshot.revision || 0) > device.revision) device.revision = Number(snapshot.revision);
     if (device.id === state.selectedId) {
@@ -2843,238 +2792,17 @@
     state.currentActivityStartedAt = mode === 'idle' ? 0 : Date.now();
   }
 
-  function warmRemainingMs() {
-    if (state.backgroundMode !== 'warm') return 0;
-    // Wall time includes OS suspension; monotonic time covers clock correction.
-    // Never use 32-bit coercion or let a backwards clock restart the budget.
-    state.hiddenElapsedMs = Math.max(state.hiddenElapsedMs,
-      Date.now() - state.hiddenAt, performance.now() - state.hiddenMonoAt, 0);
-    return Math.max(0, WARM_BACKGROUND_MS - state.hiddenElapsedMs);
-  }
-
-  function browserSessionActive() {
-    return state.backgroundMode === 'visible' ? !document.hidden :
-      state.backgroundMode === 'warm' && warmRemainingMs() > 0;
-  }
-
-  function idleBackground() {
-    if (state.backgroundMode === 'idle') return;
-    state.backgroundMode = 'idle';
-    clearTimeout(state.backgroundTimer);
-    state.backgroundTimer = 0;
-    clearInterval(state.sessionTimer);
-    state.sessionTimer = 0;
-    deactivateSession(state.selectedId);
-    // WebSocket.js retains ownership of the healthy socket and normal reconnects.
-  }
-
-  function checkBackgroundDeadline() {
-    if (state.backgroundMode !== 'warm') return;
-    clearTimeout(state.backgroundTimer);
-    const remaining = warmRemainingMs();
-    if (!remaining) { idleBackground(); return; }
-    state.backgroundTimer = setTimeout(checkBackgroundDeadline, remaining);
-  }
-
-  function enterBackground() {
-    state.lastBrowserResumeAt = 0;
-    persistRuntimeCache(currentDevice(), true);
-    state.realtimeResumeProbeRequired = true;
-    if (state.backgroundMode !== 'visible') { checkBackgroundDeadline(); return; }
-    state.backgroundMode = 'warm';
-    state.hiddenAt = Date.now();
-    state.hiddenMonoAt = performance.now();
-    state.hiddenElapsedMs = 0;
-    checkBackgroundDeadline();
-    activateSelectedSession(false);
-    prefetchControlSession();
-  }
-
-  function sendSession(deviceId, active = true, sync = false) {
-    if (!state.realtimeConnected || !deviceId) return;
-    const warm = state.backgroundMode === 'warm';
-    const remaining = warm ? warmRemainingMs() : 0;
-    if (active && !browserSessionActive()) {
-      if (warm) idleBackground();
-      return;
-    }
-    const device = state.devices.find(d => d.id === deviceId);
-    const needed = {
-      config: !warm && device?.requestedData.has('config') && (!device.config || device.configAt < device.configNeededAt),
-      log: !warm && device?.requestedData.has('log') && (device.logSyncAttempts || 0) < 3
-    };
-    try {
-      publish(routes(deviceId).session, {
-        clientId: controlClientId,
-        active,
-        foreground: !document.hidden,
-        ttlMs: active ? Math.max(1, Math.floor(warm ? Math.min(WEB.sessionTtlMs, remaining) : WEB.sessionTtlMs)) : 1000,
-        sync: active && !warm && (sync || Object.values(needed).some(Boolean)),
-        scope: 'runtime',
-        ...needed
-      }, {});
-      if (active && needed.log) device.logSyncAttempts = (device.logSyncAttempts || 0) + 1;
-    } catch (_) {}
-  }
-
-  function activateSelectedSession(sync = false) {
-    clearInterval(state.sessionTimer);
-    clearSyncRetries();
-    state.sessionTimer = 0;
-    if (!state.selectedId || !state.realtimeConnected || !browserSessionActive()) return;
-    sendSession(state.selectedId, true, sync);
-    const selectedId = state.selectedId;
-    if (sync && !document.hidden) state.syncRetryTimers = [700, 1600].map((ms) => setTimeout(() => {
-      if (selectedId === state.selectedId && !document.hidden && selectedNeedsSync())
-        sendSession(selectedId, true, true);
-    }, ms));
-    // Retry missing runtime and explicitly requested secondary reports only.
-    state.sessionTimer = setInterval(() => {
-      checkBackgroundDeadline();
-      if (!browserSessionActive()) return;
-      sendSession(state.selectedId, true, !document.hidden && selectedNeedsSync());
-      prefetchControlSession();
-    }, state.backgroundMode === 'warm' ? WARM_SESSION_REFRESH_MS : WEB.sessionRefreshMs);
-  }
-
-  function selectedNeedsSync() {
+  function syncSelectedDevice() {
     const device = currentDevice();
-    return !device?.snapshotAt || device.dataSource !== 'live' ||
-      device.liveEpoch !== state.subscriptionEpoch || Date.now() - device.snapshotAt > WEB.staleAfterMs;
-  }
-
-  function clearSyncRetries() {
-    state.syncRetryTimers.forEach(clearTimeout);
-    state.syncRetryTimers = [];
-  }
-
-  function deactivateSession(deviceId) {
-    clearSyncRetries();
-    if (deviceId) sendSession(deviceId, false, false);
-  }
-
-  function syncSelectedDevice(force = false) {
-    const device = currentDevice();
-    if (!device) return;
-    subscribeDevice(device.id).then(() => {
-      if (device.id === state.selectedId && browserSessionActive()) {
-        if (!state.sessionTimer || force) activateSelectedSession(force || selectedNeedsSync());
-        prefetchControlSession();
-      }
-    }).catch((error) => {
-      state.realtimeMessage = 'Chưa nhận được dữ liệu từ máy. Đang thử kết nối lại…';
-      renderDevice();
-      clearTimeout(state.subscriptionRetryTimer);
-      state.subscriptionRetryTimer = setTimeout(() => {
-        if (device.id === state.selectedId && state.realtimeConnected && browserSessionActive())
-          syncSelectedDevice(true);
-      }, 3000);
-    });
-    if (device.config) applyConfigToUi(device, force);
+    if (device?.config) applyConfigToUi(device, false);
     renderReminderList(device);
     renderDevice();
     renderPushStatus();
   }
 
   async function requestDeviceData(name) {
-    const device = currentDevice();
-    if (!device || !['config', 'history', 'log'].includes(name)) return;
-    const first = !device.requestedData.has(name);
-    device.requestedData.add(name);
-    if (name === 'config' && device.config && Number(device.snapshot?.revision) > Number(device.configRevision || 0))
-      device.configNeededAt = Date.now();
-    try {
-      await subscribeDevice(device.id);
-      if (first && device.id === state.selectedId && !document.hidden)
-        sendSession(device.id, true, name !== 'history');
-    } catch (_) {} // The normal SUBACK/session retry owns recovery.
-  }
-
-  async function subscribeDevice(deviceId) {
-    if (!deviceId || deviceId !== state.selectedId) return;
-    if (state.realtime?.deviceId !== deviceId) await refreshRealtimeSession();
-  }
-
-  function unsubscribeDevice(deviceId) {
-    if (state.realtime?.deviceId === deviceId && deviceId !== state.selectedId) state.realtime.end();
-  }
-
-  function connectRealtime(force = false) {
-    const session = runtimeRealtime;
-    if (!session || session.deviceId !== state.selectedId) return;
-    if (!force && state.realtime?.deviceId === session.deviceId && !state.realtime.disconnecting) {
-      if (state.realtime.connected) state.realtime.renew(session.ticket);
-      else state.realtime.resume();
-      return;
-    }
-    const previous = state.realtime;
-    state.realtimeConnected = false;
-    state.subscriptionEpoch++;
-    state.subscriptions.clear();
-    clearInterval(state.sessionTimer); state.sessionTimer = 0; clearSyncRetries();
-    previous?.end();
-    const client = new window.MayapRealtime.Client({ ...session,
-      isActive: () => browserSessionActive() && state.realtimeSessionState !== 'auth-required' &&
-        session.deviceId === state.selectedId,
-      refresh: async () => {
-        if (session.deviceId !== state.selectedId) throw new Error('DEVICE_CHANGED');
-        const next = await requestRealtimeSession(currentDevice());
-        if (!next) throw new Error('AUTH_REQUIRED');
-        return next;
-      } });
-    state.realtime = client;
-    state.realtimeMessage = 'Đang kết nối với máy…'; renderDevice();
-    client.on('packetreceive', () => {
-      if (state.realtime === client) { state.realtimeLastPacketAt = Date.now(); state.realtimeResumeProbeRequired = false; }
-    });
-    client.on('connect', () => {
-      if (state.realtime !== client) return;
-      state.realtimeConnected = true; state.realtimeSessionState = 'ready'; state.subscriptionEpoch++;
-      state.realtimeMessage = 'Đã kết nối máy chủ';
-      state.devices.forEach(device => { device.logSyncAttempts = 0; });
-      syncSelectedDevice(true); resumeExactRetries(); renderDevice();
-    });
-    client.on('close', () => {
-      if (state.realtime !== client) return;
-      state.subscriptionEpoch++; clearInterval(state.sessionTimer); state.sessionTimer = 0; clearSyncRetries();
-      state.realtimeConnected = false; state.realtimeMessage = 'Kết nối bị gián đoạn'; renderDevice();
-    });
-    client.on('reconnect', () => {
-      if (state.realtime !== client) return;
-      state.realtimeMessage = 'Đang kết nối lại với máy…'; renderDevice();
-    });
-    client.on('error', () => {
-      if (state.realtime !== client) return;
-      state.realtimeMessage = 'Kết nối máy chủ gặp lỗi. Đang thử lại…'; renderDevice();
-    });
-    client.on('message', (route, payload, packet) => {
-      if (state.realtime !== client || route.deviceId !== state.selectedId) return;
-      const device = state.devices.find(item => item.id === route.deviceId);
-      if (!device) return;
-      if (route.channel === 'presence') handlePresence(device, payload);
-      else if (route.channel === 'bootstrap') handleBootstrap(device, payload);
-      else if (route.channel === 'snapshot' && !packet?.cached) handleSnapshot(device, payload);
-      else if (route.channel === 'config/reported') {
-        if (device.liveEpoch === state.subscriptionEpoch && Number(payload.bootId) && Number(payload.bootId) !== device.bootId) return;
-        const before = device.configAt;
-        handleConfigReport(device, payload);
-        if (device.configAt !== before) device.configRevision = device.revision;
-        if (device.id === state.selectedId) renderDevice();
-      }
-
-      else if (route.channel === 'ack') {
-        verifyDeviceAck(device, payload).then((valid) => {
-          if (valid) handleAck(device,payload);
-          else if (state.pending.has(String(payload.requestId || '')) ||
-              state.uncertain.has(String(payload.requestId || ''))) {
-            const pending=state.pending.get(String(payload.requestId||''))||state.uncertain.get(String(payload.requestId||''));
-            console.warn('[TX] PROTOCOL_ERROR: ACK không xác thực được');
-          }
-        }).catch((error) => console.error('[TX] ACK verify', error));
-      }
-      else if (route.channel === 'log') handleLog(device, payload);
-      else if (route.channel === 'history/reported') handleTemperatureHistory(device, payload);
-    });
+    // Data requests are deferred until the next transport is implemented.
+    return ['config', 'history', 'log'].includes(name);
   }
 
   function validateQuickForm() {
@@ -3303,8 +3031,6 @@
     $('deviceSelector').addEventListener('change', (event) => {
       const previous = state.selectedId;
       state.selectedId = event.target.value;
-      deactivateSession(previous);
-      if (previous && previous !== state.selectedId) unsubscribeDevice(previous);
       saveDevices();
       syncSelectedDevice(true);
       syncDeviceSelectorUi();
@@ -3383,19 +3109,14 @@
       }
       const previous = state.selectedId;
       state.selectedId = id;
-      deactivateSession(previous);
-      if (previous && previous !== id) unsubscribeDevice(previous);
       renderSelector();
-      subscribeDevice(id).catch(() => {});
       $('deviceDialog').close();
       // Neu thong bao da bat san tren trinh duyet nay, tu lien ket luon may
       // moi them vao (khong bat nguoi dung phai bam lai "Bat thong bao").
       renderPushStatus();
       saveDevices();
-      toast('Đã thêm máy · đang kết nối tự động');
+      toast('Đã thêm máy');
       controlSessions.delete(id);
-      await refreshRealtimeSession();
-      controlSession(currentDevice()).catch((error) => console.warn('[SESSION]', error.code || 'TRANSPORT_ERROR'));
     });
 
     $('remindersForm').addEventListener('submit', async event => {
@@ -3673,7 +3394,6 @@
   function startTimers() {
     clearInterval(state.staleTimer);
     state.staleTimer = setInterval(() => {
-      recoverBrowserConnection();
       sweepUncertain();
       for (const [id, entry] of state.lastTerminalByDevice)
         if (Date.now() - entry.at > PACKET_POLICY.UNCERTAIN_TTL_MS)
@@ -3828,60 +3548,11 @@
     }
   }
 
-  async function refreshRealtimeSession() {
-    const session = await requestRealtimeSession(currentDevice());
-    if (session) { connectRealtime(); return true; }
-    return false;
-  }
-  async function requestRealtimeSession(device) {
-    if (!device?.id) return null;
-    const existing = state.authRequests.get(device.id);
-    if (existing) return existing;
-    const request = loadRealtimeSession(device);
-    state.authRequests.set(device.id, request);
-    try { return await request; }
-    finally { if (state.authRequests.get(device.id) === request) state.authRequests.delete(device.id); }
-  }
-  async function loadRealtimeSession(device) {
-    if (!device?.id || !device.pairingToken) return null;
-    const result = await postCloudJson('/api/device/realtime-session', {
-      device_id: device.id, control_client_id: controlClientId
-    }, 10000);
-    if (device.id !== state.selectedId) return null;
-    if (result.success && result.realtime?.url && result.realtime?.ticket) {
-      try {
-        if (!result.control && device.accountRole !== 'viewer') throw new Error('PROTOCOL_ERROR');
-        if (result.control) await storeControlSession(device, result.control);
-        runtimeRealtime = { ...result.realtime, deviceId: device.id };
-        state.realtimeSessionState = 'ready'; state.authRetryDelay = 5000; state.authRetryAt = 0;
-        return runtimeRealtime;
-      } catch (_) { controlSessions.delete(device.id); }
-    }
-    state.realtimeSessionState = [401, 403].includes(result.status) ? 'auth-required' : 'error';
-    if (state.realtimeSessionState === 'auth-required') controlSessions.delete(device.id);
-    state.authRetryAt = Date.now() + state.authRetryDelay;
-    state.authRetryDelay = Math.min(30000, state.authRetryDelay * 2);
-    state.realtimeMessage = state.realtimeSessionState === 'auth-required'
-      ? 'Phiên đăng nhập hết hạn. Hãy đăng nhập lại Google.' : 'Chưa kết nối được máy chủ. Đang thử lại…';
-    return null;
-  }
-  function cancelHubProbe() {} // Probe lifecycle belongs to the native transport.
-  function probeResumedHub() { state.realtime?.probe(); }
-  async function recoverBrowserConnection() {
-    if (document.hidden || state.realtimeSessionState === 'auth-required') return;
-    if (state.realtime && state.realtime.deviceId === state.selectedId && !state.realtime.disconnecting) {
-      state.realtime.resume(); return;
-    }
-    if (Date.now() >= state.authRetryAt && currentDevice()?.pairingToken) {
-      await refreshRealtimeSession(); renderDevice();
-    }
-  }
-
   function accountDevices(rows) {
     if (!window.MayapAccount?.current) return;
     const ids = new Set(rows.map(row => row.device_id));
     const removed = state.devices.filter(device => !ids.has(device.id));
-    if (removed.length) { state.realtime?.end(true); state.realtime = null; state.realtimeConnected = false; controlSessions.clear(); }
+    if (removed.length) controlSessions.clear();
     state.devices = rows.map(row => {
       const device = state.devices.find(d => d.id === row.device_id) || createDevice(row.device_id, row.device_name || row.device_id, 'account-session');
       device.name = row.device_name || row.device_id;
@@ -3892,8 +3563,7 @@
     if (!ids.has(state.selectedId)) state.selectedId = state.devices[0]?.id || '';
   }
   window.addEventListener('mayap-logout', () => {
-    state.realtime?.end(true); state.realtime = null; state.realtimeConnected = false;
-    controlSessions.clear(); state.devices = []; clearInterval(state.sessionTimer);
+    controlSessions.clear(); state.devices = [];
   });
   async function init() {
     if (!window.MayapAccount) return; // Production always installs the account gate.
@@ -3905,14 +3575,13 @@
     accountDevices(account.devices);
     window.addEventListener('mayap-account-devices', event => {
       accountDevices(event.detail); renderSelector();
-      if (!state.realtime && currentDevice()) refreshRealtimeSession();
+      syncSelectedDevice();
     });
     // Goi showPage() thay vi chi dat dataset.page: truoc day tieu de va chu
     // thich luc moi mo trang lay tu chuoi VIET CUNG trong index.html (vi
     // showPage chi chay khi bam nut chuyen trang), nen moi lan doi chu trong
     // pageMeta ma quen sua index.html la nguoi dung van thay chuoi cu.
     showPage('device');
-    if (document.hidden) enterBackground();
     applyTheme(getThemePreference());
     applyDeepLinkDevice();
     bindUi();
@@ -3936,60 +3605,18 @@
     if (!currentDevice()?.snapshot) setCurrentActivity('Đang kết nối', 'Đang chờ dữ liệu từ máy', 'idle');
     startTimers();
     registerServiceWorker();
-    setInterval(prefetchControlSession, 5000);
     renderPushStatus();
-    const realtimeReady = await refreshRealtimeSession();
-    if (!realtimeReady) renderDevice();
+    renderDevice();
   }
 
-  window.addEventListener('pagehide', (event) => {
-    // BFCache can retain the page; a real navigation/unload ends its lease.
-    if (event?.persisted) enterBackground();
-    else {
-      state.lastBrowserResumeAt = 0;
-      state.realtimeResumeProbeRequired = true;
-      persistRuntimeCache(currentDevice(), true);
-      idleBackground();
-    }
-  });
-  function resumeBrowserConnection(event) {
-    if (document.hidden) { checkBackgroundDeadline(); return; }
-    if (state.backgroundMode !== 'visible') {
-      state.realtimeResumeProbeRequired = true;
-      // Evaluate real elapsed time first, even if every background timer froze.
-      checkBackgroundDeadline();
-      state.backgroundMode = 'visible';
-      clearTimeout(state.backgroundTimer);
-      state.backgroundTimer = 0;
-      clearInterval(state.sessionTimer);
-      state.sessionTimer = 0;
-    }
-    renderDevice(); // Resume from RAM/cache before waiting for network work.
-    const now = Date.now();
-    if (state.lastBrowserResumeAt && now >= state.lastBrowserResumeAt && now - state.lastBrowserResumeAt < 250) return;
-    state.lastBrowserResumeAt = now;
-    if (event?.type === 'online' && !state.realtime && state.realtimeSessionState === 'error') state.authRetryAt = 0;
-    recoverBrowserConnection();
-    if (state.realtimeConnected) syncSelectedDevice(selectedNeedsSync());
-    prefetchControlSession();
-  }
-  window.addEventListener('online', resumeBrowserConnection);
-  window.addEventListener('pageshow', resumeBrowserConnection);
-
-  // Hidden pages stay warm for five minutes while the browser permits work.
-  // Short bounded leases still expire if the OS freezes/kills this page.
+  window.addEventListener('pagehide', () => persistRuntimeCache(currentDevice(), true));
   window.addEventListener('resize', requestTemperatureChartRender, { passive: true });
   window.matchMedia?.('(prefers-color-scheme: dark)')?.addEventListener('change', () => {
     if (getThemePreference() === 'system') syncBrowserTheme();
   });
-
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-      enterBackground();
-    } else {
-      // Keep the socket; renew the lease and request runtime only if stale.
-      resumeBrowserConnection();
-    }
+    if (document.hidden) persistRuntimeCache(currentDevice(), true);
+    else renderDevice();
   });
 
   let notesUi;

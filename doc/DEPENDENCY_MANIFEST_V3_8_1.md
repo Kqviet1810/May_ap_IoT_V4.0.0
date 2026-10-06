@@ -1,3 +1,5 @@
+> **V3 LEGACY:** This document describes the pre-V4 realtime stack. The V4 clean network baseline has no WebSocket/DeviceHub runtime and no MQTT implementation yet.
+
 > Cập nhật transport cho V1.1.0; xem [migration guide](CLOUDFLARE_REALTIME_MIGRATION.md) về cấu hình và giới hạn commissioning.
 
 # MAYAP v3.8.1 - Dependency manifest

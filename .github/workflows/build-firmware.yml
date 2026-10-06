@@ -113,15 +113,11 @@ jobs:
         working-directory: cloudflare
         run: npx pnpm@11.19.0 exec playwright install --with-deps chromium
 
-      - name: Real Cloudflare runtime and native browser realtime
-        run: python3 tools/test_realtime_workerd.py --browser
-
-      - name: Browser connection and UX regression
+      - name: Browser UX regression
         run: |
           python3 -m http.server 8765 --bind 127.0.0.1 > /tmp/mayap-qa-http.log 2>&1 &
           qa_server_pid=$!
           trap 'kill "$qa_server_pid"' EXIT
-          node tools/test_web_connection.cjs /tmp/mayap-connection-qa
           node tools/test_web_experience.cjs /tmp/mayap-web-qa
 
 
@@ -162,9 +158,6 @@ jobs:
         run: |
           node --check app.js
           node --check protocol_v2.js
-          node --check realtime_transport.js
-          node --check cloudflare/src/device-hub.js
-          node --check cloudflare/src/realtime-auth.js
           node --check push.js
           node --check sw.js
           node --check config.js
