@@ -31,6 +31,10 @@
 #define MAYAP_BROKER_PORT 443
 #endif
 
+// Optional FreeRTOS SMP-style affinity call. Weak so the build links (and the pin is
+// skipped, loudly) if this core build does not provide it.
+extern "C" void vTaskCoreAffinitySet(TaskHandle_t task, UBaseType_t coreMask) __attribute__((weak));
+
 namespace MayapMqttInternal {
 
 constexpr char BROKER_HOST[] = MAYAP_BROKER_HOST;
@@ -79,10 +83,20 @@ static constexpr ChannelPolicy POLICY[] = {
 
 inline bool configured() { return BROKER_HOST[0] != '\0' && mayapMqttKey()[0] != '\0'; }
 
+// Runs in the esp-mqtt task: reports the core/priority it REALLY executes on.
+inline void logTaskPlacement(const char *when) {
+  mayapSerialPrintf(false, "[MQTT] %s task=%s core=%d prio=%u\n", when, pcTaskGetName(nullptr),
+                    static_cast<int>(xPortGetCoreID()), static_cast<unsigned>(uxTaskPriorityGet(nullptr)));
+}
+
 inline void eventHandler(void *, esp_event_base_t, int32_t id, void *data) {
   auto *event = static_cast<esp_mqtt_event_handle_t>(data);
   switch (static_cast<esp_mqtt_event_id_t>(id)) {
+    case MQTT_EVENT_BEFORE_CONNECT:
+      logTaskPlacement("before-connect");
+      break;
     case MQTT_EVENT_CONNECTED:
+      logTaskPlacement("connected");
       __atomic_store_n(&evConnected, 1U, __ATOMIC_RELEASE);
       break;
     case MQTT_EVENT_DISCONNECTED:
@@ -233,6 +247,19 @@ inline bool connectClient(uint32_t now) {
   if (!client) return false;
   esp_mqtt_client_register_event(client, MQTT_EVENT_ANY, eventHandler, nullptr);
   if (esp_mqtt_client_start(client) != ESP_OK) { stopClient(false); return false; }
+  // esp-mqtt creates its task unpinned, so the TLS/WSS handshake may run on core 1
+  // next to control/supervisor/HMI. Keep it on core 0 with the other Online tasks.
+  if (vTaskCoreAffinitySet) {
+    TaskHandle_t espMqttTask = xTaskGetHandle("mqtt_task");
+    if (espMqttTask) {
+      vTaskCoreAffinitySet(espMqttTask, 1U << 0);
+      mayapSerialPrintf(false, "[MQTT] esp-mqtt task pinned to core 0\n");
+    } else {
+      mayapSerialPrintf(false, "[MQTT] pin skipped: esp-mqtt task handle not found\n");
+    }
+  } else {
+    mayapSerialPrintf(false, "[MQTT] pin skipped: vTaskCoreAffinitySet unavailable\n");
+  }
 
   const uint32_t startedAt = millis();
   while (!__atomic_load_n(&evConnected, __ATOMIC_ACQUIRE)) {

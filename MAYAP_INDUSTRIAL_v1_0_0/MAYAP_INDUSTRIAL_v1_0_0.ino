@@ -101,6 +101,11 @@ static volatile uint32_t hmiHeartbeatMs = 0U;
 static volatile uint32_t controlLastCycleUs = 0U;
 static volatile uint32_t controlMaxCycleUs = 0U;
 static volatile uint8_t controlTripCycleCount = 0U;
+// Where control was last seen, so a heartbeat trip can tell "not scheduled" from
+// "stuck inside Machine.update": phase 1=update, 2=post-update/WDT, 3=waiting for next period.
+static volatile uint8_t controlPhase = 0U;
+static volatile uint8_t controlInUpdate = 0U;
+static volatile uint32_t controlCycleStartMs = 0U;
 static volatile uint32_t hmiLastCycleUs = 0U;
 static volatile uint32_t hmiMaxCycleUs = 0U;
 static volatile uint8_t hmiTripCycleCount = 0U;
@@ -166,7 +171,12 @@ void controlTask(void *parameter) {
   for (;;) {
     const uint32_t now = millis();
     const int64_t cycleStartedUs = esp_timer_get_time();
+    __atomic_store_n(&controlCycleStartMs, now, __ATOMIC_RELEASE);
+    __atomic_store_n(&controlInUpdate, 1U, __ATOMIC_RELEASE);
+    __atomic_store_n(&controlPhase, 1U, __ATOMIC_RELEASE);
     Machine.update(now);
+    __atomic_store_n(&controlInUpdate, 0U, __ATOMIC_RELEASE);
+    __atomic_store_n(&controlPhase, 2U, __ATOMIC_RELEASE);
     const MachineRuntime &runtime = Machine.runtime();
     __atomic_store_n(&sensorHealthy,
         runtime.sensorOnline && !runtime.sensorStartupGrace && isfinite(runtime.temperature) ? 1U : 0U,
@@ -213,6 +223,7 @@ void controlTask(void *parameter) {
 
     const esp_err_t result = esp_task_wdt_reset();
     if (result != ESP_OK) fatalRestart("CTRL WDT RESET", result, MayapBoot::RestartReason::WdtApi);
+    __atomic_store_n(&controlPhase, 3U, __ATOMIC_RELEASE);
     vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(CONTROL_TASK_PERIOD_MS));
   }
 }
@@ -443,6 +454,22 @@ void supervisorTask(void *parameter) {
       const uint32_t heartbeatAgeMs = ctrlBeat != 0U ? elapsedMs(now, ctrlBeat) : 0U;
       const uint32_t cycleUs = __atomic_load_n(&controlLastCycleUs, __ATOMIC_ACQUIRE);
       const char *stageText = MayapBoot::stageText(mayapBootStage());
+      // Sampled BEFORE the suspend below: is control Running/Ready (starved or
+      // spinning) or Blocked (waiting on a lock/delay)?
+      const unsigned phase = __atomic_load_n(&controlPhase, __ATOMIC_ACQUIRE);
+      const unsigned inUpdate = __atomic_load_n(&controlInUpdate, __ATOMIC_ACQUIRE);
+      const uint32_t cycleStartMs = __atomic_load_n(&controlCycleStartMs, __ATOMIC_ACQUIRE);
+      const uint32_t cycleAgeMs = cycleStartMs != 0U ? elapsedMs(now, cycleStartMs) : 0U;
+      char taskState = '?';
+      if (controlTaskHandle) {
+        switch (eTaskGetState(controlTaskHandle)) {
+          case eRunning: taskState = 'R'; break;
+          case eReady: taskState = 'Y'; break;
+          case eBlocked: taskState = 'B'; break;
+          case eSuspended: taskState = 'S'; break;
+          default: taskState = 'D'; break;
+        }
+      }
       const MayapBoot::RestartReason tripReason = !controlHealthy ?
           MayapBoot::RestartReason::ControlHeartbeat : MayapBoot::RestartReason::ControlDeadline;
       mayapLatchSystemTrip();
@@ -458,15 +485,18 @@ void supervisorTask(void *parameter) {
       const unsigned long heapFree = ESP.getFreeHeap();
       const unsigned long heapMin = ESP.getMinFreeHeap();
       const unsigned long heapLargest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-      snprintf(detail, sizeof(detail), "%s age=%lums cyc=%luus slow=%u stg=%s h=%lu/%lu/%lu",
+      snprintf(detail, sizeof(detail), "%s age=%lums cyc=%luus slow=%u stg=%s h=%lu/%lu/%lu ph=%u in=%u ca=%lums ts=%c",
                reasonText, static_cast<unsigned long>(heartbeatAgeMs),
                static_cast<unsigned long>(cycleUs), static_cast<unsigned>(slowCycles), stageText,
-               heapFree, heapMin, heapLargest);
+               heapFree, heapMin, heapLargest, phase, inUpdate,
+               static_cast<unsigned long>(cycleAgeMs), taskState);
       mayapBootPlanRestart(tripReason, detail);
       mayapSerialPrintf(true,
-          "[SUPERVISOR] TRIP reason=%s hbAge=%lums cycleUs=%lu slow=%u stage=%s heap=%lu/%lu/%lu\n",
+          "[SUPERVISOR] TRIP reason=%s hbAge=%lums cycleUs=%lu slow=%u stage=%s heap=%lu/%lu/%lu "
+          "phase=%u inUpdate=%u currentCycleAge=%lums ctrlState=%c\n",
           reasonText, static_cast<unsigned long>(heartbeatAgeMs), static_cast<unsigned long>(cycleUs),
-          static_cast<unsigned>(slowCycles), stageText, heapFree, heapMin, heapLargest);
+          static_cast<unsigned>(slowCycles), stageText, heapFree, heapMin, heapLargest,
+          phase, inUpdate, static_cast<unsigned long>(cycleAgeMs), taskState);
       // Print now: the fallback below outlives the 5 s TWDT, so a queued line would
       // otherwise be lost. Bounded (<150 ms); TWDT timeout and membership unchanged.
       mayapSerialDrainFor(150U);

@@ -84,3 +84,21 @@ test('supervisor control trip persists and prints its evidence before any reset 
  assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/config.h'),/CONTROL_CYCLE_TRIP_US = 400000UL/);
  assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/serial_diagnostics.h'),/\[BOOT-DIAG\]/);
 });
+
+test('control trip separates "not scheduled" from "stuck in Machine.update", and esp-mqtt is kept off core 1', () => {
+ const ino=read('MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino');
+ const control=ino.slice(ino.indexOf('void controlTask('),ino.indexOf('void hmiTask('));
+ assert.ok(control.indexOf('controlInUpdate, 1U')<control.indexOf('Machine.update(now)'));
+ assert.ok(control.indexOf('Machine.update(now)')<control.indexOf('controlInUpdate, 0U'));
+ assert.match(control,/controlPhase, 3U[\s\S]*vTaskDelayUntil/);
+ const trip=ino.slice(ino.indexOf('if (!controlHealthy || deadlineTrip)'),ino.indexOf('if (hmiBeat != 0U && hmiHealthy'));
+ assert.ok(trip.indexOf('eTaskGetState(controlTaskHandle)')<trip.indexOf('vTaskSuspend(controlTaskHandle)'));
+ for (const field of ['currentCycleAge','inUpdate','phase','ctrlState']) assert.match(trip,new RegExp(field),field);
+ const mqtt=read('MAYAP_INDUSTRIAL_v1_0_0/mqtt_transport.h');
+ assert.match(mqtt,/vTaskCoreAffinitySet\(espMqttTask, 1U << 0\)/);
+ assert.match(mqtt,/xPortGetCoreID\(\)/);
+ assert.match(mqtt,/MQTT_EVENT_BEFORE_CONNECT/);
+ // Watchdog/heartbeat policy untouched.
+ assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/config.h'),/CONTROL_HEARTBEAT_TIMEOUT_MS = 500UL/);
+ assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/config.h'),/CONTROL_WDT_TIMEOUT_MS = 5000UL/);
+});
