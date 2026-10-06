@@ -18,32 +18,35 @@ code Phase 2B. Mọi mục mâu thuẫn với tài liệu khác đều lấy fil
 
 ## 2. Topic / QoS / Retain
 
-Root `mayap/v1/<deviceId>/…`. QoS và retain phải khớp CHÍNH XÁC bảng dưới. Mọi
-subscriber được cấp QoS tối đa bằng `max(requestedQoS, publisherQoS)` nhưng
-**không bao giờ** nâng QoS của PUBLISH gốc QoS0 lên QoS1 chỉ vì subscriber yêu
-cầu QoS1. Fanout giữ nguyên QoS của PUBLISH.
+Root `mayap/v1/<deviceId>/…`. QoS và retain phải khớp CHÍNH XÁC bảng dưới.
+Fanout QoS = `min(publishQoS, grantedQoS)`. Broker **không bao giờ** nâng QoS:
+một PUBLISH QoS0 vẫn fanout ở QoS0 ngay cả khi subscriber xin QoS1.
 
 | Topic | Hướng | Publish QoS | Retain | Subscribe QoS tối đa |
 |---|---|---|---|---|
-| `presence` | ESP32 → * | **1** | **true** | 1 |
-| `snapshot` | ESP32 → * | **0** | false | 1 |
-| `ack` | ESP32 → * | **1** | false | 1 |
-| `log` | ESP32 → * | **0** | false | 1 |
-| `config/reported` | ESP32 → * | **1** | false | 1 |
-| `reminders/reported` | ESP32 → * | **1** | **true** | 1 |
-| `history/reported` | ESP32 → * | **1** | false | 1 |
+| `presence` | ESP32 → Web | **1** | **true** | 1 |
+| `snapshot` | ESP32 → Web | **0** | false | **0** |
+| `ack` | ESP32 → Web | **1** | false | 1 |
+| `log` | ESP32 → Web | **0** | false | **0** |
+| `config/reported` | ESP32 → Web | **1** | false | 1 |
+| `reminders/reported` | ESP32 → Web | **1** | **true** | 1 |
+| `history/reported` | ESP32 → Web | **1** | false | 1 |
 | `command` | Web → ESP32 | **1** | false | 1 |
 | `config/set` | Web → ESP32 | **1** | false | 1 |
 | `reminders/set` | Web → ESP32 | **1** | false | 1 |
 | `history/request` | Web → ESP32 | **1** | false | 1 |
-| `session` | Web ↔ ESP32 | **0** | false | 0 |
+| `session` | Web → ESP32 | **0** | false | **0** |
 
 - **LWT** của ESP32: topic `presence`, payload `{"online":false,...}`,
-  QoS 1, retain `true`.
+  QoS 1, retain `true`. Khi broker fire LWT, retained store phải được
+  cập nhật *trước* fanout để subscriber kết nối sau vẫn thấy `online=false`.
 - Lệnh (`command`, `config/set`, `reminders/set`, `history/request`) **cấm**
-  retain. Broker set retain=0 trong fanout cho các topic này ngay cả khi
-  client gửi retain=1 → broker ACK PUBACK, drop retain bit và từ chối lưu.
-- `session` dùng QoS 0 không retain. Topic này chỉ truyền trạng thái session
+  retain. Một PUBLISH với `retain=1` lên các topic này là protocol misuse:
+  broker PUBACK (nếu QoS1) rồi **DROP** — không retain, không fanout, không
+  thực thi. Hành vi lặp lại trong một kết nối → đóng kết nối (slow violation
+  = 2 lần).
+- `session` dùng QoS 0 không retain, Web publish → ESP32 subscribe. ESP32
+  không publish, Web không subscribe. Topic này chỉ truyền trạng thái
   active/ttl/sync của Web (xem §3). Không mang HMAC grant.
 
 ## 3. HMAC control grant — qua HTTPS, KHÔNG qua topic `session`
@@ -58,13 +61,18 @@ cầu QoS1. Fanout giữ nguyên QoS của PUBLISH.
 
 ## 4. Kiến trúc 1 Durable Object / 1 device
 
-- Web/ESP32 kết nối WSS tới `https://<broker-host>/mqtt/<deviceId>`.
+- Web/ESP32 kết nối WSS tới `https://<broker-host>/mqtt/<deviceId>` với
+  WebSocket subprotocol **bắt buộc** là `mqtt`. Thiếu subprotocol → 400.
 - Worker route rút `deviceId`, chọn Durable Object bằng
   `env.MQTT_BROKER.idFromName(deviceId)` và forward WebSocket Upgrade.
 - `deviceId` trong URL **không phải secret**. Mọi auth phải thực hiện khi
   nhận CONNECT (username/password) + ACL (xem §5).
 - Mỗi DO chỉ phục vụ đúng `mayap/v1/<deviceId>/…`. Subscribe/publish ngoài
   root này bị từ chối SUBACK 0x80 / đóng kết nối.
+- **Một DO chấp nhận tối đa MỘT connection role=device** đang mở. Một
+  CONNECT device mới hợp lệ sẽ takeover: broker đóng connection device cũ
+  (code 1000 "TAKEOVER"), set `disconnected=true` để chặn LWT, rồi mở kết
+  nối mới. Mục đích: hai ESP32 không bao giờ cùng nhận `command`.
 
 ## 5. Auth + ACL
 
@@ -91,28 +99,42 @@ cầu QoS1. Fanout giữ nguyên QoS của PUBLISH.
   callbacks `webSocketMessage/webSocketClose/webSocketError`.
 - **Không** giữ dữ liệu quan trọng chỉ trong RAM:
   - Metadata kết nối (clientId, role, keepaliveMs, lastRxMs, LWT, subs,
-    buffer dở, QoS1 inflight ring) → `ws.serializeAttachment(...)`.
+    buffer dở, QoS1 inflight set, `nextPacketId`) →
+    `ws.serializeAttachment(...)`.
   - Retained messages (`presence`, `reminders/reported`) → DO Storage
     key `retained:<topic>` chứa `{qos, payloadB64, ts}`.
-  - QoS1 inflight server→client → trong attachment, bounded ring 16 entries.
+  - QoS1 inflight server→client → trong attachment, bounded 16 entries.
+    `nextPacketId` **per-connection** (không chia sẻ giữa client); không
+    bao giờ tái dùng packetId đang inflight.
 - Clearing retained: PUBLISH payload rỗng + retain=1 → xoá key storage.
+- **Backpressure** cho QoS1: khi `inflight.length == 16`, broker không
+  drop silently. Đóng slow consumer bằng close code 1013 "SLOW_CONSUMER"
+  và dừng fanout tới nó. Transaction V2 ở tầng trên tự retry.
 - Alarm định kỳ 15 s để kiểm tra keepalive quá hạn (1.5× keepalive) và
   giải phóng LWT.
 
 ## 7. Parser
 
-- Streaming, bounded. Không giả định một WebSocket message = một MQTT packet.
-- Buffer tích luỹ ≤ 4096 B. Vượt → đóng kết nối, không CONNACK.
-- Từ chối:
-  - Remaining Length encoding > 4 byte.
+- Streaming, bounded. Không giả định một WebSocket message = một MQTT
+  packet. Nhiều MQTT packet hợp lệ có thể được coalesce trong một
+  WebSocket frame; broker vẫn parse từng cái một.
+- Giới hạn 4096 B áp dụng **PER MQTT PACKET** (`totalLen` tính từ fixed
+  header + Remaining Length). Decoder buffer tích luỹ cho phép tới
+  16 KiB để chứa nhiều packet coalesced + phần dở; vượt → OVERFLOW.
+- Từ chối (fatal close, không CONNACK nếu còn ở `await-connect`):
+  - Remaining Length encoding > 4 byte (kể cả khi byte thứ 5 có MSB=0).
+  - Một packet khai báo `totalLen > 4096 B` → OVERFLOW ngay khi parse
+    xong Remaining Length (chưa cần đợi đủ payload).
   - Packet type 0 hoặc 15.
-  - CONNECT có protocol name khác `"MQTT"` v4.
-  - Reserved flags sai (ví dụ PUBLISH QoS 3).
-  - QoS > 1.
+  - CONNECT có protocol name khác `"MQTT"` v4, hoặc CleanSession=0.
+  - Reserved flags sai (ví dụ PUBLISH QoS 3, DUP+QoS0, SUBSCRIBE flags
+    không phải 0b0010, reserved bits của byte QoS trong SUBSCRIBE).
+  - QoS > 1 bất cứ chỗ nào.
   - Topic rỗng, chứa null byte, hoặc UTF-8 bất hợp lệ.
   - Wildcard (`+`, `#`) trong topic của PUBLISH.
+  - Text WebSocket frame (phải là binary).
 - Chỉ nhận packet type: CONNECT, PUBLISH, PUBACK, SUBSCRIBE, PINGREQ,
-  DISCONNECT. Phần còn lại trả CONNACK 0x05 (CONNECT), close (sau CONNECT).
+  DISCONNECT. Phần còn lại → fatal close.
 
 ## 8. Broker không biết nghiệp vụ
 

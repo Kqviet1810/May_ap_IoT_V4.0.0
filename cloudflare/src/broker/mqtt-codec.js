@@ -36,12 +36,21 @@ export class MqttDecodeError extends Error {
 }
 
 // Streaming decoder: feed bytes via push(), pull packets via drain().
-// Maintains at most MQTT_MAX_PACKET bytes of accumulated state. Any single
-// MQTT packet larger than MQTT_MAX_PACKET causes a fatal error — the owner
-// must close the connection.
+//
+// Per Phase 2B.1 contract revision §7 — the 4 KB limit is PER MQTT PACKET,
+// not per WebSocket message. Multiple small packets may legitimately arrive
+// coalesced into one frame totalling more than one packet's maximum.
+//
+// We therefore accept a larger accumulator (`bufferLimit`), but reject as
+// OVERFLOW as soon as a single packet's declared Remaining Length would push
+// its totalLen past MQTT_MAX_PACKET. The accumulator cap is a safety net
+// against a peer that pushes gigabytes of unparsed junk without any complete
+// packet; set it to MQTT_MAX_PACKET * 4 (16 KiB) which comfortably holds any
+// stall case while remaining bounded.
 export class StreamingDecoder {
-  constructor({ max = MQTT_MAX_PACKET } = {}) {
+  constructor({ max = MQTT_MAX_PACKET, bufferLimit } = {}) {
     this.max = max;
+    this.bufferLimit = bufferLimit != null ? bufferLimit : max * 4;
     this.buffer = new Uint8Array(0);
   }
 
@@ -55,13 +64,15 @@ export class StreamingDecoder {
         throw new MqttDecodeError('push expects bytes', 'BAD_INPUT');
       }
     }
+    // Reject obviously-oversized frames BEFORE allocating a merged buffer so
+    // a hostile peer cannot cause us to grow the buffer past bufferLimit.
+    if (this.buffer.length + bytes.length > this.bufferLimit) {
+      throw new MqttDecodeError('decoder buffer overflow', 'OVERFLOW');
+    }
     const next = new Uint8Array(this.buffer.length + bytes.length);
     next.set(this.buffer, 0);
     next.set(bytes, this.buffer.length);
     this.buffer = next;
-    if (this.buffer.length > this.max) {
-      throw new MqttDecodeError('buffer overflow', 'OVERFLOW');
-    }
   }
 
   // Return array of parsed packets consumed from the buffer.
@@ -80,6 +91,13 @@ export class StreamingDecoder {
       let i = 1;
       let encodedBytes = 0;
       while (true) {
+        // Guard BEFORE reading a 5th byte — Remaining Length is at most 4
+        // bytes per MQTT 3.1.1 §2.2.3, regardless of whether the 5th byte
+        // happens to have MSB=0. This closes the "byte-5 with cleared high
+        // bit" bypass that a lenient parser would accept.
+        if (encodedBytes >= 4) {
+          throw new MqttDecodeError('remaining length > 4 bytes', 'BAD_LEN');
+        }
         if (i >= this.buffer.length) {
           // Incomplete length — wait for more bytes.
           return out;
@@ -90,9 +108,6 @@ export class StreamingDecoder {
         i++;
         if ((digit & 0x80) === 0) break;
         multiplier *= 128;
-        if (encodedBytes > 4) {
-          throw new MqttDecodeError('remaining length > 4 bytes', 'BAD_LEN');
-        }
       }
       const totalLen = 1 + encodedBytes + remaining;
       if (totalLen > this.max) {

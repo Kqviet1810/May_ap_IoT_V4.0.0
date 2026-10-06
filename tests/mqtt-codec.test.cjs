@@ -190,10 +190,44 @@ test('packet exceeding MQTT_MAX_PACKET is rejected', () => {
   assert.throws(() => decodeAll(bytes), { code: 'OVERFLOW' });
 });
 
-test('buffer overflow when caller pushes > 4 KiB without draining full packets', () => {
+test('decoder buffer limit (16 KiB) overflow is fatal', () => {
   const d = new codec.StreamingDecoder();
-  const big = new Uint8Array(codec.MQTT_MAX_PACKET + 1);
-  assert.throws(() => d.push(big), { code: 'OVERFLOW' });
+  // 4 KiB is accepted so multiple packets can coalesce in one frame.
+  d.push(new Uint8Array(codec.MQTT_MAX_PACKET));
+  // Push beyond the accumulator limit (4× max) → OVERFLOW.
+  assert.throws(() => d.push(new Uint8Array(codec.MQTT_MAX_PACKET * 4)),
+    { code: 'OVERFLOW' });
+});
+
+test('5-byte Remaining Length rejected even when 5th byte MSB=0', () => {
+  // 0x80 0x80 0x80 0x80 0x00 — four continuation bytes then terminator.
+  const d = new codec.StreamingDecoder();
+  d.push(new Uint8Array([0x30, 0x80, 0x80, 0x80, 0x80, 0x00]));
+  assert.throws(() => d.drain(), { code: 'BAD_LEN' });
+});
+
+test('packets coalesced beyond MQTT_MAX_PACKET parse one by one', () => {
+  const d = new codec.StreamingDecoder();
+  // 3 × PINGREQ (2 bytes each) + 1 × 4000-byte PUBLISH would exceed 4096
+  // in total, but each packet is under the per-packet cap.
+  const makePublish = (payloadSize) => {
+    const topicBytes = Buffer.from('a/b', 'utf-8');
+    const vp = [topicBytes.length >> 8, topicBytes.length & 0xff, ...topicBytes, ...new Uint8Array(payloadSize)];
+    const total = vp.length;
+    const lenBytes = [];
+    let n = total;
+    do { let dg = n % 128; n = Math.floor(n / 128); if (n > 0) dg |= 0x80; lenBytes.push(dg); } while (n > 0);
+    return new Uint8Array([0x30, ...lenBytes, ...vp]);
+  };
+  const p1 = makePublish(3800);
+  const p2 = makePublish(3800);
+  // Buffer limit is 16 KiB — two 3800-byte publishes + overhead fits.
+  d.push(p1);
+  d.push(p2);
+  const got = d.drain();
+  assert.equal(got.length, 2);
+  assert.equal(got[0].type, 'PUBLISH');
+  assert.equal(got[1].type, 'PUBLISH');
 });
 
 test('encodeConnack / encodeSuback / encodePuback / encodePingresp byte-exact', () => {

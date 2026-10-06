@@ -24,10 +24,11 @@ export const Topics = Object.freeze({
 // Suffix lists keyed by role, enforced AFTER verifying the leading
 // `mayap/v1/<deviceId>/` prefix matches this DO's device.
 
+// Session (per V2): Web PUBLISHES to signal its active/ttl/sync; ESP32
+// SUBSCRIBES. Device never publishes, Web never subscribes.
 const DEVICE_PUB = new Set([
   Topics.presence, Topics.snapshot, Topics.ack, Topics.log,
   Topics.configReported, Topics.remindersReported, Topics.historyReported,
-  Topics.session,
 ]);
 
 const DEVICE_SUB = new Set([
@@ -43,7 +44,6 @@ const WEB_PUB = new Set([
 const WEB_SUB = new Set([
   Topics.presence, Topics.snapshot, Topics.ack, Topics.log,
   Topics.configReported, Topics.remindersReported, Topics.historyReported,
-  Topics.session,
 ]);
 
 // Topics for which broker refuses to retain even if the publisher sets

@@ -8,6 +8,8 @@ build/
 build-attiny/
 node_modules/
 cloudflare/public/
+cloudflare/package-lock.json
+cloudflare/.wrangler/
 .wrangler/
 .env
 .env.*
