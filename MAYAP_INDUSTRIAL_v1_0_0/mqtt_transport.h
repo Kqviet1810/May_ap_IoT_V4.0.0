@@ -191,6 +191,9 @@ inline void stopClient(bool graceful) {
   connected = false;
   __atomic_store_n(&qos1Inflight, 0U, __ATOMIC_RELEASE);
   qos1StuckSince = 0U;
+  // The esp-mqtt task has ended: packets of the dead session must never be
+  // dispatched after a reconnect (a late command would run outside its window).
+  __atomic_store_n(&inboundTail, __atomic_load_n(&inboundHead, __ATOMIC_ACQUIRE), __ATOMIC_RELEASE);
 }
 
 inline bool gateClosing() {
