@@ -63,6 +63,30 @@ export function topicQosCap(suffix) {
   return 1;
 }
 
+// Required publish QoS per topic suffix (contract §2). PUBLISH packets whose
+// decoded QoS != this must be rejected: 0-QoS topics never get PUBACK, and
+// 1-QoS topics must come with a packetId so the broker-level reliability
+// stays intact. Mismatch → drop + close (second violation counts).
+const PUB_QOS_REQUIREMENT = Object.freeze({
+  [Topics.presence]: 1,
+  [Topics.snapshot]: 0,
+  [Topics.ack]: 1,
+  [Topics.log]: 0,
+  [Topics.configReported]: 1,
+  [Topics.remindersReported]: 1,
+  [Topics.historyReported]: 1,
+  [Topics.command]: 1,
+  [Topics.configSet]: 1,
+  [Topics.remindersSet]: 1,
+  [Topics.historyRequest]: 1,
+  [Topics.session]: 0,
+});
+
+export function requiredPublishQos(suffix) {
+  const q = PUB_QOS_REQUIREMENT[suffix];
+  return typeof q === 'number' ? q : -1;
+}
+
 export function parseTopic(deviceId, topic) {
   const prefix = `${TOPIC_ROOT}/${deviceId}/`;
   if (!topic.startsWith(prefix)) return { ok: false, reason: 'wrong device' };

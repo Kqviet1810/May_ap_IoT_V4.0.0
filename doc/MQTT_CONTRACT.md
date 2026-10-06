@@ -5,10 +5,13 @@ code Phase 2B. Mọi mục mâu thuẫn với tài liệu khác đều lấy fil
 
 ## 1. Protocol
 
-- MQTT 3.1.1 (giao thức tên `"MQTT"`, Protocol Level `4`).
+- MQTT 3.1.1 (giao thức tên `"MQTT"`, Protocol Level `4`). Giao thức khác
+  (ví dụ MQTT 5) sẽ nhận CONNACK `0x01` (Unacceptable protocol) rồi đóng.
 - Clean Session = `true` **bắt buộc** cho mọi client. Broker không giữ phiên
   offline, không giữ hàng đợi lệnh.
-- Keepalive 60 giây mặc định (client có thể đề nghị 30–120).
+- Keepalive **30–120 s** inclusive. Giá trị 0 (keepalive-disabled) không
+  được chấp nhận vì retained presence không được stale trên half-open link.
+  Ngoài vùng → CONNACK `0x05` + close.
 - Chỉ hỗ trợ QoS 0 và QoS 1. QoS 2 bị từ chối ngay ở CONNECT và PUBLISH.
 - Gói MQTT tối đa 4096 B kể cả fixed header, variable header, payload và topic.
   Vượt → broker đóng kết nối không CONNACK.
@@ -21,6 +24,11 @@ code Phase 2B. Mọi mục mâu thuẫn với tài liệu khác đều lấy fil
 Root `mayap/v1/<deviceId>/…`. QoS và retain phải khớp CHÍNH XÁC bảng dưới.
 Fanout QoS = `min(publishQoS, grantedQoS)`. Broker **không bao giờ** nâng QoS:
 một PUBLISH QoS0 vẫn fanout ở QoS0 ngay cả khi subscriber xin QoS1.
+
+Broker enforce "Publish QoS" cột dưới **chính xác**: một PUBLISH với QoS
+khác giá trị bảng cho topic đó bị coi là protocol misuse → PUBACK (nếu
+QoS1) rồi DROP (không retain, không fanout). Lặp lại 2 lần liên tiếp
+trong cùng kết nối → đóng kết nối. Publish hợp lệ reset bộ đếm vi phạm.
 
 | Topic | Hướng | Publish QoS | Retain | Subscribe QoS tối đa |
 |---|---|---|---|---|
@@ -73,6 +81,9 @@ một PUBLISH QoS0 vẫn fanout ở QoS0 ngay cả khi subscriber xin QoS1.
   CONNECT device mới hợp lệ sẽ takeover: broker đóng connection device cũ
   (code 1000 "TAKEOVER"), set `disconnected=true` để chặn LWT, rồi mở kết
   nối mới. Mục đích: hai ESP32 không bao giờ cùng nhận `command`.
+- **ClientId takeover (MQTT-3.1.4-2)**: ngoài quy tắc trên, một CONNECT
+  mới có `ClientId` trùng với một session đang mở (bất kể role) sẽ đóng
+  session cũ với code 1000 "CLIENTID_TAKEOVER".
 
 ## 5. Auth + ACL
 

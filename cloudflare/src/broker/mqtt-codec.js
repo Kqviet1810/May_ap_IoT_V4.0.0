@@ -213,11 +213,14 @@ function decodeConnect(flags, payload) {
   const c = new Cursor(payload);
   const protoName = c.readString();
   if (protoName !== 'MQTT') {
-    throw new MqttDecodeError(`bad protocol name "${protoName}"`, 'BAD_PROTOCOL');
+    // MQTT-3.1.2-2: an unsupported protocol must still be told via CONNACK
+    // 0x01 before the broker disconnects. Return a sentinel packet so the
+    // broker can respond politely instead of a bare WebSocket close.
+    return { type: 'CONNECT_UNSUPPORTED', reason: `bad protocol name "${protoName}"` };
   }
   const protoLevel = c.readU8();
   if (protoLevel !== 4) {
-    throw new MqttDecodeError('protocol level != 4', 'BAD_PROTOCOL_LEVEL');
+    return { type: 'CONNECT_UNSUPPORTED', reason: `protocol level ${protoLevel}` };
   }
   const connectFlags = c.readU8();
   if ((connectFlags & 0x01) !== 0) {

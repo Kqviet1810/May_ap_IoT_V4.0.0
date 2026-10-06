@@ -273,12 +273,37 @@ test('§6 duplicate device CONNECT: old connection is closed with TAKEOVER', asy
   assert.equal(stored, undefined);
 });
 
-test('§6 two web connections coexist (only device is single-ton)', async () => {
+test('§6 two web connections with distinct clientIds coexist', async () => {
   const b = await harness.makeBroker({ env: envFixture() });
-  const w1 = await web(b.broker);
-  const w2 = await web(b.broker);
-  assert.equal(w1.server.closed, false);
-  assert.equal(w2.server.closed, false);
+  const { client: c1, server: s1 } = await harness.openWebSocket(b.broker, DEV);
+  await harness.feed(b.broker, s1, wire.connect({
+    clientId: 'web-A', username: 'web:u1', password: WEB_PWD,
+  }));
+  await harness.clientReceive(c1);
+  const { client: c2, server: s2 } = await harness.openWebSocket(b.broker, DEV);
+  await harness.feed(b.broker, s2, wire.connect({
+    clientId: 'web-B', username: 'web:u1', password: WEB_PWD,
+  }));
+  await harness.clientReceive(c2);
+  assert.equal(s1.closed, false);
+  assert.equal(s2.closed, false);
+});
+
+test('§6 MQTT-3.1.4-2: duplicate clientId takeover (same role)', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const { client: c1, server: s1 } = await harness.openWebSocket(b.broker, DEV);
+  await harness.feed(b.broker, s1, wire.connect({
+    clientId: 'web-DUP', username: 'web:u1', password: WEB_PWD,
+  }));
+  await harness.clientReceive(c1);
+  const { client: c2, server: s2 } = await harness.openWebSocket(b.broker, DEV);
+  await harness.feed(b.broker, s2, wire.connect({
+    clientId: 'web-DUP', username: 'web:u1', password: WEB_PWD,
+  }));
+  await harness.clientReceive(c2);
+  assert.equal(s1.closed, true, 'duplicate clientId must evict old session');
+  assert.equal(s1.closeReason, 'CLIENTID_TAKEOVER');
+  assert.equal(s2.closed, false);
 });
 
 // --------------------------------------------------------------------------
@@ -310,6 +335,154 @@ test('§7 device cannot publish session', async () => {
   const sub = await harness.clientReceive(w.client);
   // Web is NOT allowed to subscribe session per 2B.1 contract → 0x80.
   assert.deepEqual(wire.parseSuback(sub[0]).codes, [0x80]);
+});
+
+// --------------------------------------------------------------------------
+// §Codex-1: per-topic publish QoS enforcement.
+// --------------------------------------------------------------------------
+test('§Codex-1 publish presence at QoS0 is DROPPED (required QoS1)', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const d = await dev(b.broker);
+  const w = await web(b.broker);
+  await harness.feed(b.broker, w.server, wire.subscribe({
+    packetId: 1, filters: [{ filter: `mayap/v1/${DEV}/presence`, qos: 1 }],
+  }));
+  await harness.clientReceive(w.client);
+  // Device publishes presence QoS0 — contract requires QoS1.
+  await harness.feed(b.broker, d.server, wire.publish({
+    topic: `mayap/v1/${DEV}/presence`, qos: 0, retain: true,
+    payload: '{"online":true}',
+  }));
+  // No fanout to web.
+  const frames = await harness.clientReceive(w.client);
+  assert.equal(frames.length, 0);
+  // Nothing retained.
+  const stored = await b.state.storage.get('retained:presence');
+  assert.equal(stored, undefined);
+});
+
+test('§Codex-1 publish snapshot at QoS1 is DROPPED (required QoS0)', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const d = await dev(b.broker);
+  const w = await web(b.broker);
+  await harness.feed(b.broker, w.server, wire.subscribe({
+    packetId: 1, filters: [{ filter: `mayap/v1/${DEV}/snapshot`, qos: 0 }],
+  }));
+  await harness.clientReceive(w.client);
+  await harness.feed(b.broker, d.server, wire.publish({
+    topic: `mayap/v1/${DEV}/snapshot`, qos: 1, packetId: 7, payload: '{"t":36}',
+  }));
+  // Device still gets a PUBACK (hides role structure), but web sees nothing.
+  const devFrames = await harness.clientReceive(d.client);
+  assert.equal(wire.parsePuback(devFrames[0]).packetId, 7);
+  const webFrames = await harness.clientReceive(w.client);
+  assert.equal(webFrames.length, 0);
+});
+
+// --------------------------------------------------------------------------
+// §Codex-4: keepalive refreshed only after a complete control packet.
+// --------------------------------------------------------------------------
+test('§Codex-4 partial frames do NOT refresh keepalive timestamp', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const d = await dev(b.broker);
+  const att0 = d.server.deserializeAttachment();
+  const t0 = att0.lastRxMs;
+  // Backdate lastRxMs by 10s so we can see whether it advances.
+  att0.lastRxMs = t0 - 10_000;
+  d.server.serializeAttachment(att0);
+  // Push one byte that cannot form a complete MQTT packet.
+  await harness.feed(b.broker, d.server, new Uint8Array([0xc0]));
+  const att1 = d.server.deserializeAttachment();
+  assert.equal(att1.lastRxMs, t0 - 10_000,
+    'incomplete frame must not advance keepalive');
+  // Finish the PINGREQ — now the keepalive advances.
+  await harness.feed(b.broker, d.server, new Uint8Array([0x00]));
+  const att2 = d.server.deserializeAttachment();
+  assert.ok(att2.lastRxMs > t0 - 10_000);
+});
+
+// --------------------------------------------------------------------------
+// §Codex-6: keepalive range 30..120.
+// --------------------------------------------------------------------------
+test('§Codex-6 keepalive=0 (disabled) → CONNACK 5', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const { client, server } = await harness.openWebSocket(b.broker, DEV);
+  await harness.feed(b.broker, server, wire.connect({
+    clientId: 'c', username: DEV, password: DEV_PWD, keepalive: 0,
+  }));
+  const [frame] = await harness.clientReceive(client);
+  assert.equal(wire.parseConnack(frame).returnCode, 5);
+});
+
+test('§Codex-6 keepalive=10 (below min) → CONNACK 5', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const { client, server } = await harness.openWebSocket(b.broker, DEV);
+  await harness.feed(b.broker, server, wire.connect({
+    clientId: 'c', username: DEV, password: DEV_PWD, keepalive: 10,
+  }));
+  const [frame] = await harness.clientReceive(client);
+  assert.equal(wire.parseConnack(frame).returnCode, 5);
+});
+
+test('§Codex-6 keepalive=200 (above max) → CONNACK 5', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const { client, server } = await harness.openWebSocket(b.broker, DEV);
+  await harness.feed(b.broker, server, wire.connect({
+    clientId: 'c', username: DEV, password: DEV_PWD, keepalive: 200,
+  }));
+  const [frame] = await harness.clientReceive(client);
+  assert.equal(wire.parseConnack(frame).returnCode, 5);
+});
+
+// --------------------------------------------------------------------------
+// §Codex-7: violation counter resets on a valid publish.
+// --------------------------------------------------------------------------
+test('§Codex-7 valid publish resets consecutive-violation counter', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const d = await dev(b.broker);
+  // One bad publish (ack is device-pub, but at wrong QoS=0 required=1).
+  await harness.feed(b.broker, d.server, wire.publish({
+    topic: `mayap/v1/${DEV}/ack`, qos: 0, payload: 'x',
+  }));
+  let att = d.server.deserializeAttachment();
+  assert.equal(att.violations, 1);
+  // One VALID publish of ack at QoS1 — should reset counter to 0.
+  await harness.feed(b.broker, d.server, wire.publish({
+    topic: `mayap/v1/${DEV}/ack`, qos: 1, packetId: 50, payload: 'ok',
+  }));
+  await harness.clientReceive(d.client);
+  att = d.server.deserializeAttachment();
+  assert.equal(att.violations, 0);
+  // Another bad one — must NOT close (counter is 1 again, not 2).
+  await harness.feed(b.broker, d.server, wire.publish({
+    topic: `mayap/v1/${DEV}/ack`, qos: 0, payload: 'y',
+  }));
+  assert.equal(d.server.closed, false);
+});
+
+// --------------------------------------------------------------------------
+// §Codex-10: unsupported protocol level returns CONNACK 0x01.
+// --------------------------------------------------------------------------
+test('§Codex-10 MQTT 5 CONNECT → CONNACK 0x01 + close', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const { client, server } = await harness.openWebSocket(b.broker, DEV);
+  await harness.feed(b.broker, server, wire.connect({
+    clientId: 'c', protoLevel: 5, username: DEV, password: DEV_PWD,
+  }));
+  const [frame] = await harness.clientReceive(client);
+  assert.equal(wire.parseConnack(frame).returnCode, 1);
+  assert.equal(server.closed, true);
+});
+
+test('§Codex-10 bad protocol name → CONNACK 0x01 + close', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const { client, server } = await harness.openWebSocket(b.broker, DEV);
+  await harness.feed(b.broker, server, wire.connect({
+    clientId: 'c', protoName: 'MQIsdp', username: DEV, password: DEV_PWD,
+  }));
+  const [frame] = await harness.clientReceive(client);
+  assert.equal(wire.parseConnack(frame).returnCode, 1);
+  assert.equal(server.closed, true);
 });
 
 test('§7 web→device session publish fanouts to device', async () => {

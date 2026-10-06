@@ -16,12 +16,14 @@ import {
 import {
   DEVICE_ID_RE, TOPIC_ROOT, Topics,
   RETAIN_FORBIDDEN, RETAIN_ALLOWED,
-  parseTopic, canPublish, evaluateSubscribe, topicQosCap,
+  parseTopic, canPublish, evaluateSubscribe, topicQosCap, requiredPublishQos,
   makeFixtureCredentials,
 } from './acl.js';
 
-const KEEPALIVE_MIN_SEC = 10;
-const KEEPALIVE_MAX_SEC = 300;
+// Contract §1 — client keepalive 30..120 s. Zero is explicitly forbidden
+// because retained presence must not stale indefinitely on half-open links.
+const KEEPALIVE_MIN_SEC = 30;
+const KEEPALIVE_MAX_SEC = 120;
 const KEEPALIVE_GRACE = 1.5;
 const ALARM_INTERVAL_MS = 15 * 1000;
 const INFLIGHT_LIMIT = 16;        // bounded QoS1 server→client ring
@@ -144,7 +146,10 @@ export class MqttBrokerDO {
     } catch (err) {
       return this._closeFatal(ws, 1002, err.code || 'MALFORMED');
     }
-    att.lastRxMs = Date.now();
+    // MQTT 3.1.1 §3.1.2.10 — refresh keepalive only when at least one
+    // complete Control Packet has been decoded. Byte-dribbling partials
+    // must not keep the connection alive indefinitely.
+    if (packets.length > 0) att.lastRxMs = Date.now();
     for (const pkt of packets) {
       try {
         await this._handlePacket(ws, att, pkt);
@@ -216,11 +221,16 @@ export class MqttBrokerDO {
   // ------------- Packet handling ------------------------------------------
 
   async _handlePacket(ws, att, pkt) {
-    if (att.state === 'await-connect' && pkt.type !== 'CONNECT') {
+    if (att.state === 'await-connect'
+        && pkt.type !== 'CONNECT' && pkt.type !== 'CONNECT_UNSUPPORTED') {
       return this._closeFatal(ws, 1002, 'EXPECT_CONNECT');
     }
     switch (pkt.type) {
       case 'CONNECT': return this._handleConnect(ws, att, pkt);
+      case 'CONNECT_UNSUPPORTED':
+        // MQTT-3.1.2-2 — tell the client we don't speak its protocol.
+        ws.send(encodeConnack(ConnackCode.UNACCEPTABLE_PROTOCOL));
+        return this._closeFatal(ws, 1008, 'BAD_PROTOCOL');
       case 'PUBLISH': return this._handlePublish(ws, att, pkt);
       case 'PUBACK': return this._handlePuback(ws, att, pkt);
       case 'SUBSCRIBE': return this._handleSubscribe(ws, att, pkt);
@@ -240,7 +250,9 @@ export class MqttBrokerDO {
       return this._closeFatal(ws, 1008, 'CLEAN_SESSION_REQUIRED');
     }
     const keepaliveSec = pkt.keepalive;
-    if (keepaliveSec !== 0 && (keepaliveSec < KEEPALIVE_MIN_SEC || keepaliveSec > KEEPALIVE_MAX_SEC)) {
+    // Contract §1: 30..120 inclusive. Zero (keepalive-disabled) is refused
+    // because retained presence must not stale on a half-open link.
+    if (keepaliveSec < KEEPALIVE_MIN_SEC || keepaliveSec > KEEPALIVE_MAX_SEC) {
       ws.send(encodeConnack(ConnackCode.NOT_AUTHORIZED));
       return this._closeFatal(ws, 1008, 'BAD_KEEPALIVE');
     }
@@ -280,21 +292,27 @@ export class MqttBrokerDO {
       };
     }
     // Phase 2B.1 §6 — at most one authenticated device-role connection per
-    // DO. A fresh ESP32 CONNECT must evict any prior device socket so two
-    // devices can never both subscribe to `command` simultaneously.
-    if (resolved.role === 'device') {
+    // DO. A fresh ESP32 CONNECT evicts any prior device socket so two
+    // devices never both subscribe to `command`.
+    //
+    // Phase 2B.2 — MQTT-3.1.4-2 also mandates that a CONNECT with a client
+    // id already in use must disconnect the existing session. Evict any
+    // other open socket sharing this clientId, regardless of role (covers
+    // the "two web tabs with the same clientId" case too).
+    {
       const sockets = typeof this.state.getWebSockets === 'function'
         ? this.state.getWebSockets() : [];
       for (const peer of sockets) {
         if (peer === ws) continue;
         let patt;
         try { patt = peer.deserializeAttachment() || {}; } catch { continue; }
-        if (patt.state === 'open' && patt.role === 'device') {
-          // Mark takeover so webSocketClose suppresses the LWT publish — the
-          // new session will publish presence afresh.
+        if (patt.state !== 'open') continue;
+        const sameDeviceRole = resolved.role === 'device' && patt.role === 'device';
+        const sameClientId = patt.clientId && patt.clientId === att.clientId;
+        if (sameDeviceRole || sameClientId) {
           patt.disconnected = true;
           try { peer.serializeAttachment(patt); } catch {}
-          try { peer.close(1000, 'TAKEOVER'); } catch {}
+          try { peer.close(1000, sameClientId ? 'CLIENTID_TAKEOVER' : 'TAKEOVER'); } catch {}
         }
       }
     }
@@ -312,6 +330,19 @@ export class MqttBrokerDO {
       return;
     }
     const parsed = parseTopic(this.deviceId, pkt.topic);
+
+    // Contract §2 — a PUBLISH's decoded QoS must match the topic's required
+    // publish QoS exactly. Mismatch is a protocol misuse: PUBACK to hide
+    // role structure (if QoS1), then DROP (no retain, no fanout). Counts
+    // against the per-connection violation budget just like an ACL miss.
+    const needQos = requiredPublishQos(parsed.suffix);
+    if (needQos < 0 || pkt.qos !== needQos) {
+      if (pkt.qos > 0) ws.send(encodePuback(pkt.packetId));
+      att.violations = (att.violations || 0) + 1;
+      ws.serializeAttachment(att);
+      if (att.violations >= 2) return this._closeFatal(ws, 1008, 'BAD_PUB_QOS');
+      return;
+    }
 
     // Phase 2B.1 §4 — a PUBLISH with retain=1 to a retain-forbidden control
     // topic (command/config.set/reminders.set/history.request) is a protocol
@@ -349,6 +380,12 @@ export class MqttBrokerDO {
           });
         }
       }
+    }
+    // Authorized publish arriving at the right QoS clears the consecutive
+    // violation counter — only CONSECUTIVE misuses trigger a close.
+    if (att.violations) {
+      att.violations = 0;
+      try { ws.serializeAttachment(att); } catch {}
     }
     // QoS1 PUBACK to publisher before fanout — this is a transport ACK,
     // never an application ACK (see TRANSACTION_V2_SPEC.md).

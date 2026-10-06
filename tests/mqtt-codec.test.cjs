@@ -40,14 +40,16 @@ test('CONNECT rejects CleanSession=0', () => {
   assert.throws(() => decodeAll(bytes), { code: 'CLEAN_SESSION_REQUIRED' });
 });
 
-test('CONNECT rejects protocol level != 4', () => {
+test('CONNECT protocol level != 4 → CONNECT_UNSUPPORTED (MQTT-3.1.2-2)', () => {
   const bytes = wire.connect({ protoLevel: 5 });
-  assert.throws(() => decodeAll(bytes), { code: 'BAD_PROTOCOL_LEVEL' });
+  const [pkt] = decodeAll(bytes);
+  assert.equal(pkt.type, 'CONNECT_UNSUPPORTED');
 });
 
-test('CONNECT rejects protocol name != MQTT', () => {
+test('CONNECT protocol name != MQTT → CONNECT_UNSUPPORTED', () => {
   const bytes = wire.connect({ protoName: 'MQIsdp' });
-  assert.throws(() => decodeAll(bytes), { code: 'BAD_PROTOCOL' });
+  const [pkt] = decodeAll(bytes);
+  assert.equal(pkt.type, 'CONNECT_UNSUPPORTED');
 });
 
 test('CONNECT rejects reserved flag set', () => {
