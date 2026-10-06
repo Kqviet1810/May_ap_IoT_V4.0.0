@@ -3,14 +3,14 @@
 Kiến trúc: `Web (MQTT.js/WSS)` → `broker Durable Object` ← `ESP32 (esp-mqtt/WSS)`.
 Topic/QoS/retain theo [MQTT_CONTRACT.md](MQTT_CONTRACT.md); Transaction V2 theo
 [TRANSACTION_V2_SPEC.md](TRANSACTION_V2_SPEC.md). Auth Web là **token ký theo (thiết bị, tài khoản)**, sống 1 giờ, broker kiểm không cần D1; token của máy này vô dụng với máy khác.
-Auth ESP32 vẫn là **fixture** (mật khẩu thiết bị dùng chung đặt bằng secret) — cần thay bằng mật khẩu suy ra theo từng máy trước khi phát hành.
+Auth ESP32 dùng **mật khẩu riêng từng máy** = `HMAC-SHA256(MQTT_DEVICE_SECRET, "mayap-mqtt-device:v1\n<deviceId>")`: Worker trả trong `/api/device/register` (trường `mqtt_password`), firmware lưu NVS, broker tính lại để kiểm (không D1, không mật khẩu dùng chung).
 
 ## 1. Deploy broker (Worker riêng, không đụng Worker Push/account)
 
 ```bash
 cd cloudflare
 npx wrangler deploy -c wrangler-broker.toml
-npx wrangler secret put BROKER_FIXTURE_DEVICE_PASSWORD -c wrangler-broker.toml   # ESP32 dùng
+npx wrangler secret put BROKER_DEVICE_SECRET           -c wrangler-broker.toml   # suy ra mật khẩu từng ESP32 (cùng giá trị MQTT_DEVICE_SECRET của Worker account)
 npx wrangler secret put BROKER_WEB_TOKEN_SECRET        -c wrangler-broker.toml   # ký/kiểm token Web (cùng giá trị ở Worker account)
 ```
 
@@ -29,6 +29,7 @@ và secret **trùng với `BROKER_WEB_TOKEN_SECRET`** của broker:
 
 ```bash
 npx wrangler secret put MQTT_WEB_TOKEN_SECRET
+npx wrangler secret put MQTT_DEVICE_SECRET      # cùng giá trị BROKER_DEVICE_SECRET
 ```
 
 `POST /api/mqtt-session` (đã đăng nhập Google) trả thông tin broker cho mọi thành viên của máy và
@@ -36,14 +37,11 @@ npx wrangler secret put MQTT_WEB_TOKEN_SECRET
 
 ## 3. Firmware (Arduino IDE)
 
-Tạo file **không commit** `MAYAP_INDUSTRIAL_v1_0_0/build_local.h`:
-
-```cpp
-#define MAYAP_BROKER_HOST "mayap-mqtt-broker.<account>.workers.dev"
-#define MAYAP_BROKER_FIXTURE_PASSWORD "<cùng giá trị BROKER_FIXTURE_DEVICE_PASSWORD>"
-```
-
-Thiếu một trong hai, transport tự tắt và in `[MQTT] disabled: ...` (máy vẫn chạy bình thường).
+Không cần file cấu hình riêng: host broker được track trong `mqtt_transport.h`
+(`MAYAP_BROKER_HOST`, ghi đè bằng `-D` nếu dùng broker khác) và mật khẩu MQTT của máy
+nằm trong NVS sau lần `/api/device/register` đầu tiên (Worker cần secret
+`MQTT_DEVICE_SECRET`, cùng giá trị `BROKER_DEVICE_SECRET` của broker). Tải source từ GitHub, build, nạp là chạy.
+Chưa đăng ký Cloud → Serial in `[MQTT] idle: waiting for the per-device credential ...` (máy vẫn chạy bình thường).
 Board: ESP32-S3, PSRAM **Disabled**, đúng FQBN trong `build-firmware.yml`. Dùng bản DEV
 (`MAYAP_DIAGNOSTIC_SERIAL=1`) để thấy `[HEAP] free/min/largest` và `[MQTT] ...` trên Serial.
 

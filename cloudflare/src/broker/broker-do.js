@@ -50,9 +50,9 @@ export class MqttBrokerDO {
     // deviceId is set on first upgrade; also persisted in storage.
     this.deviceId = null;
     this.decoders = new WeakMap(); // ws -> StreamingDecoder (RAM; rebuilt on wake)
-    // Credential resolver: Phase 2B fixture via env; Phase 2E will call Worker.
+    // Credential resolver: stateless, per-device derived password + web tokens.
     this.resolveCredentials = makeCredentialResolver({
-      devicePassword: env && env.BROKER_FIXTURE_DEVICE_PASSWORD,
+      deviceSecret: env && env.BROKER_DEVICE_SECRET,
       webTokenSecret: env && env.BROKER_WEB_TOKEN_SECRET,
     });
     // Next packet id for server→client QoS1. 1..65535.

@@ -58,7 +58,10 @@ test('transport policy: standard MQTT clients only, no HiveMQ/PubSubClient/Devic
  for (const file of ['app.js','mqtt_transport.js','config.js','config.production.example.js','cloudflare/src/account-worker.js',
    'MAYAP_INDUSTRIAL_v1_0_0/mqtt_transport.h','MAYAP_INDUSTRIAL_v1_0_0/build_public.h','MAYAP_INDUSTRIAL_v1_0_0/config.h'])
    assert.doesNotMatch(read(file),/hivemq/i,file);
- // The fixture broker password is supplied at build time and must never be tracked.
- assert.match(firmware,/#define MAYAP_BROKER_FIXTURE_PASSWORD ""/);
- assert.doesNotMatch(read('MAYAP_INDUSTRIAL_v1_0_0/build_public.h'),/FIXTURE_PASSWORD/);
+ // The per-device broker password comes from the Worker (NVS), never from the source/build.
+ assert.doesNotMatch(firmware,/FIXTURE_PASSWORD|build_local/);
+ assert.match(firmware,/mayapMqttKey\(\)/);
+ assert.match(firmware,/#define MAYAP_BROKER_HOST "[a-z0-9.-]+"/);
+ assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/cloud_alert_link.h'),/mqtt_password/);
+ assert.doesNotMatch(read('.github/workflows/build-firmware.yml'),/build_local|FIXTURE/);
 });

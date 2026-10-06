@@ -26,6 +26,7 @@ enum class MayapProvisioningState : uint8_t {
 namespace MayapDeviceIdentityInternal {
 static char activeKey[65] = "";
 static char commandKey[65] = "";
+static char mqttKey[65] = "";
 static char webPin[9] = "";
 static bool webPinConfigured = false;
 static volatile uint8_t provisioningState =
@@ -70,6 +71,7 @@ inline void mayapDeviceIdentityBegin() {
   using namespace MayapDeviceIdentityInternal;
   activeKey[0] = '\0';
   commandKey[0] = '\0';
+  mqttKey[0] = '\0';
   webPin[0] = '\0';
   webPinConfigured = false;
   mayapSetProvisioningState(MayapProvisioningState::Syncing);
@@ -88,6 +90,11 @@ inline void mayapDeviceIdentityBegin() {
   const String storedCommandKey = prefs.getString("command-key", "");
   if (storedCommandKey.length() == 64U) {
     strlcpy(commandKey, storedCommandKey.c_str(), sizeof(commandKey));
+  }
+
+  const String storedMqttKey = prefs.getString("mqtt-key", "");
+  if (storedMqttKey.length() == 64U) {
+    strlcpy(mqttKey, storedMqttKey.c_str(), sizeof(mqttKey));
   }
 
   const String storedKey = prefs.getString("device-key", "");
@@ -127,6 +134,27 @@ inline bool mayapStoreCommandKey(const char *key) {
   prefs.end();
   if (ok) strlcpy(commandKey, key, sizeof(commandKey));
   return ok;
+}
+
+// Per-device MQTT broker password issued by the account Worker at register.
+inline bool mayapStoreMqttKey(const char *key) {
+  using namespace MayapDeviceIdentityInternal;
+  if (!key || strlen(key) != 64U) return false;
+  for (size_t i = 0; i < 64U; ++i) {
+    const char c = key[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+  }
+  if (strcmp(mqttKey, key) == 0) return true;
+  Preferences prefs;
+  if (!prefs.begin("mayap-id", false)) return false;
+  const bool ok = prefs.putString("mqtt-key", key) > 0U;
+  prefs.end();
+  if (ok) strlcpy(mqttKey, key, sizeof(mqttKey));
+  return ok;
+}
+
+inline const char *mayapMqttKey() {
+  return MayapDeviceIdentityInternal::mqttKey;
 }
 
 inline const char *mayapCommandKey() {

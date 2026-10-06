@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config.h"
+#include "device_identity.h"
 #include "network_io_guard.h"
 #include "service_recovery.h"
 #include "network_service.h"
@@ -18,34 +19,22 @@
 // inbound packets into a 2-slot ring and sets flags; every bridge call happens in
 // mqttTask (the single owner), exactly like the previous transport.
 //
-// Credentials: MAYAP_BROKER_HOST and MAYAP_BROKER_FIXTURE_PASSWORD default to
-// empty, which keeps the transport disabled. The fixture password is a MVP test
-// credential supplied at build time (-D...), never tracked; production auth
-// replaces it without changing the topic contract.
-
-// Optional local, untracked override (see doc/MVP_BRINGUP.md): plain #defines, so
-// the Arduino IDE needs no -D escaping and no secret ever enters Git.
-#if defined(__has_include)
-#if __has_include("build_local.h")
-#include "build_local.h"
-#endif
-#endif
-
+// Credentials: the broker host is public and tracked below (override with
+// -DMAYAP_BROKER_HOST for a private broker). The per-device password is NOT in
+// the source or the binary: the account Worker returns it at /api/device/register
+// and the firmware keeps it in NVS (mayapMqttKey). Until the device has
+// registered, the transport stays idle.
 #ifndef MAYAP_BROKER_HOST
-#define MAYAP_BROKER_HOST ""
+#define MAYAP_BROKER_HOST "mayap-mqtt-broker.vietk-mayaptrung.workers.dev"
 #endif
 #ifndef MAYAP_BROKER_PORT
 #define MAYAP_BROKER_PORT 443
-#endif
-#ifndef MAYAP_BROKER_FIXTURE_PASSWORD
-#define MAYAP_BROKER_FIXTURE_PASSWORD ""
 #endif
 
 namespace MayapMqttInternal {
 
 constexpr char BROKER_HOST[] = MAYAP_BROKER_HOST;
 constexpr uint16_t BROKER_PORT = MAYAP_BROKER_PORT;
-constexpr char BROKER_PASSWORD[] = MAYAP_BROKER_FIXTURE_PASSWORD;
 constexpr char TOPIC_ROOT[] = "mayap/v1";
 constexpr uint16_t KEEPALIVE_SEC = 30U;            // contract: 30..120
 constexpr int NETWORK_TIMEOUT_MS = 8000;
@@ -88,7 +77,7 @@ static constexpr ChannelPolicy POLICY[] = {
   {"config/reported", 1, false}, {"history/reported", 1, false},
 };
 
-inline bool configured() { return BROKER_HOST[0] != '\0' && BROKER_PASSWORD[0] != '\0'; }
+inline bool configured() { return BROKER_HOST[0] != '\0' && mayapMqttKey()[0] != '\0'; }
 
 inline void eventHandler(void *, esp_event_base_t, int32_t id, void *data) {
   auto *event = static_cast<esp_mqtt_event_handle_t>(data);
@@ -221,7 +210,7 @@ inline bool connectClient(uint32_t now) {
   cfg.broker.verification.certificate = TLS_ROOT_CA;
   cfg.credentials.username = MayapRealtimeInternal::deviceId;
   cfg.credentials.client_id = clientId;
-  cfg.credentials.authentication.password = BROKER_PASSWORD;
+  cfg.credentials.authentication.password = mayapMqttKey();
   cfg.session.keepalive = KEEPALIVE_SEC;
   cfg.session.disable_clean_session = false;
   cfg.session.protocol_ver = MQTT_PROTOCOL_V_3_1_1;
@@ -301,8 +290,7 @@ inline void mayapMqttTransportBegin() {
   MayapRealtimeInternal::publishCallback = MayapMqttInternal::publishFromBridge;
   MayapMqttInternal::backoff.reset(millis());
   if (!MayapMqttInternal::configured())
-    mayapSerialPrintf(false,
-        "[MQTT] disabled: define MAYAP_BROKER_HOST and MAYAP_BROKER_FIXTURE_PASSWORD at build time\n");
+    mayapSerialPrintf(false, "[MQTT] idle: waiting for the per-device credential from /api/device/register\n");
 }
 
 inline bool mayapMqttTransportConnected() { return MayapMqttInternal::connected; }

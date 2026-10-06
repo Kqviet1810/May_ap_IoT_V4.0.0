@@ -1,4 +1,5 @@
 import { findAlarmEvent, queueAlarmEvent, scheduleAlarmDelivery, maintainAlarmDeliveries } from './alarm-delivery.js';
+import { deriveDevicePassword } from './broker/acl.js';
 import { hashDeviceKey, verifyDeviceKey, randomToken, isValidDeviceId } from './auth.js';
 import {
   getDeviceByDeviceId,
@@ -49,6 +50,12 @@ async function deriveCommandKeyHex(env, deviceId) {
     `mayap-command-key:v1:${deviceId}`
   );
   return bytesToHex(digest);
+}
+// Per-device MQTT broker password (stateless; the broker derives the same value).
+async function deriveMqttPasswordHex(env, deviceId) {
+  const secret = String(env.MQTT_DEVICE_SECRET || '');
+  if (!secret || !isValidDeviceId(deviceId)) return '';
+  return deriveDevicePassword(secret, deviceId);
 }
 function pinRateKey(request, deviceId) {
   const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
@@ -168,7 +175,9 @@ async function handleRegister(request, env) {
     const pairingToken = randomToken(12);
     await insertDevice(env.DB, { deviceId, deviceName, deviceKeyHash, pairingToken, now });
     const webPin = await issueWebPin(env, deviceId);
-    return json(env, { success: true, device_id: deviceId, pairing_token: pairingToken, web_pin: webPin, command_key: commandKey, created: true });
+    const mqttPassword = await deriveMqttPasswordHex(env, deviceId);
+    return json(env, { success: true, device_id: deviceId, pairing_token: pairingToken, web_pin: webPin, command_key: commandKey,
+      ...(mqttPassword ? { mqtt_password: mqttPassword } : {}), created: true });
   }
 
   const valid = await verifyDeviceKey(deviceKey, env.DEVICE_KEY_PEPPER, existing.device_key_hash);
@@ -186,11 +195,13 @@ async function handleRegister(request, env) {
   const webPin = existing.web_pin_hash ? '' : await issueWebPin(env, deviceId);
   const commandKey = await deriveCommandKeyHex(env, deviceId);
   if (!commandKey) return json(env, { success: false, error: 'may chu thieu khoa bao ve lenh' }, 503);
+  const mqttPassword = await deriveMqttPasswordHex(env, deviceId);
   return json(env, {
     success: true,
     device_id: deviceId,
     pairing_token: existing.pairing_token,
     command_key: commandKey,
+    ...(mqttPassword ? { mqtt_password: mqttPassword } : {}),
     ...(webPin ? { web_pin: webPin } : {}),
     created: false,
   });
