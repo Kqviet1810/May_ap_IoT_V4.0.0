@@ -30,7 +30,6 @@
 // Source-level bisection of the control-heartbeat trip (default build is unchanged):
 //   MAYAP_BISECT_MQTT_NO_START=1   variant A: esp_mqtt_client_init() runs, esp_mqtt_client_start() never does.
 //   MAYAP_BISECT_MQTT_DELAY_MS=N   variant B: no MQTT connect before N ms after boot.
-//   MAYAP_BISECT_MQTT_UNPINNED=1   keep esp-mqtt's task unpinned (the build that tripped).
 // Watchdog, heartbeat and safety logic are not touched by any of these.
 #ifndef MAYAP_BISECT_MQTT_NO_START
 #define MAYAP_BISECT_MQTT_NO_START 0
@@ -38,16 +37,14 @@
 #ifndef MAYAP_BISECT_MQTT_DELAY_MS
 #define MAYAP_BISECT_MQTT_DELAY_MS 0
 #endif
-#ifndef MAYAP_BISECT_MQTT_UNPINNED
-#define MAYAP_BISECT_MQTT_UNPINNED 0
-#endif
 #ifndef MAYAP_BROKER_PORT
 #define MAYAP_BROKER_PORT 443
 #endif
 
-// Optional FreeRTOS SMP-style affinity call. Weak so the build links (and the pin is
-// skipped, loudly) if this core build does not provide it.
-extern "C" void vTaskCoreAffinitySet(TaskHandle_t task, UBaseType_t coreMask) __attribute__((weak));
+// esp-mqtt's task is pinned to core 0 at CREATION by the xTaskCreate link-time wrap in
+// mqtt_core_pin.cpp (the arduino-esp32 libs are prebuilt with
+// CONFIG_MQTT_TASK_CORE_SELECTION_ENABLED unset, so the Kconfig route is not available).
+// logTaskPlacement() below reports the core it really runs on.
 
 namespace MayapMqttInternal {
 
@@ -267,21 +264,6 @@ inline bool connectClient(uint32_t now) {
   return false;
 #endif
   if (esp_mqtt_client_start(client) != ESP_OK) { stopClient(false); return false; }
-#if !MAYAP_BISECT_MQTT_UNPINNED
-  // esp-mqtt creates its task unpinned, so the TLS/WSS handshake may run on core 1
-  // next to control/supervisor/HMI. Keep it on core 0 with the other Online tasks.
-  if (vTaskCoreAffinitySet) {
-    TaskHandle_t espMqttTask = xTaskGetHandle("mqtt_task");
-    if (espMqttTask) {
-      vTaskCoreAffinitySet(espMqttTask, 1U << 0);
-      mayapSerialPrintf(false, "[MQTT] esp-mqtt task pinned to core 0\n");
-    } else {
-      mayapSerialPrintf(false, "[MQTT] pin skipped: esp-mqtt task handle not found\n");
-    }
-  } else {
-    mayapSerialPrintf(false, "[MQTT] pin skipped: vTaskCoreAffinitySet unavailable\n");
-  }
-#endif
 
   const uint32_t startedAt = millis();
   while (!__atomic_load_n(&evConnected, __ATOMIC_ACQUIRE)) {
@@ -338,9 +320,8 @@ inline void drainInbound() {
 inline void mayapMqttTransportBegin() {
   MayapRealtimeInternal::publishCallback = MayapMqttInternal::publishFromBridge;
   MayapMqttInternal::backoff.reset(millis());
-  mayapSerialPrintf(false, "[BISECT] variant: noStart=%d delayMs=%lu unpinned=%d\n",
-                    MAYAP_BISECT_MQTT_NO_START, static_cast<unsigned long>(MAYAP_BISECT_MQTT_DELAY_MS),
-                    MAYAP_BISECT_MQTT_UNPINNED);
+  mayapSerialPrintf(false, "[BISECT] variant: noStart=%d delayMs=%lu\n",
+                    MAYAP_BISECT_MQTT_NO_START, static_cast<unsigned long>(MAYAP_BISECT_MQTT_DELAY_MS));
   if (!MayapMqttInternal::configured())
     mayapSerialPrintf(false, "[MQTT] idle: waiting for the per-device credential from /api/device/register\n");
 }

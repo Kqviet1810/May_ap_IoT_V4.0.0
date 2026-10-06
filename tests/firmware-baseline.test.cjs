@@ -95,7 +95,13 @@ test('control trip separates "not scheduled" from "stuck in Machine.update", and
  assert.ok(trip.indexOf('eTaskGetState(controlTaskHandle)')<trip.indexOf('vTaskSuspend(controlTaskHandle)'));
  for (const field of ['currentCycleAge','inUpdate','phase','ctrlState']) assert.match(trip,new RegExp(field),field);
  const mqtt=read('MAYAP_INDUSTRIAL_v1_0_0/mqtt_transport.h');
- assert.match(mqtt,/vTaskCoreAffinitySet\(espMqttTask, 1U << 0\)/);
+
+ assert.doesNotMatch(mqtt,/vTaskCoreAffinitySet/);
+ const pin=read('MAYAP_INDUSTRIAL_v1_0_0/mqtt_core_pin.cpp');
+ assert.match(pin,/__wrap_xTaskCreate/);
+ assert.match(pin,/strcmp\(name, "mqtt_task"\) == 0/);
+ assert.match(pin,/xTaskCreatePinnedToCore\(task, name, stackDepth, parameter, priority, created, 0\)/);
+ assert.match(read('.github/workflows/build-firmware.yml'),/compiler\.c\.elf\.extra_flags=-Wl,--wrap=xTaskCreate/);
  assert.match(mqtt,/xPortGetCoreID\(\)/);
  assert.match(mqtt,/MQTT_EVENT_BEFORE_CONNECT/);
  // Watchdog/heartbeat policy untouched.
@@ -107,7 +113,6 @@ test('bisect switches are compile-time only, default off, and never touch watchd
  const mqtt=read('MAYAP_INDUSTRIAL_v1_0_0/mqtt_transport.h');
  assert.match(mqtt,/#define MAYAP_BISECT_MQTT_NO_START 0/);
  assert.match(mqtt,/#define MAYAP_BISECT_MQTT_DELAY_MS 0/);
- assert.match(mqtt,/#define MAYAP_BISECT_MQTT_UNPINNED 0/);
  assert.ok(mqtt.indexOf('MAYAP_BISECT_MQTT_NO_START')<mqtt.indexOf('esp_mqtt_client_start(client)'));
  const wf=read('.github/workflows/build-firmware.yml');
  assert.match(wf,/MAYAP_BISECT_MQTT_NO_START=1/);

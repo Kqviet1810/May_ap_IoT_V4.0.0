@@ -41,6 +41,14 @@ Không cần file cấu hình riêng: host broker được track trong `mqtt_tra
 (`MAYAP_BROKER_HOST`, ghi đè bằng `-D` nếu dùng broker khác) và mật khẩu MQTT của máy
 nằm trong NVS sau lần `/api/device/register` đầu tiên (Worker cần secret
 `MQTT_DEVICE_SECRET`, cùng giá trị `BROKER_DEVICE_SECRET` của broker). Tải source từ GitHub, build, nạp là chạy.
+**Ghim task esp-mqtt vào core 0 (bắt buộc cho điều khiển ổn định):** thư viện arduino-esp32 build sẵn với
+`CONFIG_MQTT_TASK_CORE_SELECTION_ENABLED` tắt nên task esp-mqtt không ghim core; khi nó rơi vào core 1 và bị nâng
+priority trong handshake TLS, task điều khiển bị đói CPU (supervisor HEARTBEAT trip). `mqtt_core_pin.cpp` tạo task
+này bằng `xTaskCreatePinnedToCore(core 0)` nếu link có cờ `-Wl,--wrap=xTaskCreate`. CI đã truyền cờ
+(`compiler.c.elf.extra_flags`). Với Arduino IDE, tạo `platform.local.txt` cạnh `platform.txt` của core esp32 với dòng
+`compiler.c.elf.extra_flags=-Wl,--wrap=xTaskCreate`. Thiếu cờ thì firmware vẫn build/chạy nhưng task không được ghim
+(Serial sẽ in `[MQTT] before-connect ... core=1`).
+
 Chưa đăng ký Cloud → Serial in `[MQTT] idle: waiting for the per-device credential ...` (máy vẫn chạy bình thường).
 Board: ESP32-S3, PSRAM **Disabled**, đúng FQBN trong `build-firmware.yml`. Dùng bản DEV
 (`MAYAP_DIAGNOSTIC_SERIAL=1`) để thấy `[HEAP] free/min/largest` và `[MQTT] ...` trên Serial.
