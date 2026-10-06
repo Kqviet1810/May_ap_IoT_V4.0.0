@@ -293,6 +293,14 @@ for source in firmware_sources:
             raise SystemExit("FAIL: bounded Serial writer must preserve debug gate")
         require(source_text, "inline void mayapSerialDrain()", "sole bounded Serial writer")
         require(source_text, "criticalDropped", "Serial loss accounting")
+    elif source.name == "MAYAP_INDUSTRIAL_v1_0_0.ino":
+        # Crash forensics only: the supervisor trip cause and the previous-boot report
+        # must survive a disabled debug gate (they were lost before TWDT reset).
+        if direct_serial:
+            raise SystemExit(f"FAIL: ungated Serial output in {source.name}")
+        forced = re.findall(r'mayapSerialPrintf\(true,\s*"(\[[A-Z-]+\] [A-Za-z]*)', source_text)
+        if forced != ["[SUPERVISOR] TRIP", "[BOOT-DIAG] reset"]:
+            raise SystemExit("FAIL: unsolicited forced Serial output (only TRIP and BOOT-DIAG allowed)")
     elif direct_serial or "mayapSerialPrintf(true" in source_text:
         raise SystemExit(f"FAIL: ungated Serial output in {source.name}")
 require(config, "HEALTH_HEAP_SAMPLE_INTERVAL_MS = 1000UL", "bounded heap sampling")

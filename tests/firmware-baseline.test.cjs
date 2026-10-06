@@ -65,3 +65,22 @@ test('transport policy: standard MQTT clients only, no HiveMQ/PubSubClient/Devic
  assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/cloud_alert_link.h'),/mqtt_password/);
  assert.doesNotMatch(read('.github/workflows/build-firmware.yml'),/build_local|FIXTURE/);
 });
+
+test('supervisor control trip persists and prints its evidence before any reset (no longer lost to TWDT)', () => {
+ const ino=read('MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino');
+ const trip=ino.slice(ino.indexOf('if (!controlHealthy || deadlineTrip)'),ino.indexOf('if (hmiBeat != 0U && hmiHealthy'));
+ for (const field of ['reasonText','heartbeatAgeMs','cycleUs','slowCycles','stageText','heapFree','heapMin','heapLargest'])
+  assert.match(trip,new RegExp(field),field);
+ // Persisted to RTC before the heap walk and before any Serial work.
+ assert.ok(trip.indexOf('mayapBootPlanRestart')<trip.indexOf('heap_caps_get_largest_free_block'));
+ assert.ok(trip.indexOf('mayapBootPlanRestart')<trip.indexOf('mayapSerialPrintf(true'));
+ assert.match(trip,/mayapSerialPrintf\(true,\s*"\[SUPERVISOR\] TRIP/);
+ assert.match(trip,/mayapSerialDrainFor\(150U\)/);
+ assert.match(trip,/mayapRestart\(tripReason, detail\)/);
+ assert.match(ino,/mayapSerialPrintf\(true,\s*"\[BOOT-DIAG\]/);
+ // Watchdog policy untouched.
+ assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/config.h'),/CONTROL_WDT_TIMEOUT_MS = 5000UL/);
+ assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/config.h'),/CONTROL_HEARTBEAT_TIMEOUT_MS = 500UL/);
+ assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/config.h'),/CONTROL_CYCLE_TRIP_US = 400000UL/);
+ assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/serial_diagnostics.h'),/\[BOOT-DIAG\]/);
+});

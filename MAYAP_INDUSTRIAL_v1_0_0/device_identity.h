@@ -3,6 +3,7 @@
 #include "config.h"
 #include <Arduino.h>
 #include <Preferences.h>
+#include <esp_timer.h>
 #include <esp_system.h>
 #include <string.h>
 
@@ -128,10 +129,16 @@ inline bool mayapStoreCommandKey(const char *key) {
     if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
 (c >= 'A' && c <= 'F'))) return false;
   }
+  if (strcmp(commandKey, key) == 0) return true;  // register runs every boot: no needless flash write
   Preferences prefs;
   if (!prefs.begin("mayap-id", false)) return false;
+  // NVS commits stall flash-cached code on BOTH cores; log the cost so a control
+  // heartbeat trip can be correlated with provisioning (see [SUPERVISOR] TRIP).
+  const int64_t writeStartUs = esp_timer_get_time();
   const bool ok = prefs.putString("command-key", key) > 0U;
   prefs.end();
+  mayapSerialPrintf(false, "[NVS] command-key write %lluus\n",
+                    static_cast<unsigned long long>(esp_timer_get_time() - writeStartUs));
   if (ok) strlcpy(commandKey, key, sizeof(commandKey));
   return ok;
 }
@@ -147,8 +154,13 @@ inline bool mayapStoreMqttKey(const char *key) {
   if (strcmp(mqttKey, key) == 0) return true;
   Preferences prefs;
   if (!prefs.begin("mayap-id", false)) return false;
+  // NVS commits stall flash-cached code on BOTH cores; log the cost so a control
+  // heartbeat trip can be correlated with provisioning (see [SUPERVISOR] TRIP).
+  const int64_t writeStartUs = esp_timer_get_time();
   const bool ok = prefs.putString("mqtt-key", key) > 0U;
   prefs.end();
+  mayapSerialPrintf(false, "[NVS] mqtt-key write %lluus\n",
+                    static_cast<unsigned long long>(esp_timer_get_time() - writeStartUs));
   if (ok) strlcpy(mqttKey, key, sizeof(mqttKey));
   return ok;
 }

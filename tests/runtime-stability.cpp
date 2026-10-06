@@ -13,6 +13,7 @@
 #define portMUX_INITIALIZER_UNLOCKED 0
 using portMUX_TYPE = int;
 #define portENTER_CRITICAL(x) ((void)(x))
+#define vTaskDelay(x) ((void)(x))
 #define portEXIT_CRITICAL(x) ((void)(x))
 static uint32_t clockMs=100;
 uint32_t millis() { return clockMs; }
