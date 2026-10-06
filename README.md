@@ -20,6 +20,6 @@ This repository starts at the V3 `main` commit `52f10af1722c453f5cf3270f5387b74d
 
 The CI build targets ESP32-S3 N8 with PSRAM disabled, and runs host, Web and Worker tests. `tools/build_web_assets.py` stages public assets. Hardware, actual Cloud connectivity and live device command delivery need a later phase.
 
-## Historical documentation
+## Protocol documentation
 
-V3 WebSocket/DeviceHub documentation is archived in [doc/V3_LEGACY_README.md](doc/V3_LEGACY_README.md). Other historical realtime documents carry a V3 legacy header. The V4 source and this README define the current baseline.
+The transport-neutral application contract is documented in [doc/TRANSACTION_V2_SPEC.md](doc/TRANSACTION_V2_SPEC.md). The V4 source and this README define the current baseline.

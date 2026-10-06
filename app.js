@@ -635,7 +635,7 @@
     if (!$('faultPopup')?.hidden) refreshFaultPopupContent(device);
   }
 
-  // Firmware WEB_REQUEST_ID_CAPACITY = 40 byte KE CA null terminator (xem
+  // Firmware REALTIME_REQUEST_ID_CAPACITY = 40 byte KE CA null terminator (xem
   // config.h + mayap_web_adapter.h::readString trong firmware RC2), nen chuoi
   // request Id toi da dung duoc la 39 ky tu. crypto.randomUUID() co dau gach
   // ngang dai 36 ky tu; kem tien to "cfg-"/"cmd-" (4 ky tu) la du 40 ky tu va
@@ -2113,7 +2113,7 @@
   }
 
   // Toan bo chuoi "message" ma firmware co the tra ve trong ack (xem
-  // machine_control.h/realtime_link.h) - LUON viet HOA khong dau theo quy
+  // machine_control.h/transaction_bridge.h) - LUON viet HOA khong dau theo quy
   // uoc noi bo cho Serial/HMI. Truoc day web dung 1 regex de "doan" xem raw
   // co phai cau da dep san khong, nhung vi quy uoc firmware LUON viet hoa
   // khong dau nen regex do LUON coi la "ma chung" va VUT BO ly do cu the
@@ -2197,7 +2197,7 @@
     'THIEU REMINDERS': 'Thiếu dữ liệu nhắc nhở gửi lên',
     // F-01 (audit truoc phat hanh v3.7.1): may tu choi lenh vi dang dung
     // The command requires authenticated application validation.
-    // realtimeCommandChannelTrusted() trong realtime_link.h.
+    // realtimeCommandChannelTrusted() trong transaction_bridge.h.
     'BROKER CONG KHAI - LENH TU XA BI KHOA': 'Máy chưa được thiết lập kết nối điều khiển bảo mật nên lệnh điều khiển từ xa bị khoá để an toàn - vui lòng thao tác trực tiếp trên máy',
     'CHU KY LENH KHONG HOP LE': 'Yêu cầu điều khiển không có chữ ký hợp lệ - hãy xác thực lại PIN nếu vừa đổi hoặc đặt lại PIN'
   };

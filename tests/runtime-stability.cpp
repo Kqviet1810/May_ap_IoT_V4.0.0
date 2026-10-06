@@ -86,7 +86,7 @@ void dispatch(uint32_t now){
 struct HmiEventItem { uint32_t sequence=0; };
 struct HmiEventSnapshot { uint32_t sourceSequence=0; uint8_t count=0; HmiEventItem items[16]; };
 static HmiEventSnapshot pendingEventSnapshot;
-static portMUX_TYPE webMux=0;
+static portMUX_TYPE realtimeMux=0;
 static bool eventSnapshotDirty=false;
 static uint32_t lastPublishedEventSequence=0, failSequence=0;
 static std::vector<uint32_t> published;

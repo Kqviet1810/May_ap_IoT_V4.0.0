@@ -100,7 +100,7 @@ Web:
   `<root>/<deviceId>/{command,config/set,reminders/set,session}`.
 
 Realtime:
-  realtime_link.h — PubSubClient on networkTask. handleCommandMessage() maps 8
+  transaction_bridge.h — PubSubClient on networkTask. handleCommandMessage() maps 8
   string actions to HmiCommandType and reuses the *same* HMI command queue.
   handleConfigSetMessage() merges a partial JSON config onto the last known config
   and reuses startConfigSave().

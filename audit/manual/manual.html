@@ -155,7 +155,7 @@ ràng giữa việc người vận hành được tự xử lý và việc bắt
 <div class="callout">
 <b>Ghi chú nguồn thông tin:</b> Toàn bộ nội dung kỹ thuật trong tài liệu này được truy vết trực tiếp
 từ source code firmware hiện tại (<code>machine_control.h</code>, <code>hmi.h</code>,
-<code>network_service.h</code>, <code>realtime_link.h</code>, <code>cloud_alert_link.h</code>,
+<code>network_service.h</code>, <code>transaction_bridge.h</code>, <code>cloud_alert_link.h</code>,
 <code>config.h</code>, <code>app.js</code>, <code>index.html</code>) và đối chiếu với tài liệu audit
 <code>audit/OPERATION_RECOVERY_MANUAL.md</code>. Nội dung nào không tìm thấy bằng chứng trong code được
 ghi rõ là <b>CHƯA XÁC NHẬN</b> thay vì suy đoán.</div>
@@ -299,7 +299,7 @@ DUY NHẤT để xác nhận cảnh báo latching (xem callout dưới).</li>
 <b>Chỉ có trên HMI, KHÔNG có trên Web:</b> xác nhận (ACK) cảnh báo latching (201-204, 301, 303, 304, 305, 314),
 vào/thoát Test Mode, xác nhận công tắc hành trình (gỡ khoá 205), chỉnh Wi-Fi tại chỗ, Tự chỉnh PID (AutoTune có
 thể khởi động từ Web nhưng các thao tác Test Mode thì không). Đây là giới hạn thực tế của
-<code>mapCommandAction()</code> trong <code>realtime_link.h</code> — chỉ ánh xạ 5 lệnh: <code>batch_start</code>,
+<code>mapCommandAction()</code> trong <code>transaction_bridge.h</code> — chỉ ánh xạ 5 lệnh: <code>batch_start</code>,
 <code>batch_stop</code>, <code>resume_yes</code>, <code>resume_no</code>, <code>autotune_start</code>.</div>
 <h3>Bù nhiệt độ cảm biến (menu NHIỆT ĐỘ)</h3>
 <p>Mục "Bù nhiệt độ" (<code>MachineConfig::tempOffset</code>, lưu EEPROM) cộng thêm một lượng bù cố định
@@ -336,7 +336,7 @@ chỉ kỹ thuật viên lắp đặt/hiệu chỉnh PID mới nên thay đổi,
 <h2>5. WEB / ỨNG DỤNG ĐIỀU KHIỂN TỪ XA</h2>
 <p>Giao diện web (dùng được trên điện thoại/máy tính khi máy đang bật chế độ kết
 nối Online) chỉ hoạt động qua 2 kênh dữ liệu MQTT xác nhận trong
-<code>realtime_link.h</code>: <code>config/set</code> (lưu cấu hình) và
+<code>transaction_bridge.h</code>: <code>config/set</code> (lưu cấu hình) và
 <code>command</code> (5 lệnh cố định). Ảnh dưới đây là ảnh chụp thật từ chính mã
 nguồn giao diện trong repository.</p>
 <div class="figure nobreak">

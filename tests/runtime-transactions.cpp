@@ -13,14 +13,14 @@ template<class T>T constrain(T v,T a,T b){return std::max(a,std::min(v,b));}
 static uint32_t clockMs=100;uint32_t millis(){return clockMs;}
 bool timeReached(uint32_t a,uint32_t b){return static_cast<int32_t>(a-b)>=0;}
 uint32_t elapsedMs(uint32_t a,uint32_t b){return a-b;}
-static int webMux=0,hmiApiMux=1,hmiDepth=0;static bool autoRun=false,inController=false;
+static int realtimeMux=0,hmiApiMux=1,hmiDepth=0;static bool autoRun=false,inController=false;
 void controller();void enter(int *p){if(p==&hmiApiMux)++hmiDepth;}
 void leave(int *p){if(p==&hmiApiMux)--hmiDepth;if(autoRun&&!hmiDepth&&!inController)controller();}
 #define portENTER_CRITICAL(p) enter(p)
 #define portEXIT_CRITICAL(p) leave(p)
 constexpr uint8_t COMMAND_QUEUE_SIZE=4;
-constexpr size_t WEB_REQUEST_ID_CAPACITY=40;
-constexpr uint32_t AlarmNone=0,ALARM_KNOWN_MASK=0xffff,WEB_COMMAND_ACK_TIMEOUT_MS=8000,WEB_CONFIG_SAVE_ACK_TIMEOUT_MS=8000;
+constexpr size_t REALTIME_REQUEST_ID_CAPACITY=40;
+constexpr uint32_t AlarmNone=0,ALARM_KNOWN_MASK=0xffff,REALTIME_COMMAND_ACK_TIMEOUT_MS=8000,REALTIME_CONFIG_SAVE_ACK_TIMEOUT_MS=8000;
 constexpr uint16_t COMMAND_DEFAULT_VALID_MS=5000,COMMAND_AUTOTUNE_VALID_MS=5000;
 enum class HmiCommandType{None,LightToggle,AutoTuneStart,AlarmAck,FirmwareRollback};
 enum class HmiCommandSource{Local,Remote};enum class BuzzerCue{Error};
@@ -29,13 +29,13 @@ struct MachineConfig{};
 static HmiCommand commandQueue[4];static uint8_t commandTail=0,commandHead=0,commandCount=0,commandOutstandingCount=0;static uint32_t nextCommandId=1;
 bool commandConflictLocked(HmiCommandType){return false;}void showToast(const char*,bool){}void buzzerPlayCue(BuzzerCue){}
 #include "actual-transaction-hmi.inc"
-void mayapWebConfirmCommand(uint32_t,bool,const char*);
+void mayapRealtimeConfirmCommand(uint32_t,bool,const char*);
 namespace MayapRealtimeInternal {
 static bool activeAckKeyValid=true;static uint8_t activeAckKey[32]={7};static char activeOperation[40]="light.toggle";
 static uint32_t bootId=123,lastCommandSequence=0;static char lastCommandRequestId[40]="";
 static bool knownRuntimeValid=true;static struct{uint32_t alarmMask=0;}knownRuntime;
 static bool configDirty=false;
-static uint32_t webConfigRevision=0,lastVerifiedConfigRevision=0;
+static uint32_t realtimeConfigRevision=0,lastVerifiedConfigRevision=0;
 static char lastVerifiedConfigRequestId[40]="";
 #include "actual-transaction-state.inc"
 static std::vector<std::string>acks;
@@ -66,7 +66,7 @@ bool publishJson(const char *channel,const JsonDocument &doc,bool){if(failSend)r
 #include "actual-transaction-confirm.inc"
 static int executions=0,saves=0;
 void controller(){inController=true;
- while(commandCount){const auto cmd=commandQueue[commandHead];commandHead=(commandHead+1)%4;--commandCount;--commandOutstandingCount;++executions;mayapWebConfirmCommand(cmd.id,true,"APPLIED");}
+ while(commandCount){const auto cmd=commandQueue[commandHead];commandHead=(commandHead+1)%4;--commandCount;--commandOutstandingCount;++executions;mayapRealtimeConfirmCommand(cmd.id,true,"APPLIED");}
 
  inController=false;
 }

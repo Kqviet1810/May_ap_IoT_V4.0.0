@@ -209,14 +209,27 @@ jobs:
           fi
 
       - name: Bien dich firmware ESP32
+        shell: bash
         run: |
+          set -o pipefail
           echo "Build profile: ${MAYAP_BUILD_PROFILE}"
           arduino-cli compile \
             --fqbn "${{ env.MAYAP_FQBN }}" \
             --build-property "compiler.cpp.extra_flags=${MAYAP_CPP_FLAGS} -DMAYAP_BUILD_REVISION=${GITHUB_SHA:0:12}" \
             --output-dir ./build \
             --verbose \
-            MAYAP_INDUSTRIAL_v1_0_0
+            MAYAP_INDUSTRIAL_v1_0_0 2>&1 | tee /tmp/mayap-compile.log
+
+      - name: Enforce V4 clean firmware size budgets
+        shell: bash
+        run: |
+          FLASH=$(sed -n 's/.*Sketch uses \([0-9][0-9]*\) bytes.*/\1/p' /tmp/mayap-compile.log | tail -n 1)
+          STATIC_RAM=$(sed -n 's/.*Global variables use \([0-9][0-9]*\) bytes.*/\1/p' /tmp/mayap-compile.log | tail -n 1)
+          test -n "$FLASH" || { echo "::error::Cannot read ESP32 Flash size"; exit 1; }
+          test -n "$STATIC_RAM" || { echo "::error::Cannot read ESP32 static RAM size"; exit 1; }
+          echo "V4 clean baseline: Flash=${FLASH}/1380000 bytes; static RAM=${STATIC_RAM}/145000 bytes"
+          test "$FLASH" -le 1380000 || { echo "::error::ESP32 Flash exceeds V4 clean budget: ${FLASH} > 1380000"; exit 1; }
+          test "$STATIC_RAM" -le 145000 || { echo "::error::ESP32 static RAM exceeds V4 clean budget: ${STATIC_RAM} > 145000"; exit 1; }
 
       - name: Verify linked GPIO ISR cache safety
         shell: bash

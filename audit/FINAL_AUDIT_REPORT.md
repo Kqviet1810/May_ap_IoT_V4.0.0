@@ -6,7 +6,7 @@ checklist (see `05_REGRESSION.md`).
 
 Companion files: `00_AUDIT_STATUS.md`, `01_SYSTEM_MAP.md`, `02_MACHINE_FLOW.md`,
 `03_FAULT_MATRIX.md`, `04_POWER_LOSS_MATRIX.md`, `05_REGRESSION.md`,
-`sim/` (executable models), `ARCHIVE_PRIOR_AUDIT_REPORT.md`.
+and `sim/` (executable models). The superseded V3 archive was removed from the V4 clean baseline.
 
 ---
 
@@ -397,7 +397,7 @@ Status: CONFIRMED
 Evidence Level: STATIC
 Confidence: HIGH
 
-Location: config.h:79-107; realtime_link.h:63-114, 355-441, 673-702;
+Location: config.h:79-107; transaction_bridge.h:63-114, 355-441, 673-702;
           .github/workflows/build-firmware.yml:69-100; config.js:7-10; README.md:118,169
 Function: MayapRealtimeInternal::handleCommandMessage(), subscribeAll(), connectMqtt()
 Relevant variables: MAYAP_MQTT_HOST, MAYAP_MQTT_PORT, MAYAP_MQTT_USE_TLS,
@@ -419,7 +419,7 @@ Execution Path:
      so none of those macros is ever overridden. This workflow is the documented
      release mechanism (README.md:109) and its .bin is what the Cloudflare Worker
      serves for remote OTA (README.md:107-112).
-  3. realtime_link.h:69 builds deviceId = "MAP-<MAC>"; topicOf() = "mayap/v1/MAP-.../<x>".
+  3. transaction_bridge.h:69 builds deviceId = "MAP-<MAC>"; topicOf() = "mayap/v1/MAP-.../<x>".
   4. connectMqtt() passes nullptr for user and password when the macros are empty,
      i.e. it connects anonymously, in cleartext, to a public broker.
   5. subscribeAll() subscribes to command, config/set, reminders/set and session.
@@ -974,7 +974,7 @@ Evidence Level: STATIC
 Confidence: HIGH
 
 Location: machine_control.h:4118-4143 (AlarmAck case), 5284-5301 (clearTurnFault);
-          realtime_link.h:376, 405-421
+          transaction_bridge.h:376, 405-421
 Function: MachineController::processHmiTransactions() / clearTurnFault()
 Relevant variables: sirenMutedUntil_, turnFaultLatched_, turnFaultCode_,
           SIREN_TEMPORARY_MUTE_MS

@@ -16,15 +16,15 @@
 // ============================================================================
 // KENH CANH BAO CLOUD (CLOUDFLARE WORKER) - THAY THE HOAN TOAN TELEGRAM CU
 // ----------------------------------------------------------------------------
-// KHONG dung chung ket noi/hang doi voi realtime_link.h. File nay tu mo HTTPS
+// KHONG dung chung ket noi/hang doi voi transaction_bridge.h. File nay tu mo HTTPS
 // rieng toi Cloudflare Worker (xem thu muc cloudflare/) - mat MQTT/Web KHONG
 // anh huong gi den kenh nay, va nguoc lai. Nguon du lieu goc van la
 // MachineController (qua mayapCloudSetRuntime, goi tu controlTask giong het
-// pattern mayapWebSetRuntime cua realtime_link.h).
+// pattern mayapRealtimeSetRuntime cua transaction_bridge.h).
 //
 // KHAC Telegram truoc day: kenh nay chi MOT CHIEU (ESP32 -> Worker -> Web
 // Push -> trinh duyet). Khong con lenh /status, /help hoi nguoc lai ESP32 -
-// dieu khien 2 chieu da co san qua MQTT (realtime_link.h), khong can lam lai
+// dieu khien 2 chieu da co san qua MQTT (transaction_bridge.h), khong can lam lai
 // o day. Nguoi dung cuoi KHONG cau hinh gi tren ESP32 cho kenh nay (khong con
 // "Chat ID" nhu Telegram) - viec ghep trinh duyet nhan thong bao hoan toan
 // thuc hien o trang web (push.js/setup.html), dung device_id cong khai.
@@ -35,7 +35,7 @@
 // mayapCloudSetRuntime()).
 //
 // Thu vien can cai: KHONG can cai them - HTTPClient/WiFiClientSecure co san
-// trong ESP32 Arduino core; ArduinoJson da la yeu cau cua realtime_link.h.
+// trong ESP32 Arduino core; ArduinoJson da la yeu cau cua transaction_bridge.h.
 //
 // Tai nguyen: moi lan goi tao MOI mot WiFiClientSecure NGAN HAN (huy ngay sau
 // khi xong), khong giu ket noi thuong truc nhu MQTT - phu hop voi tan suat
@@ -69,7 +69,7 @@ inline const char *severityText(NotifyLevel level) {
 // ------------------------------ Hop thu runtime --------------------------------
 // Ghi boi controlTask (mayapCloudSetRuntime), doc boi networkTask. Copy
 // nguyen struct trong critical section ngan, giong het pattern cua
-// realtime_link.h::mayapWebSetRuntime - khong I/O trong vung khoa.
+// transaction_bridge.h::mayapRealtimeSetRuntime - khong I/O trong vung khoa.
 static portMUX_TYPE cloudMux = portMUX_INITIALIZER_UNLOCKED;
 static MachineRuntime knownRuntime{};
 static bool knownRuntimeValid = false;
@@ -88,7 +88,7 @@ static bool knownConfigValid = false;
 static MachineConfig processingConfig{};
 
 // Backoff RIENG cho Cloud Push - hoan toan doc lap voi backoff cua MQTT
-// (realtime_link.h) va STA Wi-Fi (network_service.h). Dung chung cho ca 3
+// (transaction_bridge.h) va STA Wi-Fi (network_service.h). Dung chung cho ca 3
 // loai goi HTTPS (register/heartbeat/alarm) vi ca 3 cung phan anh cung 1 cau
 // hoi "co goi duoc toi Worker luc nay khong". Thanh cong o BAT KY chieu nao
 // cung reset ve nhanh nhat cho ca 3.
@@ -858,7 +858,7 @@ inline void mayapCloudAlertUpdate(uint32_t now) {
 }
 
 // MachineController goi ham nay tu controlTask, cung noi/cung nhip voi
-// mayapWebSetRuntime() cua realtime_link.h (xem may_ap_industrial.ino/
+// mayapRealtimeSetRuntime() cua transaction_bridge.h (xem may_ap_industrial.ino/
 // machine_control.h::copyRuntimeToHmi khu vuc goi hmiSetRuntime()).
 inline void mayapCloudSetRuntime(const MachineRuntime &runtime) {
   using namespace MayapCloudInternal;
@@ -868,7 +868,7 @@ inline void mayapCloudSetRuntime(const MachineRuntime &runtime) {
   portEXIT_CRITICAL(&cloudMux);
 }
 
-// Cung noi/cung nhip voi mayapWebSetConfig() cua realtime_link.h - chi can
+// Cung noi/cung nhip voi mayapRealtimeSetConfig() cua transaction_bridge.h - chi can
 // cho checkLightAfterBatch() biet lightAfterBatchAlarmEnabled dang BAT/TAT.
 inline void mayapCloudSetConfig(const MachineConfig &config) {
   using namespace MayapCloudInternal;

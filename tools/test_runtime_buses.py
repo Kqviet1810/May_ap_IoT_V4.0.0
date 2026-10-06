@@ -87,7 +87,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
         function(realtime, 'inline bool publishAck(const char *requestId') + '\n' +
         function(realtime, 'inline bool replayTerminal('), encoding='utf-8')
     (out / 'actual-transaction-confirm.inc').write_text('\n'.join(function(realtime, sig) for sig in
-        ('inline void mayapWebConfirmCommand(', 'inline void mayapWebConfirmConfigSave(',)), encoding='utf-8')
+        ('inline void mayapRealtimeConfirmCommand(', 'inline void mayapRealtimeConfirmConfigSave(',)), encoding='utf-8')
     json_candidates = [Path(os.environ.get('MAYAP_ARDUINOJSON', 'missing')),
                        Path.home() / 'Arduino/libraries/ArduinoJson/src',
                        Path.home() / 'Documents/Arduino/libraries/ArduinoJson/src']
@@ -95,7 +95,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
     if json_include is None:
         raise SystemExit('ArduinoJson 7 required for actual retained bootstrap/session tests')
     cfg = (root / 'MAYAP_INDUSTRIAL_v1_0_0/config.h').read_text(encoding='utf-8')
-    cadence_names = ('WEB_SNAPSHOT_ACTIVE_INTERVAL_MS', 'WEB_SNAPSHOT_IDLE_INTERVAL_MS')
+    cadence_names = ('REALTIME_SNAPSHOT_ACTIVE_INTERVAL_MS', 'REALTIME_SNAPSHOT_IDLE_INTERVAL_MS')
     (out / 'actual-web-cadence-config.inc').write_text('\n'.join(
         re.search(r'constexpr [^;]*\b' + name + r'\b[^;]*;', cfg)[0]
         for name in cadence_names), encoding='utf-8')

@@ -130,4 +130,4 @@ Không bật thêm một Cloudflare Builds auto-deploy thứ hai cho cùng produ
 - Khi rollout mixed fleet, phải phối hợp Web/Worker cutover với firmware commissioning từng máy.
 - Quota Cloudflare hết hoặc realtime mất chỉ làm remote control unavailable/uncertain; điều khiển cục bộ của ESP32 vẫn phải tiếp tục.
 
-Chi tiết wire contract, lease/replay bounds, quota worksheet và checklist phần cứng: `../doc/CLOUDFLARE_REALTIME_MIGRATION.md`.
+Chi tiết transaction contract, replay/dedup bounds và application ACK: `../doc/TRANSACTION_V2_SPEC.md`.

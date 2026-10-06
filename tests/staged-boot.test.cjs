@@ -39,7 +39,7 @@ test('admission follows local, Wi-Fi, MQTT, Cloud, OTA order with owner-only ini
     assert.ok(pos > last, stage);
     last = pos;
   }
-  for (const [task, begin] of [['networkTask', 'mayapNetworkBegin'], ['mqttTask', 'mayapWebLinkBegin'],
+  for (const [task, begin] of [['networkTask', 'mayapNetworkBegin'], ['mqttTask', 'mayapRealtimeBegin'],
     ['cloudTask', 'mayapCloudAlertBegin'], ['otaTask', 'mayapOtaBegin']])
     assert.match(body(ino, `void ${task}(`), new RegExp(`${begin}\\(\\)`));
   // Deferred initialization must not overwrite an Online configuration read from EEPROM.

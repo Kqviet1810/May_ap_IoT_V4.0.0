@@ -43,7 +43,7 @@ Files reviewed (control-relevant):
   machine_control.h                (6562 lines, full for all control paths)
   config.h                         (1211 lines, all constants/schema referenced)
   hmi.h                            (command queue, config transactions, batch locks)
-  realtime_link.h                  (command/config/session message handling, MQTT
+  transaction_bridge.h                  (command/config/session message handling, MQTT
                                     connection and credentials)
   cloud_alert_link.h               (fault/runtime consumption only)
   network_service.h, ota_web_update.h, ota_rollback.h (command entry points only)

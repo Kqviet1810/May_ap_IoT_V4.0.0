@@ -83,10 +83,10 @@ static_assert(sizeof(OTA_PASSWORD) <= 64U, "Mat khau OTA toi da 63 ky tu");
 
 // ------------------------- Application transaction cadence -------------------
 // Generic bounded publication intervals for a future transport owner.
-constexpr uint32_t WEB_SNAPSHOT_ACTIVE_INTERVAL_MS = 1000UL;
-constexpr uint32_t WEB_SNAPSHOT_IDLE_INTERVAL_MS = 120000UL;
-constexpr uint32_t WEB_COMMAND_ACK_TIMEOUT_MS = 8000UL;
-constexpr uint32_t WEB_CONFIG_SAVE_ACK_TIMEOUT_MS = 8000UL;
+constexpr uint32_t REALTIME_SNAPSHOT_ACTIVE_INTERVAL_MS = 1000UL;
+constexpr uint32_t REALTIME_SNAPSHOT_IDLE_INTERVAL_MS = 120000UL;
+constexpr uint32_t REALTIME_COMMAND_ACK_TIMEOUT_MS = 8000UL;
+constexpr uint32_t REALTIME_CONFIG_SAVE_ACK_TIMEOUT_MS = 8000UL;
 
 // --------------------------- Cloud Push (Cloudflare Worker, doc lap voi Web) ---
 // KENH RIENG, KHONG DI QUA MQTT/WEB: cloud_alert_link.h tu mo ket noi HTTPS

@@ -3675,7 +3675,7 @@ class MachineController {
     if (DISPLAY_BUILD_DATE_WHEN_RTC_MISSING) setCompileDate(runtime_.dateText);
     else snprintf(runtime_.dateText, sizeof(runtime_.dateText), "--/--/----");
     hmiSetConfig(config_);
-    mayapWebSetConfig(config_);
+    mayapRealtimeSetConfig(config_);
     mayapCloudSetConfig(config_);
 
     PackedBatchV1 batch{};
@@ -4093,7 +4093,7 @@ class MachineController {
         sanitizeMachineConfig(config_);
         configLoaded_ = true;
         hmiSetConfig(config_);
-        mayapWebSetConfig(config_);
+        mayapRealtimeSetConfig(config_);
         mayapCloudSetConfig(config_);
         mayapSetConnectivityMode(config_.connectivityMode);
         pid_.applyConfigBumpless(now, config_.targetTemp, temperature_, config_);
@@ -4106,7 +4106,7 @@ class MachineController {
         config_ = readback;
         configLoaded_ = true;
         hmiSetConfig(config_);
-        mayapWebSetConfig(config_);
+        mayapRealtimeSetConfig(config_);
         mayapCloudSetConfig(config_);
         mayapSetConnectivityMode(config_.connectivityMode);
       }
@@ -4410,7 +4410,7 @@ class MachineController {
       if (ok) {
         config_ = readback;
         hmiSetConfig(config_);
-        mayapWebSetConfig(config_);
+        mayapRealtimeSetConfig(config_);
         mayapCloudSetConfig(config_);
         mayapSetConnectivityMode(config_.connectivityMode);
         eventLog_.push(now, EventType::ConfigSaved,
@@ -4446,7 +4446,7 @@ class MachineController {
           : protectedBatchChange ? "CONFIG_BATCH_LOCKED"
           : safetySaveBlocked ? "CONFIG_SAFETY_BLOCK"
           : "CONFIG_EEPROM_ERROR";
-      mayapWebConfirmConfigSave(transactionId, ok, ok ? &readback : nullptr,
+      mayapRealtimeConfirmConfigSave(transactionId, ok, ok ? &readback : nullptr,
                                 configFailureReason);
       const char *configFailureTag = ok ? ""
           : !pidAuthorityValid ? "(INVALID_PID)"
@@ -4676,7 +4676,7 @@ class MachineController {
                        static_cast<int16_t>(command.type));
       }
       hmiConfirmCommand(command.id, ok, message);
-      mayapWebConfirmCommand(command.id, ok, message);
+      mayapRealtimeConfirmCommand(command.id, ok, message);
     }
   }
 
@@ -5462,7 +5462,7 @@ class MachineController {
       if (store_.saveConfig(tuned, readback)) {
         config_ = readback;
         hmiSetConfig(config_);
-        mayapWebSetConfig(config_);
+        mayapRealtimeSetConfig(config_);
         mayapCloudSetConfig(config_);
         mayapSetConnectivityMode(config_.connectivityMode);
         eventLog_.push(now, EventType::AutoTuneEnd,
@@ -7166,14 +7166,14 @@ class MachineController {
     runtime_.stateCode = stateCode;
     snprintf(runtime_.machineState, sizeof(runtime_.machineState), "%s", state);
     hmiSetRuntime(runtime_);
-    mayapWebSetRuntime(runtime_);
+    mayapRealtimeSetRuntime(runtime_);
     mayapCloudSetRuntime(runtime_);
     if (lastHmiEventSequence_ != eventLog_.sequence() ||
         elapsedMs(now, lastHmiEventPushAt_) >= 30000UL) {
       HmiEventSnapshot snapshot{};
       eventLog_.snapshotRecent(now, snapshot);
       hmiSetEventLog(snapshot);
-      mayapWebPushEventLog(snapshot);
+      mayapRealtimePushEventLog(snapshot);
       lastHmiEventSequence_ = eventLog_.sequence();
       lastHmiEventPushAt_ = now;
     }

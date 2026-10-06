@@ -55,7 +55,7 @@ Network công bố radio quiesce rồi sang chu kỳ sau mới kiểm tra busy f
 - Sửa `config.h`: chỉ 2 khai báo API I2C, không đổi constant/schema.
 - Sửa `machine_control.h`: báo kết quả RTC/EEPROM và thêm recovery vào driver SHT485; không đổi `MachineController`/fault/output logic.
 - Sửa `hmi.h`: report probe, nhận bus epoch, bỏ reset shared bus riêng.
-- Sửa `network_service.h`, `realtime_link.h`, `cloud_alert_link.h`, `ota_update.h`, `ota_web_update.h`: recovery owner và heartbeat progress.
+- Sửa `network_service.h`, `transaction_bridge.h`, `cloud_alert_link.h`, `ota_update.h`, `ota_web_update.h`: recovery owner và heartbeat progress.
 - Thêm `tests/runtime-recovery.cpp`, `runtime-buses.cpp`, `runtime-network.cpp`, `runtime-ota.cpp`, `runtime-recovery.test.cjs`, `runtime-preservation.json`; `tools/test_runtime_buses.py` trích **implementation thực** để fault injection với HAL giả.
 - Sửa cả workflow build/reliability để chạy host tests với AddressSanitizer/UndefinedBehaviorSanitizer; README thêm liên kết tài liệu.
 

@@ -2,7 +2,7 @@
 
 > Tài liệu này được xây dựng bằng cách đọc trực tiếp source code firmware hiện tại
 > (`MAYAP_INDUSTRIAL_v3_4_0.ino`, `machine_control.h`, `hmi.h`, `network_service.h`,
-> `realtime_link.h`, `cloud_alert_link.h`, `config.h`). Mọi khẳng định "ĐÃ CÓ" đều
+> `transaction_bridge.h`, `cloud_alert_link.h`, `config.h`). Mọi khẳng định "ĐÃ CÓ" đều
 > kèm theo File/Function/dòng code cụ thể. Không có nội dung nào trong tài liệu
 > được suy đoán từ tên hàm hoặc comment — hành vi thực tế của code là căn cứ duy nhất.
 > Không có môi trường chạy thử phần cứng thật trong quá trình viết tài liệu này — mọi
@@ -156,7 +156,7 @@ Có ân hạn khởi động (`SENSOR_STARTUP_GRACE_MS` = 20000 ms, dòng 3078):
 | Phục hồi mẻ ấp sau mất điện/reset bất thường | `Machine.begin()`, `machine_control.h:3104-3149` | Đọc bản ghi mẻ từ EEPROM (`wasRunning=1`) → `resumePending_ = true`; nếu mất điện thật và `autoResumeOnPowerLoss=false` → yêu cầu xác nhận CO/HUY trên HMI/web trước khi tiếp tục; nếu bật `autoResumeOnPowerLoss` hoặc reset do WDT/panic (không phải mất điện) → tự áp lại không cần hỏi |
 | Chặn tự phục hồi khi có lệnh DỪNG/HUỶ đang chờ | dòng 3106-3120 | Nếu có "tombstone" trong NVS nội bộ đánh dấu người dùng vừa bấm DỪNG/HUỶ mà EEPROM chưa kịp xác nhận, firmware **cố tình không** tự áp lại mẻ dù bản ghi cũ còn đó — tránh mẻ đã dừng bị "sống lại" ngoài ý muốn |
 | Interlock đầu ra 2 chiều đảo trứng | `OutputArbiter` (đã xác nhận ở phiên trước) | Không bao giờ cho 2 chiều đảo bật đồng thời; có dead-time bắt buộc giữa 2 lần đổi chiều |
-| Wi-Fi / MQTT / Cloud Push | `network_service.h`, `realtime_link.h`, `cloud_alert_link.h` | Mỗi kênh có `BackoffTimer` độc lập (1-2-4-8-16-30-60 giây + jitter), không giới hạn số lần thử, không có trạng thái "bỏ cuộc vĩnh viễn" |
+| Wi-Fi / MQTT / Cloud Push | `network_service.h`, `transaction_bridge.h`, `cloud_alert_link.h` | Mỗi kênh có `BackoffTimer` độc lập (1-2-4-8-16-30-60 giây + jitter), không giới hạn số lần thử, không có trạng thái "bỏ cuộc vĩnh viễn" |
 | Cơ chế ACK (xác nhận) cho lỗi latching | `FaultManager::set()`/`acknowledge()`, dòng 497-543 | Lỗi có `latching=true`: khi điều kiện hết (`condition=false`) **KHÔNG tự xoá** — chỉ xoá khi người vận hành bấm ACK (`acknowledge()`) VÀ điều kiện đã hết. Lỗi `latching=false`: tự xoá ngay khi điều kiện hết, không cần ACK |
 
 ---

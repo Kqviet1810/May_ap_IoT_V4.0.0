@@ -22,13 +22,13 @@ inline bool timeReached(uint32_t now, uint32_t target) {
   return static_cast<int32_t>(now - target) >= 0;
 }
 
-constexpr uint8_t WEB_REQUEST_ID_CAPACITY = 40U;  // khop firmware/web (xem app.js)
+constexpr uint8_t REALTIME_REQUEST_ID_CAPACITY = 40U;  // khop firmware/web (xem app.js)
 
 // Mutex duy nhat bao ve toan bo hop thu trao doi giua controlTask (ghi
-// mayapWebSet.../mayapWebConfirm...) va realtime owner (doc trong
-// mayapWebLinkUpdate). Cac vung critical section o day deu ngan (copy struct/
+// mayapRealtimeSet.../mayapRealtimeConfirm...) va realtime owner (doc trong
+// mayapRealtimeUpdate). Cac vung critical section o day deu ngan (copy struct/
 // vai truong), khong bao gio giu mutex qua mot loi goi I/O.
-static portMUX_TYPE webMux = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE realtimeMux = portMUX_INITIALIZER_UNLOCKED;
 
 // --------------------------- Dinh danh thiet bi ------------------------------
 // "MAP-" + 12 hex + null = 17 byte toi thieu (khop DEVICE_ID_RE trong app.js).
@@ -59,14 +59,14 @@ static uint32_t lastSnapshotPublishAt = 0U;
 static bool forceSnapshotPublish = false;
 
 // --------------------------- Hop thu cau hinh/runtime --------------------------
-// Ghi boi controlTask qua mayapWebSetConfig/mayapWebSetRuntime; doc boi
-// realtime owner. Bao ve boi webMux vi MachineConfig/MachineRuntime khong nho
+// Ghi boi controlTask qua mayapRealtimeSetConfig/mayapRealtimeSetRuntime; doc boi
+// realtime owner. Bao ve boi realtimeMux vi MachineConfig/MachineRuntime khong nho
 // (vai chuc/vai tram byte) - copy trong critical section la ngan va an toan.
 static MachineConfig knownConfig{};
 static bool knownConfigValid = false;
 static bool configDirty = false;      // co ban cap nhat can phat "config/reported"
-static uint32_t webConfigRevision = 0U;
-static char lastVerifiedConfigRequestId[WEB_REQUEST_ID_CAPACITY] = "";
+static uint32_t realtimeConfigRevision = 0U;
+static char lastVerifiedConfigRequestId[REALTIME_REQUEST_ID_CAPACITY] = "";
 static uint32_t lastVerifiedConfigRevision = 0U;
 
 static MachineRuntime knownRuntime{};
@@ -75,8 +75,8 @@ static bool knownRuntimeValid = false;
 // --------------------- Tuong quan lenh/luu cau hinh voi web --------------------
 // pendingCommands/pendingConfigSave duoc GHI boi realtime owner (khi nhan lenh tu
 // web va queueCommand()/startConfigSave() thanh cong) va DOC+XOA boi ca hai
-// task (realtime owner khi het han, controlTask qua mayapWebConfirmCommand/
-// mayapWebConfirmConfigSave khi MachineController xu ly xong) - can webMux.
+// task (realtime owner khi het han, controlTask qua mayapRealtimeConfirmCommand/
+// mayapRealtimeConfirmConfigSave khi MachineController xu ly xong) - can realtimeMux.
 struct PendingCommand {
   bool used = false;
   bool uncertainSent = false, completed = false, completionOk = false;
@@ -84,7 +84,7 @@ struct PendingCommand {
   char completionMessage[64] = "";
   uint32_t commandId = 0;
   uint32_t queuedAt = 0;
-  char requestId[WEB_REQUEST_ID_CAPACITY] = "";
+  char requestId[REALTIME_REQUEST_ID_CAPACITY] = "";
   char operation[40] = "";
   uint8_t ackKey[32] = {};
   bool signedAck = false;
@@ -103,19 +103,19 @@ struct PendingConfigSave {
   uint32_t transactionId = 0U;
   uint32_t queuedAt = 0;
   uint32_t revision = 0;
-  char requestId[WEB_REQUEST_ID_CAPACITY] = "";
+  char requestId[REALTIME_REQUEST_ID_CAPACITY] = "";
   uint8_t ackKey[32] = {};
   bool signedAck = false;
 };
 static PendingConfigSave pendingConfigSave;
 
 // ------------------------------- Hop thu phat ACK -------------------------------
-// mayapWebConfirmCommand/mayapWebConfirmConfigSave chay tren controlTask va
+// mayapRealtimeConfirmCommand/mayapRealtimeConfirmConfigSave chay tren controlTask va
 // KHONG duoc goi thang vao network transport (I/O mang) - chung chi day ket qua vao
 // day, realtime owner se rut ra va publish that su.
 struct AckOutboxItem {
   bool used = false;
-  char requestId[WEB_REQUEST_ID_CAPACITY] = "";
+  char requestId[REALTIME_REQUEST_ID_CAPACITY] = "";
   char result[16] = "";
   char message[64] = "";
   char operation[40] = "";
@@ -148,7 +148,7 @@ inline bool enqueueAckLocked(const char *requestId, const char *result,
 }
 
 // -------------------------- Hop thu nhat ky (event log) -------------------------
-// mayapWebPushEventLog() chay tren controlTask; chi sao chep snapshot vao day,
+// mayapRealtimePushEventLog() chay tren controlTask; chi sao chep snapshot vao day,
 // realtime owner moi thuc su lap va publish tung muc (co I/O mang).
 static HmiEventSnapshot pendingEventSnapshot{};
 static bool eventSnapshotDirty = false;
@@ -162,7 +162,7 @@ static uint16_t historyWindowMinutes = 30U;
 static uint16_t historyCursor = 0U;
 static uint16_t historyCandidateCount = 0U;
 static uint32_t historySnapshotEpoch = 0U;
-static char historyRequestId[WEB_REQUEST_ID_CAPACITY] = "";
+static char historyRequestId[REALTIME_REQUEST_ID_CAPACITY] = "";
 static uint8_t historyAckKey[32] = {};
 static bool historySignedAck = false;
 static bool historyReadError = false;
@@ -281,11 +281,11 @@ inline void publishPresence(bool online) {
 }
 
 inline bool publishConfigReport(const MachineConfig &cfg, uint32_t revision) {
-  char verifiedId[WEB_REQUEST_ID_CAPACITY] = "";
-  portENTER_CRITICAL(&webMux);
+  char verifiedId[REALTIME_REQUEST_ID_CAPACITY] = "";
+  portENTER_CRITICAL(&realtimeMux);
   if (revision == lastVerifiedConfigRevision)
     snprintf(verifiedId, sizeof(verifiedId), "%s", lastVerifiedConfigRequestId);
-  portEXIT_CRITICAL(&webMux);
+  portEXIT_CRITICAL(&realtimeMux);
   JsonDocument doc;
   doc["v"] = 1;
   doc["bootId"] = bootId;
@@ -456,9 +456,9 @@ inline bool publishBootstrap(const MachineRuntime &rt, uint32_t revision) {
   doc["humidifierOn"] = rt.humidifierOn;
   doc["lightOn"] = rt.lightOn;
   doc["sirenOn"] = rt.sirenOn;
-  portENTER_CRITICAL(&webMux);
+  portENTER_CRITICAL(&realtimeMux);
   const bool humidifierInstalled = knownConfigValid && knownConfig.humidifierInstalled;
-  portEXIT_CRITICAL(&webMux);
+  portEXIT_CRITICAL(&realtimeMux);
   doc["humidifierInstalled"] = humidifierInstalled;
   doc["alarmMask"] = rt.alarmMask;
   doc["faultCode"] = rt.primaryFaultCode;
@@ -472,7 +472,7 @@ inline bool publishBootstrap(const MachineRuntime &rt, uint32_t revision) {
 
 struct TerminalResult {
   bool used = false;
-  char requestId[WEB_REQUEST_ID_CAPACITY] = "";
+  char requestId[REALTIME_REQUEST_ID_CAPACITY] = "";
   char operation[40] = "";
   char result[16] = "";
   char message[64] = "";
@@ -606,7 +606,7 @@ inline bool publishAck(const char *requestId, const char *result,
   doc["bootId"] = bootId;
   doc["result"] = result;
   doc["message"] = ackFriendlyMessage(code, message);
-  doc["revision"] = webConfigRevision;
+  doc["revision"] = realtimeConfigRevision;
   doc["tDeviceReceived"] = receivedAt ? receivedAt : millis();
   doc["tDeviceCompleted"] = completedAt ? completedAt : lastDeviceCompletedAt;
   if (key) {
@@ -677,7 +677,7 @@ inline HmiCommandType mapCommandAction(const char *action) {
 }
 
 static uint32_t lastCommandSequence = 0U;
-static char lastCommandRequestId[WEB_REQUEST_ID_CAPACITY] = "";
+static char lastCommandRequestId[REALTIME_REQUEST_ID_CAPACITY] = "";
 
 inline bool realtimeCommandChannelTrusted() {
   return mayapCommandKey() && strlen(mayapCommandKey()) == 64U;
@@ -851,10 +851,10 @@ inline void handleCommandMessage(const JsonDocument &doc) {
   // duoc gi ca (xem case HmiCommandType::AlarmAck trong machine_control.h).
   uint32_t alarmMaskParam = AlarmNone;
   if (type == HmiCommandType::AlarmAck) {
-    portENTER_CRITICAL(&webMux);
+    portENTER_CRITICAL(&realtimeMux);
     alarmMaskParam = knownRuntimeValid
         ? (knownRuntime.alarmMask & ALARM_KNOWN_MASK) : AlarmNone;
-    portEXIT_CRITICAL(&webMux);
+    portEXIT_CRITICAL(&realtimeMux);
   }
 
   uint32_t commandId = 0U;
@@ -866,7 +866,7 @@ inline void handleCommandMessage(const JsonDocument &doc) {
   // Reserve tracking before queue admission. A full tracker must never execute
   // an uncorrelated remote command, even if the HMI queue has room.
   PendingCommand *reserved = nullptr;
-  portENTER_CRITICAL(&webMux);
+  portENTER_CRITICAL(&realtimeMux);
   for (PendingCommand &slot : pendingCommands) {
     if (slot.used) continue;
     reserved = &slot;
@@ -879,19 +879,19 @@ inline void handleCommandMessage(const JsonDocument &doc) {
     if (slot.signedAck) memcpy(slot.ackKey, activeAckKey, sizeof(slot.ackKey));
     break;
   }
-  portEXIT_CRITICAL(&webMux);
+  portEXIT_CRITICAL(&realtimeMux);
   if (!reserved) { publishAck(requestId, "busy", "TRACKING_FULL"); return; }
   const bool queued = queueCommand(type, validForMs, 0U, alarmMaskParam, &commandId,
       HmiCommandSource::Remote, [](uint32_t id, void *context) {
         // Lock order is HMI -> Web; callers never hold Web while entering HMI.
-        portENTER_CRITICAL(&webMux);
+        portENTER_CRITICAL(&realtimeMux);
         static_cast<PendingCommand *>(context)->commandId = id;
-        portEXIT_CRITICAL(&webMux);
+        portEXIT_CRITICAL(&realtimeMux);
       }, reserved);
   if (!queued) {
-    portENTER_CRITICAL(&webMux);
+    portENTER_CRITICAL(&realtimeMux);
     reserved->used = false;
-    portEXIT_CRITICAL(&webMux);
+    portEXIT_CRITICAL(&realtimeMux);
     publishAck(requestId, "busy", "");
     return;
   }
@@ -912,12 +912,12 @@ inline void handleConfigSetMessage(const JsonDocument &doc) {
     return;
   }
 
-  portENTER_CRITICAL(&webMux);
+  portENTER_CRITICAL(&realtimeMux);
   const bool busy = pendingConfigSave.used;
   const bool haveBase = knownConfigValid;
-  const uint32_t currentRevision = webConfigRevision;
+  const uint32_t currentRevision = realtimeConfigRevision;
   MachineConfig candidate = knownConfig;
-  portEXIT_CRITICAL(&webMux);
+  portEXIT_CRITICAL(&realtimeMux);
 
   if (currentRevision != 0U && revision <= currentRevision) {
     publishAck(requestId, "stale", "");
@@ -1065,7 +1065,7 @@ inline void handleConfigSetMessage(const JsonDocument &doc) {
   }
 
   // Register the transaction before the control task can observe readyForHost.
-  portENTER_CRITICAL(&webMux);
+  portENTER_CRITICAL(&realtimeMux);
   pendingConfigSave = PendingConfigSave{};
   pendingConfigSave.used = true;
   pendingConfigSave.queuedAt = millis();
@@ -1075,18 +1075,18 @@ inline void handleConfigSetMessage(const JsonDocument &doc) {
                                 sizeof(pendingConfigSave.ackKey));
   snprintf(pendingConfigSave.requestId, sizeof(pendingConfigSave.requestId), "%s",
            requestId);
-  portEXIT_CRITICAL(&webMux);
+  portEXIT_CRITICAL(&realtimeMux);
   uint32_t transactionId = 0U;
   if (!startConfigSave(candidate, true, &transactionId)) {
-    portENTER_CRITICAL(&webMux);
+    portENTER_CRITICAL(&realtimeMux);
     pendingConfigSave.used = false;
-    portEXIT_CRITICAL(&webMux);
+    portEXIT_CRITICAL(&realtimeMux);
     publishAck(requestId, "busy", "");
     return;
   }
-  portENTER_CRITICAL(&webMux);
+  portENTER_CRITICAL(&realtimeMux);
   pendingConfigSave.transactionId = transactionId;
-  portEXIT_CRITICAL(&webMux);
+  portEXIT_CRITICAL(&realtimeMux);
   portENTER_CRITICAL(&hmiApiMux);
   configSave.readyForHost = true;
   portEXIT_CRITICAL(&hmiApiMux);
@@ -1165,7 +1165,7 @@ inline void dispatchApplicationMessage(const char *channel, const uint8_t *paylo
 
 // ------------------------------ Vong doi ket noi -------------------------------
 inline void flushCompletedTransactions() {
-  portENTER_CRITICAL(&webMux);
+  portENTER_CRITICAL(&realtimeMux);
   for (PendingCommand &slot : pendingCommands) {
     if (slot.used && slot.completed && enqueueAckLocked(slot.requestId,
         slot.completionOk ? "applied" : "rejected", slot.completionMessage,
@@ -1179,22 +1179,22 @@ inline void flushCompletedTransactions() {
         "config.save", slot->queuedAt,
         slot->signedAck ? slot->ackKey : nullptr, slot->completedAt)) slot->used = false;
   }
-  portEXIT_CRITICAL(&webMux);
+  portEXIT_CRITICAL(&realtimeMux);
 }
 
 inline void expirePendingCommands(uint32_t now) {
   flushCompletedTransactions();
-  char requestIdsToExpire[COMMAND_QUEUE_SIZE][WEB_REQUEST_ID_CAPACITY];
+  char requestIdsToExpire[COMMAND_QUEUE_SIZE][REALTIME_REQUEST_ID_CAPACITY];
   char operationsToExpire[COMMAND_QUEUE_SIZE][40];
   uint8_t keysToExpire[COMMAND_QUEUE_SIZE][32];
   bool signedToExpire[COMMAND_QUEUE_SIZE] = {};
   uint8_t expireCount = 0U;
   bool configExpired = false;
-  char configRequestId[WEB_REQUEST_ID_CAPACITY] = "";
+  char configRequestId[REALTIME_REQUEST_ID_CAPACITY] = "";
   uint8_t configKey[32] = {};
   bool configSigned = false;
 
-  portENTER_CRITICAL(&webMux);
+  portENTER_CRITICAL(&realtimeMux);
   for (PendingCommand &slot : pendingCommands) {
     if (!slot.used || slot.completed) continue;
     if (slot.uncertainSent) {
@@ -1205,8 +1205,8 @@ inline void expirePendingCommands(uint32_t now) {
     // this ordering guard, now - queuedAt underflows and a fresh request looks
     // roughly 49 days old, so it is expired immediately.
     if (!timeReached(now, slot.queuedAt)) continue;
-    if (elapsedMs(now, slot.queuedAt) < WEB_COMMAND_ACK_TIMEOUT_MS) continue;
-    snprintf(requestIdsToExpire[expireCount], WEB_REQUEST_ID_CAPACITY, "%s",
+    if (elapsedMs(now, slot.queuedAt) < REALTIME_COMMAND_ACK_TIMEOUT_MS) continue;
+    snprintf(requestIdsToExpire[expireCount], REALTIME_REQUEST_ID_CAPACITY, "%s",
              slot.requestId);
     snprintf(operationsToExpire[expireCount], sizeof(operationsToExpire[0]), "%s",
              slot.operation);
@@ -1217,7 +1217,7 @@ inline void expirePendingCommands(uint32_t now) {
   }
   if (pendingConfigSave.uncertainSent && !pendingConfigSave.completed && timeReached(now, pendingConfigSave.queuedAt) && elapsedMs(now, pendingConfigSave.queuedAt) >= 120000U) pendingConfigSave.used = false;
   if (pendingConfigSave.used && !pendingConfigSave.completed && !pendingConfigSave.uncertainSent && timeReached(now, pendingConfigSave.queuedAt) &&
-      elapsedMs(now, pendingConfigSave.queuedAt) >= WEB_CONFIG_SAVE_ACK_TIMEOUT_MS) {
+      elapsedMs(now, pendingConfigSave.queuedAt) >= REALTIME_CONFIG_SAVE_ACK_TIMEOUT_MS) {
     configExpired = true;
     snprintf(configRequestId, sizeof(configRequestId), "%s",
              pendingConfigSave.requestId);
@@ -1225,7 +1225,7 @@ inline void expirePendingCommands(uint32_t now) {
     if (configSigned) memcpy(configKey, pendingConfigSave.ackKey, 32U);
     pendingConfigSave.uncertainSent = true;
   }
-  portEXIT_CRITICAL(&webMux);
+  portEXIT_CRITICAL(&realtimeMux);
 
   for (uint8_t i = 0; i < expireCount; ++i)
     publishAck(requestIdsToExpire[i], "expired", "", operationsToExpire[i],
@@ -1238,9 +1238,9 @@ inline void expirePendingCommands(uint32_t now) {
 inline void drainAckOutbox() {
   for (uint8_t i = 0U; i < COMMAND_QUEUE_SIZE + 2U; ++i) {
     AckOutboxItem item;
-    portENTER_CRITICAL(&webMux);
+    portENTER_CRITICAL(&realtimeMux);
     item = ackOutbox[i];
-    portEXIT_CRITICAL(&webMux);
+    portEXIT_CRITICAL(&realtimeMux);
     if (!item.used) continue;
     const bool sent = publishAck(item.requestId, item.result, item.message,
                                  item.operation, item.receivedAt, item.completedAt,
@@ -1249,23 +1249,23 @@ inline void drainAckOutbox() {
       mayapSerialPrintf(false, "[CFG-TX] ACK PUB FAIL id=%s\n", item.requestId);
       break; // Keep the ACK and retry on the next network cycle.
     }
-    portENTER_CRITICAL(&webMux);
+    portENTER_CRITICAL(&realtimeMux);
     if (ackOutbox[i].used && ackOutbox[i].completedAt == item.completedAt &&
         !strcmp(ackOutbox[i].requestId, item.requestId))
       ackOutbox[i].used = false;
-    portEXIT_CRITICAL(&webMux);
+    portEXIT_CRITICAL(&realtimeMux);
   }
 }
 
 inline void serviceConfigPublish() {
-  portENTER_CRITICAL(&webMux);
+  portENTER_CRITICAL(&realtimeMux);
   const bool dirty = configDirty;
   configDirty = false;
   const MachineConfig cfg = knownConfig;
-  const uint32_t revision = webConfigRevision;
-  portEXIT_CRITICAL(&webMux);
+  const uint32_t revision = realtimeConfigRevision;
+  portEXIT_CRITICAL(&realtimeMux);
   if (dirty && !publishConfigReport(cfg, revision)) {
-    portENTER_CRITICAL(&webMux); configDirty = true; portEXIT_CRITICAL(&webMux);
+    portENTER_CRITICAL(&realtimeMux); configDirty = true; portEXIT_CRITICAL(&realtimeMux);
   }
 }
 
@@ -1275,26 +1275,26 @@ inline void serviceSnapshotPublish(uint32_t now) {
   // Future publisher decides when to call this. Preserve generic idle cadence.
   static MayapRealtimePublish::BootstrapState last{};
   static bool known = false;
-  portENTER_CRITICAL(&webMux);
+  portENTER_CRITICAL(&realtimeMux);
   const bool valid = knownRuntimeValid; const MachineRuntime rt = knownRuntime;
-  const uint32_t revision = webConfigRevision;
-  portEXIT_CRITICAL(&webMux);
+  const uint32_t revision = realtimeConfigRevision;
+  portEXIT_CRITICAL(&realtimeMux);
   if (!valid || !publishCallback) return;
   auto hint = MayapRealtimePublish::bootstrapState(rt, revision);
   hint.temperature = hint.humidity = 0;
   hint.outputs &= 65U;
   if (!forceSnapshotPublish && known && hint == last &&
-      elapsedMs(now, lastSnapshotPublishAt) < WEB_SNAPSHOT_IDLE_INTERVAL_MS) return;
+      elapsedMs(now, lastSnapshotPublishAt) < REALTIME_SNAPSHOT_IDLE_INTERVAL_MS) return;
   if (publishBootstrap(rt, revision)) {
     known = true; last = hint; forceSnapshotPublish = false; lastSnapshotPublishAt = millis();
   }
 }
 
 inline void serviceEventLogPublish() {
-  portENTER_CRITICAL(&webMux);
+  portENTER_CRITICAL(&realtimeMux);
   const bool dirty = eventSnapshotDirty;
   const HmiEventSnapshot snapshot = pendingEventSnapshot;
-  portEXIT_CRITICAL(&webMux);
+  portEXIT_CRITICAL(&realtimeMux);
   if (!dirty || snapshot.sourceSequence == lastPublishedEventSequence) return;
   // Oldest first; advance the cursor ONLY after successful publication.
   // Keep dirty until drained so a failed send or >5-item backlog is retried.
@@ -1307,9 +1307,9 @@ inline void serviceEventLogPublish() {
     ++published;
   }
   if (lastPublishedEventSequence >= snapshot.sourceSequence) {
-    portENTER_CRITICAL(&webMux);
+    portENTER_CRITICAL(&realtimeMux);
     if (pendingEventSnapshot.sourceSequence == snapshot.sourceSequence) eventSnapshotDirty = false;
-    portEXIT_CRITICAL(&webMux);
+    portEXIT_CRITICAL(&realtimeMux);
   }
 }
 
@@ -1317,9 +1317,9 @@ inline void serviceEventLogPublish() {
 
 // ================================ API cong khai ================================
 
-inline void mayapWebLinkBegin() { MayapRealtimeInternal::ensureIdentity(); }
+inline void mayapRealtimeBegin() { MayapRealtimeInternal::ensureIdentity(); }
 inline void mayapMqttRecover(uint32_t) {}
-inline void mayapWebLinkUpdate(uint32_t now) {
+inline void mayapRealtimeUpdate(uint32_t now) {
   // No transport is attached in the V4 clean baseline. Completion and expiry
   // mailboxes remain intact for a future MQTT owner.
   MayapRealtimeInternal::expirePendingCommands(now);
@@ -1327,20 +1327,20 @@ inline void mayapWebLinkUpdate(uint32_t now) {
 }
 
 // ------------------------- Hooks goi tu controlTask (machine_control.h) --------
-// Tat ca cac ham duoi day CHI ghi vao hop thu webMux-protected, khong bao gio
+// Tat ca cac ham duoi day CHI ghi vao hop thu realtimeMux-protected, khong bao gio
 // goi vao network transport/WiFiClient (I/O mang phai o lai realtime owner).
 
-inline void mayapWebSetRuntime(const MachineRuntime &runtime) {
+inline void mayapRealtimeSetRuntime(const MachineRuntime &runtime) {
   using namespace MayapRealtimeInternal;
-  portENTER_CRITICAL(&webMux);
+  portENTER_CRITICAL(&realtimeMux);
   knownRuntime = runtime;
   knownRuntimeValid = true;
-  portEXIT_CRITICAL(&webMux);
+  portEXIT_CRITICAL(&realtimeMux);
 }
 
-inline void mayapWebSetConfig(const MachineConfig &config) {
+inline void mayapRealtimeSetConfig(const MachineConfig &config) {
   using namespace MayapRealtimeInternal;
-  portENTER_CRITICAL(&webMux);
+  portENTER_CRITICAL(&realtimeMux);
   const bool changed = !knownConfigValid ||
       memcmp(&config, &knownConfig, sizeof(MachineConfig)) != 0;
   knownConfig = config;
@@ -1351,38 +1351,38 @@ inline void mayapWebSetConfig(const MachineConfig &config) {
     // tiep cua mot config/set tu web: revision da duoc gan san trong
     // handleConfigSetMessage(), khong tang them de khop dung "revision" ma
     // web dang cho trong pending.revision. Ngoai ra (HMI sua tay...) thi tang.
-    if (webConfigRevision == 0U) webConfigRevision = 1U;
-    else if (!pendingConfigSave.used) ++webConfigRevision;
+    if (realtimeConfigRevision == 0U) realtimeConfigRevision = 1U;
+    else if (!pendingConfigSave.used) ++realtimeConfigRevision;
   }
-  portEXIT_CRITICAL(&webMux);
+  portEXIT_CRITICAL(&realtimeMux);
 }
 
 
 
-inline void mayapWebConfirmCommand(uint32_t commandId, bool ok,
+inline void mayapRealtimeConfirmCommand(uint32_t commandId, bool ok,
                                    const char *message) {
   using namespace MayapRealtimeInternal;
-  portENTER_CRITICAL(&webMux);
+  portENTER_CRITICAL(&realtimeMux);
   for (PendingCommand &slot : pendingCommands) {
     if (!slot.used || slot.completed || slot.commandId != commandId) continue;
     slot.completed = true; slot.completionOk = ok; slot.completedAt = millis();
     snprintf(slot.completionMessage, sizeof(slot.completionMessage), "%s", message ? message : "");
     break;
   }
-  portEXIT_CRITICAL(&webMux);
+  portEXIT_CRITICAL(&realtimeMux);
 }
 
-inline void mayapWebConfirmConfigSave(uint32_t transactionId, bool ok,
+inline void mayapRealtimeConfirmConfigSave(uint32_t transactionId, bool ok,
                                       const MachineConfig *stored,
                                       const char *failureCode = "CONFIG_SAVE_REJECTED") {
   using namespace MayapRealtimeInternal;
-  (void)stored;  // config moi da/se toi qua mayapWebSetConfig() tu cung noi goi
-  portENTER_CRITICAL(&webMux);
+  (void)stored;  // config moi da/se toi qua mayapRealtimeSetConfig() tu cung noi goi
+  portENTER_CRITICAL(&realtimeMux);
   if (pendingConfigSave.used && !pendingConfigSave.completed && pendingConfigSave.transactionId == transactionId) {
     if (ok) {
-      webConfigRevision = pendingConfigSave.revision > webConfigRevision
-          ? pendingConfigSave.revision : webConfigRevision + 1U;
-      lastVerifiedConfigRevision = webConfigRevision;
+      realtimeConfigRevision = pendingConfigSave.revision > realtimeConfigRevision
+          ? pendingConfigSave.revision : realtimeConfigRevision + 1U;
+      lastVerifiedConfigRevision = realtimeConfigRevision;
       snprintf(lastVerifiedConfigRequestId, sizeof(lastVerifiedConfigRequestId), "%s",
                pendingConfigSave.requestId);
       configDirty = true; // Publish a complete verified report even if a prior report raced.
@@ -1391,17 +1391,17 @@ inline void mayapWebConfirmConfigSave(uint32_t transactionId, bool ok,
     pendingConfigSave.completedAt = millis();
     snprintf(pendingConfigSave.completionMessage, sizeof(pendingConfigSave.completionMessage), "%s", ok ? "" : failureCode);
   }
-  portEXIT_CRITICAL(&webMux);
+  portEXIT_CRITICAL(&realtimeMux);
 }
 
 
 
-inline void mayapWebPushEventLog(const HmiEventSnapshot &snapshot) {
+inline void mayapRealtimePushEventLog(const HmiEventSnapshot &snapshot) {
   using namespace MayapRealtimeInternal;
-  portENTER_CRITICAL(&webMux);
+  portENTER_CRITICAL(&realtimeMux);
   pendingEventSnapshot = snapshot;
   eventSnapshotDirty = true;
-  portEXIT_CRITICAL(&webMux);
+  portEXIT_CRITICAL(&realtimeMux);
 }
 
 // Local diagnostic for the dormant application bridge.

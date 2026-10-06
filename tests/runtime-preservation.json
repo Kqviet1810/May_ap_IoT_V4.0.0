@@ -58,12 +58,12 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "65ca66882bcd678b3f38ddeee7a68a5014ff6f3f92c0adb8758971e14fbfebd1",
+      "sha256": "7d06880bfb4b8bacbb6cff994aac50cc8ecd757e28607e3f7c628017a47bc78b",
       "filter": "config"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "198d86eb8cefc3bc0b6c77db9cd2541778a2f7911de5ed95c53f6a402edd7943",
+      "sha256": "c056cdff6185c8737c28ac174db072415dd5ef45936894bb8868e73838b71270",
       "signature": "class MachineController {"
     },
     {
@@ -119,7 +119,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino",
-      "sha256": "2b2d8794fd9c2b63d02d1b5d55e97016d34b84b97cab36f59213da883420cacc",
+      "sha256": "da56d6dd109980a157bd872464d98878396e039280173d2d11d1a0e0ae98b35e",
       "signature": "static void stagedStartupUpdate("
     },
     {
@@ -389,7 +389,7 @@
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
       "signature": "void updateAutoTune(",
-      "sha256": "9b0539a1d8abd233e84c0f724ab7118612078378ec306f08480e6fbf564021c1"
+      "sha256": "32f305dd4bb8facc08785d08a2729260a271847dc7da8ce6f591deba22c915a0"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",

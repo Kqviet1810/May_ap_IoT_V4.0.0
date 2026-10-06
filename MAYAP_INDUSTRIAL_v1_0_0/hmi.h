@@ -3477,8 +3477,8 @@ void drawConnectionInfo() {
   lcd.setFont(u8g2_font_6x12_tf);
 
   // ID may: dung chung ham voi network_service.h (mayapDeviceIdText())
-  // thay vi doc lai bien deviceId cua realtime_link.h - file nay duoc
-  // include TRUOC realtime_link.h trong .ino nen bien do chua khai bao
+  // thay vi doc lai bien deviceId cua transaction_bridge.h - file nay duoc
+  // include TRUOC transaction_bridge.h trong .ino nen bien do chua khai bao
   // luc bien dich hmi.h (xem comment tai mayapDeviceIdText()).
   snprintf(text, sizeof(text), "ID: %s", mayapDeviceIdText().c_str());
   drawLeftFit(6, 20, text, u8g2_font_6x12_tf, u8g2_font_5x8_tf,

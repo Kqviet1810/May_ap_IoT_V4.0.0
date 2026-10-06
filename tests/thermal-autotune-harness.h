@@ -65,7 +65,7 @@ struct TuneStore {
 #include "actual-config-load.inc"
 };
 void hmiSetConfig(const MachineConfig &){}
-void mayapWebSetConfig(const MachineConfig &){}
+void mayapRealtimeSetConfig(const MachineConfig &){}
 void mayapCloudSetConfig(const MachineConfig &){}
 void mayapSetConnectivityMode(ConnectivityMode){}
 struct InputState{bool light=false,autoMode=true,circulationFan=true,heaterEnable=true;};

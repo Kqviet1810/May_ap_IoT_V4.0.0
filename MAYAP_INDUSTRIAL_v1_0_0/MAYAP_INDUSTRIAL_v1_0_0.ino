@@ -1,5 +1,6 @@
 #include "config.h"
 #include "boot_diagnostic.h"
+#include <esp_heap_caps.h>
 #include <esp_timer.h>
 
 static volatile bool gMayapSystemTripLatched = false;
@@ -199,6 +200,11 @@ void controlTask(void *parameter) {
           static_cast<unsigned long>(__atomic_load_n(&controlMaxCycleUs, __ATOMIC_ACQUIRE)),
           static_cast<unsigned long>(__atomic_load_n(&hmiLastCycleUs, __ATOMIC_ACQUIRE)),
           static_cast<unsigned long>(__atomic_load_n(&hmiMaxCycleUs, __ATOMIC_ACQUIRE)));
+      mayapSerialPrintf(false,
+          "[HEAP] free=%lu min=%lu largest=%lu\n",
+          static_cast<unsigned long>(ESP.getFreeHeap()),
+          static_cast<unsigned long>(ESP.getMinFreeHeap()),
+          static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
     }
 #endif
 
@@ -300,7 +306,7 @@ void networkTask(void *parameter) {
 void mqttTask(void *parameter) {
   (void)parameter;
   mayapServiceAdmit(MayapRecovery::Service::Mqtt);
-  mayapWebLinkBegin();
+  mayapRealtimeBegin();
   __atomic_store_n(&mqttReady, 1U, __ATOMIC_RELEASE);
   TickType_t lastWake = xTaskGetTickCount();
   for (;;) {
@@ -544,8 +550,8 @@ static void stagedStartupUpdate(uint32_t now) {
       case Stage::Hmi:
         hmiSetConfig(Machine.config());
         hmiSetRuntime(Machine.runtime());
-        mayapWebSetConfig(Machine.config());
-        mayapWebSetRuntime(Machine.runtime());
+        mayapRealtimeSetConfig(Machine.config());
+        mayapRealtimeSetRuntime(Machine.runtime());
         mayapCloudSetRuntime(Machine.runtime());
         hmiBegin();
         __atomic_store_n(&hmiHeartbeatMs, millis(), __ATOMIC_RELEASE);

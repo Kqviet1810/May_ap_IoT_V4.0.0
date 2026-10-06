@@ -135,7 +135,7 @@ inline void mayapRequestFirmwareWebApply() {
 }
 
 // Goi tu lenh "firmware_check_now" nguoi dung bam tren web dashboard (qua
-// MQTT, xem realtime_link.h::mapCommandAction) - CHI yeu cau kiem tra ngay
+// MQTT, xem transaction_bridge.h::mapCommandAction) - CHI yeu cau kiem tra ngay
 // (bo qua nhip FIRMWARE_CHECK_INTERVAL_MS dinh ky), KHONG tu tai ve/flash gi
 // ca. Neu co ban moi se hien tren HMI nhu binh thuong, van can xac nhan tai
 // may - khong bypass buoc do.

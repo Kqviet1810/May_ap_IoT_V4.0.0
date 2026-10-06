@@ -38,6 +38,38 @@ security = read("cloudflare/src/security-wrapper.js")
 safety = read("doc/SAFETY_HARDWARE_REQUIREMENTS.md")
 build_workflow = read(".github/workflows/build-firmware.yml")
 
+# Keep Phase 1 production code free of the removed transport and compatibility
+# API. Tests and historical audit text are excluded so they can assert absence
+# or preserve evidence without becoming runtime dependencies.
+production_paths = [
+    ROOT / "MAYAP_INDUSTRIAL_v1_0_0",
+    ROOT / "cloudflare" / "src",
+]
+production_files = [
+    ROOT / "app.js", ROOT / "index.html", ROOT / "sw.js",
+    ROOT / "config.js", ROOT / "config.production.example.js",
+]
+production_text = ""
+for production_path in production_paths:
+    for path in production_path.rglob("*"):
+        if path.is_file() and path.suffix.lower() in {".h", ".ino", ".cpp", ".c", ".js", ".toml"}:
+            production_text += path.read_text(encoding="utf-8", errors="ignore")
+for path in production_files:
+    production_text += path.read_text(encoding="utf-8", errors="ignore")
+
+for obsolete in (
+    "WebSocketTransport", "MayapWebSocket", "DeviceHub", "DEVICE_HUB",
+    "MayapRealtime.Client", "mayap.v1", "/realtime/device/",
+    "/realtime/browser/", "/api/device/realtime-session", "WebClientLease",
+    "deliveryId", "mayapWebLinkBegin", "mayapWebLinkUpdate",
+    "mayapWebSetRuntime", "mayapWebSetConfig", "mayapWebConfirmCommand",
+    "mayapWebConfirmConfigSave", "mayapWebPushEventLog",
+):
+    if obsolete in production_text:
+        raise SystemExit("FAIL: obsolete realtime production identifier: " + obsolete)
+if (ROOT / "MAYAP_INDUSTRIAL_v1_0_0" / "realtime_link.h").exists():
+    raise SystemExit("FAIL: realtime_link.h compatibility wrapper still exists")
+
 release = json.loads(read("release-manifest.json"))["firmware"]
 require_re(config, rf'MAYAP_FIRMWARE_VERSION\[\]\s*=\s*"{re.escape(release)}"', "firmware version")
 
@@ -53,6 +85,12 @@ if "PubSubClient" in build_workflow or "MAYAP_MQTT_" in build_workflow:
     raise SystemExit("FAIL: obsolete production broker dependency")
 require(build_workflow, "github.event_name == 'workflow_dispatch'", "manual test artifact gate")
 require(build_workflow, "firmware-test-${{ github.sha }}", "test artifact tied to commit SHA")
+require(build_workflow, 'test "$FLASH" -le 1380000', "V4 clean Flash budget")
+require(build_workflow, 'test "$STATIC_RAM" -le 145000', "V4 clean static RAM budget")
+require(ino, '"[HEAP] free=%lu min=%lu largest=%lu', "DEV/PILOT heap diagnostics")
+require(ino, "heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)", "largest allocatable heap diagnostic")
+require(ino, '"[TASK] stack ctrl=%u hmi=%u sup=%u net=%u mqtt=%u cloud=%u ota=%u', "all task stack diagnostics")
+require(ino, "constexpr size_t MQTT_TASK_STACK_BYTES = 4096U", "reserved MQTT task stack")
 require(app, "device.presenceEpoch === state.subscriptionEpoch && device.presence?.online === false", "device offline requires current presence")
 require(app, "Date.now() - device.snapshotAt > WEB.staleAfterMs", "snapshot freshness independent of presence/config")
 
