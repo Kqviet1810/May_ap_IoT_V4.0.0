@@ -154,6 +154,33 @@ jobs:
           path.write_text(text.replace(needle, replacement, 1), encoding="utf-8")
           PYOTA
 
+      - name: Nap thong so broker MQTT (build_local.h, khong commit)
+        env:
+          MQTT_DEVICE_FIXTURE_PASSWORD: ${{ secrets.MQTT_DEVICE_FIXTURE_PASSWORD }}
+          MQTT_BROKER_HOST: mayap-mqtt-broker.vietk-mayaptrung.workers.dev
+        shell: bash
+        run: |
+          # build_local.h nam trong .gitignore; mat khau chi ton tai trong runner.
+          # PR (khong co secret) giu transport MQTT tat.
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            echo "PR build: MQTT transport stays disabled (no secret)."
+          elif [[ -z "$MQTT_DEVICE_FIXTURE_PASSWORD" ]]; then
+            if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" || "$GITHUB_REF" == refs/tags/* ]]; then
+              echo "::error::Thieu GitHub secret MQTT_DEVICE_FIXTURE_PASSWORD - firmware se tat MQTT"; exit 1
+            fi
+            echo "::warning::Thieu GitHub secret MQTT_DEVICE_FIXTURE_PASSWORD - firmware nay tat MQTT"
+          else
+            python3 - <<'PYMQTT'
+          import json, os
+          host = os.environ["MQTT_BROKER_HOST"]
+          pwd = os.environ["MQTT_DEVICE_FIXTURE_PASSWORD"]
+          with open("MAYAP_INDUSTRIAL_v1_0_0/build_local.h", "w", encoding="utf-8") as f:
+              f.write("#define MAYAP_BROKER_HOST " + json.dumps(host) + "\n")
+              f.write("#define MAYAP_BROKER_FIXTURE_PASSWORD " + json.dumps(pwd) + "\n")
+          print("build_local.h written (host=" + host + ", password masked)")
+          PYMQTT
+          fi
+
       - name: Kiem tra JavaScript
         run: |
           node --check app.js
@@ -250,12 +277,13 @@ jobs:
           ls -la ./build-attiny/*.hex
 
       - name: Luu firmware test
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/upload-artifact@v6
         with:
           name: firmware-test-${{ github.sha }}
           path: |
             ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.bin
+            ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.merged.bin
             ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.elf
             ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.map
             ./build-attiny/ATTINY13A_POWER_ALARM.hex
