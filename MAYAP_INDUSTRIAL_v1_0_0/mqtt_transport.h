@@ -158,10 +158,17 @@ inline bool publishFromBridge(const char *channel, const char *payload, size_t l
   const int n = snprintf(topic, sizeof(topic), "%s/%s/%s", TOPIC_ROOT,
                          MayapRealtimeInternal::deviceId, channel);
   if (n <= 0 || static_cast<size_t>(n) >= sizeof(topic)) return false;
+  // Reserve the slot BEFORE publishing: the PUBACK event runs in the esp-mqtt task
+  // and can arrive before esp_mqtt_client_publish() returns. mqttTask is the only
+  // publisher, so the check above and this reservation cannot race each other.
+  if (policy->qos > 0U) __atomic_fetch_add(&qos1Inflight, 1U, __ATOMIC_ACQ_REL);
   const int id = esp_mqtt_client_publish(client, topic, payload, static_cast<int>(length),
                                          policy->qos, policy->retain ? 1 : 0);
-  if (id < 0) return false;
-  if (policy->qos > 0U) __atomic_fetch_add(&qos1Inflight, 1U, __ATOMIC_ACQ_REL);
+  if (id < 0) {
+    if (policy->qos > 0U && __atomic_load_n(&qos1Inflight, __ATOMIC_ACQUIRE) > 0U)
+      __atomic_fetch_sub(&qos1Inflight, 1U, __ATOMIC_ACQ_REL);
+    return false;
+  }
   return true;
 }
 

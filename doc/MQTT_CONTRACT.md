@@ -93,9 +93,12 @@ trong cùng kết nối → đóng kết nối. Publish hợp lệ reset bộ đ
     `reminders/reported`, `history/reported`, `session`.
   - Subscribe được: `command`, `config/set`, `reminders/set`,
     `history/request`, `session`.
-- **Web role**: username = `web:<userId>`, password = short-lived token
-  (ttl 60 phút) do `/api/mqtt-session` cấp sau khi xác thực Google +
-  ownership trong D1.
+- **Web role**: username = `web:<userId>`, password = token
+  `v1.<exp>.<HMAC-SHA256(secret, "mayap-mqtt-web:v1\n<deviceId>\n<username>\n<exp>")>`
+  do `/api/mqtt-session` cấp sau khi xác thực Google + ownership trong D1.
+  Token **gắn với đúng một thiết bị và một tài khoản**, sống 1 giờ (broker từ chối
+  `exp` quá 2 giờ), broker kiểm không cần D1; Web gia hạn trước khi hết hạn.
+  Token của máy A bị từ chối ở máy B.
   - Publish được: `command`, `config/set`, `reminders/set`,
     `history/request`, `session`.
   - Subscribe được: tất cả topic ESP32 → * cộng `session`.

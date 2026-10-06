@@ -9,10 +9,18 @@ const harness = require('./fixtures/mqtt-broker-harness.cjs');
 
 const DEV = 'MAP-001122334455';
 const DEV_PWD = 'dev-pass-A';
-const WEB_PWD = 'web-pass-B';
+const crypto = require('node:crypto');
+const WEB_TOKEN_SECRET = 'web-token-secret-test';
+// Same construction as cloudflare/src/broker/acl.js signWebToken().
+function webToken(username = 'web:u1', deviceId = DEV, ttlSec = 600) {
+  const exp = Math.floor(Date.now() / 1000) + ttlSec;
+  const mac = crypto.createHmac('sha256', WEB_TOKEN_SECRET)
+    .update(`mayap-mqtt-web:v1\n${deviceId}\n${username}\n${exp}`).digest('hex');
+  return `v1.${exp}.${mac}`;
+}
 const envFixture = () => ({
   BROKER_FIXTURE_DEVICE_PASSWORD: DEV_PWD,
-  BROKER_FIXTURE_WEB_PASSWORD: WEB_PWD,
+  BROKER_WEB_TOKEN_SECRET: WEB_TOKEN_SECRET,
 });
 
 async function dev(broker, { willRetain = true, lwtPayload = '{"online":false}' } = {}) {
@@ -30,7 +38,7 @@ async function dev(broker, { willRetain = true, lwtPayload = '{"online":false}' 
 async function web(broker) {
   const { client, server } = await harness.openWebSocket(broker, DEV);
   await harness.feed(broker, server, wire.connect({
-    clientId: 'web-u1', username: 'web:u1', password: WEB_PWD,
+    clientId: 'web-u1', username: 'web:u1', password: webToken('web:u1'),
   }));
   return { client, server, connack: (await harness.clientReceive(client))[0] };
 }
@@ -277,12 +285,12 @@ test('§6 two web connections with distinct clientIds coexist', async () => {
   const b = await harness.makeBroker({ env: envFixture() });
   const { client: c1, server: s1 } = await harness.openWebSocket(b.broker, DEV);
   await harness.feed(b.broker, s1, wire.connect({
-    clientId: 'web-A', username: 'web:u1', password: WEB_PWD,
+    clientId: 'web-A', username: 'web:u1', password: webToken('web:u1'),
   }));
   await harness.clientReceive(c1);
   const { client: c2, server: s2 } = await harness.openWebSocket(b.broker, DEV);
   await harness.feed(b.broker, s2, wire.connect({
-    clientId: 'web-B', username: 'web:u1', password: WEB_PWD,
+    clientId: 'web-B', username: 'web:u1', password: webToken('web:u1'),
   }));
   await harness.clientReceive(c2);
   assert.equal(s1.closed, false);
@@ -293,12 +301,12 @@ test('§6 MQTT-3.1.4-2: duplicate clientId takeover (same role)', async () => {
   const b = await harness.makeBroker({ env: envFixture() });
   const { client: c1, server: s1 } = await harness.openWebSocket(b.broker, DEV);
   await harness.feed(b.broker, s1, wire.connect({
-    clientId: 'web-DUP', username: 'web:u1', password: WEB_PWD,
+    clientId: 'web-DUP', username: 'web:u1', password: webToken('web:u1'),
   }));
   await harness.clientReceive(c1);
   const { client: c2, server: s2 } = await harness.openWebSocket(b.broker, DEV);
   await harness.feed(b.broker, s2, wire.connect({
-    clientId: 'web-DUP', username: 'web:u1', password: WEB_PWD,
+    clientId: 'web-DUP', username: 'web:u1', password: webToken('web:u1'),
   }));
   await harness.clientReceive(c2);
   assert.equal(s1.closed, true, 'duplicate clientId must evict old session');
@@ -562,4 +570,44 @@ test('§Codex2 packets coalesced behind DISCONNECT are not processed', async () 
   await harness.feed(b.broker, w.server, merged);
   assert.equal(w.server.closed, true);
   assert.deepEqual(await harness.clientReceive(d.client), [], 'a command after DISCONNECT must never reach the device');
+});
+
+// --------------------------------------------------------------------------
+// Codex round 3: web credentials are bound to the device and the account.
+// --------------------------------------------------------------------------
+async function connectWithPassword(broker, username, password) {
+  const { client, server } = await harness.openWebSocket(broker, DEV);
+  await harness.feed(broker, server, wire.connect({ clientId: 'web-tok', username, password }));
+  return { server, connack: wire.parseConnack((await harness.clientReceive(client))[0]) };
+}
+
+test('§Codex3 web token: valid token is accepted', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const r = await connectWithPassword(b.broker, 'web:u1', webToken('web:u1'));
+  assert.equal(r.connack.returnCode, 0);
+});
+
+test('§Codex3 web token issued for ANOTHER device is rejected (no cross-device reuse)', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const r = await connectWithPassword(b.broker, 'web:u1', webToken('web:u1', 'MAP-AAAAAAAAAAAA'));
+  assert.equal(r.connack.returnCode, 4);
+  assert.equal(r.server.closed, true);
+});
+
+test('§Codex3 web token is bound to the account: another username is rejected', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const r = await connectWithPassword(b.broker, 'web:attacker', webToken('web:u1'));
+  assert.equal(r.connack.returnCode, 4);
+});
+
+test('§Codex3 expired or over-long web tokens are rejected', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  assert.equal((await connectWithPassword(b.broker, 'web:u1', webToken('web:u1', DEV, -5))).connack.returnCode, 4);
+  assert.equal((await connectWithPassword(b.broker, 'web:u1', webToken('web:u1', DEV, 30 * 24 * 3600))).connack.returnCode, 4);
+});
+
+test('§Codex3 no web token secret configured: the web role fails closed, forged tokens and the device password included', async () => {
+  const b = await harness.makeBroker({ env: { BROKER_FIXTURE_DEVICE_PASSWORD: DEV_PWD } });
+  assert.equal((await connectWithPassword(b.broker, 'web:u1', webToken('web:u1'))).connack.returnCode, 4);
+  assert.equal((await connectWithPassword(b.broker, 'web:u1', DEV_PWD)).connack.returnCode, 4);
 });

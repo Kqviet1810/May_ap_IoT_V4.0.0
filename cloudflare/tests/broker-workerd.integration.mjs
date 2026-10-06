@@ -14,6 +14,7 @@
 
 import { spawn } from 'node:child_process';
 import mqtt from 'mqtt';
+import { createHmac } from 'node:crypto';
 import { strict as assert } from 'node:assert';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -24,7 +25,14 @@ const CF_DIR = path.resolve(__dirname, '..');
 const PORT = Number(process.env.WRANGLER_PORT || 8795);
 const DEV = 'MAP-AABBCCDDEEFF';
 const DEV_PWD = 'dev-pass-A';
-const WEB_PWD = 'web-pass-B';
+const WEB_TOKEN_SECRET = 'web-token-secret-B';
+// Same construction as cloudflare/src/broker/acl.js signWebToken().
+function webToken(username) {
+  const exp = Math.floor(Date.now() / 1000) + 600;
+  const mac = createHmac('sha256', WEB_TOKEN_SECRET)
+    .update(`mayap-mqtt-web:v1\n${DEV}\n${username}\n${exp}`).digest('hex');
+  return `v1.${exp}.${mac}`;
+}
 
 async function waitHttp(url, timeoutMs = 25_000) {
   const start = Date.now();
@@ -40,7 +48,7 @@ async function waitHttp(url, timeoutMs = 25_000) {
 
 async function connectMqtt({ role, usePassword, extra = {} } = {}) {
   const username = role === 'device' ? DEV : 'web:u1';
-  const password = usePassword || (role === 'device' ? DEV_PWD : WEB_PWD);
+  const password = usePassword || (role === 'device' ? DEV_PWD : webToken(username));
   const client = mqtt.connect(`ws://127.0.0.1:${PORT}/mqtt/${DEV}`, {
     protocolVersion: 4,
     clean: true,
@@ -68,7 +76,7 @@ async function main() {
     '--config', 'wrangler-broker.toml',
     '--port', String(PORT),
     '--var', `BROKER_FIXTURE_DEVICE_PASSWORD:${DEV_PWD}`,
-    '--var', `BROKER_FIXTURE_WEB_PASSWORD:${WEB_PWD}`,
+    '--var', `BROKER_WEB_TOKEN_SECRET:${WEB_TOKEN_SECRET}`,
     '--local', '--log-level', 'warn',
   ], { cwd: CF_DIR, stdio: ['ignore', 'pipe', 'pipe'] });
   let bootError = '';

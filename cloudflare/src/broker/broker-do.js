@@ -17,7 +17,7 @@ import {
   DEVICE_ID_RE, TOPIC_ROOT, Topics,
   RETAIN_FORBIDDEN, RETAIN_ALLOWED,
   parseTopic, canPublish, evaluateSubscribe, topicQosCap, requiredPublishQos,
-  makeFixtureCredentials,
+  makeCredentialResolver,
 } from './acl.js';
 
 // Contract §1 — client keepalive 30..120 s. Zero is explicitly forbidden
@@ -51,9 +51,9 @@ export class MqttBrokerDO {
     this.deviceId = null;
     this.decoders = new WeakMap(); // ws -> StreamingDecoder (RAM; rebuilt on wake)
     // Credential resolver: Phase 2B fixture via env; Phase 2E will call Worker.
-    this.resolveCredentials = makeFixtureCredentials({
+    this.resolveCredentials = makeCredentialResolver({
       devicePassword: env && env.BROKER_FIXTURE_DEVICE_PASSWORD,
-      webPassword: env && env.BROKER_FIXTURE_WEB_PASSWORD,
+      webTokenSecret: env && env.BROKER_WEB_TOKEN_SECRET,
     });
     // Next packet id for server→client QoS1. 1..65535.
     this._packetSeq = 1;
@@ -261,7 +261,7 @@ export class MqttBrokerDO {
       ws.send(encodeConnack(ConnackCode.NOT_AUTHORIZED));
       return this._closeFatal(ws, 1008, 'BAD_KEEPALIVE');
     }
-    const resolved = this.resolveCredentials(this.deviceId, pkt.username, pkt.password);
+    const resolved = await this.resolveCredentials(this.deviceId, pkt.username, pkt.password);
     if (!resolved) {
       ws.send(encodeConnack(ConnackCode.BAD_CREDENTIALS));
       return this._closeFatal(ws, 1008, 'BAD_CREDENTIALS');

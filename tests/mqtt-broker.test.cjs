@@ -8,12 +8,20 @@ const harness = require('./fixtures/mqtt-broker-harness.cjs');
 
 const DEV = 'MAP-001122334455';
 const DEV_PWD = 'dev-pass-A';
-const WEB_PWD = 'web-pass-B';
+const crypto = require('node:crypto');
+const WEB_TOKEN_SECRET = 'web-token-secret-test';
+// Same construction as cloudflare/src/broker/acl.js signWebToken().
+function webToken(username = 'web:u1', deviceId = DEV, ttlSec = 600) {
+  const exp = Math.floor(Date.now() / 1000) + ttlSec;
+  const mac = crypto.createHmac('sha256', WEB_TOKEN_SECRET)
+    .update(`mayap-mqtt-web:v1\n${deviceId}\n${username}\n${exp}`).digest('hex');
+  return `v1.${exp}.${mac}`;
+}
 
 function envFixture() {
   return {
     BROKER_FIXTURE_DEVICE_PASSWORD: DEV_PWD,
-    BROKER_FIXTURE_WEB_PASSWORD: WEB_PWD,
+    BROKER_WEB_TOKEN_SECRET: WEB_TOKEN_SECRET,
   };
 }
 
@@ -36,7 +44,7 @@ async function connectWeb(broker, { username = 'web:u1' } = {}) {
   const { client, server } = await harness.openWebSocket(broker, DEV);
   await harness.feed(broker, server, wire.connect({
     clientId: `web-u1-${Math.random().toString(36).slice(2, 6)}`,
-    username, password: WEB_PWD,
+    username, password: webToken(username),
   }));
   const [connack] = await harness.clientReceive(client);
   return { client, server, connack };

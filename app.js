@@ -75,6 +75,7 @@
     syncRetryTimers: [],
     subscriptionRetryTimer: 0,
     sessionTimer: 0,
+    realtimeExpiresAt: 0,
     staleTimer: 0,
     formFlags: new Map(),
     pending: new Map(),
@@ -109,6 +110,7 @@
   // One in-flight /api/mqtt-session per device. The same reply carries the broker
   // credentials and, for owners/operators, the signed control grant.
   const mqttSessionRequests = new Map();
+  const readOnlyDevices = new Set();   // /api/mqtt-session returned control:null
   function fetchMqttSession(device) {
     const running = mqttSessionRequests.get(device.id);
     if (running) return running;
@@ -122,7 +124,8 @@
         error.code = reply.status === 401 || reply.status === 403 ? 'AUTH_ERROR' : 'TRANSPORT_ERROR';
         throw error;
       }
-      if (reply.control) await storeControlSession(device, reply.control);
+      if (reply.control) { readOnlyDevices.delete(device.id); await storeControlSession(device, reply.control); }
+      else readOnlyDevices.add(device.id);
       return reply;
     })().finally(() => mqttSessionRequests.delete(device.id));
     mqttSessionRequests.set(device.id, request);
@@ -478,6 +481,8 @@
     return postCloudJson('/api/device/change-pin', { device_id: deviceId, old_pin: oldPin, new_pin: newPin });
   }
 
+  // Key used to sign each envelope, so a grant refreshed meanwhile cannot change the ACK key.
+  const envelopeKeys = new WeakMap();
   async function signRealtimeWrite(device, channel, body) {
     if (!device?.pairingToken) {
       const error = new Error('Cần xác thực lại PIN: bấm + và thêm lại đúng ID thiết bị để làm mới quyền điều khiển.');
@@ -509,7 +514,9 @@
       const message = `mayap-mqtt-write:v2\n${device.id}\n${channel}\n${session.grant}\n${bodyText}`;
       const sig = Array.from(new Uint8Array(await crypto.subtle.sign('HMAC', session.key,
         encoder.encode(message))), (b) => b.toString(16).padStart(2, '0')).join('');
-      return { v: 2, grant: session.grant, grantSig: session.grantSig, body: bodyText, sig };
+      const envelope = { v: 2, grant: session.grant, grantSig: session.grantSig, body: bodyText, sig };
+      envelopeKeys.set(envelope, session.key);
+      return envelope;
     }
     const error = new Error('Firmware cũ chưa hỗ trợ giao thức V2. Hãy cập nhật máy để điều khiển từ Web.');
     error.code = 'PROTOCOL_ERROR';
@@ -2645,7 +2652,7 @@
       if (Number(device.presence?.proto || 0) >= 2) {
         startTransaction(requestId, { kind: 'history', operation: 'history.read',
           deviceId: device.id }, 15_000);
-        state.pending.get(requestId).ackKey = controlSessions.get(device.id)?.key;
+        state.pending.get(requestId).ackKey = envelopeKeys.get(envelope) || controlSessions.get(device.id)?.key;
         armTransaction(requestId);
         transactionPublished(requestId);
       }
@@ -2861,9 +2868,18 @@
   // Grants last 300 s and gate the controls (controlReady), so refresh before
   // expiry instead of waiting for a click that the disabled UI would never allow.
   function ensureControlGrant(device) {
+    if (readOnlyDevices.has(device.id)) return;
     const control = controlSessions.get(device.id);
     if (control && control.expiresAt > Math.floor(Date.now() / 1000) + 90) return;
     fetchMqttSession(device).then(() => { if (device.id === state.selectedId) renderDevice(); }).catch(() => {});
+  }
+
+  // The broker token is short-lived and bound to this device and account: reconnect
+  // with a fresh one shortly before it expires or whenever the broker refuses it.
+  function renewDeviceChannel(device) {
+    if (!device || device.id !== state.selectedId) return;
+    disconnectDeviceChannel();
+    connectDeviceChannel(device).catch(console.error);
   }
 
   function activateSelectedSession(sync = false) {
@@ -2878,6 +2894,7 @@
     // session is QoS 0: keep asking for sync until a complete config and a fresh
     // snapshot arrive, then fall back to plain keep-alive refreshes.
     state.sessionTimer = setInterval(() => {
+      if (state.realtimeExpiresAt && state.realtimeExpiresAt - Date.now() < 120000) return renewDeviceChannel(device);
       ensureControlGrant(device);
       sendSession(device.id, true, selectedNeedsSync());
     }, WEB.sessionRefreshMs);
@@ -2910,7 +2927,6 @@
   }
 
   function dispatchRealtimeMessage(device, channel, payload) {
-    if (channel !== 'ack' && Number.isFinite(Number(payload.bootId))) device.bootId = Number(payload.bootId);
     if (channel === 'presence') handlePresence(device, payload);
     else if (channel === 'snapshot') handleSnapshot(device, payload);
     else if (channel === 'config/reported') handleConfigReport(device, payload);
@@ -2954,6 +2970,7 @@
       return;
     }
     if (token !== realtimeToken) return;
+    state.realtimeExpiresAt = Number(reply.mqtt.expiresAt || 0) * 1000;
     const transport = window.MayapMqttTransport.create({
       deviceId: device.id, url: reply.mqtt.url, username: reply.mqtt.username, password: reply.mqtt.password,
       clientId: `mayap-web-${Array.from(crypto.getRandomValues(new Uint8Array(6)),
@@ -2986,6 +3003,10 @@
         state.realtimeConnected = false;
         clearInterval(state.sessionTimer);
         clearSyncRetries();
+        // CONNACK 4/5: the token expired or was refused; fetch a new one.
+        if (next === 'error' && error && (error.code === 4 || error.code === 5)) {
+          setTimeout(() => { if (token === realtimeToken) renewDeviceChannel(device); }, 1000);
+        }
         setRealtimeStatus(next === 'error' && !state.realtime ? 'error' : 'connecting',
           next === 'reconnecting' ? 'Đang kết nối lại với máy…'
             : next === 'offline' ? 'Thiết bị của bạn đang mất Internet'

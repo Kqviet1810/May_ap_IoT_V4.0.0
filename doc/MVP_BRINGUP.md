@@ -2,8 +2,8 @@
 
 Kiến trúc: `Web (MQTT.js/WSS)` → `broker Durable Object` ← `ESP32 (esp-mqtt/WSS)`.
 Topic/QoS/retain theo [MQTT_CONTRACT.md](MQTT_CONTRACT.md); Transaction V2 theo
-[TRANSACTION_V2_SPEC.md](TRANSACTION_V2_SPEC.md). Auth ở bước này là **fixture có kiểm soát**
-(mật khẩu dùng chung đặt bằng secret) — thay bằng token theo phiên trước khi phát hành.
+[TRANSACTION_V2_SPEC.md](TRANSACTION_V2_SPEC.md). Auth Web là **token ký theo (thiết bị, tài khoản)**, sống 1 giờ, broker kiểm không cần D1; token của máy này vô dụng với máy khác.
+Auth ESP32 vẫn là **fixture** (mật khẩu thiết bị dùng chung đặt bằng secret) — cần thay bằng mật khẩu suy ra theo từng máy trước khi phát hành.
 
 ## 1. Deploy broker (Worker riêng, không đụng Worker Push/account)
 
@@ -11,7 +11,7 @@ Topic/QoS/retain theo [MQTT_CONTRACT.md](MQTT_CONTRACT.md); Transaction V2 theo
 cd cloudflare
 npx wrangler deploy -c wrangler-broker.toml
 npx wrangler secret put BROKER_FIXTURE_DEVICE_PASSWORD -c wrangler-broker.toml   # ESP32 dùng
-npx wrangler secret put BROKER_FIXTURE_WEB_PASSWORD    -c wrangler-broker.toml   # Web dùng
+npx wrangler secret put BROKER_WEB_TOKEN_SECRET        -c wrangler-broker.toml   # ký/kiểm token Web (cùng giá trị ở Worker account)
 ```
 
 Không có hai secret này broker từ chối mọi kết nối (fail closed). Ghi lại host
@@ -22,14 +22,13 @@ Không có hai secret này broker từ chối mọi kết nối (fail closed). G
 Thêm vào `[vars]` của `cloudflare/wrangler.toml` (không phải secret):
 
 ```toml
-MQTT_AUTH_MODE = "fixture"
 MQTT_BROKER_URL = "wss://mayap-mqtt-broker.<account>.workers.dev/mqtt"
 ```
 
-và secret **trùng với `BROKER_FIXTURE_WEB_PASSWORD`**:
+và secret **trùng với `BROKER_WEB_TOKEN_SECRET`** của broker:
 
 ```bash
-npx wrangler secret put MQTT_FIXTURE_WEB_PASSWORD
+npx wrangler secret put MQTT_WEB_TOKEN_SECRET
 ```
 
 `POST /api/mqtt-session` (đã đăng nhập Google) trả thông tin broker cho mọi thành viên của máy và

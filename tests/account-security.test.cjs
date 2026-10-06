@@ -284,11 +284,18 @@ test('/api/mqtt-session issues a verifiable control grant only to owners/operato
   const body={device_id:id,client_id:'w-0123456789abcdef'};
   // Broker credentials not configured: refuse rather than hand out nothing useful.
   assert.equal((await h.call('/api/mqtt-session',owner,body)).status,503);
-  Object.assign(h.env,{MQTT_AUTH_MODE:'fixture',MQTT_BROKER_URL:'wss://broker.example/mqtt/',MQTT_FIXTURE_WEB_PASSWORD:'fixture-pass'});
+  Object.assign(h.env,{MQTT_BROKER_URL:'wss://broker.example/mqtt/',MQTT_WEB_TOKEN_SECRET:'broker-token-secret-test'});
   const res=await h.call('/api/mqtt-session',owner,body), data=await res.json();
   assert.equal(res.status,200);
   assert.equal(data.mqtt.url,`wss://broker.example/mqtt/${id}`);
   assert.equal(data.mqtt.username,'web:mqtt-owner');
+  // The token is bound to this device and account and verified by the broker's own code.
+  const brokerAcl=await import('../cloudflare/src/broker/acl.js');
+  assert.equal(await brokerAcl.verifyWebToken('broker-token-secret-test',id,'web:mqtt-owner',data.mqtt.password),true);
+  assert.equal(await brokerAcl.verifyWebToken('broker-token-secret-test','MAP-AAAAAAAAAAAA','web:mqtt-owner',data.mqtt.password),false);
+  assert.equal(await brokerAcl.verifyWebToken('broker-token-secret-test',id,'web:someone-else',data.mqtt.password),false);
+  assert.equal(await brokerAcl.verifyWebToken('another-secret',id,'web:mqtt-owner',data.mqtt.password),false);
+  assert.ok(data.mqtt.expiresAt>Math.floor(Date.now()/1000)&&data.mqtt.expiresAt<=Math.floor(Date.now()/1000)+3600);
   const hmac=(key,text)=>crypto.createHmac('sha256',key).update(text).digest('hex');
   const commandKey=Buffer.from(hmac('random-device-test-only','mayap-command-key:v1:'+id),'hex');
   const {grant,grantSig,sessionKey,expiresAt}=data.control;

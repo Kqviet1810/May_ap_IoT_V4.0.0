@@ -23,10 +23,26 @@ const BROKER_PORT = Number(process.env.E2E_BROKER_PORT || 8798);
 const WEB_PORT = Number(process.env.E2E_WEB_PORT || 8766);
 const DEVICE_ID = 'MAP-1234567890AB';
 const DEVICE_PASSWORD = 'e2e-device-fixture';
-const WEB_PASSWORD = 'e2e-web-fixture';
+const WEB_TOKEN_SECRET = 'e2e-web-token-secret';
 const PEPPER = 'e2e-device-key-pepper';
 const hmacHex = (key, text) => crypto.createHmac('sha256', key).update(text).digest('hex');
 const commandKeyHex = hmacHex(PEPPER, `mayap-command-key:v1:${DEVICE_ID}`);
+// Same construction as cloudflare/src/broker/acl.js signWebToken().
+function webToken(deviceId, username, ttlSec = 3600) {
+  const exp = Math.floor(Date.now() / 1000) + ttlSec;
+  return { exp, token: `v1.${exp}.${hmacHex(WEB_TOKEN_SECRET, `mayap-mqtt-web:v1\n${deviceId}\n${username}\n${exp}`)}` };
+}
+async function brokerLogin(url, username, password) {
+  const mqtt = require('../../cloudflare/node_modules/mqtt');
+  return new Promise((resolve) => {
+    const client = mqtt.connect(url, { protocolVersion: 4, clean: true, clientId: `probe-${Math.random().toString(16).slice(2, 8)}`,
+      username, password, keepalive: 30, reconnectPeriod: 0, wsOptions: { protocol: 'mqtt' } });
+    const done = (value) => { client.end(true); resolve(value); };
+    client.once('connect', () => done('connected'));
+    client.once('error', (error) => done(`refused:${error.code ?? error.message}`));
+    setTimeout(() => done('timeout'), 8000);
+  });
+}
 const brokerUrl = `ws://127.0.0.1:${BROKER_PORT}/mqtt/${DEVICE_ID}`;
 
 const results = [];
@@ -71,7 +87,7 @@ async function main() {
     const broker = spawnLogged(path.join(root, 'cloudflare/node_modules/.bin/wrangler'), [
       'dev', '--config', 'wrangler-broker.toml', '--port', String(BROKER_PORT), '--local',
       '--var', `BROKER_FIXTURE_DEVICE_PASSWORD:${DEVICE_PASSWORD}`,
-      '--var', `BROKER_FIXTURE_WEB_PASSWORD:${WEB_PASSWORD}`],
+      '--var', `BROKER_WEB_TOKEN_SECRET:${WEB_TOKEN_SECRET}`],
     { cwd: path.join(root, 'cloudflare') }, 'broker.log');
     children.push(broker);
     const web = spawnLogged('python3', ['-m', 'http.server', String(WEB_PORT), '--bind', '127.0.0.1'],
@@ -84,6 +100,18 @@ async function main() {
       commandKeyHex });
     await until('device connected', () => emulator.connected, 15000);
     record('device emulator connects to workerd broker (CONNECT/SUBACK/retained presence)', true);
+    const own = webToken(DEVICE_ID, 'web:qa-sub');
+    const results = {
+      valid: await brokerLogin(brokerUrl, 'web:qa-sub', own.token),
+      otherDevice: await brokerLogin(brokerUrl, 'web:qa-sub', webToken('MAP-AAAAAAAAAAAA', 'web:qa-sub').token),
+      otherUser: await brokerLogin(brokerUrl, 'web:attacker', own.token),
+      expired: await brokerLogin(brokerUrl, 'web:qa-sub', webToken(DEVICE_ID, 'web:qa-sub', -10).token),
+      devicePasswordAsWeb: await brokerLogin(brokerUrl, 'web:qa-sub', DEVICE_PASSWORD),
+    };
+    record('broker auth: a web token is accepted only for its own device and account, and while unexpired',
+      results.valid === 'connected' && results.otherDevice.startsWith('refused') &&
+      results.otherUser.startsWith('refused') && results.expired.startsWith('refused') &&
+      results.devicePasswordAsWeb.startsWith('refused'), JSON.stringify(results));
 
     browser = await chromium.launch({ headless: true,
       ...(process.env.E2E_CHROMIUM ? { executablePath: process.env.E2E_CHROMIUM } : {}) });
@@ -99,9 +127,11 @@ async function main() {
         devices: [{ device_id: DEVICE_ID, device_name: 'May ap thu', role: 'owner' }] });
       if (url.pathname === '/api/mqtt-session') {
         const body = JSON.parse(route.request().postData() || '{}');
+        // First token is deliberately short so the Web must renew it before expiry.
+        const issued = webToken(DEVICE_ID, 'web:qa-sub', sessionRequests.length === 0 ? 100 : 3600);
         sessionRequests.push(body);
         return json({ success: true, control: controlGrant(body.client_id),
-          mqtt: { url: brokerUrl, username: 'web:qa-sub', password: WEB_PASSWORD, mode: 'fixture' } });
+          mqtt: { url: brokerUrl, username: 'web:qa-sub', password: issued.token, expiresAt: issued.exp, mode: 'token' } });
       }
       return json({ success: true, notes: [], reminders: [] });
     });
@@ -185,10 +215,15 @@ async function main() {
     emulator = startDeviceEmulator({ url: brokerUrl, deviceId: DEVICE_ID, password: DEVICE_PASSWORD, commandKeyHex });
     await until('web online again', async () => (await connection()) === 'online', 20000);
     record('W1c reconnect: a new device session (new bootId) brings the Web back online', true);
+    // After a reboot the device restarts its config revision; the Web must drop its
+    // pre-reboot config and accept the new device's report instead of rejecting it as old.
+    await until('config resync after reboot', async () => Number(await page.locator('#quickTarget').inputValue()) === 37.5, 15000);
+    record('W1d reboot: bootId change resets the Web config state and the new device config is accepted', true,
+      `quickTarget=${await page.locator('#quickTarget').inputValue()} (was 38 before the reboot)`);
 
     record('Web console: no uncaught page errors', pageErrors.length === 0, pageErrors.join(' | '));
-    record('Web requested a control grant for this tab through /api/mqtt-session', sessionRequests.length >= 1,
-      `${sessionRequests.length} request(s)`);
+    record('Web renewed the short-lived broker token before expiry and kept working (control grant via /api/mqtt-session)',
+      sessionRequests.length >= 2, `${sessionRequests.length} /api/mqtt-session request(s)`);
     await page.screenshot({ path: path.join(out, 'e2e-mvp.png') });
   } catch (error) {
     record('e2e run completed', false, String(error && error.message || error));

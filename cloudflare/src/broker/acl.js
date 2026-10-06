@@ -114,17 +114,48 @@ export function evaluateSubscribe(role, deviceId, filter, requestedQos) {
   return Math.min(requestedQos, cap);
 }
 
-// Credential resolver interface — Phase 2B uses an in-memory fixture.
-// Returns { role: 'device'|'web' } or null if credentials invalid.
-export function makeFixtureCredentials({ devicePassword, webPassword } = {}) {
-  const dev = devicePassword == null ? null : String(devicePassword);
-  const web = webPassword == null ? null : String(webPassword);
-  return function resolve(deviceId, username, passwordBytes) {
-    const pwd = passwordBytes
-      ? new TextDecoder('utf-8', { fatal: false }).decode(passwordBytes)
-      : '';
+// Credential resolution. Returns { role: 'device'|'web' } or null.
+//
+// device: MVP fixture (shared secret, username must equal this DO's device id).
+//         Replace with a per-device derived secret before production.
+// web:    a signed token bound to BOTH the device and the user, so a credential
+//         issued for one device is useless on every other device DO:
+//           password = "v1.<exp>.<hex HMAC-SHA256(secret,
+//                       'mayap-mqtt-web:v1\n<deviceId>\n<username>\n<exp>')>"
+//         Verified statelessly (no D1 in the connect path); lifetime is capped.
+export const WEB_TOKEN_MAX_TTL_SEC = 7200;
+
+const textEncoder = new TextEncoder();
+const hexToBytes = (hex) => new Uint8Array(hex.match(/../g).map((byte) => parseInt(byte, 16)));
+const bytesToHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+
+async function hmacKey(secret, usages) {
+  return crypto.subtle.importKey('raw', textEncoder.encode(String(secret)),
+    { name: 'HMAC', hash: 'SHA-256' }, false, usages);
+}
+
+export async function signWebToken(secret, deviceId, username, expiresAtSec) {
+  const mac = await crypto.subtle.sign('HMAC', await hmacKey(secret, ['sign']),
+    textEncoder.encode(`mayap-mqtt-web:v1\n${deviceId}\n${username}\n${expiresAtSec}`));
+  return `v1.${expiresAtSec}.${bytesToHex(new Uint8Array(mac))}`;
+}
+
+export async function verifyWebToken(secret, deviceId, username, token, nowMs = Date.now()) {
+  const match = /^v1\.(\d{1,12})\.([0-9a-f]{64})$/.exec(String(token || ''));
+  if (!secret || !match || !String(username || '').startsWith('web:')) return false;
+  const expiresAt = Number(match[1]), nowSec = Math.floor(nowMs / 1000);
+  if (expiresAt < nowSec || expiresAt > nowSec + WEB_TOKEN_MAX_TTL_SEC) return false;
+  return crypto.subtle.verify('HMAC', await hmacKey(secret, ['verify']), hexToBytes(match[2]),
+    textEncoder.encode(`mayap-mqtt-web:v1\n${deviceId}\n${username}\n${expiresAt}`));
+}
+
+export function makeCredentialResolver({ devicePassword, webTokenSecret } = {}) {
+  const dev = devicePassword == null || devicePassword === '' ? null : String(devicePassword);
+  const secret = webTokenSecret == null || webTokenSecret === '' ? null : String(webTokenSecret);
+  return async function resolve(deviceId, username, passwordBytes) {
+    const pwd = passwordBytes ? new TextDecoder('utf-8', { fatal: false }).decode(passwordBytes) : '';
     if (dev && username === deviceId && pwd === dev) return { role: 'device' };
-    if (web && username && username.startsWith('web:') && pwd === web) return { role: 'web' };
+    if (secret && await verifyWebToken(secret, deviceId, username, pwd)) return { role: 'web' };
     return null;
   };
 }
