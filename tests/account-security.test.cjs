@@ -275,3 +275,31 @@ test('D1 Notes and Reminders are account-scoped, idempotent and independent of d
   assert.equal((await h.call(`/api/device/${id}/reminders/${reminderId}`,viewer,{mutation_id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',version:1},'DELETE')).status,403);
   assert.equal((await h.call(`/api/device/${id}/reminders/${reminderId}`,owner,{mutation_id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',version:1},'DELETE')).status,200);
 });
+
+test('/api/mqtt-session issues a verifiable control grant only to owners/operators; viewers get read-only credentials',async()=>{
+  const crypto=require('node:crypto');
+  const h=await setup(),owner=await h.login('mqtt-owner'),viewer=await h.login('mqtt-viewer'),other=await h.login('mqtt-other'),id=await h.device(90);
+  await h.call('/api/account/devices/claim',owner,{device_id:id,pin:'123456'});
+  h.sql.prepare("INSERT INTO user_devices(user_sub,device_id,role,created_at) VALUES(?,?,'viewer',?)").run('mqtt-viewer',id,Date.now());
+  const body={device_id:id,client_id:'w-0123456789abcdef'};
+  // Broker credentials not configured: refuse rather than hand out nothing useful.
+  assert.equal((await h.call('/api/mqtt-session',owner,body)).status,503);
+  Object.assign(h.env,{MQTT_AUTH_MODE:'fixture',MQTT_BROKER_URL:'wss://broker.example/mqtt/',MQTT_FIXTURE_WEB_PASSWORD:'fixture-pass'});
+  const res=await h.call('/api/mqtt-session',owner,body), data=await res.json();
+  assert.equal(res.status,200);
+  assert.equal(data.mqtt.url,`wss://broker.example/mqtt/${id}`);
+  assert.equal(data.mqtt.username,'web:mqtt-owner');
+  const hmac=(key,text)=>crypto.createHmac('sha256',key).update(text).digest('hex');
+  const commandKey=Buffer.from(hmac('random-device-test-only','mayap-command-key:v1:'+id),'hex');
+  const {grant,grantSig,sessionKey,expiresAt}=data.control;
+  assert.match(grant,/^w-0123456789abcdef\|\d+\|[0-9a-f]{24}$/);
+  assert.equal(grantSig,hmac(commandKey,`mayap-control-grant:v2\n${id}\n${grant}`));
+  assert.equal(sessionKey,hmac(commandKey,`mayap-control-session:v2\n${id}\n${grant}`));
+  assert.ok(expiresAt>Math.floor(Date.now()/1000)&&expiresAt<=Math.floor(Date.now()/1000)+300);
+  const read=await (await h.call('/api/mqtt-session',viewer,body)).json();
+  assert.equal(read.control,null);
+  assert.equal(read.mqtt.username,'web:mqtt-viewer');
+  assert.equal((await h.call('/api/mqtt-session',other,body)).status,403);
+  assert.equal((await h.call('/api/mqtt-session',owner,{device_id:id,client_id:'short'})).status,400);
+  assert.equal((await h.call('/api/mqtt-session',undefined,body)).status,401);
+});

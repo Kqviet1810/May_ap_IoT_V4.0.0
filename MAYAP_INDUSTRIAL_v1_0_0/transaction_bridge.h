@@ -1094,10 +1094,56 @@ inline void handleConfigSetMessage(const JsonDocument &doc) {
 }
 
 
+// ------------------------- Web session (foreground tabs) ---------------------
+// `session` only tunes snapshot cadence and asks for a resync; it never changes a
+// setpoint or actuator, so (as in V2) it is unsigned. Owner task only.
+constexpr uint32_t REALTIME_SESSION_MAX_TTL_MS = 60000UL;
+static bool webSessionActive = false;
+struct SessionLease { char id[40] = ""; uint32_t expiresAt = 0U; };
+static SessionLease sessionLeases[8];
+
+inline void handleSessionMessage(const JsonDocument &doc) {
+  const char *client = doc["clientId"] | "";
+  if (strlen(client) < 8U || strlen(client) >= sizeof(sessionLeases[0].id)) return;
+  const bool active = doc["active"] | false;
+  uint32_t ttlMs = doc["ttlMs"] | 0UL;
+  const bool sync = doc["sync"] | false;
+  const uint32_t now = millis();
+  SessionLease *slot = nullptr;
+  for (auto &lease : sessionLeases) if (!strcmp(lease.id, client)) { slot = &lease; break; }
+  if (!slot) for (auto &lease : sessionLeases)
+    if (!lease.id[0] || timeReached(now, lease.expiresAt)) { slot = &lease; break; }
+  if (!slot) return;  // bounded clients: never evict an active lease
+  if (active) {
+    if (ttlMs == 0U || ttlMs > REALTIME_SESSION_MAX_TTL_MS) ttlMs = REALTIME_SESSION_MAX_TTL_MS;
+    snprintf(slot->id, sizeof(slot->id), "%s", client);
+    slot->expiresAt = now + ttlMs;
+  } else {
+    slot->id[0] = '\0';
+    slot->expiresAt = now;
+  }
+  webSessionActive = false;
+  for (const auto &lease : sessionLeases)
+    if (lease.id[0] && !timeReached(now, lease.expiresAt)) webSessionActive = true;
+  if (!sync) return;
+  // Republish from the owner loop, not from inside the incoming message.
+  portENTER_CRITICAL(&realtimeMux);
+  if (knownConfigValid) configDirty = true;
+  eventSnapshotDirty = true;
+  portEXIT_CRITICAL(&realtimeMux);
+  lastSnapshotPublishAt = 0U;
+  forceSnapshotPublish = true;
+  lastPublishedEventSequence = 0U;
+}
+
 inline void dispatchApplicationMessage(const char *channel, const uint8_t *payload, size_t length) {
   if (!channel || length > MayapProtocol::FRAME_NORMAL_CAP) return;
   JsonDocument wireDoc;
   if (deserializeJson(wireDoc, payload, length) != DeserializationError::Ok) return;
+  if (!strcmp(channel, "session")) {
+    handleSessionMessage(wireDoc);
+    return;
+  }
 
   auto verifyAndDispatch = [&](const char *channel, auto handler) {
     activeAckKeyValid = false;
@@ -1271,6 +1317,32 @@ inline void serviceConfigPublish() {
 
 
 
+inline void serviceSessionTimeout(uint32_t now) {
+  bool active = false;
+  for (auto &lease : sessionLeases) {
+    if (lease.id[0] && timeReached(now, lease.expiresAt)) lease.id[0] = '\0';
+    if (lease.id[0]) active = true;
+  }
+  webSessionActive = active;
+}
+
+// Full live `snapshot` (V2 contract): fast while a Web tab holds a session lease,
+// slow heartbeat otherwise. A completed command forces an immediate sample.
+inline void serviceLiveSnapshot(uint32_t now) {
+  const uint32_t interval = webSessionActive ? REALTIME_SNAPSHOT_ACTIVE_INTERVAL_MS
+                                             : REALTIME_SNAPSHOT_IDLE_INTERVAL_MS;
+  if (!forceSnapshotPublish && !timeReached(now, lastSnapshotPublishAt + interval)) return;
+  portENTER_CRITICAL(&realtimeMux);
+  const bool valid = knownRuntimeValid;
+  const MachineRuntime rt = knownRuntime;
+  const uint32_t revision = realtimeConfigRevision;
+  portEXIT_CRITICAL(&realtimeMux);
+  if (valid && publishSnapshot(rt, revision)) {
+    forceSnapshotPublish = false;
+    lastSnapshotPublishAt = millis();
+  }
+}
+
 inline void serviceSnapshotPublish(uint32_t now) {
   // Future publisher decides when to call this. Preserve generic idle cadence.
   static MayapRealtimePublish::BootstrapState last{};
@@ -1320,10 +1392,20 @@ inline void serviceEventLogPublish() {
 inline void mayapRealtimeBegin() { MayapRealtimeInternal::ensureIdentity(); }
 inline void mayapMqttRecover(uint32_t) {}
 inline void mayapRealtimeUpdate(uint32_t now) {
-  // No transport is attached in the V4 clean baseline. Completion and expiry
-  // mailboxes remain intact for a future MQTT owner.
-  MayapRealtimeInternal::expirePendingCommands(now);
-  MayapRealtimeInternal::drainAckOutbox();
+  using namespace MayapRealtimeInternal;
+  // The owner drains inbound packets before this call and passes a fresh clock
+  // sample, so no incoming callback can stamp a time newer than `now`.
+  serviceSessionTimeout(now);
+  expirePendingCommands(now);
+  drainAckOutbox();
+  // Terminal ACKs above never wait; bulk reports defer while another TLS
+  // operation holds its transient working set.
+  MayapNetworkBatchOperation batch;
+  if (!batch) return;
+  serviceLiveSnapshot(now);
+  serviceConfigPublish();
+  serviceEventLogPublish();
+  serviceHistoryResponse();
 }
 
 // ------------------------- Hooks goi tu controlTask (machine_control.h) --------

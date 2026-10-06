@@ -42,10 +42,23 @@ test('Wi-Fi guide uses HMI, and ArduinoOTA has one empty tracked password source
   assert.doesNotMatch(publicBuild, /MAYAP_MQTT/);
 });
 
-test('production dependencies contain no broker library, fleet credential or MQTT browser bundle',()=>{
- assert.equal(fs.existsSync(path.resolve(__dirname,'../vendor/mqtt.min.js')),false);
- assert.equal(fs.existsSync(path.resolve(__dirname,'../MAYAP_INDUSTRIAL_v1_0_0/mqtt_transport.h')),false);
+test('transport policy: standard MQTT clients only, no HiveMQ/PubSubClient/DeviceHub/custom WebSocket, no tracked credentials',()=>{
+ const crypto=require('node:crypto');
+ const mqttJs=fs.readFileSync(path.resolve(__dirname,'../vendor/mqtt.min.js'));
+ assert.equal(crypto.createHash('sha256').update(mqttJs).digest('hex'),'13f43563b76f99bc60d278fd3f5d7056038d016fcb067310ff14591e73f3b9bb');
+ assert.match(read('vendor/README.md'),/MQTT\.js\*\* \*\*5\.13\.2\*\*|MQTT\.js \*\*5\.13\.2\*\*/);
+ const firmware=read('MAYAP_INDUSTRIAL_v1_0_0/mqtt_transport.h');
+ assert.match(firmware,/esp_mqtt_client_init/);
+ assert.match(firmware,/wss:\/\//);
+ assert.doesNotMatch(firmware,/PubSubClient|WebSocketsClient|WebSocketsServer|setInsecure|esp_websocket_client/);
  assert.doesNotMatch(read('MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h'),/PubSubClient|MqttTransport|MQTT_BROKER/);
  assert.doesNotMatch(read('.github/workflows/build-firmware.yml'),/PubSubClient|MAYAP_MQTT_/);
- assert.doesNotMatch(read('index.html'),/mqtt.min.js/);
+ assert.match(read('index.html'),/vendor\/mqtt\.min\.js/);
+ assert.match(read('index.html'),/mqtt_transport\.js/);
+ for (const file of ['app.js','mqtt_transport.js','config.js','config.production.example.js','cloudflare/src/account-worker.js',
+   'MAYAP_INDUSTRIAL_v1_0_0/mqtt_transport.h','MAYAP_INDUSTRIAL_v1_0_0/build_public.h','MAYAP_INDUSTRIAL_v1_0_0/config.h'])
+   assert.doesNotMatch(read(file),/hivemq/i,file);
+ // The fixture broker password is supplied at build time and must never be tracked.
+ assert.match(firmware,/#define MAYAP_BROKER_FIXTURE_PASSWORD ""/);
+ assert.doesNotMatch(read('MAYAP_INDUSTRIAL_v1_0_0/build_public.h'),/FIXTURE_PASSWORD/);
 });
