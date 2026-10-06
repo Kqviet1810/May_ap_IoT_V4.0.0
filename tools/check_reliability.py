@@ -77,7 +77,7 @@ require_re(config, rf'MAYAP_FIRMWARE_VERSION\[\]\s*=\s*"{re.escape(release)}"', 
 require(realtime, "checkReplaySequence(bodyDoc)", "signed application replay fence")
 require(realtime, "terminalCache[16]", "bounded terminal result cache")
 require(realtime, "PublishCallback publishCallback = nullptr", "disabled publisher")
-require(ino, "void mqttTask(void *parameter)", "reserved MQTT service")
+require(ino, "void mqttTask(void *parameter)", "MQTT owner service")
 for obsolete in ("DEVICE_HUB", "/realtime/", "MayapRealtime.Client"):
     if obsolete in wrangler + app + read("cloudflare/src/account-worker.js"):
         raise SystemExit("FAIL: old realtime architecture remains: " + obsolete)
@@ -85,12 +85,12 @@ if "PubSubClient" in build_workflow or "MAYAP_MQTT_" in build_workflow:
     raise SystemExit("FAIL: obsolete production broker dependency")
 require(build_workflow, "github.event_name == 'workflow_dispatch'", "manual test artifact gate")
 require(build_workflow, "firmware-test-${{ github.sha }}", "test artifact tied to commit SHA")
-require(build_workflow, 'test "$FLASH" -le 1380000', "V4 clean Flash budget")
-require(build_workflow, 'test "$STATIC_RAM" -le 145000', "V4 clean static RAM budget")
+require(build_workflow, 'test "$FLASH" -le 1380000', "V4 Flash budget")
+require(build_workflow, 'test "$STATIC_RAM" -le 155000', "V4 network-phase static RAM budget")
 require(ino, '"[HEAP] free=%lu min=%lu largest=%lu', "DEV/PILOT heap diagnostics")
 require(ino, "heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)", "largest allocatable heap diagnostic")
 require(ino, '"[TASK] stack ctrl=%u hmi=%u sup=%u net=%u mqtt=%u cloud=%u ota=%u', "all task stack diagnostics")
-require(ino, "constexpr size_t MQTT_TASK_STACK_BYTES = 4096U", "reserved MQTT task stack")
+require(ino, "constexpr size_t MQTT_TASK_STACK_BYTES = 12288U", "MQTT owner task stack (V2 budget)")
 require(app, "device.presenceEpoch === state.subscriptionEpoch && device.presence?.online === false", "device offline requires current presence")
 require(app, "Date.now() - device.snapshotAt > WEB.staleAfterMs", "snapshot freshness independent of presence/config")
 

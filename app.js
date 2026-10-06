@@ -74,6 +74,8 @@
     realtimeCredentials: null,
     syncRetryTimers: [],
     subscriptionRetryTimer: 0,
+    sessionTimer: 0,
+    realtimeExpiresAt: 0,
     staleTimer: 0,
     formFlags: new Map(),
     pending: new Map(),
@@ -105,12 +107,39 @@
     controlSessions.set(device.id, control);
     return control;
   }
+  // One in-flight /api/mqtt-session per device. The same reply carries the broker
+  // credentials and, for owners/operators, the signed control grant.
+  const mqttSessionRequests = new Map();
+  const readOnlyDevices = new Set();   // /api/mqtt-session returned control:null
+  function fetchMqttSession(device) {
+    const running = mqttSessionRequests.get(device.id);
+    if (running) return running;
+    const request = (async () => {
+      const reply = await postCloudJson('/api/mqtt-session',
+        { device_id: device.id, client_id: controlClientId }, 8000);
+      if (!reply.success || !reply.mqtt) {
+        const error = new Error(reply.status === 401 || reply.status === 403
+          ? 'Cần đăng nhập lại hoặc không có quyền với máy này'
+          : 'Chưa lấy được phiên kết nối máy chủ');
+        error.code = reply.status === 401 || reply.status === 403 ? 'AUTH_ERROR' : 'TRANSPORT_ERROR';
+        throw error;
+      }
+      if (reply.control) { readOnlyDevices.delete(device.id); await storeControlSession(device, reply.control); }
+      else readOnlyDevices.add(device.id);
+      return reply;
+    })().finally(() => mqttSessionRequests.delete(device.id));
+    mqttSessionRequests.set(device.id, request);
+    return request;
+  }
+
   async function controlSession(device) {
     const cached = controlSessions.get(device.id);
     if (cached && cached.expiresAt > Math.floor(Date.now() / 1000) + 30) return cached;
-    // No transport issues grants during the clean baseline phase.
-    // A click must never weaken command authentication.
-    const error = new Error('Đang chuẩn bị quyền điều khiển, vui lòng chờ');
+    await fetchMqttSession(device);
+    const control = controlSessions.get(device.id);
+    if (control) return control;
+    // A click must never weaken command authentication: viewers get no grant.
+    const error = new Error('Tài khoản này chỉ có quyền xem máy');
     error.code = 'AUTH_ERROR';
     throw error;
   }
@@ -452,6 +481,8 @@
     return postCloudJson('/api/device/change-pin', { device_id: deviceId, old_pin: oldPin, new_pin: newPin });
   }
 
+  // Key used to sign each envelope, so a grant refreshed meanwhile cannot change the ACK key.
+  const envelopeKeys = new WeakMap();
   async function signRealtimeWrite(device, channel, body) {
     if (!device?.pairingToken) {
       const error = new Error('Cần xác thực lại PIN: bấm + và thêm lại đúng ID thiết bị để làm mới quyền điều khiển.');
@@ -483,7 +514,9 @@
       const message = `mayap-mqtt-write:v2\n${device.id}\n${channel}\n${session.grant}\n${bodyText}`;
       const sig = Array.from(new Uint8Array(await crypto.subtle.sign('HMAC', session.key,
         encoder.encode(message))), (b) => b.toString(16).padStart(2, '0')).join('');
-      return { v: 2, grant: session.grant, grantSig: session.grantSig, body: bodyText, sig };
+      const envelope = { v: 2, grant: session.grant, grantSig: session.grantSig, body: bodyText, sig };
+      envelopeKeys.set(envelope, session.key);
+      return envelope;
     }
     const error = new Error('Firmware cũ chưa hỗ trợ giao thức V2. Hãy cập nhật máy để điều khiển từ Web.');
     error.code = 'PROTOCOL_ERROR';
@@ -1714,16 +1747,30 @@
   }
 
   function publish(route, payload, options = {}) {
-    // Transaction callers retain exact request IDs and UNCERTAIN semantics.
-    // Phase 1 deliberately has no network publisher.
-    const bytes = encoder.encode(JSON.stringify(payload)).length;
+    const wire = JSON.stringify(payload);
+    const bytes = encoder.encode(wire).length + encoder.encode(route.channel).length + PACKET_POLICY.FRAME_OVERHEAD;
     if (bytes > PACKET_POLICY.NORMAL_CAP) {
-      const error = new Error('Gói ứng dụng vượt giới hạn'); error.code = 'PROTOCOL_ERROR'; throw error;
+      const error = new Error(`Gói MQTT vượt giới hạn ${PACKET_POLICY.NORMAL_CAP} B (${bytes} B)`);
+      error.code = 'PROTOCOL_ERROR';
+      throw error;
     }
-    const error = new Error('Kênh điều khiển chưa được cấu hình');
-    error.code = 'TRANSPORT_ERROR';
-    if (options.awaitAck) return Promise.reject(error);
-    throw error;
+    const transport = state.realtime;
+    if (!transport || transport.deviceId !== route.deviceId || !transport.connected) {
+      const error = new Error('Chưa kết nối với máy chủ');
+      error.code = 'TRANSPORT_ERROR';
+      if (options.awaitAck) return Promise.reject(error);
+      throw error;
+    }
+    if (!options.awaitAck) return transport.publish(route.channel, wire, { qos: options.qos ?? 1 });
+    return transport.publish(route.channel, wire, { qos: 1 }).then(() => {
+      const id = options.requestId;
+      const pending = state.pending.get(id) || state.uncertain.get(id);
+      const tPuback = performance.now();
+      if (pending && pending.tBrokerPuback == null) pending.tBrokerPuback = tPuback;
+      const outcome = terminalOutcomes.get(id);
+      if (outcome && outcome.tBrokerPuback == null) outcome.tBrokerPuback = tPuback;
+      // Broker PUBACK is transport delivery only; the controller outcome is still pending.
+    });
   }
 
   function startTransaction(id, pending, timeoutMs) {
@@ -1752,6 +1799,8 @@
       // hien toast nhu mot thao tac that bai do nguoi dung vua thuc hien.
       if (pending.kind !== 'history')
         toast('Chưa nhận xác nhận cuối từ máy; kết quả chưa chắc chắn', 5000);
+      // Ask the device to republish state so a lost ACK can be reconciled.
+      if (device) sendSession(device.id, true, true);
     };
     state.pending.set(id, pending);
     return pending;
@@ -2603,7 +2652,7 @@
       if (Number(device.presence?.proto || 0) >= 2) {
         startTransaction(requestId, { kind: 'history', operation: 'history.read',
           deviceId: device.id }, 15_000);
-        state.pending.get(requestId).ackKey = controlSessions.get(device.id)?.key;
+        state.pending.get(requestId).ackKey = envelopeKeys.get(envelope) || controlSessions.get(device.id)?.key;
         armTransaction(requestId);
         transactionPublished(requestId);
       }
@@ -2792,16 +2841,208 @@
     state.currentActivityStartedAt = mode === 'idle' ? 0 : Date.now();
   }
 
-  function syncSelectedDevice() {
+  // ---- Realtime: MQTT 3.1.1 over WSS, one connection per selected device ------
+  let realtimeToken = 0;
+  let connectingDeviceId = '';
+
+  function sendSession(deviceId, active = true, sync = false) {
+    if (!state.realtime?.connected || state.realtime.deviceId !== deviceId) return;
+    try {
+      publish(routes(deviceId).session, { clientId: controlClientId, active,
+        ttlMs: active ? WEB.sessionTtlMs : 1000, sync }, { qos: 0 }).catch(() => {});
+    } catch (_) {}
+  }
+
+  function selectedNeedsSync() {
     const device = currentDevice();
+    return !device?.snapshotAt || Date.now() - device.snapshotAt > WEB.staleAfterMs ||
+      !device.config || !validateFullConfig(device.config) ||
+      Number(device.snapshot?.revision || 0) > Number(device.revision || 0);
+  }
+
+  function clearSyncRetries() {
+    state.syncRetryTimers.forEach(clearTimeout);
+    state.syncRetryTimers = [];
+  }
+
+  // Grants last 300 s and gate the controls (controlReady), so refresh before
+  // expiry instead of waiting for a click that the disabled UI would never allow.
+  function ensureControlGrant(device) {
+    if (readOnlyDevices.has(device.id)) return;
+    const control = controlSessions.get(device.id);
+    if (control && control.expiresAt > Math.floor(Date.now() / 1000) + 90) return;
+    fetchMqttSession(device).then(() => { if (device.id === state.selectedId) renderDevice(); }).catch(() => {});
+  }
+
+  // The broker token is short-lived and bound to this device and account: reconnect
+  // with a fresh one shortly before it expires or whenever the broker refuses it.
+  function renewDeviceChannel(device) {
+    if (!device || device.id !== state.selectedId) return;
+    disconnectDeviceChannel();
+    connectDeviceChannel(device).catch(console.error);
+  }
+
+  function activateSelectedSession(sync = false) {
+    clearInterval(state.sessionTimer);
+    clearSyncRetries();
+    const device = currentDevice();
+    if (!device || !state.realtime?.connected || state.realtime.deviceId !== device.id || document.hidden) return;
+    sendSession(device.id, true, sync);
+    if (sync) state.syncRetryTimers = [700, 1600].map((ms) => setTimeout(() => {
+      if (device.id === state.selectedId && !document.hidden && selectedNeedsSync()) sendSession(device.id, true, true);
+    }, ms));
+    // session is QoS 0: keep asking for sync until a complete config and a fresh
+    // snapshot arrive, then fall back to plain keep-alive refreshes.
+    state.sessionTimer = setInterval(() => {
+      if (state.realtimeExpiresAt && state.realtimeExpiresAt - Date.now() < 120000) return renewDeviceChannel(device);
+      ensureControlGrant(device);
+      sendSession(device.id, true, selectedNeedsSync());
+    }, WEB.sessionRefreshMs);
+  }
+
+  function deactivateSession() {
+    clearInterval(state.sessionTimer);
+    clearSyncRetries();
+    if (state.selectedId) sendSession(state.selectedId, false, false);
+  }
+
+  function setRealtimeStatus(sessionState, message) {
+    state.realtimeSessionState = sessionState;
+    state.realtimeMessage = message;
+    renderDevice();
+  }
+
+  function disconnectDeviceChannel() {
+    ++realtimeToken;
+    connectingDeviceId = '';
+    clearTimeout(state.subscriptionRetryTimer);
+    clearInterval(state.sessionTimer);
+    clearSyncRetries();
+    const previous = state.realtime;
+    state.realtime = null;
+    state.realtimeConnected = false;
+    state.subscriptionEpoch++;
+    state.subscriptions.clear();
+    previous?.end();
+  }
+
+  function dispatchRealtimeMessage(device, channel, payload) {
+    if (channel === 'presence') handlePresence(device, payload);
+    else if (channel === 'snapshot') handleSnapshot(device, payload);
+    else if (channel === 'config/reported') handleConfigReport(device, payload);
+    else if (channel === 'log') handleLog(device, payload);
+    else if (channel === 'history/reported') handleTemperatureHistory(device, payload);
+    else if (channel === 'ack') {
+      // The ACK must verify against the session key of the transaction it settles.
+      verifyDeviceAck(device, payload).then((valid) => {
+        if (valid) handleAck(device, payload);
+        else if (state.pending.has(String(payload.requestId || '')) ||
+            state.uncertain.has(String(payload.requestId || ''))) {
+          console.warn('[TX] PROTOCOL_ERROR: ACK không xác thực được');
+        }
+      }).catch((error) => console.error('[TX] ACK verify', error));
+    }
+  }
+
+  async function connectDeviceChannel(device) {
+    if (!device || connectingDeviceId === device.id) return;
+    disconnectDeviceChannel();
+    const token = realtimeToken;
+    connectingDeviceId = device.id;
+    setRealtimeStatus('connecting', 'Đang kết nối với máy…');
+    const retryLater = () => {
+      clearTimeout(state.subscriptionRetryTimer);
+      state.subscriptionRetryTimer = setTimeout(() => {
+        if (token === realtimeToken && device.id === state.selectedId) {
+          connectingDeviceId = '';
+          connectDeviceChannel(device);
+        }
+      }, 5000);
+    };
+    let reply;
+    try { reply = await fetchMqttSession(device); }
+    catch (error) {
+      if (token !== realtimeToken) return;
+      connectingDeviceId = '';
+      setRealtimeStatus(error.code === 'AUTH_ERROR' ? 'auth-required' : 'error',
+        error.code === 'AUTH_ERROR' ? error.message : 'Kết nối máy chủ gặp lỗi. Đang thử lại…');
+      retryLater();
+      return;
+    }
+    if (token !== realtimeToken) return;
+    state.realtimeExpiresAt = Number(reply.mqtt.expiresAt || 0) * 1000;
+    let transport;
+    try {
+    transport = window.MayapMqttTransport.create({
+      deviceId: device.id, url: reply.mqtt.url, username: reply.mqtt.username, password: reply.mqtt.password,
+      clientId: `mayap-web-${Array.from(crypto.getRandomValues(new Uint8Array(6)),
+        (b) => b.toString(16).padStart(2, '0')).join('')}`,
+      keepalive: WEB.keepaliveSeconds, reconnectPeriod: WEB.reconnectPeriodMs,
+      connectTimeout: WEB.connectTimeoutMs,
+      onMessage: (channel, payload) => {
+        if (token !== realtimeToken) return;
+        const target = state.devices.find((item) => item.id === device.id);
+        if (target) dispatchRealtimeMessage(target, channel, payload);
+      },
+      onState: (next, error) => {
+        if (token !== realtimeToken) return;
+        // Every connection change starts a new epoch so presence/snapshot from a
+        // previous socket can never prove the current device state.
+        state.subscriptionEpoch++;
+        state.subscriptions.clear();
+        if (next === 'subscribing') {
+          state.realtimeConnected = false;
+          setRealtimeStatus('connecting', 'Đang đăng ký kênh dữ liệu…');
+          return;
+        }
+        if (next === 'ready') {
+          state.realtimeConnected = true;
+          ensureControlGrant(device);
+          setRealtimeStatus('ready', 'Đã kết nối máy chủ');
+          activateSelectedSession(true);
+          return;
+        }
+        state.realtimeConnected = false;
+        clearInterval(state.sessionTimer);
+        clearSyncRetries();
+        // CONNACK 4/5: the token expired or was refused; fetch a new one.
+        if (next === 'error' && error && (error.code === 4 || error.code === 5)) {
+          setTimeout(() => { if (token === realtimeToken) renewDeviceChannel(device); }, 1000);
+        }
+        setRealtimeStatus(next === 'error' && !state.realtime ? 'error' : 'connecting',
+          next === 'reconnecting' ? 'Đang kết nối lại với máy…'
+            : next === 'offline' ? 'Thiết bị của bạn đang mất Internet'
+              : error ? 'Kết nối máy chủ gặp lỗi. Đang thử lại…' : 'Kết nối bị gián đoạn');
+      },
+    });
+    } catch (error) {
+      console.error(error);
+      connectingDeviceId = '';
+      setRealtimeStatus('error', 'Kết nối máy chủ gặp lỗi. Đang thử lại…');
+      retryLater();
+      return;
+    }
+    state.realtime = transport;
+  }
+
+  function syncSelectedDevice(force = false) {
+    const device = currentDevice();
+    if (!device) disconnectDeviceChannel();
+    else if (state.realtime?.deviceId !== device.id) connectDeviceChannel(device).catch(console.error);
+    else if (state.realtime.connected) activateSelectedSession(force);
     if (device?.config) applyConfigToUi(device, false);
     renderReminderList(device);
     renderDevice();
     renderPushStatus();
   }
 
+  let lastSyncRequestAt = 0;
   async function requestDeviceData(name) {
-    // Data requests are deferred until the next transport is implemented.
+    // config/log are republished by the device on a session sync request.
+    if (['config', 'log'].includes(name) && Date.now() - lastSyncRequestAt > 2000 && state.selectedId) {
+      lastSyncRequestAt = Date.now();
+      sendSession(state.selectedId, true, true);
+    }
     return ['config', 'history', 'log'].includes(name);
   }
 
@@ -3609,14 +3850,14 @@
     renderDevice();
   }
 
-  window.addEventListener('pagehide', () => persistRuntimeCache(currentDevice(), true));
+  window.addEventListener('pagehide', () => { persistRuntimeCache(currentDevice(), true); deactivateSession(); });
   window.addEventListener('resize', requestTemperatureChartRender, { passive: true });
   window.matchMedia?.('(prefers-color-scheme: dark)')?.addEventListener('change', () => {
     if (getThemePreference() === 'system') syncBrowserTheme();
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) persistRuntimeCache(currentDevice(), true);
-    else renderDevice();
+    if (document.hidden) { persistRuntimeCache(currentDevice(), true); deactivateSession(); }
+    else { renderDevice(); activateSelectedSession(true); }
   });
 
   let notesUi;

@@ -37,7 +37,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || inputs.source_ref }}
-
+          fetch-depth: 0
       - name: Cai Node.js
         uses: actions/setup-node@v7
         with:
@@ -97,3 +97,31 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy
+
+      - name: Trien khai broker MQTT (mayap-mqtt-broker)
+        working-directory: cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy -c wrangler-broker.toml
+
+      - name: Dong bo secret MQTT (neu da khai bao trong GitHub secrets)
+        working-directory: cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          MQTT_WEB_TOKEN_SECRET: ${{ secrets.MQTT_WEB_TOKEN_SECRET }}
+          MQTT_DEVICE_FIXTURE_PASSWORD: ${{ secrets.MQTT_DEVICE_FIXTURE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "$MQTT_WEB_TOKEN_SECRET" ]; then
+            printf '%s' "$MQTT_WEB_TOKEN_SECRET" | npx wrangler secret put BROKER_WEB_TOKEN_SECRET -c wrangler-broker.toml
+            printf '%s' "$MQTT_WEB_TOKEN_SECRET" | npx wrangler secret put MQTT_WEB_TOKEN_SECRET
+          else
+            echo "::warning::Chua co GitHub secret MQTT_WEB_TOKEN_SECRET - dat bang wrangler secret put (xem doc/MVP_BRINGUP.md)"
+          fi
+          if [ -n "$MQTT_DEVICE_FIXTURE_PASSWORD" ]; then
+            printf '%s' "$MQTT_DEVICE_FIXTURE_PASSWORD" | npx wrangler secret put BROKER_FIXTURE_DEVICE_PASSWORD -c wrangler-broker.toml
+          else
+            echo "::warning::Chua co GitHub secret MQTT_DEVICE_FIXTURE_PASSWORD"
+          fi

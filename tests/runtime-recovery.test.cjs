@@ -43,7 +43,17 @@ test('all service tasks admit and beat themselves, including isolation paths', (
     assert.match(source, new RegExp(`mayapServiceBeat\\(MayapRecovery::Service::${service}\\)`));
     assert.match(source, /mayapServiceRecoveryComplete/);
     if (service !== 'Mqtt') assert.match(source, /mayapServiceIsolated/);
-    else assert.match(source, /mayapSetRealtimeOnline\(false\)/);
+    else {
+      // The MQTT owner reports its real link state and delegates the gate protocol
+      // (isolation, radio quiet ACK, Cloud TLS yield) to the transport it owns.
+      assert.match(source, /mayapMqttTransportUpdate\(now\)/);
+      assert.match(source, /mayapSetRealtimeOnline\(online\)/);
+      const transport = read(dir + 'mqtt_transport.h');
+      assert.match(transport, /mayapServiceIsolated\(MayapRecovery::Service::Mqtt/);
+      assert.match(transport, /mayapOnlineOwnerQuiet\(MayapRecovery::Service::Mqtt\)/);
+      assert.match(transport, /mayapCloudTlsYieldRequested\(now\)/);
+      assert.match(transport, /MayapTlsOperation tls\(MayapTlsKind::Mqtt\)/);
+    }
     for (const prefix of source.split(/\bcontinue;/).slice(0,-1)) assert.match(prefix, /mayapServiceBeat/);
   }
 });

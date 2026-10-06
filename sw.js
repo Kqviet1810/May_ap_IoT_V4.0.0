@@ -7,7 +7,7 @@ const CACHE = 'mayap-web-v1.1.6';
 const REQUIRED_SHELL = [
   './', './styles.css', './landing.css', './account.js?v=1.1.6', './config.js?v=1.1.6',
   './app.js?v=1.1.6', './protocol_v2.js?v=1.1.6', './push.js?v=1.1.6',
-  './manifest.webmanifest', './vendor/jsQR.min.js',
+  './manifest.webmanifest', './vendor/jsQR.min.js', './vendor/mqtt.min.js', './mqtt_transport.js?v=1.1.6',
   './notes.js?v=1.1.6', './notes.css', './icons/icon-192.png', './icons/icon-512.png'
 ];
 const OPTIONAL_SHELL = [
@@ -122,7 +122,7 @@ self.addEventListener('fetch', (event) => {
   }
 
   // Pinned bundle reuses the current release cache.
-  if (/\/vendor\/jsQR\.min\.js$/.test(url.pathname)) {
+  if (/\/vendor\/(?:jsQR|mqtt)\.min\.js$/.test(url.pathname)) {
     event.respondWith(caches.open(CACHE).then(async (cache) => {
       const cached = await cache.match(event.request);
       if (cached) return cached;

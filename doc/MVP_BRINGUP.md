@@ -1,0 +1,73 @@
+# MVP bring-up: Web ↔ Cloudflare broker ↔ ESP32
+
+Kiến trúc: `Web (MQTT.js/WSS)` → `broker Durable Object` ← `ESP32 (esp-mqtt/WSS)`.
+Topic/QoS/retain theo [MQTT_CONTRACT.md](MQTT_CONTRACT.md); Transaction V2 theo
+[TRANSACTION_V2_SPEC.md](TRANSACTION_V2_SPEC.md). Auth Web là **token ký theo (thiết bị, tài khoản)**, sống 1 giờ, broker kiểm không cần D1; token của máy này vô dụng với máy khác.
+Auth ESP32 vẫn là **fixture** (mật khẩu thiết bị dùng chung đặt bằng secret) — cần thay bằng mật khẩu suy ra theo từng máy trước khi phát hành.
+
+## 1. Deploy broker (Worker riêng, không đụng Worker Push/account)
+
+```bash
+cd cloudflare
+npx wrangler deploy -c wrangler-broker.toml
+npx wrangler secret put BROKER_FIXTURE_DEVICE_PASSWORD -c wrangler-broker.toml   # ESP32 dùng
+npx wrangler secret put BROKER_WEB_TOKEN_SECRET        -c wrangler-broker.toml   # ký/kiểm token Web (cùng giá trị ở Worker account)
+```
+
+Không có hai secret này broker từ chối mọi kết nối (fail closed). Ghi lại host
+`mayap-mqtt-broker.<account>.workers.dev`.
+
+## 2. Worker account (cấp quyền cho Web)
+
+Thêm vào `[vars]` của `cloudflare/wrangler.toml` (không phải secret):
+
+```toml
+MQTT_BROKER_URL = "wss://mayap-mqtt-broker.<account>.workers.dev/mqtt"
+```
+
+và secret **trùng với `BROKER_WEB_TOKEN_SECRET`** của broker:
+
+```bash
+npx wrangler secret put MQTT_WEB_TOKEN_SECRET
+```
+
+`POST /api/mqtt-session` (đã đăng nhập Google) trả thông tin broker cho mọi thành viên của máy và
+**grant điều khiển đã ký** chỉ cho `owner/operator`. `viewer` chỉ xem.
+
+## 3. Firmware (Arduino IDE)
+
+Tạo file **không commit** `MAYAP_INDUSTRIAL_v1_0_0/build_local.h`:
+
+```cpp
+#define MAYAP_BROKER_HOST "mayap-mqtt-broker.<account>.workers.dev"
+#define MAYAP_BROKER_FIXTURE_PASSWORD "<cùng giá trị BROKER_FIXTURE_DEVICE_PASSWORD>"
+```
+
+Thiếu một trong hai, transport tự tắt và in `[MQTT] disabled: ...` (máy vẫn chạy bình thường).
+Board: ESP32-S3, PSRAM **Disabled**, đúng FQBN trong `build-firmware.yml`. Dùng bản DEV
+(`MAYAP_DIAGNOSTIC_SERIAL=1`) để thấy `[HEAP] free/min/largest` và `[MQTT] ...` trên Serial.
+
+Máy cần đã đăng ký Cloud (có `command_key` trong NVS) và đồng hồ hợp lệ (NTP) — firmware từ chối
+grant khi `time()` chưa hợp lệ.
+
+## 4. Kiểm trên máy thật (ghi lại kết quả)
+
+| # | Việc | Dấu hiệu đạt |
+|---|------|--------------|
+| 1 | Presence | Serial `[MQTT] connected MAP-…`; Web `data-connection=online`; rút nguồn/Wi-Fi → Web chuyển offline (LWT) |
+| 2 | Snapshot | Web mở tab thì nhiệt độ cập nhật ~1 s; đóng/ẩn tab thì giãn ra |
+| 3 | Bật/tắt đèn | Bấm nút Đèn → máy đổi trạng thái → Web hiện BẬT/TẮT sau ACK `APPLIED` |
+| 4 | Lưu cấu hình | Sửa SV ở form nhanh → máy lưu EEPROM → Web nhận `config/reported` |
+| 5 | ACK | Lệnh bị từ chối hiện "Máy từ chối: …"; không có ACK cuối thì Web báo "chưa chắc chắn" (không bao giờ coi PUBACK là đã thực hiện) |
+
+Số liệu cần ghi: `[HEAP] free/min/largest` sau 10 phút online; Flash/Static RAM từ log compile.
+
+## 5. Kiểm tự động không cần phần cứng
+
+```bash
+node --test tests/*.test.cjs                       # toàn bộ test (có policy guard + /api/mqtt-session)
+E2E_CHROMIUM=/opt/pw-browsers/chromium node tools/e2e/run_mvp.cjs   # Web thật + workerd thật + emulator thiết bị
+```
+
+`tools/e2e/device_emulator.cjs` là **emulator giao thức** (đọc từ `transaction_bridge.h`), không phải
+firmware: nó chứng minh Web/broker/định dạng HMAC, không chứng minh bộ điều khiển hay heap trên ESP32.

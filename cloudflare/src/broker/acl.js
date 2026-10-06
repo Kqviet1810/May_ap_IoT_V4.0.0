@@ -1,0 +1,161 @@
+// MAYAP V4 broker-lite - auth + ACL per doc/MQTT_CONTRACT.md §5.
+// Pure. No I/O. The DO owns credential resolution; this module just enforces
+// topic scope once the role is known.
+
+export const DEVICE_ID_RE = /^MAP-[0-9A-F]{12}$/;
+
+export const TOPIC_ROOT = 'mayap/v1';
+
+export const Topics = Object.freeze({
+  presence: 'presence',
+  snapshot: 'snapshot',
+  ack: 'ack',
+  log: 'log',
+  configReported: 'config/reported',
+  remindersReported: 'reminders/reported',
+  historyReported: 'history/reported',
+  command: 'command',
+  configSet: 'config/set',
+  remindersSet: 'reminders/set',
+  historyRequest: 'history/request',
+  session: 'session',
+});
+
+// Suffix lists keyed by role, enforced AFTER verifying the leading
+// `mayap/v1/<deviceId>/` prefix matches this DO's device.
+
+// Session (per V2): Web PUBLISHES to signal its active/ttl/sync; ESP32
+// SUBSCRIBES. Device never publishes, Web never subscribes.
+const DEVICE_PUB = new Set([
+  Topics.presence, Topics.snapshot, Topics.ack, Topics.log,
+  Topics.configReported, Topics.remindersReported, Topics.historyReported,
+]);
+
+const DEVICE_SUB = new Set([
+  Topics.command, Topics.configSet, Topics.remindersSet,
+  Topics.historyRequest, Topics.session,
+]);
+
+const WEB_PUB = new Set([
+  Topics.command, Topics.configSet, Topics.remindersSet,
+  Topics.historyRequest, Topics.session,
+]);
+
+const WEB_SUB = new Set([
+  Topics.presence, Topics.snapshot, Topics.ack, Topics.log,
+  Topics.configReported, Topics.remindersReported, Topics.historyReported,
+]);
+
+// Topics for which broker refuses to retain even if the publisher sets
+// retain=1. These must NEVER be stored (per §2).
+export const RETAIN_FORBIDDEN = new Set([
+  Topics.command, Topics.configSet, Topics.remindersSet,
+  Topics.historyRequest, Topics.snapshot, Topics.ack, Topics.log,
+  Topics.historyReported, Topics.configReported, Topics.session,
+]);
+
+// Topics that the contract explicitly allows to be retained.
+export const RETAIN_ALLOWED = new Set([Topics.presence, Topics.remindersReported]);
+
+// QoS cap per topic suffix (max QoS the broker will fan out at).
+export function topicQosCap(suffix) {
+  if (suffix === Topics.snapshot || suffix === Topics.log || suffix === Topics.session) return 0;
+  return 1;
+}
+
+// Required publish QoS per topic suffix (contract §2). PUBLISH packets whose
+// decoded QoS != this must be rejected: 0-QoS topics never get PUBACK, and
+// 1-QoS topics must come with a packetId so the broker-level reliability
+// stays intact. Mismatch → drop + close (second violation counts).
+const PUB_QOS_REQUIREMENT = Object.freeze({
+  [Topics.presence]: 1,
+  [Topics.snapshot]: 0,
+  [Topics.ack]: 1,
+  [Topics.log]: 0,
+  [Topics.configReported]: 1,
+  [Topics.remindersReported]: 1,
+  [Topics.historyReported]: 1,
+  [Topics.command]: 1,
+  [Topics.configSet]: 1,
+  [Topics.remindersSet]: 1,
+  [Topics.historyRequest]: 1,
+  [Topics.session]: 0,
+});
+
+export function requiredPublishQos(suffix) {
+  const q = PUB_QOS_REQUIREMENT[suffix];
+  return typeof q === 'number' ? q : -1;
+}
+
+export function parseTopic(deviceId, topic) {
+  const prefix = `${TOPIC_ROOT}/${deviceId}/`;
+  if (!topic.startsWith(prefix)) return { ok: false, reason: 'wrong device' };
+  const suffix = topic.slice(prefix.length);
+  if (suffix.length === 0) return { ok: false, reason: 'empty suffix' };
+  return { ok: true, suffix };
+}
+
+export function canPublish(role, deviceId, topic) {
+  const parsed = parseTopic(deviceId, topic);
+  if (!parsed.ok) return false;
+  const set = role === 'device' ? DEVICE_PUB : role === 'web' ? WEB_PUB : null;
+  if (!set) return false;
+  return set.has(parsed.suffix);
+}
+
+// Returns the granted QoS (0 or 1), or 0x80 (not authorized).
+export function evaluateSubscribe(role, deviceId, filter, requestedQos) {
+  const parsed = parseTopic(deviceId, filter);
+  if (!parsed.ok) return 0x80;
+  const set = role === 'device' ? DEVICE_SUB : role === 'web' ? WEB_SUB : null;
+  if (!set) return 0x80;
+  if (!set.has(parsed.suffix)) return 0x80;
+  const cap = topicQosCap(parsed.suffix);
+  return Math.min(requestedQos, cap);
+}
+
+// Credential resolution. Returns { role: 'device'|'web' } or null.
+//
+// device: MVP fixture (shared secret, username must equal this DO's device id).
+//         Replace with a per-device derived secret before production.
+// web:    a signed token bound to BOTH the device and the user, so a credential
+//         issued for one device is useless on every other device DO:
+//           password = "v1.<exp>.<hex HMAC-SHA256(secret,
+//                       'mayap-mqtt-web:v1\n<deviceId>\n<username>\n<exp>')>"
+//         Verified statelessly (no D1 in the connect path); lifetime is capped.
+export const WEB_TOKEN_MAX_TTL_SEC = 7200;
+
+const textEncoder = new TextEncoder();
+const hexToBytes = (hex) => new Uint8Array(hex.match(/../g).map((byte) => parseInt(byte, 16)));
+const bytesToHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+
+async function hmacKey(secret, usages) {
+  return crypto.subtle.importKey('raw', textEncoder.encode(String(secret)),
+    { name: 'HMAC', hash: 'SHA-256' }, false, usages);
+}
+
+export async function signWebToken(secret, deviceId, username, expiresAtSec) {
+  const mac = await crypto.subtle.sign('HMAC', await hmacKey(secret, ['sign']),
+    textEncoder.encode(`mayap-mqtt-web:v1\n${deviceId}\n${username}\n${expiresAtSec}`));
+  return `v1.${expiresAtSec}.${bytesToHex(new Uint8Array(mac))}`;
+}
+
+export async function verifyWebToken(secret, deviceId, username, token, nowMs = Date.now()) {
+  const match = /^v1\.(\d{1,12})\.([0-9a-f]{64})$/.exec(String(token || ''));
+  if (!secret || !match || !String(username || '').startsWith('web:')) return false;
+  const expiresAt = Number(match[1]), nowSec = Math.floor(nowMs / 1000);
+  if (expiresAt < nowSec || expiresAt > nowSec + WEB_TOKEN_MAX_TTL_SEC) return false;
+  return crypto.subtle.verify('HMAC', await hmacKey(secret, ['verify']), hexToBytes(match[2]),
+    textEncoder.encode(`mayap-mqtt-web:v1\n${deviceId}\n${username}\n${expiresAt}`));
+}
+
+export function makeCredentialResolver({ devicePassword, webTokenSecret } = {}) {
+  const dev = devicePassword == null || devicePassword === '' ? null : String(devicePassword);
+  const secret = webTokenSecret == null || webTokenSecret === '' ? null : String(webTokenSecret);
+  return async function resolve(deviceId, username, passwordBytes) {
+    const pwd = passwordBytes ? new TextDecoder('utf-8', { fatal: false }).decode(passwordBytes) : '';
+    if (dev && username === deviceId && pwd === dev) return { role: 'device' };
+    if (secret && await verifyWebToken(secret, deviceId, username, pwd)) return { role: 'web' };
+    return null;
+  };
+}

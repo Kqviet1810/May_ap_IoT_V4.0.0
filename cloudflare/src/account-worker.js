@@ -1,6 +1,7 @@
 import physicalWorker from './reliability-wrapper.js';
 import legacy from './index.js';
 import { randomToken, verifyDeviceKey, timingSafeEqual } from './auth.js';
+import { signWebToken } from './broker/acl.js';
 import { hash, json, session,
   deviceList, permission, createSession, verifyGoogle, controlGrant } from './account-auth.js';
 
@@ -223,6 +224,30 @@ async function revoke(env,id,sub) {
     env.DB.prepare('DELETE FROM push_subscriptions WHERE user_session_id=? AND user_sub=?').bind(id,sub),
   ]);
 }
+// Broker credentials for the Web: a short-lived token signed for THIS device and
+// THIS account (see broker/acl.js). The broker verifies it statelessly, so a token
+// for one device is rejected on every other device and expires on its own.
+const MQTT_WEB_TOKEN_TTL_SEC = 3600;
+async function brokerCredentials(env, auth, deviceId) {
+  if (!env.MQTT_BROKER_URL || !env.MQTT_WEB_TOKEN_SECRET) return null;
+  const username = `web:${auth.user_sub}`;
+  const expiresAt = Math.floor(Date.now() / 1000) + MQTT_WEB_TOKEN_TTL_SEC;
+  return { url:`${String(env.MQTT_BROKER_URL).replace(/\/+$/,'')}/${deviceId}`, username,
+    password:await signWebToken(env.MQTT_WEB_TOKEN_SECRET, deviceId, username, expiresAt), expiresAt, mode:'token' };
+}
+async function mqttSession(env, auth, data) {
+  const id=String(data.device_id || '').toUpperCase(), clientId=String(data.client_id || '');
+  if (!idRe.test(id) || !/^[A-Za-z0-9_-]{8,40}$/.test(clientId)) return json({success:false,error:'INVALID_REQUEST'},400);
+  if (!await permission(env,auth.user_sub,id,false)) return deny();
+  const mqtt=await brokerCredentials(env,auth,id);
+  if (!mqtt) return json({success:false,error:'MQTT_NOT_CONFIGURED'},503);
+  let control=null;
+  if (await permission(env,auth.user_sub,id,true)) {
+    try { control=await controlGrant(env,id,clientId); }
+    catch (_) { return json({success:false,error:'CONTROL_KEY_UNAVAILABLE'},503); }
+  }
+  return json({success:true,mqtt,control});
+}
 async function claim(request, env, auth, data) {
   const id=String(data.device_id || '').toUpperCase(), pin=String(data.pin || '');
   if (!idRe.test(id) || !/^[0-9]{4,8}$/.test(pin)) return json({success:false,error:'INVALID_CLAIM'},400);
@@ -288,6 +313,7 @@ async function fetchAccount(request, env, ctx) {
     await revoke(env,String(data.session_id || ''),auth.user_sub); return json({success:true});
   }
   if (path==='/api/account/devices/claim' && method==='POST') return claim(request,env,auth,data);
+  if (path==='/api/mqtt-session' && method==='POST') return mqttSession(env,auth,data);
   if (path==='/api/push/vapid-public-key' && method==='GET') return legacy.fetch(request,env,ctx);
   if (path==='/api/firmware/latest' && method==='GET') return legacy.fetch(request,env,ctx);
   const cloudDataMatch=path.match(/^\/api\/device\/(MAP-[A-F0-9]{12})\/(notes|reminders)(?:\/([0-9a-fA-F-]{36}))?$/);

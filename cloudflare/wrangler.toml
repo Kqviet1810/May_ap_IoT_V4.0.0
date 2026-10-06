@@ -18,6 +18,8 @@ REQUIRE_DEVICE_INVENTORY = "0"
 MAX_NEW_DEVICE_REGISTRATIONS_PER_HOUR = "20"
 # Cua so dem admission. Dat rieng de co the doi policy sau nay ma khong sua code.
 NEW_DEVICE_REGISTRATION_WINDOW_MINUTES = "60"
+# Broker MQTT/WSS rieng (Worker mayap-mqtt-broker). Khong phai secret.
+MQTT_BROKER_URL = "wss://mayap-mqtt-broker.vietk-mayaptrung.workers.dev/mqtt"
 [[d1_databases]]
 binding = "DB"
 database_name = "mayap_push"
@@ -31,3 +33,13 @@ crons = ["* * * * *"]
 directory = "./public"
 binding = "ASSETS"
 run_worker_first = ["/api/*"]
+
+# V4 bo Durable Object DeviceHub (WebSocket cu). Migration nay go bo lop DeviceHub
+# cu khoi Worker; D1 (users/devices/notes/reminders/push) khong bi anh huong.
+[[migrations]]
+tag = "device-hub-v1"
+new_sqlite_classes = ["DeviceHub"]
+
+[[migrations]]
+tag = "v4-retire-devicehub"
+deleted_classes = ["DeviceHub"]

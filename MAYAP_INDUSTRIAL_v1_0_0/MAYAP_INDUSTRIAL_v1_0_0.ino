@@ -36,6 +36,7 @@ void mayapI2cUnlock() {
 #include "hmi.h"
 #include "history_store.h"
 #include "transaction_bridge.h"
+#include "mqtt_transport.h"
 #include "cloud_alert_link.h"
 #include "attiny_bus.h"
 #include "machine_control.h"
@@ -50,7 +51,9 @@ constexpr uint32_t MQTT_TASK_PERIOD_MS = 20UL;
 constexpr uint32_t CLOUD_TASK_PERIOD_MS = 100UL;
 // Controller availability outranks connectivity. Heap pressure remains visible
 // through E401/E402, but an online workload may not reboot the machine.
-constexpr size_t MQTT_TASK_STACK_BYTES = 4096U; // Phase 1 reserved service, no network client.
+// Same budget as the V2 MQTT owner: publishAck/publishJson alone keep a 2 KiB
+// frame plus signing buffers on this stack.
+constexpr size_t MQTT_TASK_STACK_BYTES = 12288U;
 constexpr size_t CLOUD_TASK_STACK_BYTES = 12288U;
 
 static StaticTask_t controlTaskTcb;
@@ -302,18 +305,25 @@ void networkTask(void *parameter) {
   }
 }
 
-// Reserved MQTT service. No broker or transport runs in Phase 1.
+// MQTT service: the sole owner of the esp-mqtt client and of every Transaction V2
+// bridge call. The controller never waits on it (see mqtt_transport.h).
 void mqttTask(void *parameter) {
   (void)parameter;
   mayapServiceAdmit(MayapRecovery::Service::Mqtt);
   mayapRealtimeBegin();
+  mayapMqttTransportBegin();
   __atomic_store_n(&mqttReady, 1U, __ATOMIC_RELEASE);
   TickType_t lastWake = xTaskGetTickCount();
   for (;;) {
-    if (mayapServiceRecoveryRequested(MayapRecovery::Service::Mqtt))
+    const uint32_t now = millis();
+    if (mayapServiceRecoveryRequested(MayapRecovery::Service::Mqtt)) {
+      mayapMqttTransportRecover(now);
       mayapServiceRecoveryComplete(MayapRecovery::Service::Mqtt);
-    __atomic_store_n(&mqttConnected, 0U, __ATOMIC_RELEASE);
-    mayapSetRealtimeOnline(false);
+    }
+    mayapMqttTransportUpdate(now);
+    const bool online = mayapMqttTransportConnected();
+    __atomic_store_n(&mqttConnected, online ? 1U : 0U, __ATOMIC_RELEASE);
+    mayapSetRealtimeOnline(online);
     mayapServiceBeat(MayapRecovery::Service::Mqtt);
     vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(MQTT_TASK_PERIOD_MS));
   }

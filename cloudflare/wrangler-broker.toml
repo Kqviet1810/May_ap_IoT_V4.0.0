@@ -1,0 +1,19 @@
+name = "mayap-mqtt-broker"
+main = "src/broker/broker-entry.js"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Credentials are SECRETS, never committed and never declared under [vars] (an
+# empty var could shadow a secret):
+#   wrangler secret put BROKER_FIXTURE_DEVICE_PASSWORD -c wrangler-broker.toml   (ESP32, MVP fixture)
+#   wrangler secret put BROKER_WEB_TOKEN_SECRET        -c wrangler-broker.toml   (verifies Web tokens)
+# Without them the broker fails closed (no client can authenticate).
+# `wrangler dev` takes them with --var (see tools/e2e/run_mvp.cjs).
+
+[[durable_objects.bindings]]
+name = "MQTT_BROKER"
+class_name = "MqttBrokerDO"
+
+[[migrations]]
+tag = "v1-mqtt-broker"
+new_sqlite_classes = ["MqttBrokerDO"]
