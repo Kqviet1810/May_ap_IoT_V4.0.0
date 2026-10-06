@@ -27,6 +27,20 @@
 #ifndef MAYAP_BROKER_HOST
 #define MAYAP_BROKER_HOST "mayap-mqtt-broker.vietk-mayaptrung.workers.dev"
 #endif
+// Source-level bisection of the control-heartbeat trip (default build is unchanged):
+//   MAYAP_BISECT_MQTT_NO_START=1   variant A: esp_mqtt_client_init() runs, esp_mqtt_client_start() never does.
+//   MAYAP_BISECT_MQTT_DELAY_MS=N   variant B: no MQTT connect before N ms after boot.
+//   MAYAP_BISECT_MQTT_UNPINNED=1   keep esp-mqtt's task unpinned (the build that tripped).
+// Watchdog, heartbeat and safety logic are not touched by any of these.
+#ifndef MAYAP_BISECT_MQTT_NO_START
+#define MAYAP_BISECT_MQTT_NO_START 0
+#endif
+#ifndef MAYAP_BISECT_MQTT_DELAY_MS
+#define MAYAP_BISECT_MQTT_DELAY_MS 0
+#endif
+#ifndef MAYAP_BISECT_MQTT_UNPINNED
+#define MAYAP_BISECT_MQTT_UNPINNED 0
+#endif
 #ifndef MAYAP_BROKER_PORT
 #define MAYAP_BROKER_PORT 443
 #endif
@@ -246,7 +260,14 @@ inline bool connectClient(uint32_t now) {
   client = esp_mqtt_client_init(&cfg);
   if (!client) return false;
   esp_mqtt_client_register_event(client, MQTT_EVENT_ANY, eventHandler, nullptr);
+#if MAYAP_BISECT_MQTT_NO_START
+  // Variant A: init done, start deliberately skipped. Fail this attempt (normal backoff).
+  mayapSerialPrintf(false, "[BISECT] A: esp_mqtt_client_init done, esp_mqtt_client_start SKIPPED\n");
+  stopClient(false);
+  return false;
+#endif
   if (esp_mqtt_client_start(client) != ESP_OK) { stopClient(false); return false; }
+#if !MAYAP_BISECT_MQTT_UNPINNED
   // esp-mqtt creates its task unpinned, so the TLS/WSS handshake may run on core 1
   // next to control/supervisor/HMI. Keep it on core 0 with the other Online tasks.
   if (vTaskCoreAffinitySet) {
@@ -260,6 +281,7 @@ inline bool connectClient(uint32_t now) {
   } else {
     mayapSerialPrintf(false, "[MQTT] pin skipped: vTaskCoreAffinitySet unavailable\n");
   }
+#endif
 
   const uint32_t startedAt = millis();
   while (!__atomic_load_n(&evConnected, __ATOMIC_ACQUIRE)) {
@@ -316,6 +338,9 @@ inline void drainInbound() {
 inline void mayapMqttTransportBegin() {
   MayapRealtimeInternal::publishCallback = MayapMqttInternal::publishFromBridge;
   MayapMqttInternal::backoff.reset(millis());
+  mayapSerialPrintf(false, "[BISECT] variant: noStart=%d delayMs=%lu unpinned=%d\n",
+                    MAYAP_BISECT_MQTT_NO_START, static_cast<unsigned long>(MAYAP_BISECT_MQTT_DELAY_MS),
+                    MAYAP_BISECT_MQTT_UNPINNED);
   if (!MayapMqttInternal::configured())
     mayapSerialPrintf(false, "[MQTT] idle: waiting for the per-device credential from /api/device/register\n");
 }
@@ -336,6 +361,19 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
     return;
   }
   if (!configured()) return;
+#if MAYAP_BISECT_MQTT_DELAY_MS
+  {
+    // Variant B: hold the whole MQTT connect path until N ms after boot.
+    static bool bisectLogged = false;
+    if (millis() < static_cast<uint32_t>(MAYAP_BISECT_MQTT_DELAY_MS)) return;
+    if (!bisectLogged) {
+      bisectLogged = true;
+      mayapSerialPrintf(false, "[BISECT] B: MQTT connect allowed now (t=%lu ms, delay=%lu ms)\n",
+                        static_cast<unsigned long>(millis()),
+                        static_cast<unsigned long>(MAYAP_BISECT_MQTT_DELAY_MS));
+    }
+  }
+#endif
   const NetworkStatus status = mayapGetRawNetworkStatus();
   const bool staOnline = status.requestedMode == ConnectivityMode::Online && status.connected;
   if (!staOnline) {

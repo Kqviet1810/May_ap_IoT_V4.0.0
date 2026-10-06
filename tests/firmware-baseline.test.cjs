@@ -102,3 +102,16 @@ test('control trip separates "not scheduled" from "stuck in Machine.update", and
  assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/config.h'),/CONTROL_HEARTBEAT_TIMEOUT_MS = 500UL/);
  assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/config.h'),/CONTROL_WDT_TIMEOUT_MS = 5000UL/);
 });
+
+test('bisect switches are compile-time only, default off, and never touch watchdog/heartbeat/safety', () => {
+ const mqtt=read('MAYAP_INDUSTRIAL_v1_0_0/mqtt_transport.h');
+ assert.match(mqtt,/#define MAYAP_BISECT_MQTT_NO_START 0/);
+ assert.match(mqtt,/#define MAYAP_BISECT_MQTT_DELAY_MS 0/);
+ assert.match(mqtt,/#define MAYAP_BISECT_MQTT_UNPINNED 0/);
+ assert.ok(mqtt.indexOf('MAYAP_BISECT_MQTT_NO_START')<mqtt.indexOf('esp_mqtt_client_start(client)'));
+ const wf=read('.github/workflows/build-firmware.yml');
+ assert.match(wf,/MAYAP_BISECT_MQTT_NO_START=1/);
+ assert.match(wf,/MAYAP_BISECT_MQTT_DELAY_MS=60000/);
+ assert.match(wf,/firmware-bisect\${{ inputs.bisect }}-/);
+ assert.doesNotMatch(wf,/WDT|HEARTBEAT/);
+});

@@ -10,6 +10,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      bisect:
+        description: 'Bisect build (control-heartbeat trip): none | A (skip esp_mqtt_client_start) | B (MQTT connect delayed 60 s, unpinned)'
+        required: false
+        default: 'none'
 
 permissions:
   contents: write
@@ -207,6 +212,15 @@ jobs:
             echo "MAYAP_BUILD_PROFILE=DEV" >> "$GITHUB_ENV"
             echo "MAYAP_CPP_FLAGS=-DMAYAP_DIAGNOSTIC_SERIAL=1 -DMAYAP_SERIAL_INPUT_SIM=0" >> "$GITHUB_ENV"
           fi
+          # Manual bisect builds only; watchdog/heartbeat/safety are unchanged.
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" != refs/tags/* ]]; then
+            case "${{ inputs.bisect }}" in
+              A) echo "MAYAP_BUILD_PROFILE=PILOT-BISECT-A" >> "$GITHUB_ENV"
+                 echo "MAYAP_CPP_FLAGS=-DMAYAP_DIAGNOSTIC_SERIAL=1 -DMAYAP_SERIAL_INPUT_SIM=0 -DMAYAP_BISECT_MQTT_NO_START=1 -DMAYAP_BISECT_MQTT_UNPINNED=1" >> "$GITHUB_ENV" ;;
+              B) echo "MAYAP_BUILD_PROFILE=PILOT-BISECT-B" >> "$GITHUB_ENV"
+                 echo "MAYAP_CPP_FLAGS=-DMAYAP_DIAGNOSTIC_SERIAL=1 -DMAYAP_SERIAL_INPUT_SIM=0 -DMAYAP_BISECT_MQTT_DELAY_MS=60000 -DMAYAP_BISECT_MQTT_UNPINNED=1" >> "$GITHUB_ENV" ;;
+            esac
+          fi
 
       - name: Bien dich firmware ESP32
         shell: bash
@@ -249,7 +263,7 @@ jobs:
           ls -la ./build-attiny/*.hex
 
       - name: Luu firmware test
-        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        if: (github.event_name == 'workflow_dispatch' && inputs.bisect != 'A' && inputs.bisect != 'B') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/upload-artifact@v6
         with:
           name: firmware-test-${{ github.sha }}
@@ -259,6 +273,17 @@ jobs:
             ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.elf
             ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.map
             ./build-attiny/ATTINY13A_POWER_ALARM.hex
+          retention-days: 7
+
+      - name: Luu firmware bisect A/B
+        if: github.event_name == 'workflow_dispatch' && (inputs.bisect == 'A' || inputs.bisect == 'B')
+        uses: actions/upload-artifact@v6
+        with:
+          name: firmware-bisect${{ inputs.bisect }}-${{ github.sha }}
+          path: |
+            ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.bin
+            ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.merged.bin
+            ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.elf
           retention-days: 7
 
       - name: Doi ten file .bin theo tag
