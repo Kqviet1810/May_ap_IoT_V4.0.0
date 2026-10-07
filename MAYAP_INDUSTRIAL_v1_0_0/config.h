@@ -676,7 +676,12 @@ constexpr char SAFETY_NVS_TURN_STREAK_KEY[] = "turn_streak";
 constexpr char SAFETY_NVS_OVERDUE_KEY[] = "batch_overdue";
 constexpr uint32_t RUNTIME_TO_HMI_MS = 200UL;
 constexpr uint32_t DIAGNOSTIC_STATUS_MS = 10000UL;
-constexpr bool SERIAL_DEBUG_DEFAULT_ON = false;
+// Test/bench builds (workflow_dispatch PILOT) start with the debug log already ON so a flashed board
+// prints without typing LOG; production and PR builds keep it OFF until the LOG command.
+#ifndef MAYAP_SERIAL_DEBUG_DEFAULT_ON
+#define MAYAP_SERIAL_DEBUG_DEFAULT_ON 0
+#endif
+constexpr bool SERIAL_DEBUG_DEFAULT_ON = MAYAP_SERIAL_DEBUG_DEFAULT_ON != 0;
 constexpr uint32_t CONTROL_TASK_PERIOD_MS = 5UL;
 constexpr uint32_t HMI_TASK_PERIOD_MS = 5UL;
 constexpr uint32_t SUPERVISOR_TASK_PERIOD_MS = 50UL;
