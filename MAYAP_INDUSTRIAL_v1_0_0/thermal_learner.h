@@ -67,6 +67,7 @@ constexpr float HoldMaxFallPct = 4.0f;            //   after a disturbance ends:
 constexpr float HoldMismatchAbsPct = 5.0f;        // plant-change evidence: observed hold differs from the profile by
 constexpr float HoldMismatchRel = 0.25f;          //   max(5 pp, 25 %) ...
 constexpr float HoldMismatchSigmas = 2.5f;        //   ... and 2.5 sigma of the window-to-window scatter
+constexpr float SensorLsbC = 0.1f;                //   (+ one sensor LSB of window drift, as duty)
 constexpr uint16_t HoldMismatchRuns = 3;          //   ... for this many consecutive windows (same sign)
 constexpr uint32_t MismatchRefractoryMs = 1200000;  // 20 min between two plant-change declarations
 constexpr uint16_t HoldAgreeRuns = 4;             // agreement for this many windows ends a mismatch
@@ -451,7 +452,7 @@ class ThermalLearner {
   // equilibrium duty). The reference is FIXED when a deviating run starts, so the profile following
   // the change cannot make the evidence disappear; the threshold also grows with the observed
   // window-to-window scatter, so a loop that limit-cycles does not cry wolf.
-  void evaluateHoldWindow(float obs, float profileHold) {
+  void evaluateHoldWindow(float obs, float profileHold, float quantPp) {
     const float ref = holdMismatchRun_ == 0 ? profileHold : holdRef_;
     if (holdObsSeen_ && holdMismatchRun_ == 0) {
       const float c = std::min(20.0f, std::max(-20.0f, obs - lastHoldObs_));
@@ -460,7 +461,9 @@ class ThermalLearner {
     }
     lastHoldObs_ = obs; holdObsSeen_ = true;
     const float sigma = std::sqrt(std::max(0.0f, holdDevVar_));
-    const float thr = std::max(std::max(Policy::HoldMismatchAbsPct, Policy::HoldMismatchRel * std::max(ref, 1.0f)),
+    // A 'flat' window still hides up to one sensor LSB of drift; on a heavy, low-gain plant that is
+    // many percentage points of duty, so the threshold carries that quantisation floor.
+    const float thr = std::max(std::max(Policy::HoldMismatchAbsPct, Policy::HoldMismatchRel * std::max(ref, 1.0f)) + quantPp,
                                Policy::HoldMismatchSigmas * sigma);
     const float dev = obs - ref;
     const int sign = dev > 0 ? 1 : -1;
@@ -550,7 +553,7 @@ class ThermalLearner {
       }
       // Plant-change evidence: FLAT windows only (equilibrium duty is a direct measurement), compared
       // with a FIXED reference taken when a deviating run starts.
-      if (flat && holdWindows_ >= Policy::HoldFormingWindows) evaluateHoldWindow(obs, profileHoldBefore);
+      if (flat && holdWindows_ >= Policy::HoldFormingWindows) evaluateHoldWindow(obs, profileHoldBefore, 100.0f * Policy::SensorLsbC / (std::max(profile_.heaterGain, Limits::GainMin) * spanS));
       ++holdWindows_;
     }
     hold_.active = false;  // next window starts on the next sample

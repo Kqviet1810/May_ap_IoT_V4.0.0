@@ -7,7 +7,7 @@ using namespace sim;
 
 static const char *HEADER =
     "label,class,mode,sp,eff,capacity,loss,dead,lag,ambient,resolution,overshoot,mae,p95,ripple,settling,rise_s,high,emergency,energy_j,target,"
-    "confidence,state,kh_err_pct,delay_err_s,hold_err_pp,coast_err_c,t_qualified_s,gain,delay,hold,coast,pred_err,outliers,saves\n";
+    "confidence,state,kh_err_pct,delay_err_s,hold_err_pp,coast_err_c,t_qualified_s,gain,delay,hold,coast,pred_err,outliers,saves,mismatch\n";
 
 static void row(std::ostream &o, const std::string &label, const Plant &p, const Scenario &sc, const Result &r) {
   o << label << ',' << reachName(r.reach) << ',' << modeName(sc.mode) << ',' << sc.sp << ',' << p.eff << ',' << p.capacity << ','
@@ -15,7 +15,7 @@ static void row(std::ostream &o, const std::string &label, const Plant &p, const
     << r.p95 << ',' << r.ripple << ',' << r.settling << ',' << r.riseS << ',' << r.high << ',' << r.emergency << ',' << r.energyJ << ','
     << (r.pass ? "PASS" : "FAIL") << ',' << r.confidence << ',' << MayapThermal::learnStateName(static_cast<MayapThermal::LearnState>(r.state))
     << ',' << r.khEstErrPct << ',' << r.delayErrS << ',' << r.holdErrPp << ',' << r.coastErrC << ',' << r.timeQualifiedS << ','
-    << r.gainEst << ',' << r.delayEst << ',' << r.holdEst << ',' << r.coastEst << ',' << r.predErr << ',' << r.outliers << ',' << r.saves << '\n';
+    << r.gainEst << ',' << r.delayEst << ',' << r.holdEst << ',' << r.coastEst << ',' << r.predErr << ',' << r.outliers << ',' << r.saves << ',' << r.mismatchEvents << '\n';
 }
 
 // ---------------------------------------------------------------------------------------------
