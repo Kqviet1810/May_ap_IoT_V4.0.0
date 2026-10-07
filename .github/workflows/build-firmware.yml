@@ -235,6 +235,27 @@ jobs:
             --verbose \
             MAYAP_INDUSTRIAL_v1_0_0 2>&1 | tee /tmp/mayap-compile.log
 
+      - name: Report OTA feature state and linked OTA members (size attribution)
+        shell: bash
+        run: |
+          set -uo pipefail
+          MAP=$(ls build/*.map | head -n 1)
+          if grep -q '^#define MAYAP_OTA_PASSWORD ""' MAYAP_INDUSTRIAL_v1_0_0/build_public.h; then
+            echo "OTA password: EMPTY -> mayapOtaEnabled()==false"
+          else
+            LEN=$(sed -n 's/^#define MAYAP_OTA_PASSWORD "\(.*\)"$/\1/p' MAYAP_INDUSTRIAL_v1_0_0/build_public.h | tr -d '\n' | wc -c)
+            echo "OTA password: SET (length ${LEN}) -> mayapOtaEnabled()==true"
+          fi
+          echo "profile=${MAYAP_BUILD_PROFILE} event=${GITHUB_EVENT_NAME}"
+          for lib in ArduinoOTA ESPmDNS Update WiFiUdp mdns; do
+            echo "linked archive members from ${lib}: $(grep -cE "(lib${lib}\.a|/${lib}/).*\.o" "$MAP" || true)"
+          done
+          grep -E "ArduinoOTA|ESPmDNS|libUpdate|Update\.cpp|mdns" "$MAP" | grep -E "\.o\)?$" | sort -u | head -n 30
+          SIZE=$(find "$HOME/.arduino15/packages/esp32/tools" -type f -name 'xtensa-esp32s3-elf-size' -print -quit)
+          ELF=$(ls build/*.elf | head -n 1)
+          [ -n "$SIZE" ] && "$SIZE" -A "$ELF" | grep -E "^\.(flash|iram0|dram0)\.[a-z_]+|Total"
+          echo "compile summary: $(grep -E 'Sketch uses|Global variables use' /tmp/mayap-compile.log | tr '\n' ' ')"
+
       - name: Verify MQTT/TLS owner is native (no esp-mqtt, no extra task, no linker hack)
         shell: bash
         run: |
