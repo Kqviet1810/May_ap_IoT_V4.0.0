@@ -97,6 +97,24 @@ export class MqttBrokerDO {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
+    await this.acceptConnection(server, deviceId);
+    return new Response(null, {
+      status: 101,
+      webSocket: client,
+      headers: { 'Sec-WebSocket-Protocol': 'mqtt' },
+    });
+  }
+
+  // Transport-independent part of an accepted connection: `server` is any
+  // WebSocket-like object (Workers WebSocket, or the Node runtime's wrapper for a
+  // WSS or raw MQTT/TLS socket, see broker/runtime-node.js). The same packet
+  // handling, ACL, retained store, LWT and takeover rules then apply to every
+  // transport, which is what makes ESP32 (TLS) and Web (WSS) share one session logic.
+  async acceptConnection(server, deviceId) {
+    if (!this.deviceId) {
+      this.deviceId = deviceId;
+      await this.storage.put('deviceId', deviceId);
+    }
     this.state.acceptWebSocket(server);
     // Initial attachment — anonymous, awaiting CONNECT.
     server.serializeAttachment({
@@ -106,11 +124,6 @@ export class MqttBrokerDO {
       bufferB64: '',
     });
     await this._scheduleAlarm();
-    return new Response(null, {
-      status: 101,
-      webSocket: client,
-      headers: { 'Sec-WebSocket-Protocol': 'mqtt' },
-    });
   }
 
   // ------------- Hibernation callbacks ------------------------------------

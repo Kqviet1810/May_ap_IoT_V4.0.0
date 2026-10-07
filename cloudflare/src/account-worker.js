@@ -228,11 +228,14 @@ async function revoke(env,id,sub) {
 // THIS account (see broker/acl.js). The broker verifies it statelessly, so a token
 // for one device is rejected on every other device and expires on its own.
 const MQTT_WEB_TOKEN_TTL_SEC = 3600;
+// Web endpoint: MQTT_BROKER_URL, or wss://<MQTT_BROKER_HOST>/mqtt. The same host serves the
+// ESP32 over MQTT/TLS (index.js returns it at /api/device/register): one broker, one topic space.
+const brokerWebUrl = (env) => String(env.MQTT_BROKER_URL || (env.MQTT_BROKER_HOST ? `wss://${env.MQTT_BROKER_HOST}/mqtt` : ''));
 async function brokerCredentials(env, auth, deviceId) {
-  if (!env.MQTT_BROKER_URL || !env.MQTT_WEB_TOKEN_SECRET) return null;
+  if (!brokerWebUrl(env) || !env.MQTT_WEB_TOKEN_SECRET) return null;
   const username = `web:${auth.user_sub}`;
   const expiresAt = Math.floor(Date.now() / 1000) + MQTT_WEB_TOKEN_TTL_SEC;
-  return { url:`${String(env.MQTT_BROKER_URL).replace(/\/+$/,'')}/${deviceId}`, username,
+  return { url:`${brokerWebUrl(env).replace(/\/+$/,'')}/${deviceId}`, username,
     password:await signWebToken(env.MQTT_WEB_TOKEN_SECRET, deviceId, username, expiresAt), expiresAt, mode:'token' };
 }
 async function mqttSession(env, auth, data) {

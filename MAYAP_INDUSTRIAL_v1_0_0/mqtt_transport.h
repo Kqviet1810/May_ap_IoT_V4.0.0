@@ -5,83 +5,61 @@
 #include "network_io_guard.h"
 #include "service_recovery.h"
 #include "network_service.h"
+#include "mqtt_wire.h"
 #include "transaction_bridge.h"
 #include <Arduino.h>
-#include <mqtt_client.h>
+#include <WiFiClientSecure.h>
+#include <time.h>
 
-// MQTT 3.1.1 over WSS to the broker, using the ESP-IDF esp-mqtt client (standard
-// WebSocket transport, TLS verified against TLS_ROOT_CA). Contract:
-// doc/MQTT_CONTRACT.md. This file is a transport only: request ids, signatures,
-// replay protection and APPLIED/REJECTED stay in transaction_bridge.h, and the
-// controller never depends on this link (Online services may stop at any time).
+// Native MQTT 3.1.1 over TLS (TCP, port 8883) to the broker. Contract:
+// doc/MQTT_CONTRACT.md. Same shape as the V2 owner: ONE static WiFiClientSecure, touched
+// only by mqttTask (static task pinned to core 0 by the sketch, same task as every Transaction
+// V2 bridge call), bounded static buffers, no extra task, no heap churn per message.
+// There is no WebSocket and no esp-mqtt: the protocol is mqtt_wire.h, host-tested against
+// the broker's codec. The controller (core 1) never waits on any of this.
 //
-// Threading: esp-mqtt runs its own task. Its event handler only copies bounded
-// inbound packets into a 2-slot ring and sets flags; every bridge call happens in
-// mqttTask (the single owner), exactly like the previous transport.
-//
-// Credentials: the broker host is public and tracked below (override with
-// -DMAYAP_BROKER_HOST for a private broker). The per-device password is NOT in
-// the source or the binary: the account Worker returns it at /api/device/register
-// and the firmware keeps it in NVS (mayapMqttKey). Until the device has
-// registered, the transport stays idle.
+// Endpoint/credentials: nothing secret and nothing broker-specific is compiled in. The
+// account Worker returns the broker host/port and this device's own password from
+// /api/device/register; they live in NVS (device_identity.h). MAYAP_BROKER_HOST only
+// provides a default for a private build. Until both exist the transport stays idle.
 #ifndef MAYAP_BROKER_HOST
-#define MAYAP_BROKER_HOST "mayap-mqtt-broker.vietk-mayaptrung.workers.dev"
-#endif
-// Source-level bisection of the control-heartbeat trip (default build is unchanged):
-//   MAYAP_BISECT_MQTT_NO_START=1   variant A: esp_mqtt_client_init() runs, esp_mqtt_client_start() never does.
-//   MAYAP_BISECT_MQTT_DELAY_MS=N   variant B: no MQTT connect before N ms after boot.
-// Watchdog, heartbeat and safety logic are not touched by any of these.
-#ifndef MAYAP_BISECT_MQTT_NO_START
-#define MAYAP_BISECT_MQTT_NO_START 0
-#endif
-#ifndef MAYAP_BISECT_MQTT_DELAY_MS
-#define MAYAP_BISECT_MQTT_DELAY_MS 0
+#define MAYAP_BROKER_HOST ""
 #endif
 #ifndef MAYAP_BROKER_PORT
-#define MAYAP_BROKER_PORT 443
+#define MAYAP_BROKER_PORT 8883
 #endif
-
-// esp-mqtt's task is pinned to core 0 at CREATION by the xTaskCreate link-time wrap in
-// mqtt_core_pin.cpp (the arduino-esp32 libs are prebuilt with
-// CONFIG_MQTT_TASK_CORE_SELECTION_ENABLED unset, so the Kconfig route is not available).
-// logTaskPlacement() below reports the core it really runs on.
 
 namespace MayapMqttInternal {
 
-constexpr char BROKER_HOST[] = MAYAP_BROKER_HOST;
-constexpr uint16_t BROKER_PORT = MAYAP_BROKER_PORT;
 constexpr char TOPIC_ROOT[] = "mayap/v1";
-constexpr uint16_t KEEPALIVE_SEC = 30U;            // contract: 30..120
-constexpr int NETWORK_TIMEOUT_MS = 8000;
-constexpr uint32_t CONNECT_DEADLINE_MS = 15000UL;
-constexpr size_t PACKET_BUFFER = 2560U;            // topic + header + 2048 B payload
-constexpr uint8_t INBOUND_SLOTS = 2U;
+constexpr uint16_t KEEPALIVE_SEC = 30U;             // contract: 30..120
+constexpr size_t PACKET_BUFFER = 2560U;             // topic + header + 2048 B payload
 constexpr uint8_t QOS1_INFLIGHT_MAX = 4U;
 constexpr uint32_t QOS1_STUCK_MS = 15000UL;
-constexpr int ESP_MQTT_TASK_STACK = 6144;
-constexpr UBaseType_t ESP_MQTT_TASK_PRIORITY = 2U;
+constexpr uint32_t STEP_TIMEOUT_MS = 5000UL;        // CONNACK / SUBACK wait
+constexpr uint32_t CLOCK_VALID_AFTER = 1700000000UL; // TLS certificate dates need real time
+constexpr uint8_t PUMP_PACKET_BUDGET = 8U;
 
-struct Inbound {
-  uint16_t length = 0U;
-  char channel[20] = "";
-  uint8_t data[MayapProtocol::FRAME_NORMAL_CAP];
-};
-static Inbound inbound[INBOUND_SLOTS];
-static uint32_t inboundHead = 0U, inboundTail = 0U;  // producer: esp-mqtt, consumer: mqttTask
+static WiFiClientSecure net;                        // owner: mqttTask only
+static uint8_t txBuffer[PACKET_BUFFER];
+static uint8_t rxBuffer[PACKET_BUFFER];
+static MayapMqttWire::StreamParser parser(rxBuffer, sizeof(rxBuffer));
 
-static esp_mqtt_client_handle_t client = nullptr;
-static char uri[128] = "";
 static char clientId[32] = "";
 static char prefix[40] = "";
 static size_t prefixLength = 0U;
 static char willTopic[64] = "";
 static constexpr char WILL_MESSAGE[] = "{\"online\":false}";
 
-static volatile uint8_t evConnected = 0U, evDisconnected = 0U, evSubscribeRejected = 0U;
-static volatile uint8_t qos1Inflight = 0U;
-static volatile uint32_t droppedInbound = 0U, droppedOversize = 0U;
-static bool connected = false, ioEntered = false;
-static uint32_t qos1StuckSince = 0U, lastDiagAt = 0U;
+static bool connected = false, ioEntered = false, netConfigured = false, linkFailed = false;
+static uint16_t nextPacketId = 1U;
+static uint16_t inflightId[QOS1_INFLIGHT_MAX];
+static uint32_t inflightAt[QOS1_INFLIGHT_MAX];
+static uint8_t inflightCount = 0U;
+static uint32_t lastRxAt = 0U, lastTxAt = 0U, lastDiagAt = 0U;
+static uint32_t droppedOversize = 0U, droppedForeign = 0U;
+static uint8_t carry[128];                          // bytes that followed a handshake packet
+static size_t carryLength = 0U;
 static BackoffTimer backoff{};
 
 struct ChannelPolicy { const char *channel; uint8_t qos; bool retain; };
@@ -92,68 +70,44 @@ static constexpr ChannelPolicy POLICY[] = {
   {"config/reported", 1, false}, {"history/reported", 1, false},
 };
 
-inline bool configured() { return BROKER_HOST[0] != '\0' && mayapMqttKey()[0] != '\0'; }
+inline const char *brokerHost() {
+  const char *provisioned = mayapMqttHost();
+  return provisioned[0] ? provisioned : MAYAP_BROKER_HOST;
+}
+inline uint16_t brokerPort() {
+  const uint16_t provisioned = mayapMqttPort();
+  return provisioned ? provisioned : static_cast<uint16_t>(MAYAP_BROKER_PORT);
+}
+inline bool configured() { return brokerHost()[0] != '\0' && mayapMqttKey()[0] != '\0'; }
+inline bool clockValid() { return static_cast<uint32_t>(time(nullptr)) > CLOCK_VALID_AFTER; }
+inline bool gateClosing() { return mayapWifiPortalExclusiveRequested() || mayapRadioRecoveryRequested(); }
 
-// Runs in the esp-mqtt task: reports the core/priority it REALLY executes on.
-inline void logTaskPlacement(const char *when) {
-  mayapSerialPrintf(false, "[MQTT] %s task=%s core=%d prio=%u\n", when, pcTaskGetName(nullptr),
-                    static_cast<int>(xPortGetCoreID()), static_cast<unsigned>(uxTaskPriorityGet(nullptr)));
+inline bool sendPacket(size_t length) {
+  if (length == 0U) return false;
+  if (net.write(txBuffer, length) != length) { linkFailed = true; return false; }
+  lastTxAt = millis();
+  return true;
 }
 
-inline void eventHandler(void *, esp_event_base_t, int32_t id, void *data) {
-  auto *event = static_cast<esp_mqtt_event_handle_t>(data);
-  switch (static_cast<esp_mqtt_event_id_t>(id)) {
-    case MQTT_EVENT_BEFORE_CONNECT:
-      logTaskPlacement("before-connect");
-      break;
-    case MQTT_EVENT_CONNECTED:
-      logTaskPlacement("connected");
-      __atomic_store_n(&evConnected, 1U, __ATOMIC_RELEASE);
-      break;
-    case MQTT_EVENT_DISCONNECTED:
-      __atomic_store_n(&evDisconnected, 1U, __ATOMIC_RELEASE);
-      break;
-    case MQTT_EVENT_SUBSCRIBED:
-      // SUBACK return code 0x80 means the broker refused the subscription (ACL).
-      if (event->data && event->data_len > 0 && static_cast<uint8_t>(event->data[0]) == 0x80U)
-        __atomic_store_n(&evSubscribeRejected, 1U, __ATOMIC_RELEASE);
-      break;
-    case MQTT_EVENT_PUBLISHED:
-      if (__atomic_load_n(&qos1Inflight, __ATOMIC_ACQUIRE) > 0U)
-        __atomic_fetch_sub(&qos1Inflight, 1U, __ATOMIC_ACQ_REL);
-      break;
-    case MQTT_EVENT_DATA: {
-      // Whole packets only: a fragmented or oversized publish is dropped and the
-      // sender's retry/UNCERTAIN path handles it (Transaction V2).
-      if (event->current_data_offset != 0 || event->total_data_len != event->data_len ||
-          event->data_len < 0 || static_cast<size_t>(event->data_len) > sizeof(Inbound::data) ||
-          event->topic_len <= static_cast<int>(prefixLength) ||
-          memcmp(event->topic, prefix, prefixLength) != 0) {
-        __atomic_fetch_add(&droppedOversize, 1U, __ATOMIC_RELAXED);
-        break;
-      }
-      const size_t channelLength = static_cast<size_t>(event->topic_len) - prefixLength;
-      const uint32_t head = __atomic_load_n(&inboundHead, __ATOMIC_RELAXED);
-      if (channelLength >= sizeof(Inbound::channel) ||
-          head - __atomic_load_n(&inboundTail, __ATOMIC_ACQUIRE) >= INBOUND_SLOTS) {
-        __atomic_fetch_add(&droppedInbound, 1U, __ATOMIC_RELAXED);
-        break;
-      }
-      Inbound &slot = inbound[head % INBOUND_SLOTS];
-      memcpy(slot.channel, event->topic + prefixLength, channelLength);
-      slot.channel[channelLength] = '\0';
-      memcpy(slot.data, event->data, static_cast<size_t>(event->data_len));
-      slot.length = static_cast<uint16_t>(event->data_len);
-      __atomic_store_n(&inboundHead, head + 1U, __ATOMIC_RELEASE);
-      break;
-    }
-    default:
-      break;
+inline void inflightClear() { inflightCount = 0U; }
+inline void inflightAdd(uint16_t id, uint32_t now) {
+  if (inflightCount < QOS1_INFLIGHT_MAX) { inflightId[inflightCount] = id; inflightAt[inflightCount] = now; ++inflightCount; }
+}
+inline void inflightAck(uint16_t id) {
+  for (uint8_t i = 0U; i < inflightCount; ++i) {
+    if (inflightId[i] != id) continue;
+    for (uint8_t j = i; j + 1U < inflightCount; ++j) { inflightId[j] = inflightId[j + 1U]; inflightAt[j] = inflightAt[j + 1U]; }
+    --inflightCount;
+    return;
   }
+}
+inline uint16_t allocPacketId() {
+  if (++nextPacketId == 0U) nextPacketId = 1U;
+  return nextPacketId;
 }
 
 inline bool publishFromBridge(const char *channel, const char *payload, size_t length) {
-  if (!connected || !client || !channel) return false;
+  if (!connected || !channel) return false;
   // `bootstrap` hints are not part of the V2 topic contract and have no ACL entry.
   if (!strcmp(channel, "bootstrap")) return true;
   const ChannelPolicy *policy = nullptr;
@@ -161,28 +115,15 @@ inline bool publishFromBridge(const char *channel, const char *payload, size_t l
     if (!strcmp(candidate.channel, channel)) { policy = &candidate; break; }
   if (!policy || length == 0U || length >= MayapProtocol::FRAME_NORMAL_CAP) return false;
   const uint32_t now = millis();
-  if (policy->qos > 0U) {
-    if (__atomic_load_n(&qos1Inflight, __ATOMIC_ACQUIRE) >= QOS1_INFLIGHT_MAX) {
-      if (qos1StuckSince == 0U) qos1StuckSince = now;
-      return false;  // bounded: the bridge retries on the next owner cycle
-    }
-    qos1StuckSince = 0U;
-  }
+  if (policy->qos > 0U && inflightCount >= QOS1_INFLIGHT_MAX) return false;  // bounded; bridge retries next cycle
   char topic[64];
-  const int n = snprintf(topic, sizeof(topic), "%s/%s/%s", TOPIC_ROOT,
-                         MayapRealtimeInternal::deviceId, channel);
+  const int n = snprintf(topic, sizeof(topic), "%s/%s/%s", TOPIC_ROOT, MayapRealtimeInternal::deviceId, channel);
   if (n <= 0 || static_cast<size_t>(n) >= sizeof(topic)) return false;
-  // Reserve the slot BEFORE publishing: the PUBACK event runs in the esp-mqtt task
-  // and can arrive before esp_mqtt_client_publish() returns. mqttTask is the only
-  // publisher, so the check above and this reservation cannot race each other.
-  if (policy->qos > 0U) __atomic_fetch_add(&qos1Inflight, 1U, __ATOMIC_ACQ_REL);
-  const int id = esp_mqtt_client_publish(client, topic, payload, static_cast<int>(length),
-                                         policy->qos, policy->retain ? 1 : 0);
-  if (id < 0) {
-    if (policy->qos > 0U && __atomic_load_n(&qos1Inflight, __ATOMIC_ACQUIRE) > 0U)
-      __atomic_fetch_sub(&qos1Inflight, 1U, __ATOMIC_ACQ_REL);
-    return false;
-  }
+  const uint16_t id = policy->qos ? allocPacketId() : 0U;
+  const size_t packet = MayapMqttWire::encodePublish(txBuffer, sizeof(txBuffer), topic,
+      reinterpret_cast<const uint8_t *>(payload), length, policy->qos, policy->retain, id);
+  if (!sendPacket(packet)) return false;
+  if (policy->qos > 0U) inflightAdd(id, now);
   return true;
 }
 
@@ -191,110 +132,178 @@ inline void buildIdentity() {
   snprintf(prefix, sizeof(prefix), "%s/%s/", TOPIC_ROOT, MayapRealtimeInternal::deviceId);
   prefixLength = strlen(prefix);
   snprintf(willTopic, sizeof(willTopic), "%spresence", prefix);
-  if (BROKER_PORT == 443U)
-    snprintf(uri, sizeof(uri), "wss://%s/mqtt/%s", BROKER_HOST, MayapRealtimeInternal::deviceId);
-  else
-    snprintf(uri, sizeof(uri), "wss://%s:%u/mqtt/%s", BROKER_HOST,
-             static_cast<unsigned>(BROKER_PORT), MayapRealtimeInternal::deviceId);
 }
 
-// Owner task only. Releases the TLS working set so Cloud/OTA can use the heap.
+// Owner task only. Closing the socket releases the whole TLS working set so Cloud/OTA can
+// use the heap; it is idempotent.
 inline void stopClient(bool graceful) {
-  if (!client) { connected = false; return; }
-  if (graceful && connected) {
-    // A clean DISCONNECT suppresses the LWT, so only send it when the offline
-    // presence was really queued; otherwise drop the link and let the LWT fire.
-    if (MayapRealtimeInternal::publishPresence(false)) {
-      esp_mqtt_client_disconnect(client);
-      vTaskDelay(pdMS_TO_TICKS(150));
+  if (connected && graceful && !linkFailed) {
+    // A clean DISCONNECT suppresses the LWT, so only send it when the offline presence was
+    // really written; otherwise drop the link and let the broker fire the LWT.
+    if (MayapRealtimeInternal::publishPresence(false))
+      sendPacket(MayapMqttWire::encodeDisconnect(txBuffer, sizeof(txBuffer)));
+  }
+  net.stop();
+  connected = false;
+  linkFailed = false;
+  carryLength = 0U;
+  inflightClear();
+  parser.reset();
+}
+
+// Dispatches one complete broker->device packet. PUBLISH goes straight to the bridge: this
+// is the same task that owns it, so no ring/handoff is needed.
+inline void handlePacket() {
+  using namespace MayapMqttWire;
+  switch (parser.type()) {
+    case PUBLISH: {
+      if (parser.truncated()) { ++droppedOversize; return; }  // sender retry/UNCERTAIN path handles it
+      PublishView view;
+      if (!parsePublish(parser.flags(), parser.body(), parser.bodyLength(), view)) { linkFailed = true; return; }
+      if (view.qos == 1U) sendPacket(encodePuback(txBuffer, sizeof(txBuffer), view.packetId));
+      char channel[20];
+      if (view.topicLength <= prefixLength || memcmp(view.topic, prefix, prefixLength) != 0 ||
+          view.topicLength - prefixLength >= sizeof(channel)) { ++droppedForeign; return; }
+      const size_t channelLength = view.topicLength - prefixLength;
+      memcpy(channel, view.topic + prefixLength, channelLength);
+      channel[channelLength] = '\0';
+      MayapRealtimeInternal::dispatchApplicationMessage(channel, view.payload, view.payloadLength);
+      mayapServiceBeat(MayapRecovery::Service::Mqtt);
+      return;
+    }
+    case PUBACK:
+      if (parser.bodyLength() == 2U) inflightAck(static_cast<uint16_t>((parser.body()[0] << 8U) | parser.body()[1]));
+      return;
+    default:
+      return;  // PINGRESP and anything unexpected only prove the link is alive
+  }
+}
+
+// Reads what is available without blocking and parses at most PUMP_PACKET_BUDGET packets.
+// Returns false when the link must be dropped. `wantType` != 0 makes it return true as soon
+// as a packet of that type is ready (handshake); other packets are ignored then, and any
+// bytes read after the wanted packet are kept in `carry` for the next call.
+inline bool pump(uint8_t wantType = 0U) {
+  uint8_t chunk[sizeof(carry)];
+  uint8_t packets = 0U;
+  while (packets < PUMP_PACKET_BUDGET) {
+    size_t count = 0U;
+    if (carryLength > 0U) {
+      memcpy(chunk, carry, carryLength);
+      count = carryLength;
+      carryLength = 0U;
+    } else {
+      const int available = net.available();
+      if (available <= 0) return net.connected() || wantType != 0U;
+      const int got = net.read(chunk, static_cast<size_t>(available) < sizeof(chunk) ? static_cast<size_t>(available) : sizeof(chunk));
+      if (got <= 0) return net.connected() || wantType != 0U;
+      count = static_cast<size_t>(got);
+      lastRxAt = millis();
+    }
+    size_t used = 0U;
+    while (used < count) {
+      used += parser.feed(chunk + used, count - used);
+      if (parser.fatal()) return false;
+      if (!parser.ready()) continue;
+      ++packets;
+      if (wantType != 0U) {
+        if (parser.type() != wantType) continue;
+        carryLength = count - used;                 // caller reads parser.body() before the next feed
+        if (carryLength) memcpy(carry, chunk + used, carryLength);
+        return true;
+      }
+      handlePacket();
+      if (linkFailed) return false;
     }
   }
-  esp_mqtt_client_stop(client);
-  esp_mqtt_client_destroy(client);
-  client = nullptr;
-  connected = false;
-  __atomic_store_n(&qos1Inflight, 0U, __ATOMIC_RELEASE);
-  qos1StuckSince = 0U;
-  // The esp-mqtt task has ended: packets of the dead session must never be
-  // dispatched after a reconnect (a late command would run outside its window).
-  __atomic_store_n(&inboundTail, __atomic_load_n(&inboundHead, __ATOMIC_ACQUIRE), __ATOMIC_RELEASE);
+  return true;
 }
 
-inline bool gateClosing() {
-  return mayapWifiPortalExclusiveRequested() || mayapRadioRecoveryRequested();
+inline bool awaitPacket(uint8_t type) {
+  const uint32_t startedAt = millis();
+  parser.reset();
+  while (MayapRecovery::age(millis(), startedAt) < STEP_TIMEOUT_MS) {
+    if (pump(type) && parser.ready() && parser.type() == type) return true;
+    if (parser.fatal() || !net.connected() || gateClosing() || mayapCloudTlsYieldRequested(millis())) return false;
+    mayapServiceBeat(MayapRecovery::Service::Mqtt);
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  return false;
 }
 
-// Starts the client and waits (beating the supervisor) until the TLS+MQTT
-// handshake resolves. The TLS admission lease is held for the whole handshake.
-inline bool connectClient(uint32_t now) {
+// TLS + MQTT handshake. The TLS admission lease is held for its whole duration (the
+// working set is ~40 KiB); the socket then stays open. Returns false on any failure.
+inline bool connectClient() {
+  using namespace MayapMqttWire;
   MayapTlsOperation tls(MayapTlsKind::Mqtt);
   if (!tls) return false;
   buildIdentity();
-  esp_mqtt_client_config_t cfg = {};
-  cfg.broker.address.uri = uri;
-  cfg.broker.verification.certificate = TLS_ROOT_CA;
-  cfg.credentials.username = MayapRealtimeInternal::deviceId;
-  cfg.credentials.client_id = clientId;
-  cfg.credentials.authentication.password = mayapMqttKey();
-  cfg.session.keepalive = KEEPALIVE_SEC;
-  cfg.session.disable_clean_session = false;
-  cfg.session.protocol_ver = MQTT_PROTOCOL_V_3_1_1;
-  cfg.session.last_will.topic = willTopic;
-  cfg.session.last_will.msg = WILL_MESSAGE;
-  cfg.session.last_will.msg_len = static_cast<int>(sizeof(WILL_MESSAGE) - 1U);
-  cfg.session.last_will.qos = 1;
-  cfg.session.last_will.retain = 1;
-  cfg.network.disable_auto_reconnect = true;  // reconnects go through admission + backoff
-  cfg.network.timeout_ms = NETWORK_TIMEOUT_MS;
-  cfg.buffer.size = static_cast<int>(PACKET_BUFFER);
-  cfg.buffer.out_size = static_cast<int>(PACKET_BUFFER);
-  cfg.task.priority = ESP_MQTT_TASK_PRIORITY;
-  cfg.task.stack_size = ESP_MQTT_TASK_STACK;
-
-  __atomic_store_n(&evConnected, 0U, __ATOMIC_RELEASE);
-  __atomic_store_n(&evDisconnected, 0U, __ATOMIC_RELEASE);
-  __atomic_store_n(&evSubscribeRejected, 0U, __ATOMIC_RELEASE);
-  client = esp_mqtt_client_init(&cfg);
-  if (!client) return false;
-  esp_mqtt_client_register_event(client, MQTT_EVENT_ANY, eventHandler, nullptr);
-#if MAYAP_BISECT_MQTT_NO_START
-  // Variant A: init done, start deliberately skipped. Fail this attempt (normal backoff).
-  mayapSerialPrintf(false, "[BISECT] A: esp_mqtt_client_init done, esp_mqtt_client_start SKIPPED\n");
-  stopClient(false);
-  return false;
-#endif
-  if (esp_mqtt_client_start(client) != ESP_OK) { stopClient(false); return false; }
-
+  if (!netConfigured) {
+    // Same transport settings as the V2 owner.
+    net.setCACert(TLS_ROOT_CA);
+    net.setConnectionTimeout(5000);
+    net.setHandshakeTimeout(8);
+    netConfigured = true;
+  }
   const uint32_t startedAt = millis();
-  while (!__atomic_load_n(&evConnected, __ATOMIC_ACQUIRE)) {
-    if (__atomic_load_n(&evDisconnected, __ATOMIC_ACQUIRE) ||
-        MayapRecovery::age(millis(), startedAt) >= CONNECT_DEADLINE_MS ||
-        gateClosing() || mayapCloudTlsYieldRequested(millis())) {
-      stopClient(false);
+  const uint32_t heapBefore = ESP.getFreeHeap();
+  linkFailed = false;
+  carryLength = 0U;
+  if (!net.connect(brokerHost(), brokerPort())) {
+    char reason[64] = "";
+    net.lastError(reason, sizeof(reason));
+    mayapSerialPrintf(false, "[MQTT] tls connect failed host=%s:%u err=%s heap=%lu largest=%lu\n", brokerHost(),
+                      static_cast<unsigned>(brokerPort()), reason, static_cast<unsigned long>(ESP.getFreeHeap()),
+                      static_cast<unsigned long>(ESP.getMaxAllocHeap()));
+    net.stop();
+    return false;
+  }
+  const ConnectArgs args{clientId, MayapRealtimeInternal::deviceId, mayapMqttKey(), willTopic,
+                         reinterpret_cast<const uint8_t *>(WILL_MESSAGE), sizeof(WILL_MESSAGE) - 1U, KEEPALIVE_SEC};
+  if (!sendPacket(encodeConnect(txBuffer, sizeof(txBuffer), args)) || !awaitPacket(CONNACK) ||
+      parser.bodyLength() != 2U || parser.body()[1] != 0U) {
+    mayapSerialPrintf(false, "[MQTT] connect refused/timeout code=%d\n",
+                      parser.ready() && parser.type() == CONNACK && parser.bodyLength() == 2U ? static_cast<int>(parser.body()[1]) : -1);
+    net.stop();
+    return false;
+  }
+  char topics[4][64];
+  static constexpr struct { const char *channel; uint8_t qos; } SUBSCRIBE[4] = {
+    {"command", 1}, {"config/set", 1}, {"history/request", 1}, {"session", 0},
+  };
+  Subscription subs[4];
+  for (uint8_t i = 0U; i < 4U; ++i) {
+    snprintf(topics[i], sizeof(topics[i]), "%s%s", prefix, SUBSCRIBE[i].channel);
+    subs[i] = Subscription{topics[i], SUBSCRIBE[i].qos};
+  }
+  if (!sendPacket(encodeSubscribe(txBuffer, sizeof(txBuffer), 1U, subs, 4U)) || !awaitPacket(SUBACK) ||
+      parser.bodyLength() != 6U) {
+    mayapSerialPrintf(false, "[MQTT] subscribe failed\n");
+    net.stop();
+    return false;
+  }
+  for (uint8_t i = 0U; i < 4U; ++i) {
+    if (parser.body()[2U + i] > 1U) {  // 0x80: the broker refused it (ACL)
+      mayapSerialPrintf(false, "[MQTT] subscribe refused (%u)\n", static_cast<unsigned>(i));
+      net.stop();
       return false;
     }
-    mayapServiceBeat(MayapRecovery::Service::Mqtt);
-    vTaskDelay(pdMS_TO_TICKS(20));
   }
-  (void)now;
+  parser.reset();
+  inflightClear();
+  connected = true;
+  lastRxAt = lastTxAt = millis();
+  mayapSerialPrintf(false, "[MQTT] tls+mqtt up %lums heap=%lu->%lu largest=%lu task=%s core=%d prio=%u\n",
+                    static_cast<unsigned long>(millis() - startedAt), static_cast<unsigned long>(heapBefore),
+                    static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMaxAllocHeap()),
+                    pcTaskGetName(nullptr), static_cast<int>(xPortGetCoreID()),
+                    static_cast<unsigned>(uxTaskPriorityGet(nullptr)));
   return true;
 }
 
 inline void onConnected() {
   using namespace MayapRealtimeInternal;
-  connected = true;
   backoff.onSuccess();
-  // Clean session: every connect re-subscribes. QoS follows the contract.
-  static constexpr struct { const char *channel; int qos; } SUBSCRIBE[] = {
-    {"command", 1}, {"config/set", 1}, {"history/request", 1}, {"session", 0},
-  };
-  char topic[64];
-  bool ok = true;
-  for (const auto &subscription : SUBSCRIBE) {
-    snprintf(topic, sizeof(topic), "%s%s", prefix, subscription.channel);
-    ok = esp_mqtt_client_subscribe_single(client, topic, subscription.qos) >= 0 && ok;
-  }
-  if (!ok) { stopClient(false); backoff.onFailure(millis()); return; }
   publishPresence(true);
   portENTER_CRITICAL(&realtimeMux);
   if (knownConfigValid) configDirty = true;
@@ -304,15 +313,11 @@ inline void onConnected() {
   mayapSerialPrintf(false, "[MQTT] connected %s\n", deviceId);
 }
 
-inline void drainInbound() {
-  for (;;) {
-    const uint32_t tail = __atomic_load_n(&inboundTail, __ATOMIC_RELAXED);
-    if (tail == __atomic_load_n(&inboundHead, __ATOMIC_ACQUIRE)) return;
-    Inbound &slot = inbound[tail % INBOUND_SLOTS];
-    MayapRealtimeInternal::dispatchApplicationMessage(slot.channel, slot.data, slot.length);
-    __atomic_store_n(&inboundTail, tail + 1U, __ATOMIC_RELEASE);
-    mayapServiceBeat(MayapRecovery::Service::Mqtt);
-  }
+inline bool linkAlive(uint32_t now) {
+  if (linkFailed || parser.fatal() || !net.connected()) return false;
+  if (inflightCount > 0U && MayapRecovery::age(now, inflightAt[0]) >= QOS1_STUCK_MS) return false;
+  // Broker silent for 1.5 keepalives: half-open link.
+  return MayapRecovery::age(now, lastRxAt) < static_cast<uint32_t>(KEEPALIVE_SEC) * 1500UL;
 }
 
 }  // namespace MayapMqttInternal
@@ -320,10 +325,10 @@ inline void drainInbound() {
 inline void mayapMqttTransportBegin() {
   MayapRealtimeInternal::publishCallback = MayapMqttInternal::publishFromBridge;
   MayapMqttInternal::backoff.reset(millis());
-  mayapSerialPrintf(false, "[BISECT] variant: noStart=%d delayMs=%lu\n",
-                    MAYAP_BISECT_MQTT_NO_START, static_cast<unsigned long>(MAYAP_BISECT_MQTT_DELAY_MS));
+  mayapSerialPrintf(false, "[MQTT] owner task=%s core=%d prio=%u native TLS, no esp-mqtt\n", pcTaskGetName(nullptr),
+                    static_cast<int>(xPortGetCoreID()), static_cast<unsigned>(uxTaskPriorityGet(nullptr)));
   if (!MayapMqttInternal::configured())
-    mayapSerialPrintf(false, "[MQTT] idle: waiting for the per-device credential from /api/device/register\n");
+    mayapSerialPrintf(false, "[MQTT] idle: waiting for broker host + per-device credential from /api/device/register\n");
 }
 
 inline bool mayapMqttTransportConnected() { return MayapMqttInternal::connected; }
@@ -342,19 +347,6 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
     return;
   }
   if (!configured()) return;
-#if MAYAP_BISECT_MQTT_DELAY_MS
-  {
-    // Variant B: hold the whole MQTT connect path until N ms after boot.
-    static bool bisectLogged = false;
-    if (millis() < static_cast<uint32_t>(MAYAP_BISECT_MQTT_DELAY_MS)) return;
-    if (!bisectLogged) {
-      bisectLogged = true;
-      mayapSerialPrintf(false, "[BISECT] B: MQTT connect allowed now (t=%lu ms, delay=%lu ms)\n",
-                        static_cast<unsigned long>(millis()),
-                        static_cast<unsigned long>(MAYAP_BISECT_MQTT_DELAY_MS));
-    }
-  }
-#endif
   const NetworkStatus status = mayapGetRawNetworkStatus();
   const bool staOnline = status.requestedMode == ConnectivityMode::Online && status.connected;
   if (!staOnline) {
@@ -366,30 +358,28 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
     if (!mayapOnlineIoEnter(MayapRecovery::Service::Mqtt)) return;
     ioEntered = true;
   }
-  if (!client) {
-    if (!backoff.ready(now)) return;
-    if (!connectClient(now)) { backoff.onFailure(millis()); return; }
+  if (!connected) {
+    if (!backoff.ready(now) || !clockValid()) return;  // certificate dates need real time
+    if (!connectClient()) { backoff.onFailure(millis()); return; }
     onConnected();
     return;
   }
-  if (__atomic_load_n(&evDisconnected, __ATOMIC_ACQUIRE) ||
-      __atomic_load_n(&evSubscribeRejected, __ATOMIC_ACQUIRE) ||
-      (qos1StuckSince != 0U && MayapRecovery::age(now, qos1StuckSince) >= QOS1_STUCK_MS)) {
-    mayapSerialPrintf(false, "[MQTT] link lost (disc=%u rejected=%u)\n",
-                      static_cast<unsigned>(evDisconnected), static_cast<unsigned>(evSubscribeRejected));
+  if (!linkAlive(now) || !pump()) {
+    mayapSerialPrintf(false, "[MQTT] link lost (tx=%u fatal=%u open=%u inflight=%u)\n", static_cast<unsigned>(linkFailed),
+                      static_cast<unsigned>(parser.fatal()), static_cast<unsigned>(net.connected()),
+                      static_cast<unsigned>(inflightCount));
     stopClient(false);
     backoff.onFailure(now);
     return;
   }
-  drainInbound();
+  if (MayapRecovery::age(now, lastTxAt) >= static_cast<uint32_t>(KEEPALIVE_SEC) * 500UL)
+    sendPacket(MayapMqttWire::encodePingreq(txBuffer, sizeof(txBuffer)));
   mayapRealtimeUpdate(millis());
 #if MAYAP_DIAGNOSTIC_SERIAL
   if (lastDiagAt == 0U || MayapRecovery::age(now, lastDiagAt) >= 10000UL) {
     lastDiagAt = now;
-    mayapSerialPrintf(false, "[MQTT] up inflight=%u dropFull=%lu dropBig=%lu\n",
-                      static_cast<unsigned>(qos1Inflight),
-                      static_cast<unsigned long>(droppedInbound),
-                      static_cast<unsigned long>(droppedOversize));
+    mayapSerialPrintf(false, "[MQTT] up inflight=%u dropBig=%lu dropForeign=%lu\n", static_cast<unsigned>(inflightCount),
+                      static_cast<unsigned long>(droppedOversize), static_cast<unsigned long>(droppedForeign));
   }
 #endif
 }

@@ -42,15 +42,20 @@ test('Wi-Fi guide uses HMI, and ArduinoOTA has one empty tracked password source
   assert.doesNotMatch(publicBuild, /MAYAP_MQTT/);
 });
 
-test('transport policy: standard MQTT clients only, no HiveMQ/PubSubClient/DeviceHub/custom WebSocket, no tracked credentials',()=>{
+test('transport policy: firmware speaks native MQTT/TLS from mayap_mqtt only; Web stays MQTT.js/WSS; no HiveMQ/DeviceHub, no tracked credentials',()=>{
  const crypto=require('node:crypto');
  const mqttJs=fs.readFileSync(path.resolve(__dirname,'../vendor/mqtt.min.js'));
  assert.equal(crypto.createHash('sha256').update(mqttJs).digest('hex'),'13f43563b76f99bc60d278fd3f5d7056038d016fcb067310ff14591e73f3b9bb');
  assert.match(read('vendor/README.md'),/MQTT\.js\*\* \*\*5\.13\.2\*\*|MQTT\.js \*\*5\.13\.2\*\*/);
  const firmware=read('MAYAP_INDUSTRIAL_v1_0_0/mqtt_transport.h');
- assert.match(firmware,/esp_mqtt_client_init/);
- assert.match(firmware,/wss:\/\//);
- assert.doesNotMatch(firmware,/PubSubClient|WebSocketsClient|WebSocketsServer|setInsecure|esp_websocket_client/);
+ // ESP32: native MQTT over TLS in the single owner task. No esp-mqtt (hidden task), no WebSocket.
+ assert.match(firmware,/WiFiClientSecure/);
+ assert.match(firmware,/setCACert\(TLS_ROOT_CA\)/);
+ assert.match(firmware,/#include "mqtt_wire\.h"/);
+ assert.doesNotMatch(firmware,/mqtt_client\.h|esp_mqtt|esp_websocket_client|WebSocketsClient|WebSocketsServer|wss:\/\/|ws:\/\/|PubSubClient|setInsecure|xTaskCreate|MAYAP_BISECT|vTaskCoreAffinitySet/);
+ assert.doesNotMatch(read('MAYAP_INDUSTRIAL_v1_0_0/mqtt_wire.h').replace(/\/\/[^\n]*/g,''),/#include <Arduino|FreeRTOS|malloc\(|\bnew\b|\bString\b/);
+ for (const gone of ['MAYAP_INDUSTRIAL_v1_0_0/mqtt_core_pin.cpp','MAYAP_INDUSTRIAL_v1_0_0/build_local.h','platform.local.txt','cloudflare/wrangler-broker.toml'])
+   assert.equal(fs.existsSync(path.resolve(__dirname,'..',gone)),false,gone);
  assert.doesNotMatch(read('MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h'),/PubSubClient|MqttTransport|MQTT_BROKER/);
  assert.doesNotMatch(read('.github/workflows/build-firmware.yml'),/PubSubClient|MAYAP_MQTT_/);
  assert.match(read('index.html'),/vendor\/mqtt\.min\.js/);
@@ -61,9 +66,10 @@ test('transport policy: standard MQTT clients only, no HiveMQ/PubSubClient/Devic
  // The per-device broker password comes from the Worker (NVS), never from the source/build.
  assert.doesNotMatch(firmware,/FIXTURE_PASSWORD|build_local/);
  assert.match(firmware,/mayapMqttKey\(\)/);
- assert.match(firmware,/#define MAYAP_BROKER_HOST "[a-z0-9.-]+"/);
+ assert.match(firmware,/#define MAYAP_BROKER_PORT 8883/);   // MQTT/TLS port; host+port come from /api/device/register
+ assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/cloud_alert_link.h'),/mqtt_host/);
  assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/cloud_alert_link.h'),/mqtt_password/);
- assert.doesNotMatch(read('.github/workflows/build-firmware.yml'),/build_local|FIXTURE/);
+ assert.doesNotMatch(read('.github/workflows/build-firmware.yml'),/build_local|FIXTURE|--wrap|trace-symbol/);
 });
 
 test('supervisor control trip persists and prints its evidence before any reset (no longer lost to TWDT)', () => {
@@ -85,7 +91,7 @@ test('supervisor control trip persists and prints its evidence before any reset 
  assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/serial_diagnostics.h'),/\[BOOT-DIAG\]/);
 });
 
-test('control trip separates "not scheduled" from "stuck in Machine.update", and esp-mqtt is kept off core 1', () => {
+test('control trip separates "not scheduled" from "stuck in Machine.update"', () => {
  const ino=read('MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino');
  const control=ino.slice(ino.indexOf('void controlTask('),ino.indexOf('void hmiTask('));
  assert.ok(control.indexOf('controlInUpdate, 1U')<control.indexOf('Machine.update(now)'));
@@ -94,29 +100,18 @@ test('control trip separates "not scheduled" from "stuck in Machine.update", and
  const trip=ino.slice(ino.indexOf('if (!controlHealthy || deadlineTrip)'),ino.indexOf('if (hmiBeat != 0U && hmiHealthy'));
  assert.ok(trip.indexOf('eTaskGetState(controlTaskHandle)')<trip.indexOf('vTaskSuspend(controlTaskHandle)'));
  for (const field of ['currentCycleAge','inUpdate','phase','ctrlState']) assert.match(trip,new RegExp(field),field);
- const mqtt=read('MAYAP_INDUSTRIAL_v1_0_0/mqtt_transport.h');
-
- assert.doesNotMatch(mqtt,/vTaskCoreAffinitySet/);
- const pin=read('MAYAP_INDUSTRIAL_v1_0_0/mqtt_core_pin.cpp');
- assert.match(pin,/__wrap_xTaskCreate/);
- assert.match(pin,/strcmp\(name, "mqtt_task"\) == 0/);
- assert.match(pin,/xTaskCreatePinnedToCore\(task, name, stackDepth, parameter, priority, created, 0\)/);
- assert.match(read('.github/workflows/build-firmware.yml'),/compiler\.c\.elf\.extra_flags=-Wl,--wrap=xTaskCreate/);
- assert.match(mqtt,/xPortGetCoreID\(\)/);
- assert.match(mqtt,/MQTT_EVENT_BEFORE_CONNECT/);
  // Watchdog/heartbeat policy untouched.
  assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/config.h'),/CONTROL_HEARTBEAT_TIMEOUT_MS = 500UL/);
  assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/config.h'),/CONTROL_WDT_TIMEOUT_MS = 5000UL/);
 });
 
-test('bisect switches are compile-time only, default off, and never touch watchdog/heartbeat/safety', () => {
- const mqtt=read('MAYAP_INDUSTRIAL_v1_0_0/mqtt_transport.h');
- assert.match(mqtt,/#define MAYAP_BISECT_MQTT_NO_START 0/);
- assert.match(mqtt,/#define MAYAP_BISECT_MQTT_DELAY_MS 0/);
- assert.ok(mqtt.indexOf('MAYAP_BISECT_MQTT_NO_START')<mqtt.indexOf('esp_mqtt_client_start(client)'));
- const wf=read('.github/workflows/build-firmware.yml');
- assert.match(wf,/MAYAP_BISECT_MQTT_NO_START=1/);
- assert.match(wf,/MAYAP_BISECT_MQTT_DELAY_MS=60000/);
- assert.match(wf,/firmware-bisect\${{ inputs.bisect }}-/);
- assert.doesNotMatch(wf,/WDT|HEARTBEAT/);
+test('MQTT owner: one static pinned task on core 0, control/supervisor/HMI stay on core 1', () => {
+ const ino=read('MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino');
+ assert.match(ino,/mqttTask, "mayap_mqtt", sizeof\(mqttTaskStack\), nullptr, 2,\s*mqttTaskStack, &mqttTaskTcb, 0\)/);
+ for (const name of ['mayap_ctrl','mayap_supervisor','mayap_hmi'])
+   assert.match(ino,new RegExp(`"${name}"[\\s\\S]{0,120}?, 1\\);`),name);
+ // The only task-creation call sites are the static pinned ones in the sketch.
+ assert.equal((ino.match(/xTaskCreate(?!StaticPinnedToCore)\w*\(/g)||[]).length,0);
+ for (const f of fs.readdirSync(path.resolve(__dirname,'../MAYAP_INDUSTRIAL_v1_0_0')).filter((n)=>/\.(h|cpp)$/.test(n)))
+   assert.doesNotMatch(read('MAYAP_INDUSTRIAL_v1_0_0/'+f),/xTaskCreate\w*\(/,f);
 });

@@ -609,6 +609,11 @@ inline void storeProvisioningFromResponse(const String &response) {
   if (mqttPassword[0] && !mayapStoreMqttKey(mqttPassword)) {
     mayapSerialPrintf(false, "[CLOUD] mqtt_password khong hop le/khong luu duoc\n");
   }
+  const char *mqttHost = parsed["mqtt_host"] | "";
+  const uint16_t mqttPort = static_cast<uint16_t>(parsed["mqtt_port"] | 0U);
+  if (mqttHost[0] && !mayapStoreMqttEndpoint(mqttHost, mqttPort)) {
+    mayapSerialPrintf(false, "[CLOUD] mqtt_host/mqtt_port khong hop le/khong luu duoc\n");
+  }
 }
 
 inline bool rotateLegacyDeviceKey() {

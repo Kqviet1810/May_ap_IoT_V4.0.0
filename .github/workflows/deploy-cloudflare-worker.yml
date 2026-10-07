@@ -96,16 +96,17 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy
+          MQTT_BROKER_HOST: ${{ vars.MQTT_BROKER_HOST }}
+        run: |
+          # Host cua broker MQTT (GitHub repository variable MQTT_BROKER_HOST): Worker tra ve cho
+          # ESP32 (MQTT/TLS) va Web (MQTT/WSS). De trong thi giu gia tri trong wrangler.toml.
+          if [ -n "$MQTT_BROKER_HOST" ]; then
+            npx wrangler deploy --var "MQTT_BROKER_HOST:$MQTT_BROKER_HOST"
+          else
+            npx wrangler deploy
+          fi
 
-      - name: Trien khai broker MQTT (mayap-mqtt-broker)
-        working-directory: cloudflare
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy -c wrangler-broker.toml
-
-      - name: Dong bo secret MQTT (neu da khai bao trong GitHub secrets)
+      - name: Dong bo secret MQTT cho Worker account (neu da khai bao trong GitHub secrets)
         working-directory: cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -114,16 +115,14 @@ jobs:
           MQTT_DEVICE_SECRET: ${{ secrets.MQTT_DEVICE_SECRET }}
         run: |
           set -euo pipefail
+          # Broker (broker/, chay tren may chu rieng) dung CUNG hai gia tri nay qua
+          # BROKER_WEB_TOKEN_SECRET / BROKER_DEVICE_SECRET. Cloudflare khong con la broker.
           if [ -n "$MQTT_WEB_TOKEN_SECRET" ]; then
-            printf '%s' "$MQTT_WEB_TOKEN_SECRET" | npx wrangler secret put BROKER_WEB_TOKEN_SECRET -c wrangler-broker.toml
             printf '%s' "$MQTT_WEB_TOKEN_SECRET" | npx wrangler secret put MQTT_WEB_TOKEN_SECRET
           else
-            echo "::warning::Chua co GitHub secret MQTT_WEB_TOKEN_SECRET - dat bang wrangler secret put (xem doc/MVP_BRINGUP.md)"
+            echo "::warning::Chua co GitHub secret MQTT_WEB_TOKEN_SECRET - Web se khong co realtime"
           fi
-          # Mat khau MQTT rieng tung may = HMAC(MQTT_DEVICE_SECRET, device id). Worker
-          # tra cho may qua /api/device/register, broker tinh lai de kiem.
           if [ -n "$MQTT_DEVICE_SECRET" ]; then
-            printf '%s' "$MQTT_DEVICE_SECRET" | npx wrangler secret put BROKER_DEVICE_SECRET -c wrangler-broker.toml
             printf '%s' "$MQTT_DEVICE_SECRET" | npx wrangler secret put MQTT_DEVICE_SECRET
           else
             echo "::warning::Chua co GitHub secret MQTT_DEVICE_SECRET - may se khong nhan duoc mat khau MQTT"

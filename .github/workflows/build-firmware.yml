@@ -44,6 +44,7 @@ jobs:
       - name: Install pinned account dependencies
         run: |
           npx --yes pnpm@11.19.0 --dir cloudflare install --frozen-lockfile --ignore-scripts
+          npm ci --prefix broker --ignore-scripts --no-audit --no-fund
           node --check account.js
           node --check cloudflare/src/account-worker.js
 
@@ -230,26 +231,27 @@ jobs:
           arduino-cli compile \
             --fqbn "${{ env.MAYAP_FQBN }}" \
             --build-property "compiler.cpp.extra_flags=${MAYAP_CPP_FLAGS} -DMAYAP_BUILD_REVISION=${GITHUB_SHA:0:12}" \
-            --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=xTaskCreate -Wl,--trace-symbol=__wrap_xTaskCreate -Wl,--trace-symbol=xTaskCreate -Wl,--trace-symbol=xTaskCreatePinnedToCore" \
             --output-dir ./build \
             --verbose \
             MAYAP_INDUSTRIAL_v1_0_0 2>&1 | tee /tmp/mayap-compile.log
 
-      - name: Verify esp-mqtt task is created pinned to core 0
+      - name: Verify MQTT/TLS owner is native (no esp-mqtt, no extra task, no linker hack)
         shell: bash
         run: |
           set -euo pipefail
-          SDKCONFIG=$(find "$HOME/.arduino15/packages/esp32/tools" -path '*esp32s3-libs/*/sdkconfig' -print -quit)
-          echo "sdkconfig: ${SDKCONFIG:-not found}"
-          [ -z "$SDKCONFIG" ] || grep -E "MQTT_TASK_CORE_SELECTION|MQTT_USE_CUSTOM_CONFIG" "$SDKCONFIG" || true
-          # Linker trace (symbol-level, independent of Xtensa call encodings): who references what.
-          echo "--- link references (esp-mqtt) ---"
-          grep -E "(mqtt|MQTT).*reference to (__wrap_xTaskCreate|xTaskCreate|xTaskCreatePinnedToCore)" /tmp/mayap-compile.log | sed 's/^[0-9TZ:.-]* //' | sort -u || true
-          echo "--- link references (all objects) to xTaskCreate family ---"
-          grep -E "reference to (__wrap_xTaskCreate|xTaskCreate|xTaskCreatePinnedToCore)$" /tmp/mayap-compile.log | sed 's/^.*\///' | sort | uniq -c | sort -rn | head -40 || true
-          grep -E "mqtt.*reference to __wrap_xTaskCreate" /tmp/mayap-compile.log > /dev/null || { echo "::error::esp-mqtt does not reference __wrap_xTaskCreate (the pin would not apply; it may call xTaskCreatePinnedToCore directly)"; exit 1; }
-          nm build/MAYAP_INDUSTRIAL_v1_0_0.ino.elf 2>/dev/null | grep -E " (__wrap_xTaskCreate|__real_xTaskCreate|xTaskCreate)$" || true
-          echo "OK: esp-mqtt creates mqtt_task via __wrap_xTaskCreate -> xTaskCreatePinnedToCore(core 0)"
+          MAP=$(ls build/*.map | head -n 1)
+          # esp-mqtt creates its own hidden task: it must not be linked at all.
+          if grep -Eq "libmqtt\.a|esp_mqtt_client" "$MAP"; then
+            echo "::error::esp-mqtt is linked into the firmware (hidden mqtt_task)"; grep -E "libmqtt\.a|esp_mqtt_client" "$MAP" | head -5; exit 1
+          fi
+          # No sketch-level task creation other than the reviewed static, pinned set.
+          if grep -nE "xTaskCreate\(|xTaskCreatePinnedToCore\(|xTaskCreateStatic\(" MAYAP_INDUSTRIAL_v1_0_0/*.h MAYAP_INDUSTRIAL_v1_0_0/*.cpp 2>/dev/null; then
+            echo "::error::unexpected task creation in a header/cpp"; exit 1
+          fi
+          grep -c "xTaskCreateStaticPinnedToCore" MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino | sed 's/^/static pinned task creations in the sketch: /'
+          grep -n '"mayap_mqtt"' -A1 MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino | grep -E "mqttTaskStack, &mqttTaskTcb, 0\)" >/dev/null || { echo "::error::mayap_mqtt is not pinned to core 0"; exit 1; }
+          if [ -e MAYAP_INDUSTRIAL_v1_0_0/platform.local.txt ] || [ -e platform.local.txt ]; then echo "::error::platform.local.txt must not be needed"; exit 1; fi
+          echo "OK: MQTT/TLS runs only in mayap_mqtt (core 0); esp-mqtt is not linked."
 
       - name: Enforce V4 network-phase firmware size budgets
         shell: bash

@@ -57,6 +57,14 @@ async function deriveMqttPasswordHex(env, deviceId) {
   if (!secret || !isValidDeviceId(deviceId)) return '';
   return deriveDevicePassword(secret, deviceId);
 }
+// Where the ESP32 opens its MQTT/TLS connection (Cloudflare is not in that path). Returned
+// next to the credential so no broker address is compiled into the firmware.
+function mqttEndpoint(env) {
+  const host = String(env.MQTT_BROKER_HOST || '').trim();
+  const port = Number(env.MQTT_BROKER_TLS_PORT || 8883);
+  if (!/^[A-Za-z0-9.-]{1,63}$/.test(host) || !Number.isInteger(port) || port < 1 || port > 65535) return {};
+  return { mqtt_host: host, mqtt_port: port };
+}
 function pinRateKey(request, deviceId) {
   const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
   return `pin:${deviceId}:${ip}`;
@@ -177,7 +185,7 @@ async function handleRegister(request, env) {
     const webPin = await issueWebPin(env, deviceId);
     const mqttPassword = await deriveMqttPasswordHex(env, deviceId);
     return json(env, { success: true, device_id: deviceId, pairing_token: pairingToken, web_pin: webPin, command_key: commandKey,
-      ...(mqttPassword ? { mqtt_password: mqttPassword } : {}), created: true });
+      ...(mqttPassword ? { mqtt_password: mqttPassword, ...mqttEndpoint(env) } : {}), created: true });
   }
 
   const valid = await verifyDeviceKey(deviceKey, env.DEVICE_KEY_PEPPER, existing.device_key_hash);
@@ -201,7 +209,7 @@ async function handleRegister(request, env) {
     device_id: deviceId,
     pairing_token: existing.pairing_token,
     command_key: commandKey,
-    ...(mqttPassword ? { mqtt_password: mqttPassword } : {}),
+    ...(mqttPassword ? { mqtt_password: mqttPassword, ...mqttEndpoint(env) } : {}),
     ...(webPin ? { web_pin: webPin } : {}),
     created: false,
   });

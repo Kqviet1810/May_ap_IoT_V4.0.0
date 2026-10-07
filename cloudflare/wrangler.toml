@@ -18,8 +18,11 @@ REQUIRE_DEVICE_INVENTORY = "0"
 MAX_NEW_DEVICE_REGISTRATIONS_PER_HOUR = "20"
 # Cua so dem admission. Dat rieng de co the doi policy sau nay ma khong sua code.
 NEW_DEVICE_REGISTRATION_WINDOW_MINUTES = "60"
-# Broker MQTT/WSS rieng (Worker mayap-mqtt-broker). Khong phai secret.
-MQTT_BROKER_URL = "wss://mayap-mqtt-broker.vietk-mayaptrung.workers.dev/mqtt"
+# Broker MQTT (xem broker/README.md): ESP32 noi MQTT/TLS cong MQTT_BROKER_TLS_PORT,
+# Web noi MQTT/WSS toi wss://MQTT_BROKER_HOST/mqtt. Khong phai secret. DAT host that cua
+# broker truoc khi deploy; de trong thi Web va ESP32 khong co realtime (local van chay).
+MQTT_BROKER_HOST = ""
+MQTT_BROKER_TLS_PORT = "8883"
 [[d1_databases]]
 binding = "DB"
 database_name = "mayap_push"

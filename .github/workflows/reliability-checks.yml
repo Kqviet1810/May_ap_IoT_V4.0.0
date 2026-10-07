@@ -33,6 +33,7 @@ jobs:
       - name: Install pinned account dependencies
         run: |
           npx --yes pnpm@11.19.0 --dir cloudflare install --frozen-lockfile --ignore-scripts
+          npm ci --prefix broker --ignore-scripts --no-audit --no-fund
           node --check account.js
           node --check cloudflare/src/account-worker.js
 

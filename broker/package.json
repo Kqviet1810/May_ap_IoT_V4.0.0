@@ -1,0 +1,11 @@
+{
+  "name": "mayap-mqtt-broker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MAYAP MQTT broker: ESP32 over MQTT/TLS and Web over MQTT/WSS, one session/topic logic",
+  "engines": { "node": ">=20" },
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "dependencies": { "ws": "8.18.3" }
+}

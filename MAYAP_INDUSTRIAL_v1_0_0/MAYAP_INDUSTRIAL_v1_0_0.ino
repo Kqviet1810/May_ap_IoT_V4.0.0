@@ -316,7 +316,7 @@ void networkTask(void *parameter) {
   }
 }
 
-// MQTT service: the sole owner of the esp-mqtt client and of every Transaction V2
+// MQTT service: the sole owner of the native MQTT/TLS client and of every Transaction V2
 // bridge call. The controller never waits on it (see mqtt_transport.h).
 void mqttTask(void *parameter) {
   (void)parameter;
