@@ -25,7 +25,7 @@ class ProfileStorage {
   bool takeSeed(ThermalProfile &profile) {
     portENTER_CRITICAL(&mux_);
     const bool ready = seedReady_;
-    if (ready) { profile = seed_; seedReady_ = false; }
+    if (ready) { profile = stored_; seedReady_ = false; }
     portEXIT_CRITICAL(&mux_);
     return ready;
   }
@@ -37,7 +37,7 @@ class ProfileStorage {
     portEXIT_CRITICAL(&mux_);
     initialized_ = available_ = activeA_ = storedValid_ = false;
     sequence_ = lastSave_ = saves_ = 0;
-    pending_ = ThermalProfile{}; seed_ = ThermalProfile{}; stored_ = ThermalProfile{};
+    pending_ = ThermalProfile{}; stored_ = ThermalProfile{};
   }
   void service(uint32_t now) {
     if (!initialized_) {
@@ -57,7 +57,7 @@ class ProfileStorage {
         stored_ = useA ? a : b;
         storedValid_ = true;
         sequence_ = stored_.sequence;
-        portENTER_CRITICAL(&mux_); seed_ = stored_; seedReady_ = true; portEXIT_CRITICAL(&mux_);
+        portENTER_CRITICAL(&mux_); seedReady_ = true; portEXIT_CRITICAL(&mux_);
       }
       lastSave_ = now;
       return;
@@ -88,7 +88,7 @@ class ProfileStorage {
  private:
   Preferences prefs_;
   portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
-  ThermalProfile pending_{}, seed_{}, stored_{};
+  ThermalProfile pending_{}, stored_{};   // the boot seed is stored_ itself (no third copy)
   bool hasPending_ = false, seedReady_ = false, invalidRecord_ = false;
   bool initialized_ = false, available_ = false, activeA_ = false, storedValid_ = false;
   uint32_t sequence_ = 0, lastSave_ = 0, saves_ = 0;

@@ -48,8 +48,8 @@ constexpr float SxxTarget = 8.0f;                // information for full gain sc
 constexpr float ForgetSlow = 0.9985f;            // per update (~2 s): ~22 min memory
 constexpr float ForgetFast = 0.994f;             // ~5.5 min memory (change detection)
 constexpr float FastSxxMin = 1.0f;
-constexpr float MismatchLnRatio = 0.30f;         // |ln(Kfast/Kslow)| considered a plant change
-constexpr float RecoverLnRatio = 0.15f;
+constexpr float MismatchRatio = 1.349859f;        // exp(0.30): Kfast/Kslow (or its inverse) beyond this is a plant change
+constexpr float RecoverRatio = 1.161834f;         // exp(0.15): back inside this the gain evidence has recovered (no libm log)
 constexpr uint16_t MismatchRuns = 24;            // consecutive informative evaluations
 constexpr uint16_t RecoverRuns = 40;
 constexpr uint32_t MinValidLearningSec = 300;
@@ -68,6 +68,7 @@ constexpr float HoldMismatchAbsPct = 5.0f;        // plant-change evidence: obse
 constexpr float HoldMismatchRel = 0.25f;          //   max(5 pp, 25 %) ...
 constexpr float HoldMismatchSigmas = 2.5f;        //   ... and 2.5 sigma of the window-to-window scatter
 constexpr float SensorLsbC = 0.1f;                //   (+ one sensor LSB of window drift, as duty)
+constexpr uint32_t MismatchMaxMs = 5400000UL;      // a mismatch expires after 90 min if nothing clears it
 constexpr uint16_t HoldMismatchRuns = 3;          //   ... for this many consecutive windows (same sign)
 constexpr uint32_t MismatchRefractoryMs = 1200000;  // 20 min between two plant-change declarations
 constexpr uint16_t HoldAgreeRuns = 4;             // agreement for this many windows ends a mismatch
@@ -110,7 +111,13 @@ constexpr float DelayGrid[10] = {0, 8, 16, 25, 35, 50, 70, 95, 125, 160};
 class ThermalLearner {
  public:
   static constexpr uint8_t Cands = 10;
-  static constexpr uint8_t RingSize = 200;
+  #ifndef MAYAP_THERMAL_PV_SCALE
+#define MAYAP_THERMAL_PV_SCALE 200.0f   // history PV in 0.005 C units (uint16)
+#endif
+#ifndef MAYAP_THERMAL_RING
+#define MAYAP_THERMAL_RING 176   // 352 s at the 2 s cadence: 2W (160 s) + the longest delay candidate (160 s)
+#endif
+  static constexpr uint8_t RingSize = MAYAP_THERMAL_RING;
 
   ThermalLearner() { reset(); }
 
@@ -176,7 +183,7 @@ class ThermalLearner {
     lastPv_ = in.pv; lastRaw_ = in.raw;
     pushRing(now, in.pv);
     {
-      float p0; double c;
+      float p0; Cum c;
       float p1 = in.pv;
       slopeValid_ = lookup(now - Policy::SlopeWindowMs, p0, c);
       if (slopeValid_) slope90_ = (p1 - p0) / (Policy::SlopeWindowMs * 0.001f);
@@ -253,52 +260,77 @@ class ThermalLearner {
     for (uint8_t i = 0; i < Cands; ++i) { sxxS_[i] = sxyS_[i] = sxxF_[i] = sxyF_[i] = 0; }
     syyS_ = 0;
   }
-  struct Entry { uint32_t t; float pv; uint32_t cum; };
+  // Compact history (6 B/sample, no dynamic allocation): the newest sample is kept absolute
+  // (time, cumulative actual ON-ms); every entry stores only the interval to the sample before it
+  // and the PV in 0.005 C units. Older samples are reconstructed by walking back from the newest.
+  struct Entry { uint16_t dt; uint16_t pv; uint16_t on; };
+  static constexpr float PvScale = MAYAP_THERMAL_PV_SCALE;
+  static uint16_t encodePv(float pv) {
+    const float v = pv * PvScale + 0.5f;
+    return v <= 0.0f ? 0U : v >= 65535.0f ? 65535U : static_cast<uint16_t>(v);
+  }
 
   // ---- ring / window arithmetic -------------------------------------------------------
   void pushRing(uint32_t now, float pv) {
-    ring_[head_] = {now, pv, cumOnMs_};
+    Entry e;
+    e.pv = encodePv(pv);
+    if (count_ == 0U) { e.dt = 0U; e.on = 0U; }
+    else {
+      const uint32_t dt = now - newestT_;
+      if (dt > 65535U) { count_ = 0U; head_ = 0U; e.dt = 0U; e.on = 0U; }   // a long outage is a new history
+      else {
+        const uint32_t on = std::min<uint32_t>(cumOnMs_ - newestCum_, dt);
+        e.dt = static_cast<uint16_t>(dt); e.on = static_cast<uint16_t>(on);
+      }
+    }
+    ring_[head_] = e;
     head_ = static_cast<uint8_t>((head_ + 1U) % RingSize);
     if (count_ < RingSize) ++count_;
-  }
-  const Entry &at(uint8_t back) const {  // back=0 newest
-    return ring_[(head_ + RingSize - 1U - back) % RingSize];
+    newestT_ = now; newestCum_ = cumOnMs_;
   }
   // Interpolated pv and cumulative ON-ms at an absolute time; false when outside the ring.
-  bool lookup(uint32_t target, float &pv, double &cum) const {
+  // Cumulative ON-time in 1/256 ms (int64: exact, no soft-double arithmetic on the target).
+  typedef int64_t Cum;
+  bool lookup(uint32_t target, float &pv, Cum &cum) const {
     if (count_ < 2) return false;
-    const Entry &newest = at(0);
-    if (static_cast<int32_t>(target - newest.t) > 0) return false;
+    if (static_cast<int32_t>(target - newestT_) > 0) return false;
+    uint32_t tHi = newestT_, cHi = newestCum_;
+    uint8_t idx = static_cast<uint8_t>((head_ + RingSize - 1U) % RingSize);
+    float pvHi = ring_[idx].pv * (1.0f / PvScale);
     for (uint8_t b = 0; b + 1U < count_; ++b) {
-      const Entry &hi = at(b), &lo = at(b + 1U);
-      if (static_cast<int32_t>(target - lo.t) >= 0 && static_cast<int32_t>(hi.t - target) >= 0) {
-        const uint32_t span = hi.t - lo.t;
-        const double f = span ? static_cast<double>(target - lo.t) / span : 1.0;
-        pv = static_cast<float>(lo.pv + (hi.pv - lo.pv) * f);
-        cum = static_cast<double>(lo.cum) +
-              static_cast<double>(static_cast<int32_t>(hi.cum - lo.cum)) * f;
+      const Entry &hiE = ring_[idx];
+      const uint32_t tLo = tHi - hiE.dt, cLo = cHi - hiE.on;
+      idx = static_cast<uint8_t>((idx + RingSize - 1U) % RingSize);
+      const float pvLo = ring_[idx].pv * (1.0f / PvScale);
+      if (static_cast<int32_t>(target - tLo) >= 0 && static_cast<int32_t>(tHi - target) >= 0) {
+        const uint32_t span = tHi - tLo;
+        const float f = span ? static_cast<float>(target - tLo) / static_cast<float>(span) : 1.0f;
+        pv = static_cast<float>(pvLo + (pvHi - pvLo) * f);
+        cum = (static_cast<Cum>(cLo) << 8) +
+              static_cast<Cum>(static_cast<float>(static_cast<int32_t>(cHi - cLo)) * 256.0f * f);
         return true;
       }
+      tHi = tLo; cHi = cLo; pvHi = pvLo;
     }
     return false;
   }
   // cumulative on-time is a uint32 millisecond counter: a difference across its wrap is still small
-  static double cumDiff(double hi, double lo) {
-    double d = hi - lo;
-    if (d < -2147483648.0) d += 4294967296.0;
-    return d;
+  static float cumDiff(Cum hi, Cum lo) {   // ms
+    Cum d = hi - lo;
+    if (d < -(static_cast<Cum>(1) << 39)) d += static_cast<Cum>(1) << 40;
+    return static_cast<float>(d) * (1.0f / 256.0f);
   }
   // mean ACTUAL duty (0..1) over [a,b]
-  bool meanDuty(uint32_t a, uint32_t b, double &duty) const {
-    float p; double ca, cb;
+  bool meanDuty(uint32_t a, uint32_t b, float &duty) const {
+    float p; Cum ca, cb;
     if (!lookup(a, p, ca) || !lookup(b, p, cb)) return false;
-    const double span = static_cast<double>(b - a);
+    const float span = static_cast<float>(b - a);
     if (span <= 0) return false;
-    duty = std::min(1.0, std::max(0.0, cumDiff(cb, ca) / span));
+    duty = std::min(1.0f, std::max(0.0f, cumDiff(cb, ca) / span));
     return true;
   }
   bool slopeAt(uint32_t te, float &slope) const {
-    float p0, p1; double c;
+    float p0, p1; Cum c;
     if (!lookup(te - Policy::WindowMs, p0, c) || !lookup(te, p1, c)) return false;
     slope = (p1 - p0) / (Policy::WindowMs * 0.001f);
     return true;
@@ -327,6 +359,8 @@ class ThermalLearner {
       // Delay candidates look back up to DelayGrid[max] before the window: keep the gate shut until
       // no candidate can pair actuator history from before the edit with post-edit temperature.
       settleUntil_ = now + Policy::SettleMs + static_cast<uint32_t>(DelayGrid[Cands - 1] * 1000.0f);
+      // Equilibrium duty depends on the setpoint: hold learned at the old target is no longer evidence.
+      holdWindows_ = 0U; holdScore_ = 0.0f;
       return GateReason::Settling;
     }
     lastSp_ = in.sp;
@@ -355,10 +389,10 @@ class ThermalLearner {
     float du[Cands];
     for (uint8_t i = 0; i < Cands; ++i) {
       const uint32_t d = static_cast<uint32_t>(DelayGrid[i] * 1000.0f);
-      double uB, uA;
+      float uB, uA;
       if (!meanDuty(te - d - Policy::WindowMs, te - d, uB) ||
           !meanDuty(te - d - 2U * Policy::WindowMs, te - d - Policy::WindowMs, uA)) return;
-      du[i] = static_cast<float>(uB - uA);
+      du[i] = uB - uA;
     }
     // Innovation (prediction residual of the CURRENT model) -> prediction error + outlier gate.
     const float khNow = profile_.heaterGain;
@@ -382,7 +416,7 @@ class ThermalLearner {
     for (uint8_t i = 0; i < Cands; ++i) duMax = std::max(duMax, std::fabs(du[i]));
     const bool relearning = mismatch_ || wasDegraded_;
     const float minStep = relearning ? Policy::RelearnDutyStep : Policy::MinDutyStep;
-    if (duMax < minStep) { ++skippedSmall_; return; }
+    if (duMax < minStep) return;
     // Closed-loop guard #2: while PV is regulated at the setpoint the duty is the feedback law
     // answering PV noise, which biases the gain (measured +47 % on a heavy plant). The gain is
     // learned while PV is still far from SP (heat-up, approach, disturbance recovery), which is
@@ -390,7 +424,6 @@ class ThermalLearner {
     float weight = 1.0f;
     if (!relearning && std::isfinite(lastSp_) && std::fabs(lastPv_ - lastSp_) <= Policy::RegulationBandC) {
       weight = Policy::RegulationWeight;  // still informative, but at a fraction of the open-loop-like weight
-      ++skippedRegulation_;
     }
     const float lamS = Policy::ForgetSlow, lamF = Policy::ForgetFast;
     syyS_ = lamS * syyS_ + weight * dS * dS;
@@ -446,22 +479,25 @@ class ThermalLearner {
     detectMismatch();
   }
   void detectMismatch() {
+    // Safety valve: a mismatch whose own detector never gets the evidence to clear it still expires
+    // (and is simply raised again if the evidence persists).
+    if (mismatch_ && lastMismatchAt_ != 0U && sampleAt_ - lastMismatchAt_ > Policy::MismatchMaxMs) mismatch_ = false;
     const float slow = sxxS_[best_] >= Policy::SxxMin ? sxyS_[best_] / (sxxS_[best_] + 0.05f) : 0.0f;
     if (slow <= 0 || gainFast_ <= 0 || sxxF_[best_] < Policy::FastSxxMin) {
       if (mismatchRun_ > 0) --mismatchRun_;            // no evidence: decay slowly
       if (recoverRun_ > 0) --recoverRun_;
       return;
     }
-    const float ln = std::fabs(std::log(gainFast_ / slow));
-    if (ln > Policy::MismatchLnRatio) { if (mismatchRun_ < 65000) ++mismatchRun_; recoverRun_ = 0; }
+    const float ratio = gainFast_ > slow ? gainFast_ / slow : slow / gainFast_;   // >= 1
+    if (ratio > Policy::MismatchRatio) { if (mismatchRun_ < 65000) ++mismatchRun_; recoverRun_ = 0; }
     else {
       if (mismatchRun_ > 2) mismatchRun_ = static_cast<uint16_t>(mismatchRun_ - 2); else mismatchRun_ = 0;
-      if (ln < Policy::RecoverLnRatio) { if (recoverRun_ < 65000) ++recoverRun_; }
+      if (ratio < Policy::RecoverRatio) { if (recoverRun_ < 65000) ++recoverRun_; }
     }
     if (!mismatch_ && mismatchRun_ >= Policy::MismatchRuns) {
       declareMismatch(1);
-    } else if (mismatch_ && recoverRun_ >= Policy::RecoverRuns) {
-      mismatch_ = false; mismatchRun_ = 0;
+    } else if (mismatch_ && mismatchCause_ != 2 && recoverRun_ >= Policy::RecoverRuns) {
+      mismatch_ = false; mismatchRun_ = 0;   // only the detector that raised it may clear it
     }
   }
   // Hold-based plant-change detector (heater power, losses, ambient: anything that moves the
@@ -491,7 +527,7 @@ class ThermalLearner {
     } else {
       holdMismatchRun_ = 0;
       if (std::fabs(obs - profile_.holdPowerPct) < 0.5f * thr && holdAgreeRun_ < 65000) ++holdAgreeRun_;
-      if (mismatch_ && holdAgreeRun_ >= Policy::HoldAgreeRuns) { mismatch_ = false; mismatchRun_ = 0; recoverRun_ = 0; }
+      if (mismatch_ && mismatchCause_ == 2 && holdAgreeRun_ >= Policy::HoldAgreeRuns) { mismatch_ = false; mismatchRun_ = 0; recoverRun_ = 0; }
     }
   }
   // The plant the profile describes is no longer the plant being controlled.
@@ -501,6 +537,7 @@ class ThermalLearner {
     if (lastMismatchAt_ != 0U && sampleAt_ - lastMismatchAt_ < Policy::MismatchRefractoryMs) return;
     lastMismatchAt_ = sampleAt_ ? sampleAt_ : 1U;
     mismatch_ = true; recoverRun_ = 0; holdAgreeRun_ = 0; ++mismatchEvents_;
+    mismatchCause_ = reason == 2 ? 2 : 1;
     // Make the slow accumulators forget the old plant quickly.
     for (uint8_t i = 0; i < Cands; ++i) { sxxS_[i] *= 0.35f; sxyS_[i] *= 0.35f; }
     syyS_ *= 0.35f;
@@ -520,7 +557,7 @@ class ThermalLearner {
     if (!hold_.active) {
       // The window (<= 300 s) plus the delay (<= 160 s) can exceed what the ring remembers, so the
       // delayed cumulative duty at the START is captured now, while the ring still reaches it.
-      float pvTmp; double cumStart;
+      float pvTmp; Cum cumStart;
       const uint32_t d0 = static_cast<uint32_t>(profile_.heaterDelaySec * 1000.0f);
       if (!lookup(now - d0, pvTmp, cumStart)) return;
       hold_ = HoldWindow{};
@@ -537,20 +574,20 @@ class ThermalLearner {
     const float spanS = (now - hold_.t0) * 0.001f;
     const float dPv = in.pv - hold_.pv0;
     const bool flat = hold_.hi - hold_.lo <= Policy::HoldRangeC && std::fabs(dPv) <= Policy::HoldDriftC;
-    double ud = 0;
+    float ud = 0;
     bool haveDuty = false;
     {
-      float pvTmp; double cumEnd;
+      float pvTmp; Cum cumEnd;
       if (lookup(now - hold_.delayMs, pvTmp, cumEnd)) {
-        ud = std::min(1.0, std::max(0.0, cumDiff(cumEnd, hold_.cumDelayed0) / static_cast<double>(now - hold_.t0)));
+        ud = std::min(1.0f, std::max(0.0f, cumDiff(cumEnd, hold_.cumDelayed0) / static_cast<float>(now - hold_.t0)));
         haveDuty = true;
       }
     }
     float obs = NAN;
     if (haveDuty) {
-      if (flat) obs = 100.0f * static_cast<float>(ud);  // equilibrium: duty == loss duty
+      if (flat) obs = 100.0f * ud;  // equilibrium: duty == loss duty
       else if (gainTrust() >= 0.5f && profile_.heaterGain > Limits::GainMin)
-        obs = 100.0f * (static_cast<float>(ud) - dPv / (profile_.heaterGain * spanS));
+        obs = 100.0f * (ud - dPv / (profile_.heaterGain * spanS));
     }
     if (std::isfinite(obs)) {
       obs = std::min(100.0f, std::max(0.0f, obs));
@@ -686,8 +723,8 @@ class ThermalLearner {
       if (static_cast<int32_t>(now - te) >= 0) {
         float sDur;
         if (slopeAt(te, sDur) && vent_.preOk) {
-          const double dDur = meanDutyDelayed(te);
-          const float dd = static_cast<float>(dDur - vent_.dPre);
+          const float dDur = meanDutyDelayed(te);
+          const float dd = dDur - vent_.dPre;
           const bool heaterMoved = std::fabs(dd) > 0.10f;
           if (!heaterMoved || gainTrust() >= 0.4f) {
             float obs = -((sDur - vent_.sPre) - profile_.heaterGain * dd);
@@ -701,9 +738,9 @@ class ThermalLearner {
     }
     (void)dt;
   }
-  double meanDutyDelayed(uint32_t te) const {
+  float meanDutyDelayed(uint32_t te) const {
     const uint32_t d = static_cast<uint32_t>(profile_.heaterDelaySec * 1000.0f);
-    double u;
+    float u;
     if (!meanDuty(te - d - Policy::WindowMs, te - d, u)) return NAN;
     return u;
   }
@@ -741,14 +778,14 @@ class ThermalLearner {
   struct HoldWindow {
     bool active = false;
     uint32_t t0 = 0, delayMs = 0;
-    double cumDelayed0 = 0;
+    Cum cumDelayed0 = 0;
     float pv0 = 0, lo = 0, hi = 0;
   };
   struct VentEvent {
     uint8_t phase = 0;  // 0 none, 1 waiting for the during-window, 2 measured
     uint32_t t0 = 0;
     float sPre = 0;
-    double dPre = NAN;
+    float dPre = NAN;
     bool preOk = false;
   };
 
@@ -756,12 +793,14 @@ class ThermalLearner {
   bool enabled_ = false, seeded_ = false, profileFresh_ = false, holdSeen_ = false;
   bool tickSeen_ = false, sampleSeen_ = false, gapSeen_ = false, ventOn_ = false;
   bool mismatch_ = false, wasDegraded_ = false, slopeValid_ = false;
+  uint8_t mismatchCause_ = 0;  // 1 gain ratio, 2 hold power
   float slope90_ = 0, coastScale_ = 1.0f;
   uint32_t tickAt_ = 0, sampleAt_ = 0, cumOnMs_ = 0, cleanSince_ = 0, settleUntil_ = 0, validMs_ = 0, ventOffAt_ = 0, lastMismatchAt_ = 0;
   float lastPv_ = NAN, lastRaw_ = NAN, lastSp_ = NAN;
   GateReason gate_ = GateReason::Disabled;
   Entry ring_[RingSize]{};
   uint8_t head_ = 0, count_ = 0;
+  uint32_t newestT_ = 0, newestCum_ = 0;
   float sxxS_[Cands]{}, sxyS_[Cands]{}, sxxF_[Cands]{}, sxyF_[Cands]{};
   float syyS_ = 0, gainFast_ = 0, rVar_ = 0, pe_ = 2.0f, gainScore_ = 0, delayScore_ = 0, holdScore_ = 0;
   uint8_t best_ = 4;
@@ -770,7 +809,7 @@ class ThermalLearner {
   uint32_t mismatchByReason_[4]{};
   float holdRef_ = 0, holdDevVar_ = 0, lastHoldObs_ = 0;
   bool holdDevSeen_ = false, holdObsSeen_ = false;
-  uint32_t updates_ = 0, outliers_ = 0, mismatchEvents_ = 0, ventEvents_ = 0, skippedSmall_ = 0, skippedRegulation_ = 0;
+  uint32_t updates_ = 0, outliers_ = 0, mismatchEvents_ = 0, ventEvents_ = 0;
   uint8_t ventStreak_ = 0;
   Hints hint_{};
   VentEvent vent_{};

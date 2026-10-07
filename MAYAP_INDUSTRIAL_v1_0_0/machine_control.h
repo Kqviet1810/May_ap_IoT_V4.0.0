@@ -6242,7 +6242,11 @@ class MachineController {
     // Adaptive Thermal V1 plan: feed-forward + integral policy + startup hint. It can only
     // propose; the result still passes the startup ceiling, effectiveLimit, scheduler and arbiter.
     ventInfo_.active = outputs_.state().ventFan;
-    ventInfo_.forced = req.ventFanForceOn || adaptiveCoolingRequested();
+    // The origin of a protective run is latched until the fan is actually off: relay run-on after the
+    // request clears must not be compensated as an ordinary vent.
+    if (!ventInfo_.active) ventForcedRun_ = false;
+    else if (req.ventFanForceOn || adaptiveCoolingRequested()) ventForcedRun_ = true;
+    ventInfo_.forced = req.ventFanForceOn || adaptiveCoolingRequested() || ventForcedRun_;
     ventInfo_.startsInSec = ventStartsInSec;
     // A schedule shorter than the vent relay's minimum-on time ends while the fan keeps running:
     // report "ends now" (not "unknown") so the compensation fades instead of snapping back.
@@ -7914,6 +7918,7 @@ class MachineController {
   MayapAdaptive::AdaptiveThermalSupervisor adaptiveThermal_;
   MayapThermal::AdaptiveV1 thermalV1_;
   MayapThermal::VentInfo ventInfo_{};
+  bool ventForcedRun_ = false;
   uint32_t thermalDiagnosticAt_=0;
   MayapThermal::LearnState thermalLoggedState_=MayapThermal::LearnState::Unlearned;
   bool thermalMismatchLogged_=false;

@@ -1,4 +1,7 @@
 #pragma once
+#ifndef MAYAP_ADAPTIVE_OBSERVER_ONLY
+#define MAYAP_ADAPTIVE_OBSERVER_ONLY 0
+#endif
 // Real config load/save, EventLog, AutoTune update and heating/output bodies.
 // Host replaces only clocks, GPIO, EEPROM I/O and UI notification sinks.
 #include <algorithm>
@@ -109,7 +112,7 @@ struct TuneHarness {
 #include "actual-tune-update.inc"
 #ifdef MAYAP_TEST_ADAPTIVE
   MayapAdaptive::AdaptiveThermalSupervisor adaptiveThermal_;
-  MayapThermal::AdaptiveV1 thermalV1_;MayapThermal::VentInfo ventInfo_{};
+  MayapThermal::AdaptiveV1 thermalV1_;MayapThermal::VentInfo ventInfo_{};bool ventForcedRun_=false;
   uint32_t thermalDiagnosticAt_=0;
   MayapThermal::LearnState thermalLoggedState_=MayapThermal::LearnState::Unlearned;bool thermalMismatchLogged_=false;
   uint32_t adaptiveDiagnosticAt_=0,adaptiveSignature_=0;
@@ -118,7 +121,7 @@ struct TuneHarness {
   struct {uint8_t sensorProfile()const{return 1;}} sensor_;
 #include "actual-adaptive.inc"
 #else
-  MayapThermal::AdaptiveV1 thermalV1_;MayapThermal::VentInfo ventInfo_{};
+  MayapThermal::AdaptiveV1 thermalV1_;MayapThermal::VentInfo ventInfo_{};bool ventForcedRun_=false;
   void publishThermalLearning(uint32_t){}
   void trackAdaptiveEnergy(uint32_t){}
   float updateAdaptiveBalance(uint32_t,bool,bool,bool){return config_.maxHeaterPower;}
