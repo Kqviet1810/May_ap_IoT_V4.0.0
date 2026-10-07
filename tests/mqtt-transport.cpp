@@ -186,18 +186,18 @@ int main() {
   CHECK(inflightCount == 1U);                             // presence awaits its PUBACK
   CHECK(g_realtimeUpdates == 0U);
 
-  // 3. QoS1 PUBACK clears the in-flight slot; QoS0 does not use one; bounded to 4; unknown channels refused.
+  // 3. QoS1 PUBACK clears the in-flight slot; QoS0 does not use one; bounded to QOS1_INFLIGHT_MAX; unknown channels refused.
   inject({0x40, 0x02, 0x00, static_cast<uint8_t>(nextPacketId)});
   tick(1);
   CHECK(inflightCount == 0U && g_realtimeUpdates >= 1U);
   CHECK(publishFromBridge("snapshot", "{\"t\":1}", 7U) && inflightCount == 0U);
   CHECK(!publishFromBridge("command", "{}", 2U));          // Web->device topic: never published by the device
   CHECK(!publishFromBridge("ack", "", 0U));
-  for (int i = 0; i < 4; ++i) CHECK(publishFromBridge("ack", "{\"phase\":\"completed\"}", 22U));
-  CHECK(inflightCount == 4U && !publishFromBridge("ack", "{}", 2U));
+  for (unsigned i = 0; i < QOS1_INFLIGHT_MAX; ++i) CHECK(publishFromBridge("ack", "{\"phase\":\"completed\"}", 22U));
+  CHECK(inflightCount == QOS1_INFLIGHT_MAX && !publishFromBridge("ack", "{}", 2U));
   CHECK(publishFromBridge("snapshot", "{}", 2U));          // QoS0 still flows when the QoS1 window is full
   CHECK(publishFromBridge("bootstrap", "{}", 2U));         // swallowed: not part of the topic contract
-  for (uint16_t id = nextPacketId - 3U; id <= nextPacketId; ++id) inject({0x40, 0x02, static_cast<uint8_t>(id >> 8U), static_cast<uint8_t>(id)});
+  for (uint16_t id = nextPacketId - (QOS1_INFLIGHT_MAX - 1U); id <= nextPacketId; ++id) inject({0x40, 0x02, static_cast<uint8_t>(id >> 8U), static_cast<uint8_t>(id)});
   tick(1);
   CHECK(inflightCount == 0U);
 
@@ -364,8 +364,13 @@ int main() {
   for (int i = 0; i < 60; ++i) tick(1000);                 // one minute of failures: at most one more attempt
   CHECK(net.connects <= attempts + 1U);
   resetWorld(); connectNow(); g_yield = true; tick(1); g_yield = false;
-  tick(5000); CHECK(!mayapMqttTransportConnected());        // right after a Cloud yield: held off
-  tick(15000); tick(1000); CHECK(mayapMqttTransportConnected());
+  tick(1000); CHECK(!mayapMqttTransportConnected());        // right after a Cloud yield: briefly held off
+  tick(YIELD_RESUME_MS); tick(1000); CHECK(mayapMqttTransportConnected());   // ...then back within seconds, not 15 s+
+  // A busy TLS lease (Cloud mid-handshake) is contention: retried every BUSY_RETRY_MS, never escalates the backoff.
+  resetWorld(); g_tlsAllowed = false; mayapMqttTransportBegin(); tick(1); tick(STA_STABLE_MS);
+  for (int i = 0; i < 40; ++i) tick(1000);
+  CHECK(net.connects == 0U && backoff.failures == 0U && backoff.step == 0U);
+  g_tlsAllowed = true; tick(BUSY_RETRY_MS + 1000U); CHECK(mayapMqttTransportConnected());
   resetWorld(); connectNow(); g_networkStatus.connected = false; tick(1);
   g_networkStatus.connected = true; tick(1); tick(5000);
   CHECK(!mayapMqttTransportConnected());                   // Wi-Fi flapped: waits for stability again

@@ -40,7 +40,7 @@ constexpr uint16_t KEEPALIVE_SEC = 30U;             // contract: 30..120
 constexpr size_t PACKET_BUFFER = 2120U;             // MQTT packet: 2047 B payload + 63 B topic + 10 B headers
 constexpr size_t TX_HEADROOM = MayapMqttWs::MAX_HEADER;   // WebSocket header is written in front of the packet
 static_assert(PACKET_BUFFER >= MayapProtocol::FRAME_NORMAL_CAP + 72U, "MQTT packet buffer smaller than a contract frame");
-constexpr uint8_t QOS1_INFLIGHT_MAX = 4U;
+constexpr uint8_t QOS1_INFLIGHT_MAX = 8U;           // PUBACK round trip via Cloudflare is ~100-400 ms; 4 filled during command bursts
 constexpr uint32_t QOS1_STUCK_MS = 15000UL;
 constexpr uint32_t STEP_TIMEOUT_MS = 5000UL;        // WebSocket upgrade / CONNACK / SUBACK wait
 constexpr size_t UPGRADE_RESPONSE_MAX = 768U;       // bounded HTTP response header (held in rxBuffer)
@@ -79,7 +79,9 @@ static size_t carryLength = 0U;
 constexpr uint32_t RETRY_STEPS_MS[] = {15000UL, 30000UL, 60000UL, 120000UL, 300000UL};
 constexpr uint8_t RETRY_STEP_COUNT = sizeof(RETRY_STEPS_MS) / sizeof(RETRY_STEPS_MS[0]);
 constexpr uint32_t RETRY_JITTER_MAX_MS = 2000UL;
-constexpr uint32_t STA_STABLE_MS = 15000UL;
+constexpr uint32_t STA_STABLE_MS = 10000UL;
+constexpr uint32_t YIELD_RESUME_MS = 3000UL;        // after Cloud released the lease: reconnect quickly (the Web shows offline meanwhile)
+constexpr uint32_t BUSY_RETRY_MS = 3000UL;          // TLS lease/heap busy is contention, not a broker failure: no backoff escalation
 struct Retry {
   uint8_t step = 0U;
   uint32_t nextAttemptAt = 0U;
@@ -93,8 +95,8 @@ struct Retry {
   }
   void onSuccess() { step = 0U; }
   // A deliberate stop (Cloud needs the heap/lease) is not a failure, but the next handshake waits too.
-  void holdOff(uint32_t now) {
-    const uint32_t until = now + RETRY_STEPS_MS[0];
+  void holdOff(uint32_t now, uint32_t ms = RETRY_STEPS_MS[0]) {
+    const uint32_t until = now + ms;
     if (static_cast<int32_t>(until - nextAttemptAt) > 0) nextAttemptAt = until;
   }
 };
@@ -345,10 +347,11 @@ inline bool upgradeWebSocket() {
 
 // TLS + WebSocket + MQTT handshake. The TLS admission lease is held for its whole duration (the
 // working set is ~40 KiB); the socket then stays open. Returns false on any failure.
-inline bool connectClient() {
+enum class Connect : uint8_t { Ok, Busy, Failed };
+inline Connect connectClient() {
   using namespace MayapMqttWire;
   MayapTlsOperation tls(MayapTlsKind::Mqtt);
-  if (!tls) return false;
+  if (!tls) return Connect::Busy;
   buildIdentity();
   if (!netConfigured) {
     // Same transport settings as the V2 owner.
@@ -370,9 +373,9 @@ inline bool connectClient() {
                       static_cast<unsigned>(brokerPort()), reason, static_cast<unsigned long>(ESP.getFreeHeap()),
                       static_cast<unsigned long>(ESP.getMaxAllocHeap()));
     net.stop();
-    return false;
+    return Connect::Failed;
   }
-  if (!upgradeWebSocket()) { net.stop(); return false; }
+  if (!upgradeWebSocket()) { net.stop(); return Connect::Failed; }
   const ConnectArgs args{clientId, MayapRealtimeInternal::deviceId, mayapMqttKey(), willTopic,
                          reinterpret_cast<const uint8_t *>(WILL_MESSAGE), sizeof(WILL_MESSAGE) - 1U, KEEPALIVE_SEC};
   if (!sendPacket(encodeConnect(txMqtt(), PACKET_BUFFER, args)) || !awaitPacket(CONNACK) ||
@@ -380,7 +383,7 @@ inline bool connectClient() {
     mayapSerialPrintf(false, "[MQTT] connect refused/timeout code=%d\n",
                       parser.ready() && parser.type() == CONNACK && parser.bodyLength() == 2U ? static_cast<int>(parser.body()[1]) : -1);
     net.stop();
-    return false;
+    return Connect::Failed;
   }
   char topics[4][64];
   static constexpr struct { const char *channel; uint8_t qos; } SUBSCRIBE[4] = {
@@ -395,13 +398,13 @@ inline bool connectClient() {
       parser.bodyLength() != 6U) {
     mayapSerialPrintf(false, "[MQTT] subscribe failed\n");
     net.stop();
-    return false;
+    return Connect::Failed;
   }
   for (uint8_t i = 0U; i < 4U; ++i) {
     if (parser.body()[2U + i] > 1U) {  // 0x80: the broker refused it (ACL)
       mayapSerialPrintf(false, "[MQTT] subscribe refused (%u)\n", static_cast<unsigned>(i));
       net.stop();
-      return false;
+      return Connect::Failed;
     }
   }
   parser.reset();
@@ -413,7 +416,7 @@ inline bool connectClient() {
                     static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMaxAllocHeap()),
                     pcTaskGetName(nullptr), static_cast<int>(xPortGetCoreID()),
                     static_cast<unsigned>(uxTaskPriorityGet(nullptr)));
-  return true;
+  return Connect::Ok;
 }
 
 inline void onConnected() {
@@ -453,10 +456,14 @@ inline bool mayapMqttTransportConnected() { return MayapMqttInternal::connected;
 inline void mayapMqttTransportUpdate(uint32_t now) {
   using namespace MayapMqttInternal;
   const bool closing = gateClosing();
-  if (closing || mayapServiceIsolated(MayapRecovery::Service::Mqtt, now) ||
-      mayapOnlineMemoryPressure() || mayapCloudTlsYieldRequested(now)) {
+  const bool yielding = mayapCloudTlsYieldRequested(now);
+  const bool pressure = mayapOnlineMemoryPressure();
+  if (closing || mayapServiceIsolated(MayapRecovery::Service::Mqtt, now) || pressure || yielding) {
+    if (connected)
+      mayapSerialPrintf(false, "[MQTT] closed on purpose (%s) heap=%lu\n", closing ? "radio" : pressure ? "memory" : yielding ? "cloud-tls" : "isolated",
+                        static_cast<unsigned long>(ESP.getFreeHeap()));
     stopClient(true);
-    if (!closing) backoff.holdOff(now);
+    if (!closing) backoff.holdOff(now, yielding && !pressure ? YIELD_RESUME_MS : RETRY_STEPS_MS[0]);
     if (ioEntered) { mayapOnlineIoLeave(MayapRecovery::Service::Mqtt); ioEntered = false; }
     // An idle poll is not a drain ACK: the socket above is already closed.
     if (closing) mayapOnlineOwnerQuiet(MayapRecovery::Service::Mqtt);
@@ -479,7 +486,9 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
   if (!connected) {
     if (!backoff.ready(now) || !clockValid()) return;  // certificate dates need real time
     if (MayapRecovery::age(now, staUpSince) < STA_STABLE_MS) return;   // a flapping Wi-Fi gets no TLS handshakes
-    if (!connectClient()) { backoff.onFailure(millis()); return; }
+    const Connect result = connectClient();
+    if (result == Connect::Busy) { backoff.holdOff(millis(), BUSY_RETRY_MS); return; }
+    if (result == Connect::Failed) { backoff.onFailure(millis()); return; }
     onConnected();
     return;
   }
