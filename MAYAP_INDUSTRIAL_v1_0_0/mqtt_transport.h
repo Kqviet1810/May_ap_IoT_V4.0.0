@@ -486,7 +486,12 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
   if (!connected) {
     if (!backoff.ready(now) || !clockValid()) return;  // certificate dates need real time
     if (MayapRecovery::age(now, staUpSince) < STA_STABLE_MS) return;   // a flapping Wi-Fi gets no TLS handshakes
-    const Connect result = connectClient();
+    Connect result = connectClient();
+    if (result == Connect::Failed && mayapCloudTlsYieldRequested(millis())) {
+      // Cloud asked for the heap while this handshake ran: contention, not a broker failure.
+      mayapSerialPrintf(false, "[MQTT] connect aborted: Cloud needs the TLS lease, retry soon\n");
+      result = Connect::Busy;
+    }
     if (result == Connect::Busy) { backoff.holdOff(millis(), BUSY_RETRY_MS); return; }
     if (result == Connect::Failed) { backoff.onFailure(millis()); return; }
     onConnected();

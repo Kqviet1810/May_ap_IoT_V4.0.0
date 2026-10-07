@@ -529,7 +529,10 @@ inline bool postJson(const char *path, const JsonDocument &doc, const char *logT
     if (responseCode) *responseCode = 0;
     return false;
   }
-  if (urgent && (ESP.getFreeHeap()<73728U || mayapTlsBusy())) mayapRequestCloudTlsYield(millis(),true);
+  // A TLS lease held by someone else (typically the ~2.5 s realtime handshake) is waited out, never
+  // pre-empted: asking realtime to yield mid-handshake aborted every reconnect while alarms were
+  // queued, so the Web stayed offline for the whole backlog. Only a real heap shortage asks for a yield.
+  if (urgent && !mayapTlsBusy() && ESP.getFreeHeap()<73728U) mayapRequestCloudTlsYield(millis(),true);
   MayapTlsOperation tlsOperation(MayapTlsKind::Cloud);
   if (!tlsOperation) {
     static uint32_t lastAdmissionLogAt = 0U;

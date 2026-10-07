@@ -9,6 +9,7 @@ uint32_t g_millis = 100000U, g_epoch = 1800000000U;
 std::vector<std::string> g_log;
 char g_mqttKey[65] = "";
 bool g_gateClosing = false, g_isolated = false, g_pressure = false, g_yield = false, g_ioEnterOk = true, g_tlsAllowed = true;
+unsigned g_yieldAfterCalls = 0U;
 unsigned g_beats = 0U, g_realtimeUpdates = 0U;
 NetworkStatus g_networkStatus{ConnectivityMode::Online, true};
 std::vector<MayapRealtimeInternal::Delivered> MayapRealtimeInternal::g_delivered;
@@ -127,7 +128,7 @@ static void resetWorld() {
   g_log.clear(); MayapRealtimeInternal::g_delivered.clear(); g_realtimeUpdates = 0U;
   g_connackCode = 0U; g_silentBroker = false; g_subackFirst = 1U; g_upgradeMode = UpgradeMode::Good;
   g_upgraded = false; g_clientFrameBad = false; g_request.clear(); g_clientPings = g_clientPongs = g_clientCloses = 0U; g_clientPongPayloads.clear();
-  g_gateClosing = g_isolated = g_pressure = g_yield = false; g_ioEnterOk = g_tlsAllowed = true;
+  g_gateClosing = g_isolated = g_pressure = g_yield = false; g_ioEnterOk = g_tlsAllowed = true; g_yieldAfterCalls = 0U;
   g_networkStatus = NetworkStatus{ConnectivityMode::Online, true};
   strcpy(g_mqttKey, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
   g_epoch = 1800000000U;
@@ -375,6 +376,14 @@ int main() {
   g_networkStatus.connected = true; tick(1); tick(5000);
   CHECK(!mayapMqttTransportConnected());                   // Wi-Fi flapped: waits for stability again
   tick(STA_STABLE_MS); CHECK(mayapMqttTransportConnected());
+
+  // 16. Cloud asking for the lease while the handshake runs aborts that attempt but is contention, not a
+  //     broker failure: no backoff escalation, retried within seconds once the yield is over.
+  resetWorld(); g_silentBroker = true; g_yieldAfterCalls = 4U; mayapMqttTransportBegin(); tick(1); tick(STA_STABLE_MS);
+  CHECK(net.connects == 1U && !mayapMqttTransportConnected() && backoff.failures == 0U && backoff.step == 0U);
+  CHECK(logged("connect aborted"));
+  g_yield = false; g_silentBroker = false; g_yieldAfterCalls = 0U;
+  tick(BUSY_RETRY_MS + 1000U); CHECK(mayapMqttTransportConnected());
 
   printf("mqtt transport host tests PASS\n");
   return 0;

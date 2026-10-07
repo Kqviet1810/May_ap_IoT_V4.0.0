@@ -69,11 +69,15 @@ enum class Service { Mqtt };
 inline uint32_t age(uint32_t now, uint32_t then) { return now - then; }
 }
 extern bool g_gateClosing, g_isolated, g_pressure, g_yield, g_ioEnterOk, g_tlsAllowed;
+extern unsigned g_yieldAfterCalls;   // >0: the Nth mayapCloudTlsYieldRequested() call flips g_yield (Cloud asks mid-handshake)
 extern unsigned g_beats;
 inline void mayapServiceBeat(MayapRecovery::Service) { ++g_beats; }
 inline bool mayapServiceIsolated(MayapRecovery::Service, uint32_t) { return g_isolated; }
 inline bool mayapOnlineMemoryPressure() { return g_pressure; }
-inline bool mayapCloudTlsYieldRequested(uint32_t) { return g_yield; }
+inline bool mayapCloudTlsYieldRequested(uint32_t) {
+  if (g_yieldAfterCalls > 0U && --g_yieldAfterCalls == 0U) g_yield = true;
+  return g_yield;
+}
 inline void mayapOnlineOwnerQuiet(MayapRecovery::Service) {}
 inline bool mayapOnlineIoEnter(MayapRecovery::Service) { return g_ioEnterOk; }
 inline void mayapOnlineIoLeave(MayapRecovery::Service) {}
