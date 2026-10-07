@@ -76,7 +76,7 @@ vents are never compensated.
 | | PASS | reachable PASS | High | Emergency | worst overshoot (reachable) | mean / worst MAE | worst ripple |
 |---|---|---|---|---|---|---|---|
 | V4 baseline | 186/788 | 139/489 | 1 | 0 | 0.27 | 0.385 / 7.9 | 2.33 |
-| Adaptive V1 | **503/788** | **382/489** | **0** | **0** | 0.46 | 0.073 / 1.0 | 1.43 |
+| Adaptive V1 | **504/788** | **382/489** | **0** | **0** | 0.46 | 0.073 / 1.0 | 1.43 |
 
 Classes (PASS/total, baseline → V1): REACHABLE 139→382 /489, SAFETY_LIMITED 11→85 /187,
 COOLING_REQUIRED 36→36 /108, HEAT_LIMITED 0→0 /4. 2 cases pass on the baseline and fail on V1.

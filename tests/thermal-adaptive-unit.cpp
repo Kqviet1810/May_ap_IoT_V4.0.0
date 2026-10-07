@@ -32,6 +32,7 @@ struct Rig {
   double sp = 40, integ = 0;
   ThermalLearner L;
   ThermalLearner *Lp = &L;     // learner under test (may be an AdaptiveV1's own)
+  float lastPv = NAN; uint32_t lastNow = 0;
   double worstSampleUs = 0, totSampleUs = 0; unsigned nSamples = 0;  // host cost of one learner sample
   double khTrue() const { return 16000.0 * eff / cap; }
 
@@ -73,6 +74,7 @@ struct Rig {
         in.sensor = true; in.fanStable = true; in.ventActive = ventOn; in.heaterBlocked = blocked; in.tune = tune;
         if (badEvery && (k / 20) % badEvery == 5) in.pv = NAN;
         if (badEvery && (k / 20) % badEvery == 6) in.pv = INFINITY;
+        lastPv = in.pv; lastNow = now;
         Hints h;
         const std::chrono::high_resolution_clock::time_point t0 = std::chrono::high_resolution_clock::now();
         L.sample(now, in, h);
@@ -129,6 +131,10 @@ static void profileTests() {
   CHECK(shouldPersistProfile(live, p, false, 3600000UL));             // nothing stored yet
   ThermalProfile st = live; CHECK(!shouldPersistProfile(live, st, true, 7200000UL));  // no material change
   live.heaterGain = 0.07f; CHECK(shouldPersistProfile(live, st, true, 7200000UL));    // +40 %
+  live = st; live.epoch = 1700000000U; st.epoch = live.epoch;
+  CHECK(!shouldPersistProfile(live, st, true, 7200000UL));
+  live.epoch += 8UL * 86400UL; CHECK(shouldPersistProfile(live, st, true, 7200000UL));   // weekly age refresh
+  CHECK(!shouldPersistProfile(live, st, true, 1000));                                    // still rate-limited
   live = st; live.confidence = 40; CHECK(!shouldPersistProfile(live, p, false, 7200000UL));  // unqualified
 }
 
@@ -154,6 +160,13 @@ static void learnerTests() {
     CHECK(r.L.gate() == GateReason::HeaterBlocked); }
   // Clean-window gate: an AutoTune running, or a whole run of vent, must not teach heater gain.
   { Rig r; r.tune = true; r.run(); CHECK(r.L.profile().confidence == 0); CHECK(r.L.gate() == GateReason::Tune); }
+  // A setpoint edit drops the windows that span both operating points: the gate stays shut for a full
+  // 2W of fresh history afterwards instead of reopening on the next sample.
+  { Rig r; r.hours = 1.0; r.run(); CHECK(r.L.gate() == GateReason::Open);
+    const uint32_t now = r.lastNow + 2000;
+    LearnInput in; in.pv = r.lastPv; in.raw = r.lastPv; in.sp = 41.0f; in.high = 500; in.sensor = true; in.fanStable = true;
+    Hints h; r.L.sample(now, in, h); CHECK(r.L.gate() == GateReason::Settling);
+    r.L.sample(now + 2000, in, h); CHECK(r.L.gate() == GateReason::Settling); }
   // Bounds: nothing learned leaves the persistent limits, whatever the plant.
   const double effs[] = {0.2, 2.5};
   for (double e : effs) { Rig r; r.eff = e; r.run(); CHECK(profileRangesValid(r.L.profile())); }

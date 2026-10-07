@@ -193,7 +193,8 @@ class ThermalLearner {
     if (cleanSince_ == 0U) { cleanSince_ = now; }
     gate_ = (now - cleanSince_) >= 2U * Policy::WindowMs ? GateReason::Open : GateReason::Settling;
     if (gate_ != GateReason::Open) { updateConfidence(); return; }
-    validMs_ += std::min<uint32_t>(dt, Policy::MaxSampleGapMs);
+    { const uint32_t add = std::min<uint32_t>(dt, Policy::MaxSampleGapMs);  // saturate: no 49.7-day wrap
+      validMs_ = validMs_ > 0xffffffffU - add ? 0xffffffffU : validMs_ + add; }
     profile_.validLearningSec = validMs_ / 1000U;
     updateRegression(now);
     trackHold(now, in);
@@ -312,7 +313,10 @@ class ThermalLearner {
     if (std::isfinite(prevPv) && std::fabs(in.pv - prevPv) > jumpLimit(dt ? dt : 2000U)) return GateReason::Jump;
     if (std::isfinite(in.raw) && std::isfinite(prevRaw) && std::fabs(in.raw - prevRaw) > Policy::DoorRawJumpC)
       return GateReason::Door;
-    if (std::isfinite(lastSp_) && std::fabs(in.sp - lastSp_) > 0.01f) { lastSp_ = in.sp; return GateReason::Settling; }
+    if (std::isfinite(lastSp_) && std::fabs(in.sp - lastSp_) > 0.01f) {
+      // A setpoint edit is a one-shot disturbance: drop the windows that span both operating points.
+      lastSp_ = in.sp; invalidate(now, GateReason::Settling, false); return GateReason::Settling;
+    }
     lastSp_ = in.sp;
     if (settleUntil_ != 0U && static_cast<int32_t>(now - settleUntil_) < 0) return GateReason::Settling;
     return GateReason::Open;

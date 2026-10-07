@@ -156,6 +156,9 @@ inline bool shouldPersistProfile(const ThermalProfile &live, const ThermalProfil
   if (live.confidence < 60 || !profileRangesValid(live)) return false;
   if (sinceLastSaveMs < minIntervalMs) return false;
   if (!storedValid) return true;
+  // Age refresh: an unchanged but healthy profile is rewritten weekly so its epoch (and with it
+  // the seed trust after a reboot) never ages out while the oven keeps running.
+  if (live.epoch != 0U && stored.epoch != 0U && live.epoch > stored.epoch && live.epoch - stored.epoch >= 7UL * 86400UL) return true;
   auto rel = [](float a, float b) { return std::fabs(a - b) / (std::fabs(b) > 1e-6f ? std::fabs(b) : 1e-6f); };
   if (rel(live.heaterGain, stored.heaterGain) > 0.10f) return true;
   if (std::fabs(live.heaterDelaySec - stored.heaterDelaySec) > 10.0f) return true;
