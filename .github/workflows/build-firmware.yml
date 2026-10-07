@@ -10,11 +10,6 @@ on:
     branches:
       - main
   workflow_dispatch:
-    inputs:
-      bisect:
-        description: 'Bisect build (control-heartbeat trip): none | A (skip esp_mqtt_client_start) | B (MQTT connect delayed 60 s, unpinned)'
-        required: false
-        default: 'none'
 
 permissions:
   contents: write
@@ -44,7 +39,6 @@ jobs:
       - name: Install pinned account dependencies
         run: |
           npx --yes pnpm@11.19.0 --dir cloudflare install --frozen-lockfile --ignore-scripts
-          npm ci --prefix broker --ignore-scripts --no-audit --no-fund
           node --check account.js
           node --check cloudflare/src/account-worker.js
 
@@ -213,15 +207,6 @@ jobs:
             echo "MAYAP_BUILD_PROFILE=DEV" >> "$GITHUB_ENV"
             echo "MAYAP_CPP_FLAGS=-DMAYAP_DIAGNOSTIC_SERIAL=1 -DMAYAP_SERIAL_INPUT_SIM=0" >> "$GITHUB_ENV"
           fi
-          # Manual bisect builds only; watchdog/heartbeat/safety are unchanged.
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" != refs/tags/* ]]; then
-            case "${{ inputs.bisect }}" in
-              A) echo "MAYAP_BUILD_PROFILE=PILOT-BISECT-A" >> "$GITHUB_ENV"
-                 echo "MAYAP_CPP_FLAGS=-DMAYAP_DIAGNOSTIC_SERIAL=1 -DMAYAP_SERIAL_INPUT_SIM=0 -DMAYAP_BISECT_MQTT_NO_START=1" >> "$GITHUB_ENV" ;;
-              B) echo "MAYAP_BUILD_PROFILE=PILOT-BISECT-B" >> "$GITHUB_ENV"
-                 echo "MAYAP_CPP_FLAGS=-DMAYAP_DIAGNOSTIC_SERIAL=1 -DMAYAP_SERIAL_INPUT_SIM=0 -DMAYAP_BISECT_MQTT_DELAY_MS=60000" >> "$GITHUB_ENV" ;;
-            esac
-          fi
 
       - name: Bien dich firmware ESP32
         shell: bash
@@ -269,16 +254,16 @@ jobs:
           test "$OTA_SYMS" -gt 0 || { echo "::error::the size gate would measure a firmware without OTA"; exit 1; }
           echo "measured: $(grep -E 'Sketch uses|Global variables use' /tmp/mayap-size.log | tr '\n' ' ')"
 
-      - name: Verify MQTT/TLS owner is native (no esp-mqtt, no extra task, no linker hack)
+      - name: Verify the MQTT/WSS owner is native (no esp-mqtt, no esp_websocket_client, no extra task, no linker hack)
         shell: bash
         run: |
           set -euo pipefail
           MAP=$(ls build/*.map | head -n 1)
-          # esp-mqtt creates its own hidden task: it must not be linked at all.
+          # esp-mqtt and esp_websocket_client each create their own hidden task: neither may be linked.
           # `LOAD .../libmqtt.a` only lists the archive on the link line; what matters is whether any
           # of its members was pulled in (they appear as `libmqtt.a(member.obj)`).
-          if grep -Eq "libmqtt\.a\(|esp_mqtt_client_(init|start)" "$MAP"; then
-            echo "::error::esp-mqtt is linked into the firmware (hidden mqtt_task)"; grep -E "libmqtt\.a\(|esp_mqtt_client_(init|start)" "$MAP" | head -5; exit 1
+          if grep -Eq "libmqtt\.a\(|esp_mqtt_client_(init|start)|esp_websocket_client_(init|start)|libesp_websocket_client\.a\(" "$MAP"; then
+            echo "::error::esp-mqtt / esp_websocket_client is linked into the firmware (hidden task)"; grep -E "libmqtt\.a\(|esp_mqtt_client_(init|start)|esp_websocket_client_(init|start)|libesp_websocket_client\.a\(" "$MAP" | head -5; exit 1
           fi
           # No sketch-level task creation other than the reviewed static, pinned set.
           if grep -nE "xTaskCreate\(|xTaskCreatePinnedToCore\(|xTaskCreateStatic\(" MAYAP_INDUSTRIAL_v1_0_0/*.h MAYAP_INDUSTRIAL_v1_0_0/*.cpp 2>/dev/null; then
@@ -287,26 +272,23 @@ jobs:
           grep -c "xTaskCreateStaticPinnedToCore" MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino | sed 's/^/static pinned task creations in the sketch: /'
           grep -n '"mayap_mqtt"' -A1 MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino | grep -E "mqttTaskStack, &mqttTaskTcb, 0\)" >/dev/null || { echo "::error::mayap_mqtt is not pinned to core 0"; exit 1; }
           if [ -e MAYAP_INDUSTRIAL_v1_0_0/platform.local.txt ] || [ -e platform.local.txt ]; then echo "::error::platform.local.txt must not be needed"; exit 1; fi
-          echo "OK: MQTT/TLS runs only in mayap_mqtt (core 0); esp-mqtt is not linked."
+          echo "OK: TLS/WebSocket/MQTT run only in mayap_mqtt (core 0); esp-mqtt and esp_websocket_client are not linked."
 
       - name: Enforce V4 network-phase firmware size budgets
         shell: bash
         run: |
-          # Phase 1 (no transport): Flash=1359805 / static RAM=142184.
-          # Native MQTT/TLS, OTA ON (the gated, feature-complete image; same for PR/PILOT/PROD):
-          #   Flash=1400721 / static RAM=161712 -> margin 9279 B Flash, 288 B static RAM.
-          # Native MQTT/TLS, OTA OFF (MAYAP_OTA_PASSWORD secret empty): Flash=1382213 / static RAM=159872.
-          # Historical esp-mqtt/WSS: Flash=1423729 / static RAM=159640 with the OTA state UNVERIFIED,
-          # so no like-for-like saving is claimed from it.
-          # Ceilings: Flash 1410000, static RAM 162000; lower them after the stack high-water mark
-          # is measured on hardware.
+          # Phase 1 (no transport) measured Flash=1359805 / static RAM=142184.
+          # Full esp-mqtt/WSS path (host is tracked, password comes from NVS at runtime,
+          # so nothing is dead-stripped) measured on main: Flash=1439981 / static RAM=161024.
+          # Ceilings = measured + ~1.4% Flash / ~1.8% RAM margin; lower them
+          # after the stack high-water mark is measured on hardware.
           FLASH=$(sed -n 's/.*Sketch uses \([0-9][0-9]*\) bytes.*/\1/p' /tmp/mayap-size.log | tail -n 1)
           STATIC_RAM=$(sed -n 's/.*Global variables use \([0-9][0-9]*\) bytes.*/\1/p' /tmp/mayap-size.log | tail -n 1)
           test -n "$FLASH" || { echo "::error::Cannot read ESP32 Flash size"; exit 1; }
           test -n "$STATIC_RAM" || { echo "::error::Cannot read ESP32 static RAM size"; exit 1; }
-          echo "V4 network phase: Flash=${FLASH}/1410000 bytes; static RAM=${STATIC_RAM}/162000 bytes"
-          test "$FLASH" -le 1410000 || { echo "::error::ESP32 Flash exceeds V4 budget: ${FLASH} > 1410000"; exit 1; }
-          test "$STATIC_RAM" -le 162000 || { echo "::error::ESP32 static RAM exceeds V4 budget: ${STATIC_RAM} > 162000"; exit 1; }
+          echo "V4 network phase: Flash=${FLASH}/1460000 bytes; static RAM=${STATIC_RAM}/164000 bytes"
+          test "$FLASH" -le 1460000 || { echo "::error::ESP32 Flash exceeds V4 budget: ${FLASH} > 1460000"; exit 1; }
+          test "$STATIC_RAM" -le 164000 || { echo "::error::ESP32 static RAM exceeds V4 budget: ${STATIC_RAM} > 164000"; exit 1; }
 
       - name: Verify linked GPIO ISR cache safety
         shell: bash
@@ -321,7 +303,7 @@ jobs:
           ls -la ./build-attiny/*.hex
 
       - name: Luu firmware test
-        if: (github.event_name == 'workflow_dispatch' && inputs.bisect != 'A' && inputs.bisect != 'B') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/upload-artifact@v6
         with:
           name: firmware-test-${{ github.sha }}
@@ -331,17 +313,6 @@ jobs:
             ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.elf
             ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.map
             ./build-attiny/ATTINY13A_POWER_ALARM.hex
-          retention-days: 7
-
-      - name: Luu firmware bisect A/B
-        if: github.event_name == 'workflow_dispatch' && (inputs.bisect == 'A' || inputs.bisect == 'B')
-        uses: actions/upload-artifact@v6
-        with:
-          name: firmware-bisect${{ inputs.bisect }}-${{ github.sha }}
-          path: |
-            ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.bin
-            ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.merged.bin
-            ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.elf
           retention-days: 7
 
       - name: Doi ten file .bin theo tag

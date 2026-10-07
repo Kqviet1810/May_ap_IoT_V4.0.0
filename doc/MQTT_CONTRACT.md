@@ -15,10 +15,8 @@ code Phase 2B. Mọi mục mâu thuẫn với tài liệu khác đều lấy fil
 - Chỉ hỗ trợ QoS 0 và QoS 1. QoS 2 bị từ chối ngay ở CONNECT và PUBLISH.
 - Gói MQTT tối đa 4096 B kể cả fixed header, variable header, payload và topic.
   Vượt → broker đóng kết nối không CONNACK.
-- Transport — một broker, hai đường vào, cùng logic phiên/topic (`broker/`):
-  - **ESP32**: MQTT 3.1.1 thuần qua TLS (TCP, cổng 8883). Không WebSocket, không esp-mqtt;
-    client là `MAYAP_INDUSTRIAL_v1_0_0/mqtt_wire.h` + `mqtt_transport.h` chạy trong task `mayap_mqtt` (core 0).
-  - **Web**: MQTT.js qua WebSocket Secure (`wss://`), subprotocol `mqtt`, path `/mqtt/<deviceId>` (xem §4).
+- Transport: MQTT trên WebSocket Secure (`wss://`), subprotocol `mqtt`,
+  path `/mqtt/<deviceId>` (xem §4).
 - Không MQTT 5, không shared subscription, không session persistence.
 
 ## 2. Topic / QoS / Retain
@@ -69,12 +67,12 @@ trong cùng kết nối → đóng kết nối. Publish hợp lệ reset bộ đ
 - Lệnh (`command`, `config/set`, `reminders/set`) tiếp tục mang chữ ký HMAC
   trong payload JSON, broker không hiểu chữ ký, chỉ fanout.
 
-## 4. Một lõi broker / 1 device (mọi transport)
+## 4. Kiến trúc 1 Durable Object / 1 device
 
-- Web kết nối WSS tới `https://<broker-host>/mqtt/<deviceId>` với
+- Web/ESP32 kết nối WSS tới `https://<broker-host>/mqtt/<deviceId>` với
   WebSocket subprotocol **bắt buộc** là `mqtt`. Thiếu subprotocol → 400.
-  ESP32 kết nối TLS thuần; `deviceId` chính là username của CONNECT (listener 8883 chỉ nhận
-  deviceId hợp lệ). Broker (`broker/server.js`) chọn lõi theo deviceId rồi dùng chung cho cả hai đường.
+- Worker route rút `deviceId`, chọn Durable Object bằng
+  `env.MQTT_BROKER.idFromName(deviceId)` và forward WebSocket Upgrade.
 - `deviceId` trong URL **không phải secret**. Mọi auth phải thực hiện khi
   nhận CONNECT (username/password) + ACL (xem §5).
 - Mỗi DO chỉ phục vụ đúng `mayap/v1/<deviceId>/…`. Subscribe/publish ngoài
@@ -89,9 +87,8 @@ trong cùng kết nối → đóng kết nối. Publish hợp lệ reset bộ đ
 
 ## 5. Auth + ACL
 
-- **Device role**: username = `deviceId`, password = `HMAC-SHA256(MQTT_DEVICE_SECRET,
-  "mayap-mqtt-device:v1\n<deviceId>")` (riêng từng máy). Worker trả password cùng `mqtt_host`/`mqtt_port` ở
-  `/api/device/register`; firmware lưu NVS; broker tính lại để kiểm (không D1).
+- **Device role**: username = `deviceId`, password = `deviceToken` do Worker
+  cấp khi `/api/device/register` hoặc `/api/device/rotate-key`.
   - Publish được: `presence`, `snapshot`, `ack`, `log`, `config/reported`,
     `reminders/reported`, `history/reported`, `session`.
   - Subscribe được: `command`, `config/set`, `reminders/set`,
@@ -111,11 +108,6 @@ trong cùng kết nối → đóng kết nối. Publish hợp lệ reset bộ đ
 - Credentials lookup phải cache ngoài hot path (D1 không nằm trong mỗi click).
 
 ## 6. Hibernation + state
-
-> Lõi broker được viết theo bề mặt runtime của Durable Object (attachment, storage, alarm). `broker/runtime-node.js`
-> cung cấp cùng bề mặt đó cho tiến trình Node phục vụ cả TLS lẫn WSS: attachment sống trong RAM của tiến trình,
-> retained được ghi vào `BROKER_DATA_FILE`, alarm là timer. Hành vi quan sát được (ACL, retain, LWT, QoS1, takeover)
-> không đổi.
 
 - DO phải dùng WebSocket Hibernation API: `state.acceptWebSocket(ws)`,
   callbacks `webSocketMessage/webSocketClose/webSocketError`.

@@ -33,7 +33,6 @@ jobs:
       - name: Install pinned account dependencies
         run: |
           npx --yes pnpm@11.19.0 --dir cloudflare install --frozen-lockfile --ignore-scripts
-          npm ci --prefix broker --ignore-scripts --no-audit --no-fund
           node --check account.js
           node --check cloudflare/src/account-worker.js
 
@@ -89,6 +88,9 @@ jobs:
             fi
           }
           run_browser_qa tools/test_web_experience.cjs /tmp/mayap-web-qa
+
+      - name: Firmware MQTT/WSS transport vs the real broker Durable Object (workerd)
+        run: node tools/e2e/firmware_wss_interop.cjs /tmp/mayap-fw-wss
 
       - name: AT24C512 driver regression
         run: python3 tools/test_single_eeprom.py --sanitize --check-regression

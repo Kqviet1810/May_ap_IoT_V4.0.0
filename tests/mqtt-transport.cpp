@@ -1,12 +1,13 @@
-// Host test of the REAL mqtt_transport.h + mqtt_wire.h (copied beside tests/stubs/mqtt by
-// tests/mqtt-transport.test.cjs): native MQTT/TLS client behaviour against a scripted socket.
+// Host test of the REAL mqtt_transport.h + mqtt_wire.h + mqtt_ws.h (copied beside tests/stubs/mqtt by
+// tests/mqtt-transport.test.cjs): MQTT-over-WebSocket-over-TLS client behaviour against a scripted
+// socket that plays the Cloudflare broker (HTTP Upgrade, masked client frames, unmasked server frames).
 #include "mayap_stubs.h"
 #include <cassert>
 #include <cstdlib>
 
 uint32_t g_millis = 100000U, g_epoch = 1800000000U;
 std::vector<std::string> g_log;
-char g_mqttKey[65] = ""; char g_mqttHost[64] = ""; uint16_t g_mqttPort = 0U;
+char g_mqttKey[65] = "";
 bool g_gateClosing = false, g_isolated = false, g_pressure = false, g_yield = false, g_ioEnterOk = true, g_tlsAllowed = true;
 unsigned g_beats = 0U, g_realtimeUpdates = 0U;
 NetworkStatus g_networkStatus{ConnectivityMode::Online, true};
@@ -21,61 +22,127 @@ using MayapMqttWire::StreamParser;
 static bool logged(const char *needle) { for (auto &l : g_log) if (l.find(needle) != std::string::npos) return true; return false; }
 #define CHECK(cond) do { if (!(cond)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #cond); for (auto &l : g_log) fprintf(stderr, "  log: %s", l.c_str()); exit(1); } } while (0)
 
+// ---- the broker side of the WebSocket ---------------------------------------------------------
+enum class UpgradeMode { Good, BadAccept, Status403, Extension, WrongProtocol, Oversize, NoTerminator };
+static UpgradeMode g_upgradeMode = UpgradeMode::Good;
+static bool g_upgraded = false, g_clientFrameBad = false, g_silentBroker = false;
+static std::string g_request;
+static unsigned g_clientPings = 0U, g_clientPongs = 0U, g_clientCloses = 0U;
+static std::vector<std::vector<uint8_t>> g_clientPongPayloads;
+
+static std::vector<uint8_t> serverFrame(const std::vector<uint8_t> &payload, uint8_t opcode = 2, bool fin = true, int lengthForm = 0) {
+  std::vector<uint8_t> f;
+  f.push_back(static_cast<uint8_t>((fin ? 0x80 : 0) | opcode));
+  const size_t n = payload.size();
+  if (lengthForm == 8) { f.push_back(127); for (int i = 7; i >= 0; --i) f.push_back(static_cast<uint8_t>(static_cast<uint64_t>(n) >> (8 * i))); }
+  else if (n < 126 && lengthForm == 0) f.push_back(static_cast<uint8_t>(n));
+  else { f.push_back(126); f.push_back(static_cast<uint8_t>(n >> 8)); f.push_back(static_cast<uint8_t>(n)); }
+  f.insert(f.end(), payload.begin(), payload.end());
+  return f;
+}
+static void injectBytes(const std::vector<uint8_t> &b) { net.in.insert(net.in.end(), b.begin(), b.end()); }
+static void inject(std::initializer_list<uint8_t> bytes) { injectBytes(serverFrame(std::vector<uint8_t>(bytes))); }
+static void injectPublish(const std::string &topic, const std::string &payload, uint8_t qos, uint16_t id) {
+  uint8_t buffer[4096];
+  size_t n = MayapMqttWire::encodePublish(buffer, sizeof(buffer), topic.c_str(), reinterpret_cast<const uint8_t *>(payload.data()), payload.size(), qos, false, id);
+  CHECK(n > 0);
+  injectBytes(serverFrame(std::vector<uint8_t>(buffer, buffer + n)));
+}
+
+struct ClientFrame { uint8_t opcode; bool fin; bool masked; std::vector<uint8_t> payload; };
+static bool parseClientFrame(const std::vector<uint8_t> &b, ClientFrame &out) {
+  if (b.size() < 6) return false;
+  out.fin = (b[0] & 0x80) != 0; out.opcode = b[0] & 0x0F; out.masked = (b[1] & 0x80) != 0;
+  size_t len = b[1] & 0x7F, pos = 2;
+  if (len == 126) { len = (static_cast<size_t>(b[2]) << 8) | b[3]; pos = 4; }
+  else if (len == 127) return false;
+  if (!out.masked || b.size() != pos + 4 + len || (b[0] & 0x70)) return false;
+  out.payload.resize(len);
+  for (size_t i = 0; i < len; ++i) out.payload[i] = static_cast<uint8_t>(b[pos + 4 + i] ^ b[pos + (i & 3)]);
+  return true;
+}
+
 struct Packet { uint8_t type, flags; std::vector<uint8_t> body; };
 static std::vector<Packet> decodeSent(size_t from = 0) {
   std::vector<Packet> out;
   uint8_t buffer[4096];
   for (size_t i = from; i < net.sent.size(); ++i) {
+    ClientFrame frame;
+    if (!parseClientFrame(net.sent[i], frame)) continue;    // the HTTP request is not a frame
+    if (frame.opcode != 2) continue;
     StreamParser parser(buffer, sizeof(buffer));
-    const auto &bytes = net.sent[i];
     size_t used = 0;
-    while (used < bytes.size()) {
-      used += parser.feed(bytes.data() + used, bytes.size() - used);
+    while (used < frame.payload.size()) {
+      used += parser.feed(frame.payload.data() + used, frame.payload.size() - used);
       if (parser.ready()) out.push_back({parser.type(), parser.flags(), std::vector<uint8_t>(parser.body(), parser.body() + parser.bodyLength())});
     }
   }
   return out;
 }
 static std::string str(const uint8_t *p, size_t n) { return std::string(reinterpret_cast<const char *>(p), n); }
-static void inject(std::initializer_list<uint8_t> bytes) { net.in.insert(net.in.end(), bytes.begin(), bytes.end()); }
-static void injectPublish(const std::string &topic, const std::string &payload, uint8_t qos, uint16_t id) {
-  uint8_t buffer[4096];
-  size_t n = MayapMqttWire::encodePublish(buffer, sizeof(buffer), topic.c_str(), reinterpret_cast<const uint8_t *>(payload.data()), payload.size(), qos, false, id);
-  CHECK(n > 0);
-  net.in.insert(net.in.end(), buffer, buffer + n);
-}
 
-// The broker side of the handshake: CONNACK for CONNECT, SUBACK for SUBSCRIBE.
-static uint8_t g_connackCode = 0U; static bool g_silentBroker = false; static uint8_t g_subackFirst = 1U;
+static uint8_t g_connackCode = 0U; static uint8_t g_subackFirst = 1U;
+static void answerUpgrade(const std::string &request) {
+  const size_t k = request.find("Sec-WebSocket-Key: ");
+  CHECK(k != std::string::npos);
+  const std::string key = request.substr(k + 19, 24);
+  char accept[MayapMqttWs::ACCEPT_BASE64 + 1];
+  MayapMqttWs::expectedAccept(key.c_str(), accept);
+  std::string response;
+  switch (g_upgradeMode) {
+    case UpgradeMode::Status403: response = "HTTP/1.1 403 Forbidden\r\n\r\n"; break;
+    case UpgradeMode::NoTerminator: response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"; break;
+    case UpgradeMode::Oversize: response = "HTTP/1.1 101 Switching Protocols\r\nX-Pad: " + std::string(900, 'a') + "\r\n\r\n"; break;
+    default:
+      response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " +
+                 std::string(g_upgradeMode == UpgradeMode::BadAccept ? "AAAAAAAAAAAAAAAAAAAAAAAAAAA=" : accept) + "\r\n";
+      response += g_upgradeMode == UpgradeMode::WrongProtocol ? "Sec-WebSocket-Protocol: chat\r\n" : "Sec-WebSocket-Protocol: mqtt\r\n";
+      if (g_upgradeMode == UpgradeMode::Extension) response += "Sec-WebSocket-Extensions: permessage-deflate\r\n";
+      response += "\r\n";
+  }
+  net.in.insert(net.in.end(), response.begin(), response.end());
+  if (g_upgradeMode == UpgradeMode::Good) g_upgraded = true;
+}
 static void installBroker() {
   net.onWrite = [](const std::vector<uint8_t> &bytes) {
-    if (g_silentBroker) return;
-    if ((bytes[0] >> 4) == 1) inject({0x20, 0x02, 0x00, g_connackCode});
-    if ((bytes[0] >> 4) == 8) inject({0x90, 0x06, 0x00, 0x01, g_subackFirst, 0x01, 0x01, 0x00});
+    if (bytes.size() > 4 && memcmp(bytes.data(), "GET ", 4) == 0) {   // a (new) opening handshake
+      g_upgraded = false; g_request.assign(bytes.begin(), bytes.end()); answerUpgrade(g_request);
+      return;
+    }
+    if (!g_upgraded) return;
+    ClientFrame frame;
+    if (!parseClientFrame(bytes, frame)) { g_clientFrameBad = true; return; }   // unmasked / malformed client frame
+    if (frame.opcode == 9) { ++g_clientPings; return; }
+    if (frame.opcode == 10) { ++g_clientPongs; g_clientPongPayloads.push_back(frame.payload); return; }
+    if (frame.opcode == 8) { ++g_clientCloses; return; }
+    if (frame.opcode != 2 || g_silentBroker || frame.payload.empty()) return;
+    if ((frame.payload[0] >> 4) == 1) inject({0x20, 0x02, 0x00, g_connackCode});
+    if ((frame.payload[0] >> 4) == 8) inject({0x90, 0x06, 0x00, 0x01, g_subackFirst, 0x01, 0x01, 0x00});
   };
 }
 static void resetWorld() {
   net = WiFiClientSecure();
-  parser.reset(); connected = false; linkFailed = false; carryLength = 0U; inflightCount = 0U; nextPacketId = 1U;
+  parser.reset(); ws.reset(); connected = false; linkFailed = false; carryLength = 0U; inflightCount = 0U; nextPacketId = 1U;
   droppedOversize = droppedForeign = 0U; backoff = BackoffTimer();
   g_log.clear(); MayapRealtimeInternal::g_delivered.clear(); g_realtimeUpdates = 0U;
-  g_connackCode = 0U; g_silentBroker = false; g_subackFirst = 1U;
+  g_connackCode = 0U; g_silentBroker = false; g_subackFirst = 1U; g_upgradeMode = UpgradeMode::Good;
+  g_upgraded = false; g_clientFrameBad = false; g_request.clear(); g_clientPings = g_clientPongs = g_clientCloses = 0U; g_clientPongPayloads.clear();
   g_gateClosing = g_isolated = g_pressure = g_yield = false; g_ioEnterOk = g_tlsAllowed = true;
   g_networkStatus = NetworkStatus{ConnectivityMode::Online, true};
   strcpy(g_mqttKey, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
-  strcpy(g_mqttHost, "broker.example.com"); g_mqttPort = 8883U; g_epoch = 1800000000U;
+  g_epoch = 1800000000U;
   installBroker();
 }
 static void tick(uint32_t ms) { g_millis += ms; mayapMqttTransportUpdate(g_millis); }
 static void connectNow() {
   mayapMqttTransportBegin();
-  tick(1);   // ioEnter + connect + handshake + presence
+  tick(1);   // ioEnter + TLS + upgrade + MQTT handshake + presence
   CHECK(mayapMqttTransportConnected());
 }
 
 int main() {
-  // 1. Idle until the Worker has provisioned host + credential; no TLS attempt before real time.
-  resetWorld(); g_mqttHost[0] = '\0';
+  // 1. Idle until the Worker has provisioned the credential; no TLS attempt before real time.
+  resetWorld(); g_mqttKey[0] = '\0';
   mayapMqttTransportBegin(); tick(10); tick(10);
   CHECK(net.connects == 0U && !mayapMqttTransportConnected());
   resetWorld(); g_epoch = 1000U;
@@ -83,6 +150,16 @@ int main() {
   CHECK(net.connects == 0U);                              // clock not valid: certificate dates unusable
   g_epoch = 1800000000U; tick(10);
   CHECK(mayapMqttTransportConnected());
+
+  // 1b. WebSocket opening handshake: SNI host + port 443, GET /mqtt/<deviceId>, mqtt subprotocol, random key.
+  resetWorld(); connectNow();
+  CHECK(net.lastHost == MAYAP_BROKER_HOST && net.lastPort == 443U);
+  CHECK(g_request.compare(0, 37, "GET /mqtt/MAP-AABBCCDDEEFF HTTP/1.1\r\n") == 0);
+  CHECK(g_request.find("Upgrade: websocket\r\n") != std::string::npos && g_request.find("Connection: Upgrade\r\n") != std::string::npos);
+  CHECK(g_request.find("Sec-WebSocket-Version: 13\r\n") != std::string::npos && g_request.find("Sec-WebSocket-Protocol: mqtt\r\n") != std::string::npos);
+  CHECK(g_request.find(std::string("Host: ") + MAYAP_BROKER_HOST + "\r\n") != std::string::npos);
+  CHECK(g_request.size() >= 4 && g_request.compare(g_request.size() - 4, 4, "\r\n\r\n") == 0);
+  CHECK(!g_clientFrameBad);                               // every client frame so far was masked and well formed
 
   // 2. Handshake contents: CONNECT (clean session, LWT QoS1 retained, creds), SUBSCRIBE x4, presence online.
   resetWorld(); connectNow();
@@ -195,6 +272,83 @@ int main() {
   tick(100); CHECK(!mayapMqttTransportConnected());       // backoff running
   tick(6000); tick(1);
   CHECK(mayapMqttTransportConnected() && net.connects == 2U);   // initial + one fresh handshake after the backoff
+  // 10. WebSocket upgrade failures never reach MQTT and back off with nothing left open.
+  for (UpgradeMode mode : {UpgradeMode::BadAccept, UpgradeMode::Status403, UpgradeMode::Extension, UpgradeMode::WrongProtocol,
+                           UpgradeMode::Oversize, UpgradeMode::NoTerminator}) {
+    resetWorld(); g_upgradeMode = mode; mayapMqttTransportBegin(); tick(1); tick(1);
+    CHECK(!mayapMqttTransportConnected() && backoff.failures >= 1U && !net.open);
+    CHECK(decodeSent().empty());                          // no MQTT packet was sent over a failed upgrade
+  }
+
+  // 11. Server PING is answered with a masked PONG carrying the same payload; PONG/CLOSE handling.
+  resetWorld(); connectNow(); net.sent.clear();
+  injectBytes(serverFrame(std::vector<uint8_t>{'h', 'i', '!'}, 9));
+  tick(1);
+  CHECK(g_clientPongs == 1U && g_clientPongPayloads[0] == (std::vector<uint8_t>{'h', 'i', '!'}) && !g_clientFrameBad);
+  injectBytes(serverFrame(std::vector<uint8_t>{}, 10)); tick(1);
+  CHECK(mayapMqttTransportConnected());
+  injectBytes(serverFrame(std::vector<uint8_t>{0x03, 0xE8}, 8)); tick(1);
+  CHECK(!mayapMqttTransportConnected() && !net.open && logged("link lost"));
+
+  // 12. MQTT packets split across WebSocket frames, several packets in one frame, 16-bit and 64-bit lengths,
+  //     empty frames, and a frame boundary in the middle of a packet at the byte level.
+  resetWorld(); connectNow(); net.sent.clear();
+  {
+    uint8_t buffer[4096];
+    const std::string payload(300, 'p');
+    size_t n = MayapMqttWire::encodePublish(buffer, sizeof(buffer), "mayap/v1/MAP-AABBCCDDEEFF/command", reinterpret_cast<const uint8_t *>(payload.data()), payload.size(), 0, false, 0);
+    CHECK(n > 0);
+    std::vector<uint8_t> whole(buffer, buffer + n);
+    // fragmented message: binary(!fin) + continuation + continuation(fin), with an empty frame between
+    injectBytes(serverFrame(std::vector<uint8_t>(whole.begin(), whole.begin() + 100), 2, false));
+    injectBytes(serverFrame(std::vector<uint8_t>(), 0, false));
+    injectBytes(serverFrame(std::vector<uint8_t>(whole.begin() + 100, whole.begin() + 250), 0, false));
+    injectBytes(serverFrame(std::vector<uint8_t>(whole.begin() + 250, whole.end()), 0, true));
+    // two packets in one frame, 64-bit length form
+    std::vector<uint8_t> two = whole; two.insert(two.end(), whole.begin(), whole.end());
+    injectBytes(serverFrame(two, 2, true, 8));
+    tick(1);
+    CHECK(MayapRealtimeInternal::g_delivered.size() == 3U);
+    for (auto &d : MayapRealtimeInternal::g_delivered) CHECK(d.channel == "command" && d.payload == payload);
+    CHECK(mayapMqttTransportConnected());
+  }
+  // The same stream delivered one byte at a time.
+  resetWorld(); connectNow();
+  {
+    std::vector<uint8_t> frame = serverFrame(std::vector<uint8_t>{0xD0, 0x00}), pub;
+    uint8_t buffer[512];
+    const size_t n = MayapMqttWire::encodePublish(buffer, sizeof(buffer), "mayap/v1/MAP-AABBCCDDEEFF/session", reinterpret_cast<const uint8_t *>("{\"a\":1}"), 7, 0, false, 0);
+    pub = serverFrame(std::vector<uint8_t>(buffer, buffer + n));
+    frame.insert(frame.end(), pub.begin(), pub.end());
+    for (uint8_t b : frame) { net.in.push_back(b); tick(1); }
+    CHECK(MayapRealtimeInternal::g_delivered.size() == 1U && MayapRealtimeInternal::g_delivered[0].payload == "{\"a\":1}");
+  }
+
+  // 13. Protocol violations from the server drop the link (never a desynchronised stream).
+  const std::vector<std::vector<uint8_t>> bad = {
+    {0x82, 0x82, 0, 0, 0, 0, 0xD0, 0x00},                       // masked server frame
+    {0x81, 0x01, 'x'},                                           // text frame
+    {0xC2, 0x01, 0x00},                                          // RSV1 (compression nobody negotiated)
+    {0x89, 0x7E, 0x00, 0x80},                                    // control frame with extended length
+    {0x09, 0x00},                                                // fragmented control frame
+    {0x80, 0x00},                                                // continuation without a message
+    {0x82, 0x7F, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00},   // 64-bit length with high bits set
+    {0x83, 0x00},                                                // reserved opcode
+  };
+  for (const auto &frame : bad) {
+    resetWorld(); connectNow();
+    injectBytes(frame); tick(1);
+    CHECK(!mayapMqttTransportConnected() && !net.open && logged("link lost"));
+  }
+
+  // 14. Every frame the device ever sent was masked, FIN, and carried a known opcode (checked cumulatively).
+  resetWorld(); connectNow(); mayapRealtimeUpdate(0);
+  for (int i = 0; i < 20; ++i) { publishFromBridge("snapshot", "{\"t\":1}", 7U); tick(1); }
+  publishFromBridge("ack", std::string(2000, 'a').c_str(), 2000U);
+  CHECK(!g_clientFrameBad);
+  g_yield = true; tick(1);
+  CHECK(g_clientCloses == 1U && !g_clientFrameBad);          // graceful stop: DISCONNECT then WebSocket CLOSE
+
   printf("mqtt transport host tests PASS\n");
   return 0;
 }

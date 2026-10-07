@@ -12,18 +12,36 @@
 #include <string>
 #include <vector>
 
+#ifdef MAYAP_LIVE_SOCKET   // tests/host-wss-client.cpp: real TCP to a local broker (TLS itself is not part of the test)
+#include <arpa/inet.h>
+#include <chrono>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+inline uint32_t millis() {
+  using namespace std::chrono;
+  return static_cast<uint32_t>(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+}
+#else
 extern uint32_t g_millis;
 extern uint32_t g_epoch;
 inline uint32_t millis() { return g_millis; }
 inline time_t fake_time(time_t *) { return static_cast<time_t>(g_epoch); }
 #define time(x) fake_time(x)
+#endif
 
 typedef uint32_t TickType_t;
 typedef int portMUX_TYPE;
 #define pdMS_TO_TICKS(x) (x)
 #define portENTER_CRITICAL(x) ((void)(x))
 #define portEXIT_CRITICAL(x) ((void)(x))
+#ifdef MAYAP_LIVE_SOCKET
+inline void vTaskDelay(TickType_t ticks) { usleep(ticks * 1000U); }
+#else
 inline void vTaskDelay(TickType_t ticks) { g_millis += ticks; }   // the owner task sleeps: time moves
+#endif
 inline const char *pcTaskGetName(void *) { return "mayap_mqtt"; }
 inline int xPortGetCoreID() { return 0; }
 inline unsigned uxTaskPriorityGet(void *) { return 2U; }
@@ -41,10 +59,9 @@ constexpr char TLS_ROOT_CA[] = "fake-pem";
 namespace MayapProtocol { constexpr size_t FRAME_NORMAL_CAP = 2048U; }
 
 // ---- device identity (NVS) ----
-extern char g_mqttKey[65]; extern char g_mqttHost[64]; extern uint16_t g_mqttPort;
+extern char g_mqttKey[65];
 inline const char *mayapMqttKey() { return g_mqttKey; }
-inline const char *mayapMqttHost() { return g_mqttHost; }
-inline uint16_t mayapMqttPort() { return g_mqttPort; }
+inline uint32_t esp_random() { static uint32_t x = 0x2545F491U; x = x * 1664525U + 1013904223U; return x; }
 
 // ---- service / online gates ----
 namespace MayapRecovery {
@@ -81,9 +98,40 @@ struct BackoffTimer {
 };
 
 // ---- the TLS socket ----
+#ifdef MAYAP_LIVE_SOCKET
+struct WiFiClientSecure {
+  int fd = -1; bool allowConnect = true; unsigned connects = 0U;
+  void setCACert(const char *) {}
+  void setConnectionTimeout(uint32_t) {}
+  void setHandshakeTimeout(uint32_t) {}
+  int lastError(char *buffer, size_t size) { snprintf(buffer, size, "socket"); return -1; }
+  bool connect(const char *host, uint16_t port) {
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons(port); inet_pton(AF_INET, host, &a.sin_addr);
+    if (fd < 0 || ::connect(fd, reinterpret_cast<sockaddr *>(&a), sizeof(a)) != 0) { if (fd >= 0) close(fd); fd = -1; return false; }
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+    ++connects;
+    return true;
+  }
+  size_t write(const uint8_t *data, size_t length) {
+    size_t done = 0U;
+    while (done < length) {
+      const ssize_t n = ::send(fd, data + done, length - done, MSG_NOSIGNAL);
+      if (n > 0) { done += static_cast<size_t>(n); continue; }
+      pollfd p{fd, POLLOUT, 0}; if (poll(&p, 1, 1000) <= 0) break;
+    }
+    return done;
+  }
+  int available() { if (fd < 0) return 0; pollfd p{fd, POLLIN, 0}; return poll(&p, 1, 0) > 0 ? 1024 : 0; }
+  int read(uint8_t *buffer, size_t length) { const ssize_t n = ::recv(fd, buffer, length, 0); return n > 0 ? static_cast<int>(n) : 0; }
+  bool connected() { if (fd < 0) return false; char c; const ssize_t n = ::recv(fd, &c, 1, MSG_PEEK | MSG_DONTWAIT); return n != 0; }
+  void stop() { if (fd >= 0) { close(fd); fd = -1; } }
+};
+#else
 struct WiFiClientSecure {
   bool allowConnect = true, open = false, failWrite = false;
   unsigned connects = 0U, stops = 0U;
+  std::string lastHost; uint16_t lastPort = 0U;
   std::vector<uint8_t> in;
   std::vector<std::vector<uint8_t>> sent;
   std::function<void(const std::vector<uint8_t> &)> onWrite;
@@ -91,7 +139,7 @@ struct WiFiClientSecure {
   void setConnectionTimeout(uint32_t) {}
   void setHandshakeTimeout(uint32_t) {}
   int lastError(char *buffer, size_t size) { snprintf(buffer, size, "fake-tls-error"); return -1; }
-  bool connect(const char *, uint16_t) { if (!allowConnect) return false; open = true; ++connects; return true; }
+  bool connect(const char *host, uint16_t port) { if (!allowConnect) return false; lastHost = host; lastPort = port; open = true; ++connects; return true; }
   size_t write(const uint8_t *data, size_t length) {
     if (failWrite || !open) return 0U;
     sent.emplace_back(data, data + length);
@@ -109,6 +157,8 @@ struct WiFiClientSecure {
   bool connected() { return open; }
   void stop() { open = false; in.clear(); ++stops; }
 };
+
+#endif
 
 // ---- Transaction V2 bridge surface used by the transport ----
 extern unsigned g_realtimeUpdates;

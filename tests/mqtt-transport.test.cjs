@@ -9,11 +9,11 @@ const { test } = require('node:test');
 
 const root = path.resolve(__dirname, '..');
 
-test('native MQTT/TLS transport: handshake, QoS1, inbound dispatch, keepalive, backoff, gates', (t) => {
+test('MQTT over WebSocket over TLS transport: handshake, QoS1, inbound dispatch, keepalive, backoff, gates', (t) => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'mayap-transport-'));
   for (const f of fs.readdirSync(path.join(root, 'tests/stubs/mqtt'))) fs.copyFileSync(path.join(root, 'tests/stubs/mqtt', f), path.join(work, f));
   // Production files, unmodified, placed beside the stubs so their quoted includes resolve to the stubs.
-  for (const f of ['mqtt_transport.h', 'mqtt_wire.h']) fs.copyFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', f), path.join(work, f));
+  for (const f of ['mqtt_transport.h', 'mqtt_wire.h', 'mqtt_ws.h']) fs.copyFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', f), path.join(work, f));
   fs.copyFileSync(path.join(root, 'tests/mqtt-transport.cpp'), path.join(work, 'mqtt-transport.cpp'));
   const exe = path.join(work, 'mqtt-transport');
   const compile = spawnSync('g++', ['-std=c++11', '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined', '-I', work,

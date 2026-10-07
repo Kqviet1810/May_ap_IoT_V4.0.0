@@ -26,7 +26,7 @@ constexpr uint32_t MQTT_WAIT_MS = 1000U;
 constexpr uint32_t SERVICE_GAP_MS = 1000U;
 constexpr uint32_t READY_DISPLAY_MS = 500U;
 constexpr uint32_t RECORD_MAGIC = 0x4D425431U;
-constexpr uint32_t RECORD_VERSION = 3U;
+constexpr uint32_t RECORD_VERSION = 2U;
 
 struct Diagnostic {
   uint32_t magic;
@@ -41,8 +41,8 @@ struct Diagnostic {
   RestartReason previousPlannedRestartReason;
   uint32_t recoveryLevel;
   uint32_t bootCompleted;
-  char restartDetail[112];
-  char previousRestartDetail[112];
+  char restartDetail[80];
+  char previousRestartDetail[80];
   uint32_t checksum;
 };
 

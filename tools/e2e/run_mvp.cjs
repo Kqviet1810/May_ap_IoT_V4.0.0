@@ -1,9 +1,8 @@
 'use strict';
 // End-to-end MVP proof (no hardware):
-//   real app.js + real MQTT.js in headless Chromium  --MQTT/WS-->  real broker process (broker/server.js)
-//   device PROTOCOL EMULATOR (tools/e2e/device_emulator.cjs, NOT the firmware) --raw MQTT/TCP--> same broker
-// The device uses the native (non-WebSocket) transport exactly like the firmware; the
-// Web uses WebSocket. TLS on the device listener is covered by tests/mqtt-node-broker.test.cjs.
+//   real app.js + real MQTT.js in headless Chromium
+//     -> real broker Durable Object running on workerd (wrangler dev)
+//     -> device PROTOCOL EMULATOR (tools/e2e/device_emulator.cjs, NOT the firmware)
 // /api/mqtt-session is answered by the test with the same grant algorithm as
 // cloudflare/src/account-auth.js controlGrant() (that route is covered by
 // tests/account-security.test.cjs against the real Worker code).
@@ -20,8 +19,7 @@ const { startDeviceEmulator } = require('./device_emulator.cjs');
 const root = path.resolve(__dirname, '../..');
 const out = path.resolve(process.argv[2] || path.join(root, 'work', 'e2e-mvp'));
 fs.mkdirSync(out, { recursive: true });
-const BROKER_PORT = Number(process.env.E2E_BROKER_PORT || 8798);     // Web: MQTT over WebSocket
-const DEVICE_PORT = Number(process.env.E2E_DEVICE_PORT || 8799);     // ESP32 stand-in: native MQTT
+const BROKER_PORT = Number(process.env.E2E_BROKER_PORT || 8798);
 const WEB_PORT = Number(process.env.E2E_WEB_PORT || 8766);
 const DEVICE_ID = 'MAP-1234567890AB';
 const DEVICE_SECRET = 'e2e-device-secret';
@@ -49,7 +47,6 @@ async function brokerLogin(url, username, password) {
   });
 }
 const brokerUrl = `ws://127.0.0.1:${BROKER_PORT}/mqtt/${DEVICE_ID}`;
-const deviceUrl = `mqtt://127.0.0.1:${DEVICE_PORT}`;
 
 const results = [];
 const record = (name, ok, detail = '') => {
@@ -90,10 +87,11 @@ async function main() {
   const children = [];
   let browser, emulator;
   try {
-    const broker = spawnLogged('node', [path.join(root, 'broker/server.js')], {
-      cwd: root,
-      env: { ...process.env, BIND_HOST: '127.0.0.1', WS_PORT: String(BROKER_PORT), MQTT_TCP_PORT: String(DEVICE_PORT),
-             BROKER_DEVICE_SECRET: DEVICE_SECRET, BROKER_WEB_TOKEN_SECRET: WEB_TOKEN_SECRET } }, 'broker.log');
+    const broker = spawnLogged(path.join(root, 'cloudflare/node_modules/.bin/wrangler'), [
+      'dev', '--config', 'wrangler-broker.toml', '--port', String(BROKER_PORT), '--local',
+      '--var', `BROKER_DEVICE_SECRET:${DEVICE_SECRET}`,
+      '--var', `BROKER_WEB_TOKEN_SECRET:${WEB_TOKEN_SECRET}`],
+    { cwd: path.join(root, 'cloudflare') }, 'broker.log');
     children.push(broker);
     const web = spawnLogged('python3', ['-m', 'http.server', String(WEB_PORT), '--bind', '127.0.0.1'],
       { cwd: root }, 'web.log');
@@ -101,10 +99,10 @@ async function main() {
     await until('broker up', () => httpUp(`http://127.0.0.1:${BROKER_PORT}/healthz`), 60000, 500);
     await until('web up', () => httpUp(`http://127.0.0.1:${WEB_PORT}/index.html`), 15000, 200);
 
-    emulator = startDeviceEmulator({ url: deviceUrl, deviceId: DEVICE_ID, password: DEVICE_PASSWORD,
+    emulator = startDeviceEmulator({ url: brokerUrl, deviceId: DEVICE_ID, password: DEVICE_PASSWORD,
       commandKeyHex });
     await until('device connected', () => emulator.connected, 15000);
-    record('device emulator connects over native MQTT/TCP (CONNECT/SUBACK/retained presence)', true);
+    record('device emulator connects to workerd broker (CONNECT/SUBACK/retained presence)', true);
     const own = webToken(DEVICE_ID, 'web:qa-sub');
     const results = {
       valid: await brokerLogin(brokerUrl, 'web:qa-sub', own.token),
@@ -217,7 +215,7 @@ async function main() {
     emulator.dropConnection();
     await until('web offline via LWT', async () => (await connection()) === 'offline', 15000);
     record('W1b LWT: abrupt device loss publishes retained online=false and the Web shows offline', true);
-    emulator = startDeviceEmulator({ url: deviceUrl, deviceId: DEVICE_ID, password: DEVICE_PASSWORD, commandKeyHex });
+    emulator = startDeviceEmulator({ url: brokerUrl, deviceId: DEVICE_ID, password: DEVICE_PASSWORD, commandKeyHex });
     await until('web online again', async () => (await connection()) === 'online', 20000);
     record('W1c reconnect: a new device session (new bootId) brings the Web back online', true);
     // After a reboot the device restarts its config revision; the Web must drop its

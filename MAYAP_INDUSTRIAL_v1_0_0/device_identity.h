@@ -28,8 +28,6 @@ namespace MayapDeviceIdentityInternal {
 static char activeKey[65] = "";
 static char commandKey[65] = "";
 static char mqttKey[65] = "";
-static char mqttHost[64] = "";
-static uint16_t mqttPort = 0U;
 static char webPin[9] = "";
 static bool webPinConfigured = false;
 static volatile uint8_t provisioningState =
@@ -75,8 +73,6 @@ inline void mayapDeviceIdentityBegin() {
   activeKey[0] = '\0';
   commandKey[0] = '\0';
   mqttKey[0] = '\0';
-  mqttHost[0] = '\0';
-  mqttPort = 0U;
   webPin[0] = '\0';
   webPinConfigured = false;
   mayapSetProvisioningState(MayapProvisioningState::Syncing);
@@ -100,12 +96,6 @@ inline void mayapDeviceIdentityBegin() {
   const String storedMqttKey = prefs.getString("mqtt-key", "");
   if (storedMqttKey.length() == 64U) {
     strlcpy(mqttKey, storedMqttKey.c_str(), sizeof(mqttKey));
-  }
-
-  const String storedMqttHost = prefs.getString("mqtt-host", "");
-  if (storedMqttHost.length() > 0U && storedMqttHost.length() < sizeof(mqttHost)) {
-    strlcpy(mqttHost, storedMqttHost.c_str(), sizeof(mqttHost));
-    mqttPort = prefs.getUShort("mqtt-port", 0U);
   }
 
   const String storedKey = prefs.getString("device-key", "");
@@ -178,29 +168,6 @@ inline bool mayapStoreMqttKey(const char *key) {
 inline const char *mayapMqttKey() {
   return MayapDeviceIdentityInternal::mqttKey;
 }
-
-// Broker endpoint issued by the account Worker together with the credential. Host names
-// only (letters, digits, '.', '-'): it is later used as the TLS server name.
-inline bool mayapStoreMqttEndpoint(const char *host, uint16_t port) {
-  using namespace MayapDeviceIdentityInternal;
-  if (!host || port == 0U) return false;
-  const size_t length = strlen(host);
-  if (length == 0U || length >= sizeof(mqttHost)) return false;
-  for (size_t i = 0; i < length; ++i) {
-    const char c = host[i];
-    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '.' || c == '-')) return false;
-  }
-  if (strcmp(mqttHost, host) == 0 && mqttPort == port) return true;  // register runs every boot
-  Preferences prefs;
-  if (!prefs.begin("mayap-id", false)) return false;
-  const bool ok = prefs.putString("mqtt-host", host) > 0U && prefs.putUShort("mqtt-port", port) > 0U;
-  prefs.end();
-  if (ok) { strlcpy(mqttHost, host, sizeof(mqttHost)); mqttPort = port; }
-  return ok;
-}
-
-inline const char *mayapMqttHost() { return MayapDeviceIdentityInternal::mqttHost; }
-inline uint16_t mayapMqttPort() { return MayapDeviceIdentityInternal::mqttPort; }
 
 inline const char *mayapCommandKey() {
   return MayapDeviceIdentityInternal::commandKey;

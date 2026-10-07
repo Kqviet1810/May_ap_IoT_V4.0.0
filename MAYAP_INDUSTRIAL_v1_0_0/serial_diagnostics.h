@@ -12,7 +12,7 @@ inline bool mayapSerialDebugEnabled() {
 namespace MayapSerialInternal {
 constexpr uint8_t CAPACITY = 8U;
 struct Entry {
-  char text[272];
+  char text[224];
   uint16_t length = 0U, offset = 0U;
   bool priority = false, force = false;
 };
