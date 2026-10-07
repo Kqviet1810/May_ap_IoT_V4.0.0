@@ -56,7 +56,10 @@ static uint16_t nextPacketId = 1U;
 static uint16_t inflightId[QOS1_INFLIGHT_MAX];
 static uint32_t inflightAt[QOS1_INFLIGHT_MAX];
 static uint8_t inflightCount = 0U;
-static uint32_t lastRxAt = 0U, lastTxAt = 0U, lastDiagAt = 0U;
+static uint32_t lastRxAt = 0U, lastTxAt = 0U;
+#if MAYAP_DIAGNOSTIC_SERIAL
+static uint32_t lastDiagAt = 0U;
+#endif
 static uint32_t droppedOversize = 0U, droppedForeign = 0U;
 static uint8_t carry[128];                          // bytes that followed a handshake packet
 static size_t carryLength = 0U;
