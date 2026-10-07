@@ -1,4 +1,5 @@
 #pragma once
+#include "thermal_assist.h"
 
 // Pure thermal algorithms. Including code provides MachineConfig, timing,
 // constants and sanitizeMachineConfig; the host test runs these SAME classes.
@@ -26,6 +27,7 @@ class ThermalController {
     lastComputeAt_ = 0;
     output_ = 0.0f;
     filteredDerivative_ = 0.0f;
+    ffApplied_ = 0.0f;
   }
 
   // Ap dung cau hinh moi ma giu nguyen cong suat hien tai. Cach nay tranh
@@ -40,7 +42,7 @@ class ThermalController {
     filteredDerivative_ = 0.0f;
     if (cfg.controlMode == ControlMode::Pid) {
       const float integralLimit = maxOut + fabsf(cfg.kp * (1.0f - beta_) * setpoint);
-      integral_ = clampFloat(output_ - cfg.kp * (beta_ * setpoint - input),
+      integral_ = clampFloat(output_ - ffApplied_ - cfg.kp * (beta_ * setpoint - input),
                             -integralLimit, integralLimit);
     } else {
       integral_ = 0.0f;
@@ -49,7 +51,8 @@ class ThermalController {
 
   float updateOnNewSample(uint32_t now, float setpoint, float input,
                           const MachineConfig &cfg, bool enabled,
-                          float actuatorCeiling = INFINITY, bool freezePositiveIntegral = false) {
+                          float actuatorCeiling = INFINITY, bool freezePositiveIntegral = false,
+                          const MayapThermal::Assist *assist = nullptr) {
     if (!enabled || !isfinite(input) || !isfinite(setpoint)) { reset(); return 0.0f; }
     const float maxOut = isfinite(actuatorCeiling)
         ? clampFloat(actuatorCeiling, 0.0f, static_cast<float>(cfg.maxHeaterPower))
@@ -63,12 +66,20 @@ class ThermalController {
       return output_;
     }
 
+    // Adaptive Thermal V1 feed-forward (all-default assist == 0 == legacy).
+    // The feed-forward state follows the REQUESTED value (bounded to 0..100), not the clamped
+    // one: a transient ceiling (startup brake) must not make the FF look "removed", or the
+    // bumpless transfer would later subtract it from the integral and cancel its purpose.
+    const float ff = assist ? clampFloat(assist->feedForward, 0.0f, 100.0f) : 0.0f;
     if (!initialized_) {
       initialized_ = true;
       lastInput_ = input;
       lastComputeAt_ = now;
       integral_ = 0.0f;
-      output_ = clampFloat(cfg.kp * (beta_ * setpoint - input), 0.0f, maxOut);
+      // A (re)started controller begins from "heater off": the feed-forward applies at once
+      // instead of being subtracted from the integral, which would cancel its purpose.
+      ffApplied_ = ff;
+      output_ = clampFloat(ff + cfg.kp * (beta_ * setpoint - input), 0.0f, maxOut);
       return output_;
     }
 
@@ -90,30 +101,57 @@ class ThermalController {
     // the old +/-maxOut bound alone can prevent beta<1 reaching the setpoint.
     // Anti-windup uses the ACTUAL 0..maxOut actuator limits.
     const float integralLimit = maxOut + fabsf(cfg.kp * (1.0f - beta_) * setpoint);
-    const float integralDelta = cfg.ki * error * dt;
-    const float candidateIntegral = clampFloat(integral_ +
-        (freezePositiveIntegral && integralDelta > 0.0f ? 0.0f : integralDelta),
-        -integralLimit, integralLimit);
-    const float unsaturated = p + candidateIntegral + d;
-    const float previousUnsaturated = p + integral_ + d;
+    // The integral carries the RESIDUAL: when the feed-forward moves, the integral moves
+    // the opposite way so the TOTAL is continuous (bumpless, no double counting of hold).
+    if (ff != ffApplied_) {
+      integral_ = clampFloat(integral_ - (ff - ffApplied_), -integralLimit, integralLimit);
+      ffApplied_ = ff;
+    }
+    const bool freeze = assist && assist->freezeIntegral;
+    const float integralCeil = assist ? assist->integralCeiling : INFINITY;
+    // Learned-model ceiling on Ki (V1): lowers an over-aggressive integral for a slow/delayed
+    // plant; it never raises the configured gain.
+    const float kiEff = (assist && isfinite(assist->kiMax)) ? fminf(cfg.ki, fmaxf(0.0f, assist->kiMax)) : cfg.ki;
+    float integralDelta = kiEff * error * dt;
+    // Vent window: the known disturbance belongs to the feed-forward; I may only unwind.
+    if (freeze && integralDelta > 0.0f) integralDelta = 0.0f;
+    if (freezePositiveIntegral && integralDelta > 0.0f) integralDelta = 0.0f;
+    float candidateIntegral = clampFloat(integral_ + integralDelta, -integralLimit, integralLimit);
+    // The ceiling blocks growth only: an integral already above it may still unwind.
+    if (isfinite(integralCeil))
+      candidateIntegral = fminf(candidateIntegral, fmaxf(integralCeil, integral_));
+    const float pp = p + ff;  // feed-forward shifts the proportional operating point
+    // Output bounds: legacy [0, maxOut], optionally narrowed around the feed-forward by the
+    // V1 correction-authority limiter (never widened).
+    float lo = 0.0f, hi = maxOut;
+    if (assist && isfinite(assist->corrBase)) {
+      const float authority = fmaxf(0.0f, assist->corrBase) + fmaxf(0.0f, assist->corrPerC) * fabsf(error);
+      lo = fmaxf(0.0f, ff - authority);
+      hi = fminf(maxOut, ff + authority);
+      if (lo > hi) lo = hi;
+    }
+    const float unsaturated = pp + candidateIntegral + d;
+    const float previousUnsaturated = pp + integral_ + d;
     const float integralStep = candidateIntegral - integral_;
     // A step crossing a limit must reach that limit. Discarding the whole
     // step can leave positive heat indefinitely while PV is above SP.
-    if (unsaturated < 0.0f && integralStep < 0.0f && previousUnsaturated > 0.0f) {
-      integral_ = clampFloat(-p - d, -integralLimit, integralLimit);
-    } else if (unsaturated > maxOut && integralStep > 0.0f &&
-               previousUnsaturated < maxOut) {
-      integral_ = clampFloat(maxOut - p - d, -integralLimit, integralLimit);
-    } else if ((unsaturated >= 0.0f && unsaturated <= maxOut) ||
-               (unsaturated > maxOut && integralStep < 0.0f) ||
-               (unsaturated < 0.0f && integralStep > 0.0f)) {
+    if (unsaturated < lo && integralStep < 0.0f && previousUnsaturated > lo) {
+      integral_ = clampFloat(lo - pp - d, -integralLimit, integralLimit);
+    } else if (unsaturated > hi && integralStep > 0.0f &&
+               previousUnsaturated < hi) {
+      integral_ = clampFloat(hi - pp - d, -integralLimit, integralLimit);
+    } else if ((unsaturated >= lo && unsaturated <= hi) ||
+               (unsaturated > hi && integralStep < 0.0f) ||
+               (unsaturated < lo && integralStep > 0.0f)) {
       integral_ = candidateIntegral;
     }
-    output_ = clampFloat(p + integral_ + d, 0.0f, maxOut);
+    output_ = clampFloat(pp + integral_ + d, lo, hi);
     return output_;
   }
 
   float output() const { return output_; }
+  float integral() const { return integral_; }
+  float feedForwardApplied() const { return ffApplied_; }
 
  private:
   const float beta_;
@@ -123,6 +161,7 @@ class ThermalController {
   float lastInput_ = 0.0f;
   uint32_t lastComputeAt_ = 0;
   float output_ = 0.0f;
+  float ffApplied_ = 0.0f;
 };
 
 // Physical heat is metered from the arbiter's actual SSR state, not PID demand.
@@ -137,6 +176,7 @@ class ThermalStartupController {
     lastHeatOffAt_ = 0; energyWindowStartedAt_ = 0; coastCleared_ = false;
     stableAt_ = 0; lastRequested_ = 0; holdPower_ = 0;
     slope_ = 0; lastSampleAt_ = 0; lastPeak_ = 0;
+    hint_ = MayapThermal::StartupHint{};
   }
   void observe(uint32_t now, bool heaterOn) {
     if (!observed_) { observed_ = true; observedAt_ = bucketAt_ = now; lastOn_ = heaterOn; return; }
@@ -162,6 +202,9 @@ class ThermalStartupController {
     if (heaterOn && firstHeatAt_ == 0U) firstHeatAt_ = now;
   }
   struct Decision { float ceiling; bool freezePositiveIntegral; Phase phase; float peak; };
+  // Learned plant knowledge from Adaptive Thermal V1. An invalid hint is exactly the
+  // legacy controller: it replaces the lightest-plant coast assumption, never adds heat.
+  void setHint(const MayapThermal::StartupHint &h) { hint_ = h; }
   Decision decide(uint32_t now, float sp, float pv, float maxPower) {
     if (!isfinite(sp) || !isfinite(pv)) return {0, true, phase_, pv};
     historyGap_ = false; // only a fresh real sensor sample can resume heat
@@ -179,8 +222,12 @@ class ThermalStartupController {
     const uint32_t riseDelayMs = firstRiseAt_ == 0U ? 0U :
         static_cast<uint32_t>(firstRiseAt_-firstHeatAt_);
     const bool longDelay = riseDelayMs > 80000U;
-    const float coastSeconds = firstRiseAt_ == 0U ? 135.0f :
+    float coastSeconds = firstRiseAt_ == 0U ? 135.0f :
         clampFloat(static_cast<float>(riseDelayMs)*0.001f+14.0f, 18.0f, 135.0f);
+    // Learned delay replaces the single-event estimate in proportion to the hint strength.
+    const float hs = hint_.valid ? clampFloat(hint_.strength, 0.0f, 1.0f) : 0.0f;
+    if (hs > 0.0f)
+      coastSeconds += hs * (clampFloat(hint_.delaySec + 14.0f, 18.0f, 240.0f) - coastSeconds);
     if (!coastCleared_ && !lastOn_ && lastHeatOffAt_ != 0U &&
         static_cast<uint32_t>(now-lastHeatOffAt_) >= static_cast<uint32_t>(coastSeconds*1000.0f) &&
         slope_ <= 0.001f) {
@@ -188,7 +235,10 @@ class ThermalStartupController {
       energyWindowStartedAt_ = now;
       coastCleared_ = true;
     }
-    const float slopeCoast = fmaxf(0.0f, slope_) * coastSeconds;
+    // Quantized sensors (0.1 C steps) make the 10 s IIR slope spike on every step, which
+    // fakes coast. With a learned hint the window-regression slope replaces it.
+    const float slopeEff = (hs > 0.0f && hint_.slopeValid) ? slope_ + hs*(hint_.slopePerSec - slope_) : slope_;
+    const float slopeCoast = fmaxf(0.0f, slopeEff) * coastSeconds;
     // The long-term loss-compensation duty is deliberately slow and cannot
     // be learned until after the first delayed heat response. It removes the
     // permanent offset of proportional-only braking without banking pulse
@@ -201,7 +251,12 @@ class ThermalStartupController {
         holdPower_ -= 3.0f*dt/60.0f;
       holdPower_ = clampFloat(holdPower_,0.0f,maxPower);
     }
-    const uint32_t horizonMs = longDelay ? 240000U : 160000U;
+    uint32_t horizonMs = longDelay ? 240000U : 160000U;
+    if (hs >= 0.5f)  // only energy still IN FLIGHT can coast: window = learned delay + margin
+      horizonMs = static_cast<uint32_t>(clampFloat((hint_.delaySec+6.0f)*0.5f, 6.0f, 120.0f))*2000U;
+    // Learned hold power (average ACTUAL duty at the setpoint) replaces the slow legacy
+    // integrator in proportion to the hint strength.
+    const float holdEff = hs > 0.0f ? holdPower_ + hs*(clampFloat(hint_.holdPct,0.0f,maxPower)-holdPower_) : holdPower_;
     const uint8_t recentBuckets = static_cast<uint8_t>(horizonMs/2000U);
     uint32_t recentOnMs = 0;
     for (uint8_t i = 0; i < recentBuckets; ++i)
@@ -209,13 +264,16 @@ class ThermalStartupController {
     const float windowMs = static_cast<float>(std::min<uint32_t>(horizonMs,
         static_cast<uint32_t>(now-energyWindowStartedAt_)));
     const float excessOnMs = fmaxf(0.0f, static_cast<float>(recentOnMs) -
-        holdPower_ * 0.01f * windowMs);
+        holdEff * 0.01f * windowMs);
     // Rated watts are not a calibration of transfer to this one probe.
     // Keep a bounded 35% reserve for heater effectiveness, sensor filter lag
     // and delayed heat before trusting a first-rise estimate.
     // Do not subtract PV rise over this ring: with transport delay, that rise
     // can be caused by an older pulse which already aged out of the ring.
-    const float energyCoast = excessOnMs*16.0f*1.35f/MinimumCapacity;
+    const float legacyEnergyCoast = excessOnMs*16.0f*1.35f/MinimumCapacity;
+    const float energyCoast = hs > 0.0f && hint_.coastPerOnMs > 0.0f
+        ? legacyEnergyCoast + hs*(excessOnMs*hint_.coastPerOnMs - legacyEnergyCoast)
+        : legacyEnergyCoast;
     const float expectedCoast = fmaxf(slopeCoast, energyCoast);
     const float error = sp-pv;
     const float peak = pv+expectedCoast;
@@ -238,17 +296,51 @@ class ThermalStartupController {
     // The predictive fraction refers to the rated bank. External authority
     // remains a separate final limit and never redefines physical 100%.
     float cap = 100.0f*brakeFraction;
+    if (hs > 0.0f) {
+      // Hold-aware braking: the legacy law is a pure proportional cap that is unaware of the
+      // duty needed just to stand still, so a plant with 33 % hold power can only balance at
+      // error >= ~0.07 C (more for bigger hold). Brake the SURPLUS above the learned hold
+      // instead; go below hold only when the predicted coast really overshoots SP.
+      const float f = clampFloat((remaining+0.05f)/0.5f, -1.0f, 1.0f);
+      const float holdCap = clampFloat(holdEff, 0.0f, maxPower);
+      const float learnedCap = f >= 0.0f ? holdCap + (maxPower-holdCap)*f : holdCap*(1.0f+f);
+      cap += hs*(learnedCap - cap);
+    }
     // Near SP, a stationary heavy load can suddenly become light before the
     // remote sensor sees it. Allow only a bounded increment above established
     // maintenance duty until the changed slope is observed.
-    if (error < 2.0f) cap = fminf(cap, fmaxf(20.0f,holdPower_+5.0f));
-    if (slope_ > 0.0f) {
-      const float rateCap = 100.0f*clampFloat(
-          (error+0.1f)/(slope_*coastSeconds+0.1f), 0.0f, 1.0f);
+    if (error < 2.0f) {
+      const float legacyFloor = fmaxf(20.0f, holdEff+5.0f);
+      float floorCap = legacyFloor;
+      if (hs > 0.0f && hint_.gainPerSec > 0.0f) {
+        // Learned model: hold + exactly the surplus that closes the remaining error with a
+        // first-order approach (time constant 3x the learned delay, >= 90 s). It shrinks to
+        // the hold duty as the error vanishes, so PV can actually reach SP without a late burst.
+        const float tApproach = fmaxf(90.0f, 3.0f*hint_.delaySec);
+        const float surplus = 100.0f*clampFloat(error, 0.0f, 2.0f)/(tApproach*hint_.gainPerSec);
+        const float learned = clampFloat(holdEff + surplus + 3.0f, 0.0f, maxPower);
+        floorCap = legacyFloor + hs*(learned - legacyFloor);
+      }
+      cap = fminf(cap, floorCap);
+    }
+    if (slopeEff > 0.0f) {
+      float rateCap = 100.0f*clampFloat(
+          (error+0.1f)/(slopeEff*coastSeconds+0.1f), 0.0f, 1.0f);
+      if (hs > 0.0f && hint_.gainPerSec > 0.0f) {
+        // Model-based slope cancel: hold power, minus exactly the duty that removes the slope
+        // in excess of what would reach SP in coastSeconds (dS / Kh). It equals hold on a
+        // consistent approach and falls below it only as far as the physics requires, instead
+        // of the legacy cut to ~0 % when PV is merely a tenth of a degree high.
+        const float allowedSlope = fmaxf(0.0f, error) / fmaxf(30.0f, coastSeconds);
+        const float learnedRate = clampFloat(clampFloat(holdEff, 0.0f, maxPower) +
+            100.0f*(allowedSlope - slopeEff)/hint_.gainPerSec, 0.0f, maxPower);
+        rateCap += hs*(learnedRate - rateCap);
+      }
       cap = fminf(cap, rateCap);
     }
     cap = clampFloat(cap, 0.0f, maxPower);
     cap = fminf(cap, lastRequested_+30.0f);
+    lastCap_ = cap;
     const bool freezeIntegral = phase_ != Phase::Hold &&
         !(error > 0.15f && slope_ <= 0.001f && peak < sp-0.2f);
     return {cap, freezeIntegral, phase_, peak};
@@ -260,6 +352,8 @@ class ThermalStartupController {
   }
   Phase phase() const { return phase_; }
   float predictedPeak() const { return lastPeak_; }
+  float lastCeiling() const { return lastCap_; }
+  float slope() const { return slope_; }
  private:
   static constexpr uint8_t Buckets = 120U;
   static constexpr float MinimumCapacity = 180000.0f;
@@ -271,7 +365,8 @@ class ThermalStartupController {
   bool initialized_ = false, observed_ = false, lastOn_ = false, coastCleared_ = false;
   bool historyGap_ = false;
   float lastPv_ = 0, lastSp_ = 0, slope_ = 0;
-  float lastRequested_ = 0, holdPower_ = 0, lastPeak_ = 0;
+  float lastRequested_ = 0, holdPower_ = 0, lastPeak_ = 0, lastCap_ = 0;
+  MayapThermal::StartupHint hint_{};
   Phase phase_ = Phase::FullHeat;
 };
 

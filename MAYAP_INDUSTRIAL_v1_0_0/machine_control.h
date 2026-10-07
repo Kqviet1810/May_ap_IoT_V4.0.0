@@ -3,6 +3,8 @@
 #include "config.h"
 #include "adaptive_thermal_balance.h"
 #include "adaptive_persistence.h"
+#include "thermal_adaptive_v1.h"
+#include "thermal_profile_storage.h"
 #include "turn_schedule_policy.h"
 #include "firmware_update_guard.h"
 #include "boot_diagnostic.h"
@@ -195,7 +197,8 @@ enum class EventCode : uint16_t {
   InputBase = 100,
   OutputBase = 200,
   FaultBase = 1000,
-  AdaptiveChanged = 450, AdaptiveModelInvalidated, AdaptiveEnabled, AdaptiveDisabled
+  AdaptiveChanged = 450, AdaptiveModelInvalidated, AdaptiveEnabled, AdaptiveDisabled,
+  ThermalLearnChanged, ThermalModelMismatch
 };
 
 struct EventEntry {
@@ -5897,8 +5900,17 @@ class MachineController {
       MayapAdaptive::Policy::BankWatts,static_cast<float>(HEATER_BURST_QUANTUM_MS),static_cast<float>(PIN_OUT_HEATER_SSR),1.0f};
     return mcCrc32(reinterpret_cast<const uint8_t *>(signature),sizeof(signature));
   }
+  // Hardware identity for the stored thermal profile. tempOffset/SP/PID are deliberately NOT part
+  // of it: the SHT30 calibration offset and tuning do not change the plant's dynamics.
+  uint32_t thermalSignature() const {
+    const float signature[]={MayapAdaptive::Policy::BankWatts,static_cast<float>(HEATER_BURST_QUANTUM_MS),
+      static_cast<float>(PIN_OUT_HEATER_SSR),static_cast<float>(sensor_.sensorProfile()),
+      static_cast<float>(MAYAP_SENSOR_PROFILE),1.0f};
+    return mcCrc32(reinterpret_cast<const uint8_t *>(signature),sizeof(signature));
+  }
   void trackAdaptiveEnergy(uint32_t now) {
     adaptiveThermal_.tick(now, outputs_.state().heaterSsr);
+    thermalV1_.tick(now, outputs_.state().heaterSsr);
     if(testModeActive_ || resumeConfirmationRequired_){
       MayapAdaptive::modelStorage.discardPending();
       MayapAdaptive::Observation o; o.test=testModeActive_;o.recovery=resumeConfirmationRequired_;
@@ -5975,7 +5987,73 @@ class MachineController {
       mayapSerialPrintf(false,"[THERMAL-ADAPT] state=%s conf=%.0f load=%.3f coast=%.3f hold=%.1f max=%.1f approach=%.3f selfheat=%u cool=%u\n",
         MayapAdaptive::stateName(d.state),adaptiveThermal_.effectiveConfidence(),e.load,e.coast,e.hold,d.effective,d.approach,d.selfHeating,d.cooling);
     }
+    // ---- Adaptive Thermal V1: learn the effective thermal profile (consumed below by the PID) ----
+    thermalV1_.setEnabled(config_.adaptiveThermalBalanceEnabled);
+    if(config_.adaptiveThermalBalanceEnabled && newSensorSample_){
+      MayapThermal::LearnInput li;
+      li.pv=temperature_;li.raw=rawTemperature_;li.sp=config_.targetTemp;li.high=config_.highTempAlarm;
+      li.sensor=sensorUsable_;li.fanStable=o.fanStable;li.ventActive=outputs_.state().ventFan;
+      li.safety=o.safety;li.tune=o.tune;li.test=o.test;li.maintenance=o.maintenance;
+      li.recovery=!mayapBootOperationsReady()||abnormalResetLatched_||resumeConfirmationRequired_||
+        !timeReached(now,sensorStartupGraceUntil_);
+      li.heaterBlocked=!permit;
+      MayapThermal::Hints hints;hints.valid=true;hints.coast=e.coast;hints.coastSec=e.coastSec;
+      hints.coastWindows=e.coastWindows;hints.holdWindows=e.holdWindows;hints.hold=e.hold;
+      thermalV1_.learner().sample(now,li,hints);
+      const uint32_t tsig=thermalSignature();
+      if(sensorUsable_ && rtc_.valid()){
+        if(MayapThermal::profileStorage.takeInvalid())
+          eventLog_.push(now,EventType::Adaptive,static_cast<uint16_t>(EventCode::AdaptiveModelInvalidated),static_cast<int16_t>(MayapAdaptive::Reason::SeedInvalid));
+        MayapThermal::ThermalProfile seedProfile{};
+        if(MayapThermal::profileStorage.takeSeed(seedProfile)){
+          if(MayapThermal::profileCompatible(seedProfile,tsig,abnormalResetLatched_))
+            thermalV1_.learner().seed(seedProfile,MayapThermal::seedConfidenceCap(seedProfile,rtc_.epoch()));
+          else
+            eventLog_.push(now,EventType::Adaptive,static_cast<uint16_t>(EventCode::AdaptiveModelInvalidated),static_cast<int16_t>(MayapAdaptive::Reason::SeedInvalid));
+        }
+        const auto &lp=thermalV1_.learner().profile();
+        const auto ls=thermalV1_.learner().state();
+        if((ls==MayapThermal::LearnState::Qualified||ls==MayapThermal::LearnState::Adapting)&&
+           thermalV1_.learner().gate()==MayapThermal::GateReason::Open){
+          MayapThermal::ThermalProfile out=lp;
+          out.signature=tsig;out.epoch=rtc_.epoch();out.sequence=0;MayapThermal::sealProfile(out);
+          MayapThermal::profileStorage.offer(out);
+        } else MayapThermal::profileStorage.discardPending();
+      } else MayapThermal::profileStorage.discardPending();
+    } else if(!config_.adaptiveThermalBalanceEnabled) MayapThermal::profileStorage.discardPending();
     return d.effective;
+  }
+
+  // Runtime telemetry + rate-limited diagnostics for Adaptive Thermal V1. Read-only.
+  void publishThermalLearning(uint32_t now) {
+    if(!config_.adaptiveThermalBalanceEnabled){
+      runtime_.thermalLearnState=0;runtime_.thermalConfidence=0;runtime_.thermalVentPhase=0;
+      return;
+    }
+    const auto &lrn=thermalV1_.learner();const auto &pr=lrn.profile();
+    runtime_.thermalLearnState=pr.state;runtime_.thermalConfidence=pr.confidence;
+    runtime_.thermalGain=pr.heaterGain;runtime_.thermalDelaySec=pr.heaterDelaySec;
+    runtime_.thermalCoastC=pr.coastRiseC;runtime_.thermalHoldPct=pr.holdPowerPct;
+    runtime_.thermalVentGain=pr.ventCoolingGain;runtime_.thermalPredictionError=lrn.predictionError();
+    runtime_.thermalVentPhase=static_cast<uint8_t>(thermalV1_.plan().ventPhase);
+    const auto st=lrn.state();
+    if(st!=thermalLoggedState_){
+      eventLog_.push(now,EventType::Adaptive,static_cast<uint16_t>(EventCode::ThermalLearnChanged),static_cast<int16_t>(st));
+      thermalLoggedState_=st;
+    }
+    if(lrn.mismatch()!=thermalMismatchLogged_){
+      thermalMismatchLogged_=lrn.mismatch();
+      if(thermalMismatchLogged_)
+        eventLog_.push(now,EventType::Adaptive,static_cast<uint16_t>(EventCode::ThermalModelMismatch),static_cast<int16_t>(pr.confidence));
+    }
+    if(elapsedMs(now,thermalDiagnosticAt_)>=30000UL){
+      thermalDiagnosticAt_=now;
+      mayapSerialPrintf(false,"[THERMAL-LEARN] state=%s conf=%u gain=%.4f delay=%.0f coast=%.2f hold=%.1f ventGain=%.4f ventConf=%u predErr=%.2f gate=%s vent=%s ff=%.1f\n",
+        MayapThermal::learnStateName(st),static_cast<unsigned>(pr.confidence),pr.heaterGain,pr.heaterDelaySec,
+        pr.coastRiseC,pr.holdPowerPct,pr.ventCoolingGain,static_cast<unsigned>(pr.ventConfidence),
+        lrn.predictionError(),MayapThermal::gateReasonName(lrn.gate()),
+        MayapThermal::ventPhaseName(thermalV1_.plan().ventPhase),thermalV1_.plan().assist.feedForward);
+    }
   }
 
   // ----------------------------- Heating/Output -------------------------------
@@ -6046,6 +6124,9 @@ class MachineController {
     const bool sensorFaultNeedsFan = !sensorUsable_ && !sensorStartupGraceActive &&
         (batchRunning_ || outputs_.state().heaterSsr || postCooling);
     bool scheduledVentActive = false;
+    // Ventilation owns WHEN and HOW LONG; thermal is only told, so the heater can be
+    // coordinated (Adaptive Thermal V1). Negative == not known.
+    float ventStartsInSec = -1.0f, ventRemainingSec = -1.0f;
     if (!config_.ventAutoEnabled && config_.ventScheduleEnabled &&
         batchRunning_ && rtc_.valid()) {
       const uint8_t hours[VENT_SCHEDULE_MAX_RUNS] = {
@@ -6058,14 +6139,25 @@ class MachineController {
       const uint32_t secondOfDay = rtc_.epoch() % 86400UL;
       const uint32_t durationSec =
           static_cast<uint32_t>(config_.ventScheduleDurationMin) * 60UL;
+      uint32_t nextStartWaitSec = 0xFFFFFFFFUL;
       for (uint8_t i = 0U; i < count; ++i) {
         const uint32_t start = static_cast<uint32_t>(hours[i]) * 3600UL;
         const uint32_t end = start + durationSec;
         const bool inWindow = end <= 86400UL
             ? (secondOfDay >= start && secondOfDay < end)
             : (secondOfDay >= start || secondOfDay < (end - 86400UL));
-        if (inWindow) { scheduledVentActive = true; break; }
+        if (inWindow) {
+          scheduledVentActive = true;
+          ventRemainingSec = static_cast<float>(
+              ((end - secondOfDay) + 86400UL) % 86400UL);
+          if (ventRemainingSec == 0.0f) ventRemainingSec = static_cast<float>(durationSec);
+          break;
+        }
+        const uint32_t wait = (start + 86400UL - secondOfDay) % 86400UL;
+        if (wait < nextStartWaitSec) nextStartWaitSec = wait;
       }
+      if (!scheduledVentActive && nextStartWaitSec != 0xFFFFFFFFUL)
+        ventStartsInSec = static_cast<float>(nextStartWaitSec);
     }
 
     bool profileVentActive = false;
@@ -6077,6 +6169,11 @@ class MachineController {
       const uint32_t cycleSec = static_cast<uint32_t>(config_.ventCycleMinutes) * 60UL;
       const uint32_t onSec = cycleSec * duty / 100UL;
       profileVentActive = (elapsedSec % cycleSec) < onSec;
+      if (onSec > 0UL) {
+        const uint32_t phaseSec = elapsedSec % cycleSec;
+        if (phaseSec < onSec) ventRemainingSec = static_cast<float>(onSec - phaseSec);
+        else ventStartsInSec = static_cast<float>(cycleSec - phaseSec);
+      }
     }
 
     const bool safetyForcesCirculation = faults_.circulationForced() ||
@@ -6134,6 +6231,16 @@ class MachineController {
 
     const float effectiveLimit = updateAdaptiveBalance(now, normalSsrPermit && actuatorReady, fanStable, req.ventFan);
     req.ventFan = req.ventFan || adaptiveCoolingRequested();
+    // Adaptive Thermal V1 plan: feed-forward + integral policy + startup hint. It can only
+    // propose; the result still passes the startup ceiling, effectiveLimit, scheduler and arbiter.
+    ventInfo_.active = outputs_.state().ventFan;
+    ventInfo_.forced = req.ventFanForceOn || adaptiveCoolingRequested();
+    ventInfo_.startsInSec = ventStartsInSec;
+    ventInfo_.remainingSec = ventRemainingSec;
+    const MayapThermal::Plan &v1plan = thermalV1_.update(now, normalSsrPermit && actuatorReady,
+        autotune_.running(), ventInfo_, temperature_, config_.targetTemp, pid_.integral(),
+        config_.highTempAlarm);
+    publishThermalLearning(now);
     float commandedPower = 0.0f;
     if (autotune_.running()) {
       startupHeat_.reset();
@@ -6145,13 +6252,15 @@ class MachineController {
         float ceiling = effectiveLimit;
         bool freezePositiveIntegral = false;
         if (config_.controlMode == ControlMode::Pid) {
+          startupHeat_.setHint(v1plan.hint);
           const auto decision = startupHeat_.decide(now, config_.targetTemp,
               temperature_, effectiveLimit);
           ceiling = decision.ceiling;
           freezePositiveIntegral = decision.freezePositiveIntegral;
         }
         pidPower_ = pid_.updateOnNewSample(now, config_.targetTemp,
-            temperature_, actuatorConfig, true, ceiling, freezePositiveIntegral);
+            temperature_, actuatorConfig, true, ceiling, freezePositiveIntegral,
+            &v1plan.assist);
       }
       if (config_.controlMode == ControlMode::Pid && startupHeat_.sampleStale(now)) {
         pid_.reset();
@@ -7789,6 +7898,11 @@ class MachineController {
 
   float pidPower_ = 0.0f;
   MayapAdaptive::AdaptiveThermalSupervisor adaptiveThermal_;
+  MayapThermal::AdaptiveV1 thermalV1_;
+  MayapThermal::VentInfo ventInfo_{};
+  uint32_t thermalDiagnosticAt_=0;
+  MayapThermal::LearnState thermalLoggedState_=MayapThermal::LearnState::Unlearned;
+  bool thermalMismatchLogged_=false;
   uint32_t adaptiveDiagnosticAt_=0, adaptiveSignature_=0;
   bool adaptiveSignatureSeen_=false;
   MayapAdaptive::State adaptiveLoggedState_=MayapAdaptive::State::Disabled;

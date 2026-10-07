@@ -11,6 +11,7 @@
 #endif
 #include "../MAYAP_INDUSTRIAL_v1_0_0/heater_burst_scheduler.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/startup_output_policy.h"
+#include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_adaptive_v1.h"
 static uint32_t clockMs=0;
 uint32_t millis() { return clockMs; }
 bool timeReached(uint32_t now,uint32_t then) { return static_cast<int32_t>(now-then)>=0; }
@@ -68,6 +69,8 @@ struct Harness {
   unsigned testCalls=0;
   uint32_t elapsedBatchSec(uint32_t)const{return 0;}
   void updateTestModeOutputs(uint32_t now){++testCalls;outputs_.forceSafe(now);}
+  MayapThermal::AdaptiveV1 thermalV1_;MayapThermal::VentInfo ventInfo_{};
+  void publishThermalLearning(uint32_t){}
   void trackAdaptiveEnergy(uint32_t){}
   float updateAdaptiveBalance(uint32_t,bool,bool,bool){return config_.maxHeaterPower;}
   bool adaptiveCoolingRequested()const{return false;}

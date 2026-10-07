@@ -1212,6 +1212,10 @@ struct MachineRuntime {
   float adaptiveCoastTimeSec = 0, adaptiveHoldPowerPct = 0;
   float effectiveMaxPowerPct = 100, adaptiveApproachBandC = 0, adaptiveCoolingDemand = 0;
   uint32_t observerValidWindows = 0;
+  // Adaptive Thermal V1 (read-only diagnostics; not part of any persisted/serialized record)
+  uint8_t thermalLearnState = 0, thermalConfidence = 0, thermalVentPhase = 0;
+  float thermalGain = 0, thermalDelaySec = 0, thermalCoastC = 0, thermalHoldPct = 0;
+  float thermalVentGain = 0, thermalPredictionError = 0;
   bool heaterOn = false;
   bool circulationFanOn = false;
   bool ventFanOn = false;

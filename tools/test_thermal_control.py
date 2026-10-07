@@ -5,6 +5,7 @@ import csv
 import hashlib
 import os
 import re
+import shutil
 import statistics
 import subprocess
 import tempfile
@@ -15,7 +16,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--sanitize', action='store_true')
 parser.add_argument('--require-targets', action='store_true', help='Fail if any model misses the fixed acceptance targets')
 parser.add_argument('--report-dir', type=Path, default=Path('/tmp/mayap-thermal-report'))
+parser.add_argument('--quick', action='store_true', help='unit tests only; skip the long simulation matrices (development loop)')
+parser.add_argument('--emit-includes', type=Path, default=None, help='write the generated production-derived include dir here and exit (used by tools/test_thermal_adaptive.py)')
+parser.add_argument('--only', default='', help='comma list of unit tests to run (implies --quick)')
 args = parser.parse_args()
+if args.only: args.quick = True
 args.report_dir.mkdir(parents=True, exist_ok=True)
 machine = (ROOT / 'MAYAP_INDUSTRIAL_v1_0_0/machine_control.h').read_text()
 config = (ROOT / 'MAYAP_INDUSTRIAL_v1_0_0/config.h').read_text()
@@ -123,8 +128,8 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
         +method('inline MachineConfig unpackConfig(')+'\n'+method('inline uint8_t ventProfileDutyPercent(')+'\n')
     (out / 'actual-config-load.inc').write_text(method('  bool loadConfig(')+'\n'+method('  bool saveConfig(')+'\n'
         +method('  static bool newer(')+'\n'+validators+'\n'+method('  bool refreshConfigCache('))
-    adaptive_methods = ['  uint32_t adaptiveCompatibility(', '  void trackAdaptiveEnergy(',
-        '  bool adaptiveCoolingRequested(', '  float updateAdaptiveBalance(']
+    adaptive_methods = ['  uint32_t adaptiveCompatibility(', '  uint32_t thermalSignature(', '  void trackAdaptiveEnergy(',
+        '  bool adaptiveCoolingRequested(', '  void publishThermalLearning(', '  float updateAdaptiveBalance(']
     (out / 'actual-adaptive.inc').write_text('\n'.join(method(signature) for signature in adaptive_methods))
     # Storage I/O and FreeRTOS critical-section stubs only; real mailbox/store class is tested.
     (out / 'freertos').mkdir()
@@ -153,7 +158,13 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
     if args.sanitize: common += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-fno-pie', '-no-pie']
     plant_source=(ROOT / 'tests/thermal-plant.cpp').read_text()
     (out / 'actual-plants.inc').write_text(re.search(r'const Plant plants\[\]=[^;]+;', plant_source)[0])
-    for test in ['adaptive-observer','adaptive-thermal','thermal-autotune','thermal-control','thermal-startup','thermal-v2','thermal-output','thermal-heating','thermal-e115','thermal-config','thermal-filter']:
+    if args.emit_includes:
+        shutil.copytree(out, args.emit_includes, dirs_exist_ok=True)
+        print('Generated include directory: ' + str(args.emit_includes))
+        raise SystemExit(0)
+    unit_tests = ['adaptive-observer','adaptive-thermal','thermal-autotune','thermal-control','thermal-startup','thermal-v2','thermal-output','thermal-heating','thermal-e115','thermal-config','thermal-filter']
+    if args.only: unit_tests = [t for t in args.only.split(',') if t]
+    for test in unit_tests:
         variants = [1] if test in ('thermal-output','thermal-heating') else [0]
         for groups in variants:
             executable = out / (test + str(groups))
@@ -173,6 +184,9 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
                 with (args.report_dir / 'low-duty.csv').open('w') as bank_report:
                     bank_report.write('quantum_ms,power_percent,horizon_s,requested_pct,delivered_pct,absolute_energy_error_j,max_no_heat_ms,transitions_per_hour\n')
                     bank_report.writelines(line[5:]+'\n' for line in result.stdout.splitlines() if line.startswith('BANK,'))
+    if args.quick:
+        print('QUICK: unit tests passed; simulation matrices skipped')
+        raise SystemExit(0)
     current_executable = out / 'adaptive-plant-current'
     subprocess.run(common + ['-O2', '-DMAYAP_ADAPTIVE_FAST_PATH=0',
         str(ROOT / 'tests/adaptive-plant.cpp'), '-o', str(current_executable)], check=True)
