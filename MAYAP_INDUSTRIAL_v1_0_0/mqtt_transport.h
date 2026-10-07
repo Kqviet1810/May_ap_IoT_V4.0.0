@@ -33,7 +33,8 @@ namespace MayapMqttInternal {
 
 constexpr char TOPIC_ROOT[] = "mayap/v1";
 constexpr uint16_t KEEPALIVE_SEC = 30U;             // contract: 30..120
-constexpr size_t PACKET_BUFFER = 2560U;             // topic + header + 2048 B payload
+constexpr size_t PACKET_BUFFER = 2120U;             // 2047 B payload + 63 B topic + 10 B headers
+static_assert(PACKET_BUFFER >= MayapProtocol::FRAME_NORMAL_CAP + 72U, "MQTT packet buffer smaller than a contract frame");
 constexpr uint8_t QOS1_INFLIGHT_MAX = 4U;
 constexpr uint32_t QOS1_STUCK_MS = 15000UL;
 constexpr uint32_t STEP_TIMEOUT_MS = 5000UL;        // CONNACK / SUBACK wait
@@ -61,7 +62,7 @@ static uint32_t lastRxAt = 0U, lastTxAt = 0U;
 static uint32_t lastDiagAt = 0U;
 #endif
 static uint32_t droppedOversize = 0U, droppedForeign = 0U;
-static uint8_t carry[128];                          // bytes that followed a handshake packet
+static uint8_t carry[64];                          // bytes that followed a handshake packet
 static size_t carryLength = 0U;
 static BackoffTimer backoff{};
 

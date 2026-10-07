@@ -129,7 +129,7 @@ int main() {
   injectPublish("mayap/v1/MAP-AABBCCDDEEFF/command", "{\"v\":2,\"requestId\":\"R1\"}", 1U, 42U);
   injectPublish("mayap/v1/OTHER/command", "{\"x\":1}", 1U, 43U);
   injectPublish("mayap/v1/MAP-AABBCCDDEEFF/session", "{\"active\":true}", 0U, 0U);
-  injectPublish("mayap/v1/MAP-AABBCCDDEEFF/command", std::string(3000, 'x'), 0U, 0U);       // > 2560: truncated
+  injectPublish("mayap/v1/MAP-AABBCCDDEEFF/command", std::string(3000, 'x'), 0U, 0U);       // > 2120: truncated
   injectPublish("mayap/v1/MAP-AABBCCDDEEFF/config/set", "{\"after\":\"big\"}", 0U, 0U);
   tick(1);
   CHECK(MayapRealtimeInternal::g_delivered.size() == 3U);
