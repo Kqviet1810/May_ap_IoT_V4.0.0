@@ -229,8 +229,15 @@ class AdaptiveV1 {
       const float theta = std::max(3.0f, p.heaterDelaySec);
       const float kiLimit = 100.0f / (16.0f * std::max(p.heaterGain, 0.0005f) * theta * theta);
       const float w = Authority::ramp(conf, 45.0f, 75.0f);
-      if (w > 0) plan_.assist.kiMax = kiLimit + (1.0f - w) * 1000.0f;  // w=0: effectively no limit
-      if (conf >= 75.0f) stickyKiLimit_ = kiLimit;
+      if (stickyKiLimit_ > 0.0f) {
+        // Once a plant has been qualified, the stability limit is never relaxed again just because
+        // confidence later falls (a plant change drops it): lifting it to the legacy Ki on a plant
+        // that may now be many times more sensitive is what turns a change into a limit cycle.
+        plan_.assist.kiMax = std::min(stickyKiLimit_, kiLimit + (1.0f - w) * 1000.0f);
+      } else if (w > 0) {
+        plan_.assist.kiMax = kiLimit + (1.0f - w) * 1000.0f;  // never qualified: w=0 means no limit
+      }
+      if (conf >= 75.0f) stickyKiLimit_ = stickyKiLimit_ > 0.0f ? std::min(stickyKiLimit_, kiLimit) : kiLimit;
     } else if (learner_.enabled() && permit && !tuneRunning && stickyKiLimit_ > 0.0f) {
       // A mismatch/lock-out withdraws feed-forward and startup authority, but the loop STABILITY
       // limit (a function of delay and gain, which a loss change does not move) stays: dropping
