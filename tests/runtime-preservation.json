@@ -19,7 +19,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/thermal_control.h",
-      "sha256": "285e88a6e871d3b9806e4b0a58f0317561bb13079f8ecf3ac60237f6d75ed6a1"
+      "sha256": "b7b89dab9edaf40df57027c17b780a730312cfd2e1c03c89a9a181c69564252c"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/firmware_update_guard.h",
@@ -64,7 +64,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "345fb083e657e7aea8dcfa0c2580bc7bf93417c24669f41e31a83ed8b9fde760",
+      "sha256": "afac63ab39b39a43bd1d5857205418e6c3f5710ab16ef0fa08da80aae9220c78",
       "signature": "class MachineController {"
     },
     {

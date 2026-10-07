@@ -28,6 +28,7 @@ class ThermalController {
     output_ = 0.0f;
     filteredDerivative_ = 0.0f;
     ffApplied_ = 0.0f;
+    addApplied_ = 0.0f;
   }
 
   // Ap dung cau hinh moi ma giu nguyen cong suat hien tai. Cach nay tranh
@@ -42,7 +43,7 @@ class ThermalController {
     filteredDerivative_ = 0.0f;
     if (cfg.controlMode == ControlMode::Pid) {
       const float integralLimit = maxOut + fabsf(cfg.kp * (1.0f - beta_) * setpoint);
-      integral_ = clampFloat(output_ - ffApplied_ - cfg.kp * (beta_ * setpoint - input),
+      integral_ = clampFloat(output_ - ffApplied_ - addApplied_ - cfg.kp * (beta_ * setpoint - input),
                             -integralLimit, integralLimit);
     } else {
       integral_ = 0.0f;
@@ -82,6 +83,7 @@ class ThermalController {
       // A (re)started controller begins from "heater off": the feed-forward applies at once
       // instead of being subtracted from the integral, which would cancel its purpose.
       ffApplied_ = ff;
+      addApplied_ = addFf;
       output_ = clampFloat(ff + addFf + cfg.kp * (beta_ * setpoint - input), 0.0f, maxOut);
       return output_;
     }
@@ -148,6 +150,7 @@ class ThermalController {
                (unsaturated < lo && integralStep > 0.0f)) {
       integral_ = candidateIntegral;
     }
+    addApplied_ = addFf;
     output_ = clampFloat(pp + integral_ + d, lo, hi);
     return output_;
   }
@@ -165,6 +168,7 @@ class ThermalController {
   uint32_t lastComputeAt_ = 0;
   float output_ = 0.0f;
   float ffApplied_ = 0.0f;
+  float addApplied_ = 0.0f;  // additive (vent) feed-forward contained in output_
 };
 
 // Physical heat is metered from the arbiter's actual SSR state, not PID demand.

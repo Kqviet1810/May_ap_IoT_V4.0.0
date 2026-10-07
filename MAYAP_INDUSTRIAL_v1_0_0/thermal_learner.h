@@ -138,7 +138,7 @@ class ThermalLearner {
     sxxF_[best_] = pseudo * 0.5f; sxyF_[best_] = pseudo * 0.5f * profile_.heaterGain;
     syyS_ = pseudo * profile_.heaterGain * profile_.heaterGain * 1.2f;
     seeded_ = true;
-    holdWindows_ = profile_.holdPowerPct > 0.0f ? 1U : 0U;
+    holdWindows_ = 0U;  // a stored hold is a seed, not a live window: no authority until re-measured
     ventEvents_ = profile_.ventConfidence >= 25 ? 1 : 0;
     updateState();
   }
@@ -280,13 +280,19 @@ class ThermalLearner {
     }
     return false;
   }
+  // cumulative on-time is a uint32 millisecond counter: a difference across its wrap is still small
+  static double cumDiff(double hi, double lo) {
+    double d = hi - lo;
+    if (d < -2147483648.0) d += 4294967296.0;
+    return d;
+  }
   // mean ACTUAL duty (0..1) over [a,b]
   bool meanDuty(uint32_t a, uint32_t b, double &duty) const {
     float p; double ca, cb;
     if (!lookup(a, p, ca) || !lookup(b, p, cb)) return false;
     const double span = static_cast<double>(b - a);
     if (span <= 0) return false;
-    duty = std::min(1.0, std::max(0.0, (cb - ca) / span));
+    duty = std::min(1.0, std::max(0.0, cumDiff(cb, ca) / span));
     return true;
   }
   bool slopeAt(uint32_t te, float &slope) const {
@@ -530,7 +536,7 @@ class ThermalLearner {
     {
       float pvTmp; double cumEnd;
       if (lookup(now - hold_.delayMs, pvTmp, cumEnd)) {
-        ud = std::min(1.0, std::max(0.0, (cumEnd - hold_.cumDelayed0) / static_cast<double>(now - hold_.t0)));
+        ud = std::min(1.0, std::max(0.0, cumDiff(cumEnd, hold_.cumDelayed0) / static_cast<double>(now - hold_.t0)));
         haveDuty = true;
       }
     }

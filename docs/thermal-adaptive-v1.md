@@ -83,8 +83,8 @@ COOLING_REQUIRED 36→36 /108, HEAT_LIMITED 0→0 /4. 2 cases pass on the baseli
 The 107 reachable failures are concentrated in heavy plants (63 with 1.6 MJ/°C) and long dead times
 and are mostly slow settling (87), MAE (89) and P95 (85); only 6 exceed the 0.30 °C overshoot gate.
 
-2160-case factorial matrix: baseline 319 PASS, V1 1245 PASS (reachable 304 → 1093 of 1535); High 33 and
-Emergency 17 for **both** (the identical SAFETY_LIMITED plants: V1 adds none). 5 cases pass on the baseline and fail on V1. Worst-case reachable
+2160-case factorial matrix: baseline 319 PASS, V1 1246 PASS (reachable 304 → 1093 of 1535); High 33 and
+Emergency 17 for **both** (the identical SAFETY_LIMITED plants: V1 adds none). 3 cases pass on the baseline and fail on V1. Worst-case reachable
 overshoot 0.50, so the 0.30 target is not met everywhere.
 
 Ventilation (63 scenarios): V1 without coordination vs full V1 vs baseline — mean wind-up 21.5 / 4.8 / 48.9,
@@ -117,6 +117,7 @@ Host worst-case learner sample is ~0.14 ms (x86 -O2); the on-target figure has n
 * Plant-change detection is the weakest part: late for some plants, absent for heater ×1.5 on 3 of 4
   plants, one spurious event on a heavy plant. Authority degrades through the overshoot guard and the
   confidence drop, but the gain estimate can stay wrong for hours.
+* The integral-gain stability limit only tightens once a plant has qualified (a confidence drop after a plant change used to lift it and caused a High crossing); if the heater later weakens, Ki stays conservative until the next reset.
 * The closed-loop gain estimate is biased on heavy plants (median 11 %, tails to 86 %).
 * HEAT_LIMITED, COOLING_REQUIRED and many SAFETY_LIMITED plants cannot meet the targets by any controller.
 * Strong exhaust on a light plant is limited by the heater, not the algorithm.

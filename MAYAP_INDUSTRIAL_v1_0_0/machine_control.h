@@ -6237,7 +6237,7 @@ class MachineController {
     ventInfo_.forced = req.ventFanForceOn || adaptiveCoolingRequested();
     ventInfo_.startsInSec = ventStartsInSec;
     ventInfo_.remainingSec = ventRemainingSec;
-    const MayapThermal::Plan &v1plan = thermalV1_.update(now, normalSsrPermit && actuatorReady,
+    const MayapThermal::Plan &v1plan = thermalV1_.update(now, normalSsrPermit && actuatorReady && config_.controlMode == ControlMode::Pid,
         autotune_.running(), ventInfo_, temperature_, config_.targetTemp, pid_.integral(),
         config_.highTempAlarm);
     publishThermalLearning(now);

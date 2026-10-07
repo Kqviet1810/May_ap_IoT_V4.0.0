@@ -135,6 +135,10 @@ static void profileTests() {
   CHECK(!shouldPersistProfile(live, st, true, 7200000UL));
   live.epoch += 8UL * 86400UL; CHECK(shouldPersistProfile(live, st, true, 7200000UL));   // weekly age refresh
   CHECK(!shouldPersistProfile(live, st, true, 1000));                                    // still rate-limited
+  { ThermalProfile other = st; other.signature = st.signature + 1U; other.epoch = st.epoch;
+    CHECK(shouldPersistProfile(other, st, true, 7200000UL));               // compatibility metadata changed
+    other = st; other.modelVersion = st.modelVersion + 1U;
+    CHECK(shouldPersistProfile(other, st, true, 7200000UL)); }
   live = st; live.confidence = 40; CHECK(!shouldPersistProfile(live, p, false, 7200000UL));  // unqualified
 }
 
@@ -186,6 +190,7 @@ static void learnerTests() {
   { Rig a; a.run(); ThermalProfile s = a.L.profile(); s.confidence = 95; s.ventConfidence = 95; sealProfile(s);
     ThermalLearner L; L.setEnabled(true); L.seed(s, 40);
     CHECK(L.profile().confidence <= 40 && L.profile().ventConfidence <= 40);
+    CHECK(L.holdWindows() == 0 && L.holdTrust() == 0.0f);   // stored hold is not a live window
     ThermalProfile badSeed = s; badSeed.heaterGain = NAN;
     ThermalLearner M; M.setEnabled(true); M.seed(badSeed, 40);
     CHECK(M.profile().confidence == 0); }  // an invalid seed is ignored: defaults, confidence 0
@@ -299,6 +304,14 @@ static void pidAssistTests() {
     const float before = c.output(); as.feedForward = 30;
     const float after = step(c, 302000, 37.5f, pv, cfg, true, &as);
     CHECK(std::fabs(after - before) < 5.0f); }
+  // Bumpless config change while a vent boost is applied must not double-count the additive term.
+  { ThermalController c; Assist as; as.feedForward = 10; as.addForward = 20; float pv = 37.0f;
+    for (uint32_t ms = 1000; ms <= 300000; ms += 2000) c.updateOnNewSample(ms, 37.5f, pv, cfg, true, INFINITY, false, &as);
+    const float before = c.output();
+    MachineConfig changed = cfg; changed.kp = 25;
+    c.applyConfigBumpless(300000, 37.5f, pv, changed);
+    const float after = c.updateOnNewSample(302000, 37.5f, pv, changed, true, INFINITY, false, &as);
+    CHECK(std::fabs(after - before) < 4.0f); }
   // NaN / out-of-range feed-forward cannot produce a non-finite or out-of-range output.
   { const float vals[] = {NAN, INFINITY, -50.0f, 1e9f};
     for (float f : vals) { ThermalController c; Assist as; as.feedForward = f; as.addForward = f;

@@ -156,6 +156,7 @@ inline bool shouldPersistProfile(const ThermalProfile &live, const ThermalProfil
   if (live.confidence < 60 || !profileRangesValid(live)) return false;
   if (sinceLastSaveMs < minIntervalMs) return false;
   if (!storedValid) return true;
+  if (live.signature != stored.signature || live.modelVersion != stored.modelVersion) return true;
   // Age refresh: an unchanged but healthy profile is rewritten weekly so its epoch (and with it
   // the seed trust after a reboot) never ages out while the oven keeps running.
   if (live.epoch != 0U && stored.epoch != 0U && live.epoch > stored.epoch && live.epoch - stored.epoch >= 7UL * 86400UL) return true;
