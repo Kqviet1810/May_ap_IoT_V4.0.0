@@ -139,7 +139,9 @@ class ThermalLearner {
     syyS_ = pseudo * profile_.heaterGain * profile_.heaterGain * 1.2f;
     seeded_ = true;
     holdWindows_ = 0U;  // a stored hold is a seed, not a live window: no authority until re-measured
-    ventEvents_ = profile_.ventConfidence >= 25 ? 1 : 0;
+    // A stored vent estimate is a seed: no compensation until a live vent event has requalified it.
+    profile_.ventConfidence = 0;
+    ventEvents_ = 0;
     updateState();
   }
   void setEnabled(bool on) {

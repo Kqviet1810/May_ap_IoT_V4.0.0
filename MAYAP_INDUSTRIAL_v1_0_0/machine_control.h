@@ -6148,9 +6148,17 @@ class MachineController {
             : (secondOfDay >= start || secondOfDay < (end - 86400UL));
         if (inWindow) {
           scheduledVentActive = true;
-          ventRemainingSec = static_cast<float>(
-              ((end - secondOfDay) + 86400UL) % 86400UL);
-          if (ventRemainingSec == 0.0f) ventRemainingSec = static_cast<float>(durationSec);
+          uint32_t remaining = ((end - secondOfDay) + 86400UL) % 86400UL;
+          if (remaining == 0U) remaining = durationSec;
+          // Contiguous or overlapping runs keep the fan on: report the end of the whole interval.
+          for (uint8_t pass = 0U; pass < count; ++pass) {
+            for (uint8_t j = 0U; j < count; ++j) {
+              const uint32_t startsIn = (static_cast<uint32_t>(hours[j]) * 3600UL + 86400UL - secondOfDay) % 86400UL;
+              if (startsIn > 0U && startsIn <= remaining && startsIn + durationSec > remaining)
+                remaining = startsIn + durationSec;
+            }
+          }
+          ventRemainingSec = static_cast<float>(remaining);
           break;
         }
         const uint32_t wait = (start + 86400UL - secondOfDay) % 86400UL;

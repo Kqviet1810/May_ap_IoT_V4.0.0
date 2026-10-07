@@ -189,8 +189,9 @@ static void learnerTests() {
   // Seeding from storage is capped and never raises confidence above the cap.
   { Rig a; a.run(); ThermalProfile s = a.L.profile(); s.confidence = 95; s.ventConfidence = 95; sealProfile(s);
     ThermalLearner L; L.setEnabled(true); L.seed(s, 40);
-    CHECK(L.profile().confidence <= 40 && L.profile().ventConfidence <= 40);
-    CHECK(L.holdWindows() == 0 && L.holdTrust() == 0.0f);   // stored hold is not a live window
+    CHECK(L.profile().confidence <= 40);
+    CHECK(L.holdWindows() == 0 && L.holdTrust() == 0.0f);
+    CHECK(L.profile().ventConfidence == 0 && L.ventTrust() == 0.0f);   // nor is a stored vent estimate   // stored hold is not a live window
     ThermalProfile badSeed = s; badSeed.heaterGain = NAN;
     ThermalLearner M; M.setEnabled(true); M.seed(badSeed, 40);
     CHECK(M.profile().confidence == 0); }  // an invalid seed is ignored: defaults, confidence 0
