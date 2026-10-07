@@ -122,8 +122,8 @@ static void installBroker() {
 }
 static void resetWorld() {
   net = WiFiClientSecure();
-  parser.reset(); ws.reset(); connected = false; linkFailed = false; carryLength = 0U; inflightCount = 0U; nextPacketId = 1U;
-  droppedOversize = droppedForeign = 0U; backoff = BackoffTimer();
+  parser.reset(); ws.reset(); connected = false; linkFailed = false; staUpSince = 0U; carryLength = 0U; inflightCount = 0U; nextPacketId = 1U;
+  droppedOversize = droppedForeign = 0U; backoff = Retry();
   g_log.clear(); MayapRealtimeInternal::g_delivered.clear(); g_realtimeUpdates = 0U;
   g_connackCode = 0U; g_silentBroker = false; g_subackFirst = 1U; g_upgradeMode = UpgradeMode::Good;
   g_upgraded = false; g_clientFrameBad = false; g_request.clear(); g_clientPings = g_clientPongs = g_clientCloses = 0U; g_clientPongPayloads.clear();
@@ -136,7 +136,8 @@ static void resetWorld() {
 static void tick(uint32_t ms) { g_millis += ms; mayapMqttTransportUpdate(g_millis); }
 static void connectNow() {
   mayapMqttTransportBegin();
-  tick(1);   // ioEnter + TLS + upgrade + MQTT handshake + presence
+  tick(1);                // Wi-Fi first seen up
+  tick(STA_STABLE_MS);    // stable: ioEnter + TLS + upgrade + MQTT handshake + presence
   CHECK(mayapMqttTransportConnected());
 }
 
@@ -148,7 +149,7 @@ int main() {
   resetWorld(); g_epoch = 1000U;
   mayapMqttTransportBegin(); tick(10); tick(10);
   CHECK(net.connects == 0U);                              // clock not valid: certificate dates unusable
-  g_epoch = 1800000000U; tick(10);
+  g_epoch = 1800000000U; tick(10); tick(STA_STABLE_MS);
   CHECK(mayapMqttTransportConnected());
 
   // 1b. WebSocket opening handshake: SNI host + port 443, GET /mqtt/<deviceId>, mqtt subprotocol, random key.
@@ -238,15 +239,15 @@ int main() {
   CHECK(logged("link lost") && logged("inflight=1"));
 
   // 7. Refusals and failures back off; nothing is left half-open.
-  resetWorld(); g_connackCode = 5U; mayapMqttTransportBegin(); tick(1); tick(1);
+  resetWorld(); g_connackCode = 5U; mayapMqttTransportBegin(); tick(1); tick(STA_STABLE_MS);
   CHECK(!mayapMqttTransportConnected() && backoff.failures == 1U && !net.open);
-  resetWorld(); g_subackFirst = 0x80U; mayapMqttTransportBegin(); tick(1); tick(1);
+  resetWorld(); g_subackFirst = 0x80U; mayapMqttTransportBegin(); tick(1); tick(STA_STABLE_MS);
   CHECK(!mayapMqttTransportConnected() && backoff.failures == 1U && !net.open);
-  resetWorld(); net.allowConnect = false; mayapMqttTransportBegin(); tick(1); tick(1);
+  resetWorld(); net.allowConnect = false; mayapMqttTransportBegin(); tick(1); tick(STA_STABLE_MS);
   CHECK(!mayapMqttTransportConnected() && backoff.failures == 1U);
-  resetWorld(); g_silentBroker = true; mayapMqttTransportBegin(); tick(1); tick(1);
+  resetWorld(); g_silentBroker = true; mayapMqttTransportBegin(); tick(1); tick(STA_STABLE_MS);
   CHECK(!mayapMqttTransportConnected() && backoff.failures == 1U && !net.open);
-  resetWorld(); g_tlsAllowed = false; mayapMqttTransportBegin(); tick(1); tick(1);
+  resetWorld(); g_tlsAllowed = false; mayapMqttTransportBegin(); tick(1); tick(STA_STABLE_MS);
   CHECK(net.connects == 0U);                              // no TLS lease: no handshake (Cloud/OTA own the heap)
 
   // 8. Gates: Wi-Fi/portal/yield/isolation stop the client; a graceful stop publishes offline then DISCONNECT only
@@ -270,12 +271,13 @@ int main() {
   mayapMqttTransportRecover(g_millis);
   CHECK(!mayapMqttTransportConnected() && inflightCount == 0U);
   tick(100); CHECK(!mayapMqttTransportConnected());       // backoff running
-  tick(6000); tick(1);
+  tick(10000); CHECK(!mayapMqttTransportConnected());       // still inside the 15 s retry gap
+  tick(10000); tick(1);
   CHECK(mayapMqttTransportConnected() && net.connects == 2U);   // initial + one fresh handshake after the backoff
   // 10. WebSocket upgrade failures never reach MQTT and back off with nothing left open.
   for (UpgradeMode mode : {UpgradeMode::BadAccept, UpgradeMode::Status403, UpgradeMode::Extension, UpgradeMode::WrongProtocol,
                            UpgradeMode::Oversize, UpgradeMode::NoTerminator}) {
-    resetWorld(); g_upgradeMode = mode; mayapMqttTransportBegin(); tick(1); tick(1);
+    resetWorld(); g_upgradeMode = mode; mayapMqttTransportBegin(); tick(1); tick(STA_STABLE_MS);
     CHECK(!mayapMqttTransportConnected() && backoff.failures >= 1U && !net.open);
     CHECK(decodeSent().empty());                          // no MQTT packet was sent over a failed upgrade
   }
@@ -348,6 +350,26 @@ int main() {
   CHECK(!g_clientFrameBad);
   g_yield = true; tick(1);
   CHECK(g_clientCloses == 1U && !g_clientFrameBad);          // graceful stop: DISCONNECT then WebSocket CLOSE
+
+  // 15. Realtime never storms: failed handshakes are spaced 15 s, 30 s, 60 s ... (not 1 s), a Wi-Fi that has
+  //     been up for less than STA_STABLE_MS gets no TLS attempt, and a Cloud yield holds the next one off too.
+  resetWorld(); g_connackCode = 5U; mayapMqttTransportBegin();
+  tick(1); tick(5000); CHECK(net.connects == 0U);          // Wi-Fi up for 5 s only: no handshake yet
+  tick(STA_STABLE_MS); CHECK(net.connects == 1U && backoff.failures == 1U);
+  tick(10000); CHECK(net.connects == 1U);                  // first retry gap is >= 15 s
+  tick(8000); CHECK(net.connects == 2U && backoff.failures == 2U);
+  tick(20000); CHECK(net.connects == 2U);                  // second gap is >= 30 s
+  tick(15000); CHECK(net.connects == 3U);
+  unsigned attempts = net.connects;
+  for (int i = 0; i < 60; ++i) tick(1000);                 // one minute of failures: at most one more attempt
+  CHECK(net.connects <= attempts + 1U);
+  resetWorld(); connectNow(); g_yield = true; tick(1); g_yield = false;
+  tick(5000); CHECK(!mayapMqttTransportConnected());        // right after a Cloud yield: held off
+  tick(15000); tick(1000); CHECK(mayapMqttTransportConnected());
+  resetWorld(); connectNow(); g_networkStatus.connected = false; tick(1);
+  g_networkStatus.connected = true; tick(1); tick(5000);
+  CHECK(!mayapMqttTransportConnected());                   // Wi-Fi flapped: waits for stability again
+  tick(STA_STABLE_MS); CHECK(mayapMqttTransportConnected());
 
   printf("mqtt transport host tests PASS\n");
   return 0;

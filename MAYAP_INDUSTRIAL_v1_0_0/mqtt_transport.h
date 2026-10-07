@@ -72,7 +72,34 @@ static uint32_t lastDiagAt = 0U;
 static uint32_t droppedOversize = 0U, droppedForeign = 0U;
 static uint8_t carry[64];                          // raw bytes that followed a handshake packet
 static size_t carryLength = 0U;
-static BackoffTimer backoff{};
+// Realtime is best-effort and must never starve Wi-Fi or Cloud. The shared BackoffTimer starts at
+// 1 s, which for a full TLS handshake is a reconnect storm: every attempt holds the TLS admission
+// lease that Cloud HTTPS needs and churns ~40 KiB of heap. Realtime therefore retries slowly,
+// and only once Wi-Fi has been up for STA_STABLE_MS.
+constexpr uint32_t RETRY_STEPS_MS[] = {15000UL, 30000UL, 60000UL, 120000UL, 300000UL};
+constexpr uint8_t RETRY_STEP_COUNT = sizeof(RETRY_STEPS_MS) / sizeof(RETRY_STEPS_MS[0]);
+constexpr uint32_t RETRY_JITTER_MAX_MS = 2000UL;
+constexpr uint32_t STA_STABLE_MS = 15000UL;
+struct Retry {
+  uint8_t step = 0U;
+  uint32_t nextAttemptAt = 0U;
+  unsigned failures = 0U;
+  void reset(uint32_t now) { step = 0U; nextAttemptAt = now; }
+  bool ready(uint32_t now) const { return static_cast<int32_t>(now - nextAttemptAt) >= 0; }
+  void onFailure(uint32_t now) {
+    nextAttemptAt = now + RETRY_STEPS_MS[step] + esp_random() % (RETRY_JITTER_MAX_MS + 1U);
+    if (step + 1U < RETRY_STEP_COUNT) ++step;
+    ++failures;
+  }
+  void onSuccess() { step = 0U; }
+  // A deliberate stop (Cloud needs the heap/lease) is not a failure, but the next handshake waits too.
+  void holdOff(uint32_t now) {
+    const uint32_t until = now + RETRY_STEPS_MS[0];
+    if (static_cast<int32_t>(until - nextAttemptAt) > 0) nextAttemptAt = until;
+  }
+};
+static Retry backoff{};
+static uint32_t staUpSince = 0U;
 
 struct ChannelPolicy { const char *channel; uint8_t qos; bool retain; };
 // Publish QoS/retain per doc/MQTT_CONTRACT.md section 2. The broker enforces the
@@ -429,6 +456,7 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
   if (closing || mayapServiceIsolated(MayapRecovery::Service::Mqtt, now) ||
       mayapOnlineMemoryPressure() || mayapCloudTlsYieldRequested(now)) {
     stopClient(true);
+    if (!closing) backoff.holdOff(now);
     if (ioEntered) { mayapOnlineIoLeave(MayapRecovery::Service::Mqtt); ioEntered = false; }
     // An idle poll is not a drain ACK: the socket above is already closed.
     if (closing) mayapOnlineOwnerQuiet(MayapRecovery::Service::Mqtt);
@@ -440,14 +468,17 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
   if (!staOnline) {
     stopClient(false);
     backoff.reset(now);
+    staUpSince = 0U;
     return;
   }
+  if (staUpSince == 0U) staUpSince = now ? now : 1U;
   if (!ioEntered) {
     if (!mayapOnlineIoEnter(MayapRecovery::Service::Mqtt)) return;
     ioEntered = true;
   }
   if (!connected) {
     if (!backoff.ready(now) || !clockValid()) return;  // certificate dates need real time
+    if (MayapRecovery::age(now, staUpSince) < STA_STABLE_MS) return;   // a flapping Wi-Fi gets no TLS handshakes
     if (!connectClient()) { backoff.onFailure(millis()); return; }
     onConnected();
     return;
