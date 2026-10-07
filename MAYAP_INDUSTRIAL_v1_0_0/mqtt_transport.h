@@ -8,6 +8,7 @@
 #include "mqtt_wire.h"
 #include "mqtt_ws.h"
 #include "transaction_bridge.h"
+#include "mqtt_uplink.h"
 #include <Arduino.h>
 #include <WiFiClientSecure.h>
 #include <esp_random.h>
@@ -109,6 +110,7 @@ struct ChannelPolicy { const char *channel; uint8_t qos; bool retain; };
 static constexpr ChannelPolicy POLICY[] = {
   {"presence", 1, true}, {"snapshot", 0, false}, {"ack", 1, false}, {"log", 0, false},
   {"config/reported", 1, false}, {"history/reported", 1, false},
+  {"alarm", 1, false}, {"heartbeat", 1, false},   // device -> cloud ingest, see mqtt_uplink.h
 };
 
 inline const char *brokerHost() { return MAYAP_BROKER_HOST; }
@@ -149,16 +151,17 @@ inline uint16_t allocPacketId() {
   return nextPacketId;
 }
 
-inline bool publishFromBridge(const char *channel, const char *payload, size_t length) {
+// Encodes and sends one PUBLISH. `track` puts a QoS1 packet into the in-flight window that the link watchdog
+// watches (a bridge message nobody PUBACKs means a half-open link). Uplink packets are tracked by mqtt_uplink.h
+// instead: the broker deliberately withholds their PUBACK when the Worker did not store the event.
+inline bool publishChannel(const char *channel, const char *payload, size_t length, bool track, uint16_t *idOut) {
   if (!connected || !channel) return false;
-  // `bootstrap` hints are not part of the V2 topic contract and have no ACL entry.
-  if (!strcmp(channel, "bootstrap")) return true;
   const ChannelPolicy *policy = nullptr;
   for (const ChannelPolicy &candidate : POLICY)
     if (!strcmp(candidate.channel, channel)) { policy = &candidate; break; }
   if (!policy || length == 0U || length >= MayapProtocol::FRAME_NORMAL_CAP) return false;
   const uint32_t now = millis();
-  if (policy->qos > 0U && inflightCount >= QOS1_INFLIGHT_MAX) return false;  // bounded; bridge retries next cycle
+  if (track && policy->qos > 0U && inflightCount >= QOS1_INFLIGHT_MAX) return false;  // bounded; bridge retries next cycle
   char topic[64];
   const int n = snprintf(topic, sizeof(topic), "%s/%s/%s", TOPIC_ROOT, MayapRealtimeInternal::deviceId, channel);
   if (n <= 0 || static_cast<size_t>(n) >= sizeof(topic)) return false;
@@ -166,8 +169,18 @@ inline bool publishFromBridge(const char *channel, const char *payload, size_t l
   const size_t packet = MayapMqttWire::encodePublish(txMqtt(), PACKET_BUFFER, topic,
       reinterpret_cast<const uint8_t *>(payload), length, policy->qos, policy->retain, id);
   if (!sendPacket(packet)) return false;
-  if (policy->qos > 0U) inflightAdd(id, now);
+  if (track && policy->qos > 0U) inflightAdd(id, now);
+  if (idOut) *idOut = id;
   return true;
+}
+
+inline bool publishFromBridge(const char *channel, const char *payload, size_t length) {
+  if (!connected || !channel) return false;
+  // `bootstrap` hints are not part of the V2 topic contract and have no ACL entry.
+  if (!strcmp(channel, "bootstrap")) return true;
+  // alarm/heartbeat belong to the uplink; the bridge never publishes them.
+  if (!strcmp(channel, "alarm") || !strcmp(channel, "heartbeat")) return false;
+  return publishChannel(channel, payload, length, true, nullptr);
 }
 
 inline void buildIdentity() {
@@ -191,6 +204,7 @@ inline void stopClient(bool graceful) {
   }
   net.stop();
   connected = false;
+  MayapUplink::onLinkDown();
   linkFailed = false;
   carryLength = 0U;
   inflightClear();
@@ -219,7 +233,11 @@ inline void handlePacket() {
       return;
     }
     case PUBACK:
-      if (parser.bodyLength() == 2U) inflightAck(static_cast<uint16_t>((parser.body()[0] << 8U) | parser.body()[1]));
+      if (parser.bodyLength() == 2U) {
+        const uint16_t id = static_cast<uint16_t>((parser.body()[0] << 8U) | parser.body()[1]);
+        inflightAck(id);
+        MayapUplink::onPuback(id);
+      }
       return;
     default:
       return;  // PINGRESP and anything unexpected only prove the link is alive
@@ -410,6 +428,7 @@ inline Connect connectClient() {
   parser.reset();
   inflightClear();
   connected = true;
+  MayapUplink::onLinkUp();
   lastRxAt = lastTxAt = millis();
   mayapSerialPrintf(false, "[MQTT] wss+mqtt up %lums heap=%lu->%lu largest=%lu task=%s core=%d prio=%u\n",
                     static_cast<unsigned long>(millis() - startedAt), static_cast<unsigned long>(heapBefore),
@@ -429,6 +448,24 @@ inline void onConnected() {
   lastSnapshotPublishAt = 0U;
   forceSnapshotPublish = true;
   mayapSerialPrintf(false, "[MQTT] connected %s\n", deviceId);
+}
+
+// Publishes what the Cloud task queued (alarms, heartbeat), oldest first. A slot that cannot be sent for a
+// reason other than a dead socket is failed so it can never wedge the queue.
+inline void pumpUplink(uint32_t now) {
+  MayapUplink::expire(now);
+  for (uint8_t guard = 0U; guard < MayapUplink::SLOTS; ++guard) {
+    const int8_t slot = MayapUplink::nextQueued();
+    if (slot < 0) return;
+    uint16_t id = 0U;
+    const bool alarm = MayapUplink::kind(slot) == MayapUplink::Kind::Alarm;
+    if (publishChannel(alarm ? "alarm" : "heartbeat", MayapUplink::payload(slot), MayapUplink::length(slot), false, &id)) {
+      MayapUplink::markSent(slot, id, now);
+    } else {
+      if (linkFailed) return;   // the watchdog below drops the link; onLinkDown() fails the slots
+      MayapUplink::markFailed(slot);
+    }
+  }
 }
 
 inline bool linkAlive(uint32_t now) {
@@ -505,6 +542,7 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
     backoff.onFailure(now);
     return;
   }
+  pumpUplink(now);
   if (MayapRecovery::age(now, lastTxAt) >= static_cast<uint32_t>(KEEPALIVE_SEC) * 500UL)
     sendPacket(MayapMqttWire::encodePingreq(txMqtt(), PACKET_BUFFER));
   mayapRealtimeUpdate(millis());

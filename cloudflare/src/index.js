@@ -1,5 +1,5 @@
 import { findAlarmEvent, queueAlarmEvent, scheduleAlarmDelivery, maintainAlarmDeliveries } from './alarm-delivery.js';
-import { deriveDevicePassword } from './broker/acl.js';
+import { deriveDevicePassword, verifyUplink } from './broker/acl.js';
 import { hashDeviceKey, verifyDeviceKey, randomToken, isValidDeviceId } from './auth.js';
 import {
   getDeviceByDeviceId,
@@ -380,6 +380,42 @@ async function handleAlarmBatch(request, env, ctx) {
   }
   if (schedule) scheduleAlarmDelivery(env, ctx);
   return json(env, { success: true, results });
+}
+
+// -------------------------- Endpoint: alarm/heartbeat tu ESP32 qua MQTT (broker -> Worker) --------------------------
+// Only the MQTT broker calls this (service binding), signed with the shared device secret; the device itself was
+// authenticated by the broker with its per-device MQTT password. Reuses the exact alarm/heartbeat writes of the HTTPS
+// endpoints. `durable:true` is the only thing that makes the broker PUBACK the device.
+async function handleUplink(request, env, ctx) {
+  const bodyText = await request.text();
+  const secret = String(env.MQTT_DEVICE_SECRET || '');
+  if (bodyText.length > 4096 ||
+      !await verifyUplink(secret, request.headers.get('x-mayap-ts'), bodyText, request.headers.get('x-mayap-sig'))) {
+    return json(env, { success: false, error: 'UPLINK_AUTH' }, 401);
+  }
+  let message;
+  try { message = JSON.parse(bodyText); } catch { return json(env, { success: false, error: 'BAD_JSON' }, 400); }
+  const deviceId = String(message?.device_id || '').trim();
+  const data = message?.data;
+  if (!isValidDeviceId(deviceId) || !data || typeof data !== 'object') {
+    return json(env, { success: false, error: 'BAD_UPLINK' }, 400);
+  }
+  const device = await getDeviceByDeviceId(env.DB, deviceId);
+  if (!device) return json(env, { success: true, durable: false, error: 'device chua dang ky' });
+  if (message.kind === 'heartbeat') {
+    await touchDeviceHeartbeat(env.DB, deviceId, Date.now(), Boolean(data.batch_running));
+    return json(env, { success: true, durable: true });
+  }
+  if (message.kind === 'alarm') {
+    const fields = alarmFields(data);
+    if (!fields.alarmType || !fields.message || data.event_id === undefined) {
+      return json(env, { success: true, durable: false, status: 400, error: 'thieu event_id/alarm_type/message' });
+    }
+    const outcome = await recordAlarmEvent(env, device, deviceId, data, fields);
+    if (outcome.schedule) scheduleAlarmDelivery(env, ctx);
+    return json(env, { success: true, durable: outcome.payload.durable === true, status: outcome.status });
+  }
+  return json(env, { success: false, error: 'BAD_KIND' }, 400);
 }
 
 // -------------------------- Endpoint: dang ky / huy Push subscription --------------------------
@@ -794,6 +830,9 @@ export default {
       }
       if (url.pathname === '/api/device/alarms' && request.method === 'POST') {
         return await handleAlarmBatch(request, env, ctx);
+      }
+      if (url.pathname === '/api/internal/uplink' && request.method === 'POST') {
+        return await handleUplink(request, env, ctx);
       }
       if (['/api/device/verify-pin','/api/device/mqtt-session','/api/device/sign-mqtt','/api/device/session-check'].includes(url.pathname)) {
         return json(env, { success:false, error:'ACCOUNT_UPGRADE_REQUIRED' }, 410);

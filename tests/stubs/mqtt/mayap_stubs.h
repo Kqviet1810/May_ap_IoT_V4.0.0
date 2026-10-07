@@ -35,6 +35,7 @@ inline time_t fake_time(time_t *) { return static_cast<time_t>(g_epoch); }
 typedef uint32_t TickType_t;
 typedef int portMUX_TYPE;
 #define pdMS_TO_TICKS(x) (x)
+#define portMUX_INITIALIZER_UNLOCKED 0
 #define portENTER_CRITICAL(x) ((void)(x))
 #define portEXIT_CRITICAL(x) ((void)(x))
 #ifdef MAYAP_LIVE_SOCKET

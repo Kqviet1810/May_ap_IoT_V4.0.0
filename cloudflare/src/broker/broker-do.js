@@ -17,7 +17,7 @@ import {
   DEVICE_ID_RE, TOPIC_ROOT, Topics,
   RETAIN_FORBIDDEN, RETAIN_ALLOWED,
   parseTopic, canPublish, evaluateSubscribe, topicQosCap, requiredPublishQos,
-  makeCredentialResolver,
+  makeCredentialResolver, UPLINK_SUFFIXES, signUplink,
 } from './acl.js';
 
 // Contract §1 — client keepalive 30..120 s. Zero is explicitly forbidden
@@ -28,6 +28,8 @@ const KEEPALIVE_GRACE = 1.5;
 const ALARM_INTERVAL_MS = 15 * 1000;
 const INFLIGHT_LIMIT = 16;        // bounded QoS1 server→client ring
 const RETAINED_LIMIT = 32;        // bounded retained messages per DO
+const UPLINK_PENDING_MAX = 16;    // alarm/heartbeat ingests awaiting the Worker (bounded)
+const UPLINK_TIMEOUT_MS = 5000;   // the device waits for the PUBACK for a few seconds only
 
 const b64enc = (bytes) => {
   // atob/btoa in Workers handle binary strings.
@@ -393,6 +395,7 @@ export class MqttBrokerDO {
       att.violations = 0;
       try { ws.serializeAttachment(att); } catch {}
     }
+    if (UPLINK_SUFFIXES.has(parsed.suffix)) return this._handleUplink(ws, parsed.suffix, pkt);
     // QoS1 PUBACK to publisher before fanout — this is a transport ACK,
     // never an application ACK (see TRANSACTION_V2_SPEC.md).
     if (pkt.qos > 0) ws.send(encodePuback(pkt.packetId));
@@ -403,6 +406,49 @@ export class MqttBrokerDO {
     if (closedSlow && closedSlow.length > 0) {
       // Slow consumers were closed; no further work on this publish.
     }
+  }
+
+  // Device alarm / heartbeat: hand it to the main Worker (service binding CLOUD_INGEST) and PUBACK only
+  // after the Worker confirms a durable write. Anything else - no binding, bad JSON, Worker error, timeout,
+  // throttled/conflicting event - sends NO PUBACK, so the device keeps the event and retries (events are
+  // idempotent by event_id). Jobs run strictly in arrival order so an alarm and its recovery cannot swap.
+  async _handleUplink(ws, kind, pkt) {
+    const ingest = this.env && this.env.CLOUD_INGEST;
+    const secret = this.env && this.env.BROKER_DEVICE_SECRET;
+    if (!ingest || !secret || (this._uplinkPending || 0) >= UPLINK_PENDING_MAX) return;
+    let data;
+    try { data = JSON.parse(new TextDecoder().decode(pkt.payload)); } catch { return; }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+    const body = JSON.stringify({ device_id: this.deviceId, kind, data });
+    this._uplinkPending = (this._uplinkPending || 0) + 1;
+    const run = async () => {
+      let durable = false;
+      try {
+        const ts = Date.now();
+        const res = await ingest.fetch('https://ingest.internal/api/internal/uplink', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-mayap-ts': String(ts),
+            'x-mayap-sig': await signUplink(secret, ts, body),
+          },
+          body,
+          signal: AbortSignal.timeout(UPLINK_TIMEOUT_MS),
+        });
+        if (res.ok) {
+          const out = await res.json();
+          durable = Boolean(out && out.durable === true);
+        }
+      } catch (error) {
+        console.error('[uplink] ingest failed', kind, String((error && error.message) || error));
+      } finally {
+        this._uplinkPending -= 1;
+      }
+      if (durable && (ws.readyState === undefined || ws.readyState === 1)) ws.send(encodePuback(pkt.packetId));
+    };
+    const chained = (this._uplinkChain || Promise.resolve()).then(run, run);
+    this._uplinkChain = chained;
+    await chained;
   }
 
   async _fanoutPublish({ topic, qos, retain, payload, originWs }) {

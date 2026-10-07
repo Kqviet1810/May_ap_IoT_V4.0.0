@@ -10,6 +10,13 @@ compatibility_flags = ["nodejs_compat"]
 # Without them the broker fails closed (no client can authenticate).
 # `wrangler dev` takes them with --var (see tools/e2e/run_mvp.cjs).
 
+# Device alarms/heartbeats published over MQTT (topics alarm, heartbeat) are written by the main Worker:
+# the broker signs and forwards them through this service binding and PUBACKs only after a durable write.
+# Deploy the main Worker first (it must expose /api/internal/uplink).
+[[services]]
+binding = "CLOUD_INGEST"
+service = "mayap-push-worker"
+
 [[durable_objects.bindings]]
 name = "MQTT_BROKER"
 class_name = "MqttBrokerDO"

@@ -432,3 +432,87 @@ test('web role cannot subscribe to a non-device-scope topic', async () => {
   const [sub] = await harness.clientReceive(web.client);
   assert.deepEqual(wire.parseSuback(sub).codes, [0x80]);
 });
+
+// ---- Device uplink (alarm / heartbeat): PUBACK only after the main Worker confirms a durable write ----
+function ingestFixture(handler) {
+  const calls = [];
+  const env = { ...envFixture(), CLOUD_INGEST: { async fetch(url, init) {
+    calls.push({ url, init, body: JSON.parse(init.body) });
+    return handler(calls.length, init);
+  } } };
+  return { env, calls };
+}
+// The harness swaps the global Response for a 101-tolerant stub; the Worker's reply is a real one.
+const NativeResponse = globalThis.Response;   // captured at load, before the harness replaces it
+const reply = (body, status = 200) => new NativeResponse(body, { status });
+const durable = (value = true) => reply(JSON.stringify({ success: true, durable: value }));
+const alarmEvent = (id, extra = {}) => JSON.stringify({ event_id: id, alarm_type: 'FAULT_130', state: 'active', message: 'm', severity: 'critical', ...extra });
+
+test('uplink alarm: signed hand-off to the Worker, PUBACK after durable, never fanned out to Web', async () => {
+  const { env, calls } = ingestFixture(() => durable());
+  const b = await harness.makeBroker({ env });
+  const dev = await connectDevice(b.broker);
+  const web = await connectWeb(b.broker);
+  await harness.feed(b.broker, web.server, wire.subscribe({ packetId: 3, filters: [{ filter: `mayap/v1/${DEV}/#`, qos: 0 }] }));
+  await harness.clientReceive(web.client);
+  await harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/alarm`, qos: 1, packetId: 41, payload: alarmEvent('e-1') }));
+  const frames = await harness.clientReceive(dev.client);
+  assert.equal(wire.parsePuback(frames[0]).packetId, 41);
+  assert.equal(calls.length, 1);
+  const { body, init } = calls[0];
+  assert.deepEqual(body, { device_id: DEV, kind: 'alarm', data: JSON.parse(alarmEvent('e-1')) });
+  const ts = init.headers['x-mayap-ts'];
+  const expected = crypto.createHmac('sha256', DEV_SECRET).update(`mayap-uplink-ingest:v1\n${ts}\n${init.body}`).digest('hex');
+  assert.equal(init.headers['x-mayap-sig'], expected);
+  assert.deepEqual(await harness.clientReceive(web.client), []);        // nothing reaches subscribers
+});
+
+test('uplink: no PUBACK when the Worker says not durable, errors, times out, or is missing', async () => {
+  for (const handler of [() => durable(false), () => reply('boom', 500), () => { throw new Error('binding down'); }]) {
+    const { env } = ingestFixture(handler);
+    const b = await harness.makeBroker({ env });
+    const dev = await connectDevice(b.broker);
+    await harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/alarm`, qos: 1, packetId: 5, payload: alarmEvent('e-2') }));
+    assert.deepEqual(await harness.clientReceive(dev.client), []);
+    assert.equal(dev.server.closed, false);                                // the link stays up; the device just retries
+  }
+  const b = await harness.makeBroker({ env: envFixture() });               // no CLOUD_INGEST binding: fail closed
+  const dev = await connectDevice(b.broker);
+  await harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/heartbeat`, qos: 1, packetId: 6, payload: '{"batch_running":false}' }));
+  assert.deepEqual(await harness.clientReceive(dev.client), []);
+});
+
+test('uplink: malformed payload is dropped without PUBACK; ordering is preserved; web cannot publish or subscribe', async () => {
+  const order = [];
+  const { env } = ingestFixture(async (n, init) => {
+    const body = JSON.parse(init.body);
+    if (body.data.event_id === 'slow') await new Promise((resolve) => setTimeout(resolve, 30));
+    order.push(body.data.event_id);
+    return durable();
+  });
+  const b = await harness.makeBroker({ env });
+  const dev = await connectDevice(b.broker);
+  await harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/alarm`, qos: 1, packetId: 7, payload: 'not json' }));
+  assert.deepEqual(await harness.clientReceive(dev.client), []);
+  // Two publishes in flight at once: the second waits for the first (active before resolved).
+  await Promise.all([
+    harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/alarm`, qos: 1, packetId: 8, payload: alarmEvent('slow') })),
+    harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/alarm`, qos: 1, packetId: 9, payload: alarmEvent('fast', { state: 'resolved' }) })),
+  ]);
+  assert.deepEqual(order, ['slow', 'fast']);
+  assert.deepEqual((await harness.clientReceive(dev.client)).map((f) => wire.parsePuback(f).packetId), [8, 9]);
+  const web = await connectWeb(b.broker);
+  await harness.feed(b.broker, web.server, wire.subscribe({ packetId: 2, filters: [{ filter: `mayap/v1/${DEV}/alarm`, qos: 0 }] }));
+  assert.deepEqual(wire.parseSuback(await (async () => (await harness.clientReceive(web.client))[0])()).codes, [0x80]);
+  await harness.feed(b.broker, web.server, wire.publish({ topic: `mayap/v1/${DEV}/alarm`, qos: 1, packetId: 3, payload: alarmEvent('forged') }));
+  assert.equal(order.length, 2);                                           // the ACL stopped it before ingest
+});
+
+test('uplink: QoS0 or retained alarm publishes are protocol misuse and never reach the Worker', async () => {
+  const { env, calls } = ingestFixture(() => durable());
+  const b = await harness.makeBroker({ env });
+  const dev = await connectDevice(b.broker);
+  await harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/alarm`, qos: 0, payload: alarmEvent('q0') }));
+  await harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/heartbeat`, qos: 1, retain: true, packetId: 4, payload: '{}' }));
+  assert.equal(calls.length, 0);
+});

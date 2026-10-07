@@ -39,11 +39,25 @@ trong cùng kết nối → đóng kết nối. Publish hợp lệ reset bộ đ
 | `config/reported` | ESP32 → Web | **1** | false | 1 |
 | `reminders/reported` | ESP32 → Web | **1** | **true** | 1 |
 | `history/reported` | ESP32 → Web | **1** | false | 1 |
+| `alarm` | ESP32 → cloud ingest | **1** | false | — (không ai subscribe) |
+| `heartbeat` | ESP32 → cloud ingest | **1** | false | — (không ai subscribe) |
 | `command` | Web → ESP32 | **1** | false | 1 |
 | `config/set` | Web → ESP32 | **1** | false | 1 |
 | `reminders/set` | Web → ESP32 | **1** | false | 1 |
 | `history/request` | Web → ESP32 | **1** | false | 1 |
 | `session` | Web → ESP32 | **0** | false | **0** |
+
+- **Uplink `alarm` / `heartbeat` (ESP32 → Worker, không fanout).** Payload JSON một sự kiện
+  (`alarm`: `event_id`, `alarm_type`, `severity`, `state`, `message`, `temperature?`, `humidity?`,
+  `detected_uptime_ms` — cùng trường với `POST /api/device/alarms`; `heartbeat`: `batch_running`).
+  Broker không lưu/không phát cho subscriber; nó ký (`x-mayap-ts`, `x-mayap-sig` =
+  HMAC-SHA256 theo `MQTT_DEVICE_SECRET`) rồi chuyển cho Worker chính qua service binding
+  `CLOUD_INGEST` (`POST /api/internal/uplink`) và **chỉ PUBACK sau khi Worker xác nhận đã ghi bền**
+  (`durable:true`). Không PUBACK khi: payload sai JSON, Worker lỗi/timeout, sự kiện bị từ chối
+  (xung đột `event_id`, throttle cooldown), hoặc thiếu binding/secret — thiết bị giữ sự kiện và thử lại
+  (idempotent theo `event_id`; sau 1 lần thiếu PUBACK nó dùng HTTPS trong 60 s). Các job của cùng một
+  kết nối chạy tuần tự đúng thứ tự đến (alarm trước, recovery sau). Web không được publish/subscribe
+  hai topic này.
 
 - **LWT** của ESP32: topic `presence`, payload `{"online":false,...}`,
   QoS 1, retain `true`. Khi broker fire LWT, retained store phải được

@@ -4,6 +4,7 @@
 #include "mayap_stubs.h"
 #include <cassert>
 #include <cstdlib>
+#include <tuple>
 
 uint32_t g_millis = 100000U, g_epoch = 1800000000U;
 std::vector<std::string> g_log;
@@ -384,6 +385,74 @@ int main() {
   CHECK(logged("connect aborted"));
   g_yield = false; g_silentBroker = false; g_yieldAfterCalls = 0U;
   tick(BUSY_RETRY_MS + 1000U); CHECK(mayapMqttTransportConnected());
+
+  // 17. Uplink (alarms / heartbeat on mayap/v1/<id>/alarm|heartbeat): published QoS1 in FIFO order, a PUBACK means
+  //     stored, a missing PUBACK never drops the link (the broker withholds it when the Worker did not store
+  //     the event), and losing the socket fails whatever was queued or in flight.
+  {
+    using namespace MayapUplink;
+    auto clearSlots = [] { onLinkDown(); for (int8_t i = 0; i < static_cast<int8_t>(SLOTS); ++i) finish(i); };
+    auto publishes = [](size_t from) {
+      std::vector<std::pair<std::string, std::string>> out; std::vector<uint16_t> ids; std::vector<uint8_t> flags;
+      for (const Packet &p : decodeSent(from)) {
+        MayapMqttWire::PublishView v;
+        if (p.type != 3 || !MayapMqttWire::parsePublish(p.flags, p.body.data(), p.body.size(), v)) continue;
+        out.emplace_back(str(v.topic, v.topicLength), str(v.payload, v.payloadLength)); ids.push_back(v.packetId); flags.push_back(p.flags);
+      }
+      return std::make_tuple(out, ids, flags);
+    };
+    resetWorld(); clearSlots(); connectNow();
+    const std::string prefix = std::string("mayap/v1/") + MayapRealtimeInternal::deviceId + "/";
+    CHECK(available(g_millis));
+    const char *alarm1 = "{\"event_id\":\"e1\",\"alarm_type\":\"FAULT_130\",\"state\":\"active\"}";
+    const char *alarm2 = "{\"event_id\":\"e2\",\"alarm_type\":\"FAULT_130\",\"state\":\"resolved\"}";
+    const char *beat = "{\"batch_running\":true}";
+    const int8_t s1 = offer(Kind::Alarm, alarm1, strlen(alarm1), g_millis), s2 = offer(Kind::Alarm, alarm2, strlen(alarm2), g_millis),
+                 s3 = offer(Kind::Heartbeat, beat, strlen(beat), g_millis);
+    CHECK(s1 >= 0 && s2 >= 0 && s3 >= 0 && peek(s1) == State::Queued);
+    net.sent.clear(); const size_t before = net.sent.size();
+    inflightClear();                                                                   // presence PUBACK is not what this checks
+    tick(20);
+    auto sentOut = publishes(before);
+    const auto &topics = std::get<0>(sentOut); const auto &ids = std::get<1>(sentOut); const auto &flags = std::get<2>(sentOut);
+    CHECK(topics.size() == 3U);
+    CHECK(topics[0].first == prefix + "alarm" && topics[0].second == alarm1);          // oldest first: active before resolved
+    CHECK(topics[1].first == prefix + "alarm" && topics[1].second == alarm2);
+    CHECK(topics[2].first == prefix + "heartbeat" && topics[2].second == beat);
+    CHECK(flags[0] == 0x02 && flags[2] == 0x02);                                       // QoS1, DUP=0, retain=0
+    CHECK(peek(s1) == State::Sent && peek(s3) == State::Sent && inflightCount == 0U);   // uplink is not in the watchdog window
+    for (int i = 0; i < 25; ++i) tick(1000);                                           // 25 s without any PUBACK: link stays up
+    CHECK(mayapMqttTransportConnected() && net.open);
+    inject({0x40, 0x02, static_cast<uint8_t>(ids[0] >> 8U), static_cast<uint8_t>(ids[0])}); tick(1);
+    CHECK(peek(s1) == State::Acked && peek(s2) == State::Sent);
+    CHECK(finish(s1) == State::Acked && peek(s1) == State::Free);                      // collected
+    CHECK(finish(s2) == State::Sent && peek(s2) == State::Orphan);                     // Cloud gave up waiting
+    inject({0x40, 0x02, static_cast<uint8_t>(ids[1] >> 8U), static_cast<uint8_t>(ids[1])}); tick(1);
+    CHECK(peek(s2) == State::Free);                                                    // late PUBACK of an orphan frees it
+    // Bounded: four slots, an oversized payload is refused, the bridge itself can never publish uplink channels.
+    clearSlots(); onLinkUp();
+    for (uint8_t i = 0; i < SLOTS; ++i) CHECK(offer(Kind::Alarm, alarm1, strlen(alarm1), g_millis) >= 0);
+    CHECK(offer(Kind::Alarm, alarm1, strlen(alarm1), g_millis) == -1);
+    clearSlots(); onLinkUp();
+    CHECK(offer(Kind::Alarm, std::string(PAYLOAD_MAX, 'x').c_str(), PAYLOAD_MAX, g_millis) == -1);
+    CHECK(!publishFromBridge("alarm", alarm1, strlen(alarm1)) && !publishFromBridge("heartbeat", beat, strlen(beat)));
+    // A dead socket fails queued and in-flight slots at once and uplink becomes unavailable (Cloud falls back to HTTPS).
+    resetWorld(); clearSlots(); connectNow();
+    const int8_t q1 = offer(Kind::Alarm, alarm1, strlen(alarm1), g_millis); tick(20);
+    const int8_t q2 = offer(Kind::Alarm, alarm2, strlen(alarm2), g_millis);
+    CHECK(peek(q1) == State::Sent && peek(q2) == State::Queued);
+    g_networkStatus.connected = false; tick(1);
+    CHECK(!available(g_millis) && peek(q1) == State::Failed && peek(q2) == State::Failed);
+    CHECK(finish(q1) == State::Failed && finish(q2) == State::Failed);
+    CHECK(offer(Kind::Alarm, alarm1, strlen(alarm1), g_millis) == -1);                 // no link: nothing can be queued
+    // After a missed PUBACK the Cloud task marks the uplink suspect and uses HTTPS for a while.
+    resetWorld(); clearSlots(); connectNow();
+    suspect(g_millis); CHECK(!available(g_millis) && !available(g_millis + SUSPECT_MS - 1U) && available(g_millis + SUSPECT_MS + 1U));
+    // A slot nobody collects cannot live forever.
+    const int8_t old = offer(Kind::Alarm, alarm1, strlen(alarm1), g_millis); tick(20); CHECK(peek(old) == State::Sent);
+    expire(g_millis + SLOT_MAX_AGE_MS + 1U); CHECK(peek(old) == State::Failed);
+    clearSlots();
+  }
 
   printf("mqtt transport host tests PASS\n");
   return 0;

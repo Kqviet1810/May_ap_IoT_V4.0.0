@@ -168,3 +168,37 @@ test('batch endpoint: bad key, empty, oversized and malformed events',async()=>{
  assert.deepEqual(body.results.map(r=>[r.durable,r.status]),[[false,400],[false,400],[true,200]]);
  assert.equal(h.sql.prepare('SELECT COUNT(*) n FROM alarm_events').get().n,1);
 });
+
+test('MQTT uplink ingest: signed broker calls write alarms/heartbeats exactly like the HTTPS endpoints',async()=>{
+ const crypto=require('node:crypto'),h=await setup(),original=global.fetch;global.fetch=async()=>new Response('',{status:201});
+ h.env.MQTT_DEVICE_SECRET='uplink-secret';
+ const call=async(message,{secret='uplink-secret',ts=Date.now(),tamper=false}={})=>{
+  const body=JSON.stringify(message);
+  const sig=crypto.createHmac('sha256',secret).update(`mayap-uplink-ingest:v1\n${ts}\n${tamper?body+' ':body}`).digest('hex');
+  const worker=(await import('../cloudflare/src/index.js')).default;
+  return worker.fetch(new Request('https://worker.test/api/internal/uplink',{method:'POST',headers:{'x-mayap-ts':String(ts),'x-mayap-sig':sig},body}),h.env,{waitUntil(p){h.jobs.push(p);}});
+ };
+ const event=(id,extra={})=>({device_id:h.deviceId,kind:'alarm',data:{event_id:id,alarm_type:'FAULT_130',state:'active',message:'off',severity:'critical',...extra}});
+ try{
+  const first=await (await call(event('u-1'))).json();assert.deepEqual([first.success,first.durable,first.status],[true,true,200]);
+  assert.equal(h.sql.prepare('SELECT COUNT(*) n FROM alarm_events').get().n,1);
+  const again=await (await call(event('u-1'))).json();assert.equal(again.durable,true);       // response-loss resend
+  assert.equal(h.sql.prepare('SELECT COUNT(*) n FROM alarm_events').get().n,1);
+  const conflict=await (await call(event('u-1',{message:'different'}))).json();assert.equal(conflict.durable,false);
+  assert.equal((await call(event('u-2',{state:'active'}))).status,200);                       // cooldown: unchanged state is not durable
+  const throttled=await (await call(event('u-3'))).json();assert.equal(throttled.durable,false);
+  const bad=await (await call({device_id:h.deviceId,kind:'alarm',data:{event_id:'u-4',alarm_type:'X'}})).json();assert.equal(bad.durable,false);
+  const hb=await (await call({device_id:h.deviceId,kind:'heartbeat',data:{batch_running:true}})).json();assert.equal(hb.durable,true);
+  const row=h.sql.prepare('SELECT last_seen,batch_running,status FROM devices WHERE device_id=?').get(h.deviceId);
+  assert.equal(row.batch_running,1);assert.equal(row.status,'online');assert.ok(row.last_seen>0);
+  const unknown=await (await call({device_id:'MAP-AAAAAAAAAAAA',kind:'heartbeat',data:{}})).json();assert.equal(unknown.durable,false);
+  // Authentication: wrong secret, tampered body, stale or missing timestamp, unknown kind.
+  assert.equal((await call(event('u-5'),{secret:'other'})).status,401);
+  assert.equal((await call(event('u-5'),{tamper:true})).status,401);
+  assert.equal((await call(event('u-5'),{ts:Date.now()-10*60*1000})).status,401);
+  assert.equal((await call({device_id:h.deviceId,kind:'nope',data:{}})).status,400);
+  h.env.MQTT_DEVICE_SECRET='';
+  assert.equal((await call(event('u-6'))).status,401);                                       // fails closed without the secret
+  await Promise.all(h.jobs);
+ }finally{global.fetch=original;}
+});

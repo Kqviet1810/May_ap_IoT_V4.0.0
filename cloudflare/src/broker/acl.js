@@ -19,6 +19,10 @@ export const Topics = Object.freeze({
   remindersSet: 'reminders/set',
   historyRequest: 'history/request',
   session: 'session',
+  // Device -> cloud ingest (alarms, heartbeat). Not fanned out: the broker hands them to the main Worker
+  // and PUBACKs only once the Worker confirms a durable write.
+  alarm: 'alarm',
+  heartbeat: 'heartbeat',
 });
 
 // Suffix lists keyed by role, enforced AFTER verifying the leading
@@ -29,6 +33,7 @@ export const Topics = Object.freeze({
 const DEVICE_PUB = new Set([
   Topics.presence, Topics.snapshot, Topics.ack, Topics.log,
   Topics.configReported, Topics.remindersReported, Topics.historyReported,
+  Topics.alarm, Topics.heartbeat,
 ]);
 
 const DEVICE_SUB = new Set([
@@ -52,7 +57,11 @@ export const RETAIN_FORBIDDEN = new Set([
   Topics.command, Topics.configSet, Topics.remindersSet,
   Topics.historyRequest, Topics.snapshot, Topics.ack, Topics.log,
   Topics.historyReported, Topics.configReported, Topics.session,
+  Topics.alarm, Topics.heartbeat,
 ]);
+
+// Suffixes handled by the ingest path instead of subscriber fanout.
+export const UPLINK_SUFFIXES = new Set([Topics.alarm, Topics.heartbeat]);
 
 // Topics that the contract explicitly allows to be retained.
 export const RETAIN_ALLOWED = new Set([Topics.presence, Topics.remindersReported]);
@@ -80,6 +89,8 @@ const PUB_QOS_REQUIREMENT = Object.freeze({
   [Topics.remindersSet]: 1,
   [Topics.historyRequest]: 1,
   [Topics.session]: 0,
+  [Topics.alarm]: 1,
+  [Topics.heartbeat]: 1,
 });
 
 export function requiredPublishQos(suffix) {
@@ -150,6 +161,25 @@ export async function verifyWebToken(secret, deviceId, username, token, nowMs = 
   if (expiresAt < nowSec || expiresAt > nowSec + WEB_TOKEN_MAX_TTL_SEC) return false;
   return crypto.subtle.verify('HMAC', await hmacKey(secret, ['verify']), hexToBytes(match[2]),
     textEncoder.encode(`mayap-mqtt-web:v1\n${deviceId}\n${username}\n${expiresAt}`));
+}
+
+// Broker -> main Worker ingest authentication (service binding, but the route is also reachable from the
+// internet, so every request is signed). Both Workers already hold MQTT_DEVICE_SECRET /
+// BROKER_DEVICE_SECRET (the same value), so no new secret is needed:
+//   sig = hex HMAC-SHA256(secret, 'mayap-uplink-ingest:v1\n<tsMs>\n<body>')
+// Replays are harmless (events are idempotent by event_id) but the timestamp bounds them anyway.
+export const UPLINK_MAX_SKEW_MS = 5 * 60 * 1000;
+export async function signUplink(secret, tsMs, body) {
+  const mac = await crypto.subtle.sign('HMAC', await hmacKey(secret, ['sign']),
+    textEncoder.encode(`mayap-uplink-ingest:v1\n${tsMs}\n${body}`));
+  return bytesToHex(new Uint8Array(mac));
+}
+export async function verifyUplink(secret, tsHeader, body, sigHex, nowMs = Date.now()) {
+  const ts = Number(tsHeader);
+  if (!secret || !Number.isFinite(ts) || Math.abs(nowMs - ts) > UPLINK_MAX_SKEW_MS) return false;
+  if (!/^[0-9a-f]{64}$/.test(String(sigHex || ''))) return false;
+  return crypto.subtle.verify('HMAC', await hmacKey(secret, ['verify']), hexToBytes(sigHex),
+    textEncoder.encode(`mayap-uplink-ingest:v1\n${ts}\n${body}`));
 }
 
 export async function deriveDevicePassword(secret, deviceId) {

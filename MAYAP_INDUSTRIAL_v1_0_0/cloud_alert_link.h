@@ -7,6 +7,7 @@
 #include "cloud_fault_events.h"
 #include "cloud_alarm_receipt.h"
 #include "light_alarm_policy.h"
+#include "mqtt_uplink.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -706,6 +707,27 @@ inline bool sendResetPin() {
   return true;
 }
 
+// Waits (bounded) for the MQTT task to publish the offered slots and for the broker's PUBACK, which the
+// broker only sends once the Worker stored the event. Returns a bitmask (bit k = slots[k]) of the durable ones.
+// Slots that did not finish are cancelled/orphaned, never left behind.
+inline uint8_t awaitUplink(const int8_t *slots, uint8_t count) {
+  const uint32_t startedAt = millis();
+  for (;;) {
+    bool pending = false;
+    for (uint8_t k = 0U; k < count; ++k) {
+      const MayapUplink::State state = MayapUplink::peek(slots[k]);
+      if (state == MayapUplink::State::Queued || state == MayapUplink::State::Sent) pending = true;
+    }
+    if (!pending || !MayapUplink::linkUp() || elapsedMs(millis(), startedAt) >= MayapUplink::ACK_WAIT_MS) break;
+    mayapServiceBeat(MayapRecovery::Service::Cloud);
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+  uint8_t durable = 0U;
+  for (uint8_t k = 0U; k < count; ++k)
+    if (MayapUplink::finish(slots[k]) == MayapUplink::State::Acked) durable |= static_cast<uint8_t>(1U << k);
+  return durable;
+}
+
 inline bool sendHeartbeat() {
   JsonDocument doc;
   doc["device_id"] = mayapDeviceIdText();
@@ -715,6 +737,23 @@ inline bool sendHeartbeat() {
   // trong cloudflare/src/index.js). processingRuntime duoc lam moi moi chu ky
   // kiem tra (CLOUD_CHECK_INTERVAL_MS), du moi cho heartbeat moi 30s.
   doc["batch_running"] = processingRuntime.batchRunning;
+  // The MQTT link is already open: let it carry the heartbeat (no second TLS session, so realtime never has
+  // to yield for it). Fall back to HTTPS when it is down, missing the PUBACK, or the Worker is not updated.
+  if (MayapUplink::available(millis())) {
+    char json[48];
+    snprintf(json, sizeof(json), "{\"batch_running\":%s}", processingRuntime.batchRunning ? "true" : "false");
+    const int8_t slot = MayapUplink::offer(MayapUplink::Kind::Heartbeat, json, strlen(json), millis());
+    if (slot >= 0) {
+      if (awaitUplink(&slot, 1U)) {
+        requestDeferred = false;
+        mayapSerialPrintf(false, "[CLOUD] heartbeat -> MQTT durable\n");
+        return true;
+      }
+      MayapUplink::suspect(millis());
+      mayapSerialPrintf(false, "[CLOUD] heartbeat: no MQTT PUBACK, using HTTPS for %lus\n",
+          static_cast<unsigned long>(MayapUplink::SUSPECT_MS / 1000UL));
+    }
+  }
   return postJson("/api/device/heartbeat", doc, "heartbeat");
 }
 
@@ -748,12 +787,61 @@ inline bool sendAlarm(OutboxItem &item) {
   return accepted;
 }
 
+// Alarms over the open MQTT link: one PUBLISH per event, same fields and event_id as the HTTPS batch (the Worker
+// applies identical idempotency/cooldown rules). Offers as many as fit the mailbox; returns the durable mask and
+// sets *sentMask like sendAlarms(). Nothing offered -> *sentMask stays 0 and the caller uses HTTPS.
+inline uint8_t sendAlarmsUplink(const uint8_t *idx, uint8_t count, uint8_t *sentMask) {
+  int8_t slots[MayapUplink::SLOTS];
+  char ids[MayapUplink::SLOTS][40];
+  uint8_t offered = 0U;
+  for (uint8_t k = 0U; k < count && offered < MayapUplink::SLOTS; ++k) {
+    const OutboxItem &item = outboxAt(idx[k]);
+    JsonDocument event;
+    alarmEventId(item, ids[offered]);
+    event["event_id"] = ids[offered];
+    event["alarm_type"] = item.alarmType;
+    event["severity"] = severityText(item.severity);
+    event["state"] = item.resolved ? "resolved" : "active";
+    event["message"] = item.message;
+    if (item.hasReadings) {
+      event["temperature"] = item.temperature;
+      event["humidity"] = item.humidity;
+    }
+    event["detected_uptime_ms"] = item.detectedAt;
+    char json[MayapUplink::PAYLOAD_MAX];
+    const size_t length = serializeJson(event, json, sizeof(json));
+    if (event.overflowed() || length == 0U || length >= sizeof(json)) break;
+    slots[offered] = MayapUplink::offer(MayapUplink::Kind::Alarm, json, length, millis());
+    if (slots[offered] < 0) break;                                        // mailbox full / link just went down
+    ++offered;
+  }
+  if (offered == 0U) return 0U;
+  requestDeferred = false;                                                // an attempt was made: failures back off
+  for (uint8_t k = 0U; k < offered; ++k) outboxAt(idx[k]).attempted = true;
+  *sentMask = static_cast<uint8_t>((1U << offered) - 1U);
+  const uint8_t durable = awaitUplink(slots, offered);
+  for (uint8_t k = 0U; k < offered; ++k)
+    mayapSerialPrintf(false, "[CLOUD] event=%s age=%lums durable_ack=%u via=mqtt batch=%u\n", ids[k],
+        static_cast<unsigned long>(elapsedMs(millis(), outboxAt(idx[k]).detectedAt)),
+        (durable >> k) & 1U ? 1U : 0U, static_cast<unsigned>(offered));
+  if (durable == 0U) {
+    MayapUplink::suspect(millis());
+    mayapSerialPrintf(false, "[CLOUD] no MQTT PUBACK for %u alarm(s): HTTPS for %lus\n", static_cast<unsigned>(offered),
+        static_cast<unsigned long>(MayapUplink::SUSPECT_MS / 1000UL));
+  }
+  return durable;
+}
+
 // Sends the events at queue positions idx[0..count) and returns a bitmask (bit k = idx[k]) of the ones the
 // Worker made durable; *sentMask marks those that were part of the request. One event (or an older Worker
 // without the batch endpoint) uses the original single-event endpoint.
 inline uint8_t sendAlarms(const uint8_t *idx, uint8_t count, uint8_t *sentMask) {
   *sentMask = 0U;
   if (count == 0U) return 0U;
+  if (MayapUplink::available(millis())) {
+    const uint8_t durable = sendAlarmsUplink(idx, count, sentMask);
+    if (*sentMask != 0U) return durable;
+  }
   JsonDocument doc;
   doc["device_id"] = mayapDeviceIdText();
   doc["device_key"] = mayapDeviceSecret();
