@@ -108,8 +108,8 @@ manual, heater off, safety cut, power loss, door, rollover, vent): High = Emerge
 cases have V1 tail MAE 0.33–0.49 °C (invalid samples, heater off, safety cut), still no worse than baseline.
 A reboot restores at most the capped seed (confidence 28 in the reboot cases).
 
-Cost: `AdaptiveV1` is 3040 B of RAM (learner 2904 B, profile 60 B, planner ~80 B), no dynamic allocation.
-Host worst-case learner sample is ~0.14 ms (x86 -O2); the on-target figure has not been measured.
+Cost: `AdaptiveV1` is 1688 B of RAM (learner 1552 B, profile 60 B, planner ~80 B), no dynamic allocation.
+History is 6 B/sample (interval, 0.005 °C PV, on-time) in a 176-sample ring (352 s; a ring of 160 breaks learning, 176 and 250 give identical results). CI build (DEV profile) with the compaction: Flash 1,458,309 / 1,460,000 B, static RAM 163,192 / 164,000 B (the first V1 build was 1,458,925 / 164,600, i.e. over the RAM budget). Headroom is only 1,691 B Flash and 808 B RAM: heap, stack high-water and largest free block are not measured, and the host worst-case learner sample (~0.14 ms, x86) is not an on-target figure.
 
 ## 6. Limitations (read before trusting it)
 
