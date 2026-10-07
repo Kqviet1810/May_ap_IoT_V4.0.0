@@ -235,26 +235,39 @@ jobs:
             --verbose \
             MAYAP_INDUSTRIAL_v1_0_0 2>&1 | tee /tmp/mayap-compile.log
 
-      - name: Report OTA feature state and linked OTA members (size attribution)
+      - name: Measure feature-complete firmware size (OTA linked in every event type)
         shell: bash
         run: |
-          set -uo pipefail
-          MAP=$(ls build/*.map | head -n 1)
-          if grep -q '^#define MAYAP_OTA_PASSWORD ""' MAYAP_INDUSTRIAL_v1_0_0/build_public.h; then
-            echo "OTA password: EMPTY -> mayapOtaEnabled()==false"
+          set -euo pipefail
+          # The release/dispatch artifact follows the MAYAP_OTA_PASSWORD secret: with an empty
+          # secret mayapOtaEnabled() is false and the linker drops ArduinoOTA/ESPmDNS (~18.5 kB Flash,
+          # ~1.8 kB RAM). The size gate must measure the feature-complete image, so when the artifact
+          # build has OTA off, build a separate measurement image (not published) with OTA on.
+          HDR=MAYAP_INDUSTRIAL_v1_0_0/build_public.h
+          NM=$(find "$HOME/.arduino15/packages/esp32/tools" -type f -name 'xtensa-esp32s3-elf-nm' -print -quit)
+          test -n "$NM"
+          ARTIFACT_ELF=$(ls build/*.elf | head -n 1)
+          echo "OTA symbols (ArduinoOTAClass) in the ${MAYAP_BUILD_PROFILE} artifact ELF: $("$NM" -C "$ARTIFACT_ELF" | grep -c 'ArduinoOTAClass::' || true)"
+          if grep -q '^#define MAYAP_OTA_PASSWORD ""' "$HDR"; then
+            echo "::warning::MAYAP_OTA_PASSWORD is empty for this ${GITHUB_EVENT_NAME} build: the ${MAYAP_BUILD_PROFILE} artifact has OTA DISABLED. Set the repository secret."
+            cp "$HDR" /tmp/build_public.h.orig
+            sed -i 's|^#define MAYAP_OTA_PASSWORD ""|#define MAYAP_OTA_PASSWORD "__ci_ota_password__"|' "$HDR"
+            arduino-cli compile \
+              --fqbn "${{ env.MAYAP_FQBN }}" \
+              --build-property "compiler.cpp.extra_flags=${MAYAP_CPP_FLAGS} -DMAYAP_BUILD_REVISION=${GITHUB_SHA:0:12}" \
+              --output-dir ./build-size \
+              --verbose \
+              MAYAP_INDUSTRIAL_v1_0_0 2>&1 | tee /tmp/mayap-size.log
+            cp /tmp/build_public.h.orig "$HDR"
+            MEASURED_ELF=$(ls build-size/*.elf | head -n 1)
           else
-            LEN=$(sed -n 's/^#define MAYAP_OTA_PASSWORD "\(.*\)"$/\1/p' MAYAP_INDUSTRIAL_v1_0_0/build_public.h | tr -d '\n' | wc -c)
-            echo "OTA password: SET (length ${LEN}) -> mayapOtaEnabled()==true"
+            cp /tmp/mayap-compile.log /tmp/mayap-size.log
+            MEASURED_ELF="$ARTIFACT_ELF"
           fi
-          echo "profile=${MAYAP_BUILD_PROFILE} event=${GITHUB_EVENT_NAME}"
-          for lib in ArduinoOTA ESPmDNS Update WiFiUdp mdns; do
-            echo "linked archive members from ${lib}: $(grep -cE "(lib${lib}\.a|/${lib}/).*\.o" "$MAP" || true)"
-          done
-          grep -E "ArduinoOTA|ESPmDNS|libUpdate|Update\.cpp|mdns" "$MAP" | grep -E "\.o\)?$" | sort -u | head -n 30
-          SIZE=$(find "$HOME/.arduino15/packages/esp32/tools" -type f -name 'xtensa-esp32s3-elf-size' -print -quit)
-          ELF=$(ls build/*.elf | head -n 1)
-          [ -n "$SIZE" ] && "$SIZE" -A "$ELF" | grep -E "^\.(flash|iram0|dram0)\.[a-z_]+|Total"
-          echo "compile summary: $(grep -E 'Sketch uses|Global variables use' /tmp/mayap-compile.log | tr '\n' ' ')"
+          OTA_SYMS=$("$NM" -C "$MEASURED_ELF" | grep -c 'ArduinoOTAClass::' || true)
+          echo "OTA symbols in the measured (gated) ELF: ${OTA_SYMS}"
+          test "$OTA_SYMS" -gt 0 || { echo "::error::the size gate would measure a firmware without OTA"; exit 1; }
+          echo "measured: $(grep -E 'Sketch uses|Global variables use' /tmp/mayap-size.log | tr '\n' ' ')"
 
       - name: Verify MQTT/TLS owner is native (no esp-mqtt, no extra task, no linker hack)
         shell: bash
@@ -282,14 +295,16 @@ jobs:
           # Phase 1 (no transport) measured Flash=1359805 / static RAM=142184.
           # esp-mqtt/WSS build (previous architecture): Flash=1423729 / static RAM=159640.
           # Native MQTT/TLS owner (current): Flash=1382217 / static RAM=160816 before the buffer trim.
+          # Feature-complete image (ArduinoOTA linked), PR/PILOT/PROD alike: Flash=1400721 / static RAM=161712.
+          # (The artifact built without the OTA secret is 1382213 / 159872 only because OTA is linked out.)
           # Ceilings = measured + ~1.3% Flash / ~0.8% RAM; lower them after the stack
           # high-water mark is measured on hardware.
-          FLASH=$(sed -n 's/.*Sketch uses \([0-9][0-9]*\) bytes.*/\1/p' /tmp/mayap-compile.log | tail -n 1)
-          STATIC_RAM=$(sed -n 's/.*Global variables use \([0-9][0-9]*\) bytes.*/\1/p' /tmp/mayap-compile.log | tail -n 1)
+          FLASH=$(sed -n 's/.*Sketch uses \([0-9][0-9]*\) bytes.*/\1/p' /tmp/mayap-size.log | tail -n 1)
+          STATIC_RAM=$(sed -n 's/.*Global variables use \([0-9][0-9]*\) bytes.*/\1/p' /tmp/mayap-size.log | tail -n 1)
           test -n "$FLASH" || { echo "::error::Cannot read ESP32 Flash size"; exit 1; }
           test -n "$STATIC_RAM" || { echo "::error::Cannot read ESP32 static RAM size"; exit 1; }
-          echo "V4 network phase: Flash=${FLASH}/1400000 bytes; static RAM=${STATIC_RAM}/162000 bytes"
-          test "$FLASH" -le 1400000 || { echo "::error::ESP32 Flash exceeds V4 budget: ${FLASH} > 1400000"; exit 1; }
+          echo "V4 network phase: Flash=${FLASH}/1410000 bytes; static RAM=${STATIC_RAM}/162000 bytes"
+          test "$FLASH" -le 1410000 || { echo "::error::ESP32 Flash exceeds V4 budget: ${FLASH} > 1410000"; exit 1; }
           test "$STATIC_RAM" -le 162000 || { echo "::error::ESP32 static RAM exceeds V4 budget: ${STATIC_RAM} > 162000"; exit 1; }
 
       - name: Verify linked GPIO ISR cache safety

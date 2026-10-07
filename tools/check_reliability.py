@@ -85,7 +85,7 @@ if "PubSubClient" in build_workflow or "MAYAP_MQTT_" in build_workflow:
     raise SystemExit("FAIL: obsolete production broker dependency")
 require(build_workflow, "github.event_name == 'workflow_dispatch'", "manual test artifact gate")
 require(build_workflow, "firmware-test-${{ github.sha }}", "test artifact tied to commit SHA")
-require(build_workflow, 'test "$FLASH" -le 1400000', "V4 Flash budget")
+require(build_workflow, 'test "$FLASH" -le 1410000', "V4 Flash budget")
 require(build_workflow, 'test "$STATIC_RAM" -le 162000', "V4 network-phase static RAM budget")
 require(ino, '"[HEAP] free=%lu min=%lu largest=%lu', "DEV/PILOT heap diagnostics")
 require(ino, "heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)", "largest allocatable heap diagnostic")
