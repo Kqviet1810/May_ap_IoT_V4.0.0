@@ -4,6 +4,7 @@
 #include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_control.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_adaptive_v1.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_profile.h"
+#include <chrono>
 #include <cstring>
 #include <vector>
 
@@ -31,6 +32,7 @@ struct Rig {
   double sp = 40, integ = 0;
   ThermalLearner L;
   ThermalLearner *Lp = &L;     // learner under test (may be an AdaptiveV1's own)
+  double worstSampleUs = 0, totSampleUs = 0; unsigned nSamples = 0;  // host cost of one learner sample
   double khTrue() const { return 16000.0 * eff / cap; }
 
   void run() {
@@ -72,7 +74,10 @@ struct Rig {
         if (badEvery && (k / 20) % badEvery == 5) in.pv = NAN;
         if (badEvery && (k / 20) % badEvery == 6) in.pv = INFINITY;
         Hints h;
+        const std::chrono::high_resolution_clock::time_point t0 = std::chrono::high_resolution_clock::now();
         L.sample(now, in, h);
+        const double us = std::chrono::duration<double, std::micro>(std::chrono::high_resolution_clock::now() - t0).count();
+        worstSampleUs = std::max(worstSampleUs, us); totSampleUs += us; ++nSamples;
       }
     }
   }
