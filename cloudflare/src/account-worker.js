@@ -7,7 +7,7 @@ import { hash, json, session,
 
 const idRe = /^MAP-[A-F0-9]{12}$/;
 const physical = new Set(['/api/device/register','/api/device/heartbeat','/api/device/reset-pin',
-  '/api/device/rotate-key','/api/device/alarm','/api/firmware/check']);
+  '/api/device/rotate-key','/api/device/alarm','/api/device/alarms','/api/firmware/check']);
 const deny = (status=403) => json({ success:false, error:status===401?'ACCOUNT_LOGIN_REQUIRED':'ACCESS_DENIED' },status);
 
 const CLOUD_NOTE_LIMIT = 200, CLOUD_REMINDER_LIMIT = 32;

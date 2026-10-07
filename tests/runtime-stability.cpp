@@ -50,7 +50,7 @@ struct HTTPClient {
   }
 };
 #include "actual-bounded_http.inc"
-struct BackoffTimer {void reset(uint32_t){}};
+struct BackoffTimer {void reset(uint32_t){}bool ready(uint32_t){return true;}};
 constexpr uint8_t CLOUD_OUTBOX_SIZE=16;
 namespace MayapCloudInternal {
 enum class NotifyLevel : uint8_t { Info, Warning, Critical, System };

@@ -37,7 +37,14 @@ NetworkStatus mayapGetRawNetworkStatus(){return net;}
 NetworkStatus mayapGetNetworkStatus(){return net;}
 std::vector<std::string> sent;
 bool deferred=false,success=true;
-bool sendAlarm(OutboxItem &item){requestDeferred=deferred;if(!deferred){item.attempted=true;sent.push_back(item.alarmType);}return !deferred&&success;}
+unsigned acceptOnlyMask=0xFF,requests=0;std::vector<std::string> batchSizes;
+// Stands in for the HTTPS call: one request carries idx[0..count); the Worker makes `acceptOnlyMask` durable.
+uint8_t sendAlarms(const uint8_t*idx,uint8_t count,uint8_t*sentMask){
+ *sentMask=0;requestDeferred=deferred;if(deferred)return 0;
+ ++requests;batchSizes.push_back(std::to_string(count));uint8_t accepted=0;
+ for(uint8_t k=0;k<count;++k){OutboxItem&it=outboxAt(idx[k]);it.attempted=true;sent.push_back(it.alarmType);*sentMask|=1U<<k;
+  if(success&&((acceptOnlyMask>>k)&1U))accepted|=1U<<k;}
+ return accepted;}
 #include "actual-cloud-drain.inc"
 }
 int main(){
@@ -47,6 +54,11 @@ int main(){
  assert(!mayapDurableAlarmReceipt("{\"success\":true,\"durable\":true,\"event_id\":\"other\"}","id"));
  assert(!mayapDurableAlarmReceipt("bad-json","id"));
  assert(mayapDurableAlarmReceipt("{\"success\":true,\"durable\":true,\"event_id\":\"id\"}","id"));
+ {char ids[3][40]={"a-1","a-2","a-3"};
+  assert(mayapDurableAlarmBatchReceipt("{\"success\":true,\"results\":[{\"event_id\":\"a-1\",\"durable\":true},{\"event_id\":\"a-2\",\"durable\":false,\"status\":429},{\"event_id\":\"a-3\",\"durable\":true,\"duplicate\":true}]}",ids,3)==0b101);
+  assert(mayapDurableAlarmBatchReceipt("{\"success\":false}",ids,3)==0&&mayapDurableAlarmBatchReceipt("garbage",ids,3)==0);
+  assert(mayapDurableAlarmBatchReceipt("{\"success\":true,\"results\":[{\"event_id\":\"other\",\"durable\":true}]}",ids,3)==0);
+  assert(mayapDurableAlarmBatchReceipt("{\"success\":true}",ids,3)==0);}
  // A full routine queue must not mark a batch/power notification as sent.
  for(unsigned n=0;n<12;++n){char id[24];snprintf(id,sizeof(id),"INFO_%u",n);assert(enqueueRaw(id,NotifyLevel::Info,false,"info",false,0,0));}
  checkTransitions(clockMs);processingRuntime.batchRunning=true;checkTransitions(clockMs);
@@ -61,8 +73,8 @@ int main(){
  checkFaults(9000);assert(outboxCount==2&&!outbox[0].resolved&&outbox[1].resolved);
  assert(outbox[0].detectedAt==1000&&outbox[1].detectedAt==1055);
  deferred=true;drainOutbox(clockMs);assert(outboxCount==2&&lastSendAt==0);
- deferred=false;drainOutbox(clockMs);assert(outboxCount==1);
- drainOutbox(clockMs);assert(outboxCount==0); // critical bypasses routine 3s gap
+ deferred=false;drainOutbox(clockMs);assert(outboxCount==0&&sent.size()==2); // active+resolved in ONE request, critical bypasses the routine 3s gap
+ assert(requests==1&&sent[0]=="FAULT_101"&&sent[1]=="FAULT_101");
  // More than twelve simultaneous faults are all visible to Cloud.
  for(uint16_t c=200;c<220;++c)mayapCloudRecordFault(c,2,true,clockMs);
  checkFaults(clockMs);assert(outboxCount==16&&MayapCloudFaultEvents::count==4);
@@ -73,8 +85,10 @@ int main(){
  enqueueRaw("INFO",NotifyLevel::Info,false,"info",false,0,0);
  enqueueRaw("FAULT_130",NotifyLevel::Critical,false,"off",false,0,0);
  enqueueRaw("FAULT_130",NotifyLevel::Critical,true,"on",false,0,0);
- drainOutbox(clockMs);assert(sent.back()=="FAULT_130"&&outboxCount==2);
- assert(outbox[1].resolved);drainOutbox(clockMs);assert(outboxCount==1);
+ {const size_t before=sent.size();
+  drainOutbox(clockMs); // critical FAULT_130 is not delayed by routine INFO; its recovery follows it in the same request
+  assert(outboxCount==0&&sent.size()==before+3);
+  assert(sent[before]=="INFO"&&sent[before+1]=="FAULT_130"&&sent[before+2]=="FAULT_130");}
  // Per-event retry: a failed event cannot stall a fresh critical alarm.
  outboxHead=outboxTail=outboxCount=0;
  enqueueRaw("OLD_CRITICAL",NotifyLevel::Critical,false,"old",false,0,0);
@@ -107,6 +121,29 @@ int main(){
  assert(count==CAPACITY&&overflow==16);
  Event edge;while(peek(edge))consume(edge);
  assert(!states[0].event.active&&!states[0].resync);
+ // Batching: ten unrelated events leave in two requests (6 + 4), oldest first.
+ outboxHead=outboxTail=outboxCount=0;sent.clear();requests=0;batchSizes.clear();clockMs+=100000;
+ for(unsigned n=0;n<10;++n){char id[24];snprintf(id,sizeof(id),"B_%u",n);assert(enqueueRaw(id,NotifyLevel::Info,false,"b",false,0,0));}
+ drainOutbox(clockMs);assert(requests==1&&outboxCount==4&&sent.size()==6&&sent[0]=="B_0"&&sent[5]=="B_5");
+ clockMs+=CLOUD_MIN_SEND_GAP_MS;drainOutbox(clockMs);
+ assert(requests==2&&outboxCount==0&&batchSizes[0]=="6"&&batchSizes[1]=="4"&&sent[6]=="B_6"&&sent[9]=="B_9");
+ // Partial acceptance: only the durable events leave the queue; the others keep their immutable payload and retry timer.
+ outboxHead=outboxTail=outboxCount=0;sent.clear();clockMs+=100000;
+ for(unsigned n=0;n<4;++n){char id[24];snprintf(id,sizeof(id),"P_%u",n);enqueueRaw(id,NotifyLevel::Warning,false,"p",false,0,0);}
+ acceptOnlyMask=0b0101;drainOutbox(clockMs);acceptOnlyMask=0xFF;
+ assert(outboxCount==2&&std::string(outboxAt(0).alarmType)=="P_1"&&std::string(outboxAt(1).alarmType)=="P_3");
+ assert(outboxAt(0).attempted&&!outboxAt(0).retry.ready(clockMs)&&outboxAt(1).attempted);
+ // An event waiting for its retry timer is not dragged into a batch, and does not let its same-type successor overtake it.
+ outboxHead=outboxTail=outboxCount=0;sent.clear();clockMs+=100000;
+ enqueueRaw("T_A",NotifyLevel::Critical,false,"on",false,0,0);enqueueRaw("T_B",NotifyLevel::Info,false,"x",false,0,0);
+ success=false;drainOutbox(clockMs);success=true;                    // both fail; both now wait
+ enqueueRaw("T_A",NotifyLevel::Critical,true,"off",false,0,0);enqueueRaw("T_C",NotifyLevel::Critical,false,"c",false,0,0);
+ sent.clear();drainOutbox(clockMs);
+ assert(sent.size()==1&&sent[0]=="T_C");                            // T_A(resolved) must wait for T_A(active)
+ // A Worker without the batch endpoint (404) is remembered: queued events then go out one by one.
+ outboxHead=outboxTail=outboxCount=0;sent.clear();requests=0;batchSizes.clear();clockMs+=100000;alarmBatchUnsupported=true;
+ for(unsigned n=0;n<3;++n){char id[24];snprintf(id,sizeof(id),"S_%u",n);enqueueRaw(id,NotifyLevel::Info,false,"s",false,0,0);}
+ drainOutbox(clockMs);assert(requests==1&&batchSizes[0]=="1"&&outboxCount==2);alarmBatchUnsupported=false;
  // millis wrap is supported by the real dispatch arithmetic.
  assert(timeReached(20,0xfffffff0U));
  std::puts("Cloud alert regression: transient fault, >12 faults, backpressure, priority, immutable IDs, durable ACK, overflow resync and wrap PASS");

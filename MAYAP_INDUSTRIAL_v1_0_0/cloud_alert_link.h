@@ -6,6 +6,7 @@
 #include "bounded_http.h"
 #include "cloud_fault_events.h"
 #include "cloud_alarm_receipt.h"
+#include "light_alarm_policy.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -110,6 +111,8 @@ static volatile uint8_t pinResetRequestFlag = 0U;
 // chay trong mayapCloudAlertUpdate(), khong co task nao khac cham vao.
 static uint32_t eventSequence=0U;
 static uint32_t eventBootHigh=0U,eventBootLow=0U;
+// Request body buffer (stack of the Cloud task): 1.5 kB holds 4+ typical queued events per request.
+constexpr size_t CLOUD_JSON_BODY_CAP = 1536U;
 struct OutboxItem {
   uint32_t sequence=0U,detectedAt=0U;
   bool used = false,attempted=false;
@@ -167,6 +170,44 @@ inline bool enqueueRaw(const char *alarmType, NotifyLevel severity, bool resolve
   outboxTail = static_cast<uint8_t>((outboxTail + 1U) % CLOUD_OUTBOX_SIZE);
   ++outboxCount;
   return true;
+}
+
+// ---- Batched delivery: every request costs a TLS handshake (~70 kB peak) that the realtime link has to
+// make room for, so queued events travel together. Order per alarm type is preserved.
+constexpr uint8_t ALARM_BATCH_MAX = 6U;
+static bool alarmBatchUnsupported = false;   // Worker answered 404/405 to /api/device/alarms: single endpoint only
+
+inline OutboxItem &outboxAt(uint8_t n) { return outbox[(outboxHead + n) % CLOUD_OUTBOX_SIZE]; }
+
+inline void removeOutboxAt(uint8_t n) {
+  for (uint8_t i = n; i + 1U < outboxCount; ++i) outboxAt(i) = outboxAt(static_cast<uint8_t>(i + 1U));
+  outboxTail = static_cast<uint8_t>((outboxTail + CLOUD_OUTBOX_SIZE - 1U) % CLOUD_OUTBOX_SIZE);
+  outbox[outboxTail].used = false;
+  --outboxCount;
+}
+
+// Queue positions (ascending) sent together with `selected`: events whose retry timer is due and whose
+// same-type predecessors are all in the batch (an alarm and its recovery never overtake each other).
+inline uint8_t collectAlarmBatch(uint8_t selected, uint32_t now, uint8_t *idx) {
+  bool in[CLOUD_OUTBOX_SIZE] = {};
+  in[selected] = true;
+  uint8_t members = 1U;
+  if (!alarmBatchUnsupported) {
+    for (uint8_t n = 0U; n < outboxCount && members < ALARM_BATCH_MAX; ++n) {
+      if (in[n]) continue;
+      OutboxItem &candidate = outboxAt(n);
+      if (candidate.attempted && !candidate.retry.ready(now)) continue;
+      bool blocked = false;
+      for (uint8_t p = 0U; p < n && !blocked; ++p)
+        blocked = !in[p] && !strcmp(outboxAt(p).alarmType, candidate.alarmType);
+      if (blocked) continue;
+      in[n] = true;
+      ++members;
+    }
+  }
+  uint8_t count = 0U;
+  for (uint8_t n = 0U; n < outboxCount; ++n) if (in[n]) idx[count++] = n;
+  return count;
 }
 
 inline bool enqueueLevel(const char *alarmType, NotifyLevel level, const char *body) {
@@ -343,41 +384,36 @@ inline void checkPowerRestored(uint32_t now) {
 }
 
 // --------------------- Canh bao: den van bat khi dang ap me --------------------
-// Dieu kien: me ap dang chay VA den (lightOn) van bat. Gui 1 lan khi vua phat
-// hien, sau do nhac lai moi CLOUD_LIGHT_AFTER_BATCH_REPEAT_MS (30 phut) neu
-// van con dung, va bao "da binh thuong" ngay khi het dieu kien (tat den hoac
-// ket thuc me) - dung nguyen mau checkFaults() nhung cho 1 dieu kien don, co
-// the tat rieng qua config (khac cac loi FaultCode khac khong tat duoc).
-static bool lightAfterBatchActive = false;
-static uint32_t lightAfterBatchLastSentAt = 0;
+// Bat/tat den la thao tac binh thuong: KHONG gui gi (chi hien tren web/ESP32). Chi khi me ap dang chay
+// VA den bat LIEN TUC qua CLOUD_LIGHT_AFTER_BATCH_REPEAT_MS (30 phut) moi bao 1 lan, nhac lai moi 30 phut
+// neu van con, va bao "da binh thuong" chi khi canh bao da duoc gui. Co the tat rieng qua config.
+// Logic thuan nam trong light_alarm_policy.h (co test host).
+static MayapLightAlarm::Tracker lightAlarm;
 
 inline void checkLightAfterBatch(uint32_t now) {
-  if (!processingConfig.lightAfterBatchAlarmEnabled) {
-    lightAfterBatchActive = false;  // nguoi dung vua tat: khong con "dinh" trang thai active cu
-    return;
+  using MayapLightAlarm::Action;
+  const Action action = MayapLightAlarm::step(lightAlarm, processingConfig.lightAfterBatchAlarmEnabled,
+      processingRuntime.batchRunning && processingRuntime.lightOn, now,
+      CLOUD_LIGHT_AFTER_BATCH_REPEAT_MS, CLOUD_LIGHT_AFTER_BATCH_REPEAT_MS);
+  bool queued = false;
+  switch (action) {
+    case Action::Raise:
+      queued = enqueueLevel("LIGHT_ON_DURING_BATCH", NotifyLevel::Warning,
+          "Đèn đã bật liên tục hơn 30 phút trong lúc mẻ ấp đang chạy - kiểm tra nếu không cần thiết.");
+      break;
+    case Action::Remind:
+      queued = enqueueLevel("LIGHT_ON_DURING_BATCH", NotifyLevel::Warning,
+          "Vẫn còn: đèn đang bật trong lúc mẻ ấp đang chạy.");
+      break;
+    case Action::Resolve:
+      // Noi RO nguyen nhan het canh bao (tat den hay het me), nguoi dung khong phai doan.
+      queued = enqueueResolved("LIGHT_ON_DURING_BATCH", NotifyLevel::Warning,
+          !processingRuntime.lightOn ? "Đã hết: đèn đã được tắt." : "Đã hết: mẻ ấp đã kết thúc (đèn vẫn đang bật).");
+      break;
+    case Action::None:
+      return;
   }
-  const bool condition = processingRuntime.batchRunning && processingRuntime.lightOn;
-  if (condition) {
-    if (!lightAfterBatchActive) {
-      lightAfterBatchActive=enqueueLevel("LIGHT_ON_DURING_BATCH", NotifyLevel::Warning,
-          "Đèn đang bật trong lúc mẻ ấp đang chạy - kiểm tra nếu không cần thiết.");
-      if(lightAfterBatchActive) lightAfterBatchLastSentAt=now;
-    } else if (timeReached(now, lightAfterBatchLastSentAt + CLOUD_LIGHT_AFTER_BATCH_REPEAT_MS)) {
-      if(enqueueLevel("LIGHT_ON_DURING_BATCH", NotifyLevel::Warning,
-          "Vẫn còn: đèn đang bật trong lúc mẻ ấp đang chạy.")) lightAfterBatchLastSentAt=now;
-    }
-  } else if (lightAfterBatchActive) {
-    // Noi RO nguyen nhan het canh bao, khong bao chung chung "den da tat HOAC
-    // me ap da ket thuc" - nguoi dung doc xong khong biet thuc te vua xay ra
-    // chuyen gi. Tai day van con du du lieu de biet chinh xac ve nao dung.
-    if (!processingRuntime.lightOn) {
-      lightAfterBatchActive=!enqueueResolved("LIGHT_ON_DURING_BATCH", NotifyLevel::Warning,
-          "Đã hết: đèn đã được tắt.");
-    } else {
-      lightAfterBatchActive=!enqueueResolved("LIGHT_ON_DURING_BATCH", NotifyLevel::Warning,
-          "Đã hết: mẻ ấp đã kết thúc (đèn vẫn đang bật).");
-    }
-  }
+  if (queued) MayapLightAlarm::commit(lightAlarm, action, now);
 }
 
 // --------------------- Canh bao: bo lo lich dao trung ---------------------
@@ -559,7 +595,7 @@ inline bool postJson(const char *path, const JsonDocument &doc, const char *logT
     return false;
   }
   http.addHeader("Content-Type", "application/json");
-  char body[1024];
+  char body[CLOUD_JSON_BODY_CAP];
   const size_t bodySize = measureJson(doc);
   if (doc.overflowed() || bodySize >= sizeof(body)) {
     http.end(); client.stop();
@@ -682,6 +718,11 @@ inline bool sendHeartbeat() {
   return postJson("/api/device/heartbeat", doc, "heartbeat");
 }
 
+inline void alarmEventId(const OutboxItem &item, char (&eventId)[40]) {
+  snprintf(eventId,sizeof(eventId),"%08lx%08lx-%08lx",static_cast<unsigned long>(eventBootHigh),
+      static_cast<unsigned long>(eventBootLow),static_cast<unsigned long>(item.sequence));
+}
+
 inline bool sendAlarm(OutboxItem &item) {
   JsonDocument doc;
   doc["device_id"] = mayapDeviceIdText();
@@ -695,8 +736,7 @@ inline bool sendAlarm(OutboxItem &item) {
     doc["humidity"] = item.humidity;
   }
   char eventId[40];
-  snprintf(eventId,sizeof(eventId),"%08lx%08lx-%08lx",static_cast<unsigned long>(eventBootHigh),
-      static_cast<unsigned long>(eventBootLow),static_cast<unsigned long>(item.sequence));
+  alarmEventId(item,eventId);
   doc["event_id"]=eventId;doc["detected_uptime_ms"]=item.detectedAt;
   String response;
   const bool sent=postJson("/api/device/alarm",doc,"alarm",&response,nullptr,true);
@@ -706,6 +746,65 @@ inline bool sendAlarm(OutboxItem &item) {
   mayapSerialPrintf(false,"[CLOUD] event=%s age=%lums durable_ack=%u\n",eventId,
       static_cast<unsigned long>(elapsedMs(millis(),item.detectedAt)),accepted?1U:0U);
   return accepted;
+}
+
+// Sends the events at queue positions idx[0..count) and returns a bitmask (bit k = idx[k]) of the ones the
+// Worker made durable; *sentMask marks those that were part of the request. One event (or an older Worker
+// without the batch endpoint) uses the original single-event endpoint.
+inline uint8_t sendAlarms(const uint8_t *idx, uint8_t count, uint8_t *sentMask) {
+  *sentMask = 0U;
+  if (count == 0U) return 0U;
+  JsonDocument doc;
+  doc["device_id"] = mayapDeviceIdText();
+  doc["device_key"] = mayapDeviceSecret();
+  JsonArray events = doc["events"].to<JsonArray>();
+  char ids[ALARM_BATCH_MAX][40];
+  uint8_t used = 0U;
+  for (uint8_t k = 0U; k < count && count > 1U; ++k) {
+    const OutboxItem &item = outboxAt(idx[k]);
+    JsonObject event = events.add<JsonObject>();
+    alarmEventId(item, ids[used]);
+    event["event_id"] = ids[used];
+    event["alarm_type"] = item.alarmType;
+    event["severity"] = severityText(item.severity);
+    event["state"] = item.resolved ? "resolved" : "active";
+    event["message"] = item.message;
+    if (item.hasReadings) {
+      event["temperature"] = item.temperature;
+      event["humidity"] = item.humidity;
+    }
+    event["detected_uptime_ms"] = item.detectedAt;
+    if (doc.overflowed() || measureJson(doc) >= CLOUD_JSON_BODY_CAP) {   // the rest goes in the next request
+      events.remove(events.size() - 1U);
+      break;
+    }
+    ++used;
+  }
+  if (used <= 1U) {
+    *sentMask = 1U;
+    return sendAlarm(outboxAt(idx[0])) ? 1U : 0U;
+  }
+  String response;
+  int code = 0;
+  const bool sent = postJson("/api/device/alarms", doc, "alarms", &response, &code, true);
+  *sentMask = static_cast<uint8_t>((1U << used) - 1U);
+  for (uint8_t k = 0U; k < used; ++k) {
+    OutboxItem &item = outboxAt(idx[k]);
+    item.attempted = item.attempted || !requestDeferred;
+  }
+  if (!sent) {
+    if (code == 404 || code == 405) {
+      alarmBatchUnsupported = true;
+      mayapSerialPrintf(false, "[CLOUD] batch endpoint missing (HTTP %d): single alarms from now on\n", code);
+    }
+    return 0U;
+  }
+  const uint8_t durable = mayapDurableAlarmBatchReceipt(response.c_str(), ids, used);
+  for (uint8_t k = 0U; k < used; ++k)
+    mayapSerialPrintf(false, "[CLOUD] event=%s age=%lums durable_ack=%u batch=%u\n", ids[k],
+        static_cast<unsigned long>(elapsedMs(millis(), outboxAt(idx[k]).detectedAt)),
+        (durable >> k) & 1U ? 1U : 0U, static_cast<unsigned>(used));
+  return durable;
 }
 
 inline void drainOutbox(uint32_t now) {
@@ -719,20 +818,20 @@ inline void drainOutbox(uint32_t now) {
     for(uint8_t p=0;p<n;++p) if(!strcmp(outbox[(outboxHead+p)%CLOUD_OUTBOX_SIZE].alarmType,candidate.alarmType)){predecessor=true;break;}
     if(!predecessor){selected=n;break;}
   }
-  OutboxItem &item=outbox[(outboxHead+selected)%CLOUD_OUTBOX_SIZE];
+  OutboxItem &item=outboxAt(selected);
   if(item.severity!=NotifyLevel::Critical && !timeReached(now,lastSendAt+CLOUD_MIN_SEND_GAP_MS)) return;
   if(item.attempted && !item.retry.ready(now)) return;
   const NetworkStatus status=mayapGetRawNetworkStatus();
   if(!(status.requestedMode==ConnectivityMode::Online && status.connected)) return;
-  const bool ok=sendAlarm(item);
+  uint8_t idx[ALARM_BATCH_MAX];
+  const uint8_t count=collectAlarmBatch(selected,now,idx);
+  uint8_t sentMask=0U;
+  const uint8_t acceptedMask=sendAlarms(idx,count,&sentMask);
   if(!requestDeferred) lastSendAt=millis();
-  if(ok) {
-    item.retry.onSuccess();
-    for(uint8_t n=selected;n+1U<outboxCount;++n)
-      outbox[(outboxHead+n)%CLOUD_OUTBOX_SIZE]=outbox[(outboxHead+n+1U)%CLOUD_OUTBOX_SIZE];
-    outboxTail=(outboxTail+CLOUD_OUTBOX_SIZE-1U)%CLOUD_OUTBOX_SIZE;
-    outbox[outboxTail].used=false;--outboxCount;
-  } else if(!requestDeferred) item.retry.onFailure(millis());
+  for(int k=count-1;k>=0;--k) {
+    if(acceptedMask&(1U<<k)) removeOutboxAt(idx[k]);
+    else if((sentMask&(1U<<k)) && !requestDeferred) outboxAt(idx[k]).retry.onFailure(millis());
+  }
 }
 
 inline void serviceHeartbeat(uint32_t now) {

@@ -26,7 +26,10 @@ async function setup(){
  async function alarm(eventId='boot-0001',state='active',message='off'){
   return worker.default.fetch(new Request('https://worker.test/api/device/alarm',{method:'POST',body:JSON.stringify({device_id:deviceId,device_key:secret,event_id:eventId,alarm_type:'FAULT_130',state,message,severity:'critical'})}),env,ctx);
  }
- return{delivery,env,sql,deviceId,notification,subscribe,alarm,jobs};
+ async function batch(events,key=secret){
+  return worker.default.fetch(new Request('https://worker.test/api/device/alarms',{method:'POST',body:JSON.stringify({device_id:deviceId,device_key:key,events})}),env,ctx);
+ }
+ return{delivery,env,sql,deviceId,notification,subscribe,alarm,batch,jobs};
 }
 test('durable HTTP receipt, response-loss duplicate and event conflict',async()=>{
  const h=await setup(),original=global.fetch;global.fetch=async()=>new Response('',{status:201});
@@ -134,4 +137,34 @@ test('a hung Push endpoint aborts and remains durably pending',async()=>{
   const row=h.sql.prepare('SELECT status,attempts,lease_until FROM alarm_deliveries').get();
   assert.equal(row.status,'pending');assert.equal(row.attempts,1);assert.equal(row.lease_until,0);
  }finally{global.fetch=original;}
+});
+
+test('batch endpoint: one auth, per-event durable receipts, idempotent resend, ordering after a failure',async()=>{
+ const h=await setup(),original=global.fetch;global.fetch=async()=>new Response('',{status:201});
+ const ev=(id,type,state='active',message='m')=>({event_id:id,alarm_type:type,state,message,severity:'warning'});
+ try{
+  const ok=await h.batch([ev('b-1','LIGHT_ON_DURING_BATCH'),ev('b-2','FAULT_130','active','off'),ev('b-3','FAULT_130','resolved','on')]);
+  assert.equal(ok.status,200);const body=await ok.json();
+  assert.deepEqual(body.results.map(r=>[r.event_id,r.durable,r.status]),[['b-1',true,200],['b-2',true,200],['b-3',true,200]]);
+  assert.equal(h.sql.prepare('SELECT COUNT(*) n FROM alarm_events').get().n,3);
+  // Response lost on the device: the identical batch is a duplicate, not a second write.
+  const again=await (await h.batch([ev('b-1','LIGHT_ON_DURING_BATCH'),ev('b-2','FAULT_130','active','off')])).json();
+  assert.deepEqual(again.results.map(r=>[r.durable,r.duplicate]),[[true,true],[true,true]]);
+  assert.equal(h.sql.prepare('SELECT COUNT(*) n FROM alarm_events').get().n,3);
+  // Conflict on one event does not block an unrelated alarm type, but later events of the same type are skipped.
+  const mixed=await (await h.batch([ev('b-2','FAULT_130','resolved','DIFFERENT'),ev('b-9','FAULT_130','resolved','on'),ev('b-4','OTHER')])).json();
+  assert.deepEqual(mixed.results.map(r=>[r.event_id,r.durable,r.status]),[['b-2',false,409],['b-9',false,409],['b-4',true,200]]);
+  assert.equal(mixed.results[1].error,'SKIPPED_AFTER_FAILURE');
+  await Promise.all(h.jobs);
+ }finally{global.fetch=original;}
+});
+test('batch endpoint: bad key, empty, oversized and malformed events',async()=>{
+ const h=await setup();
+ const ev=(id)=>({event_id:id,alarm_type:'X',state:'active',message:'m'});
+ assert.equal((await h.batch([ev('c-1')],'wrong-key')).status,401);
+ assert.equal((await h.batch([])).status,400);
+ assert.equal((await h.batch(Array.from({length:9},(_,i)=>ev('d-'+i)))).status,400);
+ const body=await (await h.batch([{event_id:'e-1',alarm_type:'X'},{alarm_type:'X',message:'m'},ev('e-3')])).json();
+ assert.deepEqual(body.results.map(r=>[r.durable,r.status]),[[false,400],[false,400],[true,200]]);
+ assert.equal(h.sql.prepare('SELECT COUNT(*) n FROM alarm_events').get().n,1);
 });

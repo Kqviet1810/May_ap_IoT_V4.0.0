@@ -262,38 +262,33 @@ async function handleRotateDeviceKey(request, env) {
 }
 
 // -------------------------- Endpoint: bao dong / canh bao --------------------------
-async function handleAlarm(request, env, ctx) {
-  const body = await readJson(request);
-  const deviceId = String(body?.device_id || '').trim();
-  const deviceKey = String(body?.device_key || '');
-  const alarmType = String(body?.alarm_type || '').trim();
-  const message = String(body?.message || '').slice(0, 300);
-  const severity = ['info', 'warning', 'critical', 'system'].includes(body?.severity) ? body.severity : 'warning';
-  const state = body?.state === 'resolved' ? 'resolved' : 'active';
-  const temperature = Number.isFinite(Number(body?.temperature)) ? Number(body.temperature) : null;
-  const humidity = Number.isFinite(Number(body?.humidity)) ? Number(body.humidity) : null;
+function alarmFields(body) {
+  return {
+    alarmType: String(body?.alarm_type || '').trim(),
+    message: String(body?.message || '').slice(0, 300),
+    severity: ['info', 'warning', 'critical', 'system'].includes(body?.severity) ? body.severity : 'warning',
+    state: body?.state === 'resolved' ? 'resolved' : 'active',
+    temperature: Number.isFinite(Number(body?.temperature)) ? Number(body.temperature) : null,
+    humidity: Number.isFinite(Number(body?.humidity)) ? Number(body.humidity) : null,
+  };
+}
 
-  if (!isValidDeviceId(deviceId) || !alarmType || !message) {
-    return json(env, { success: false, error: 'thieu device_id/alarm_type/message' }, 400);
-  }
-
-  const device = await getDeviceByDeviceId(env.DB, deviceId);
-  if (!device) return json(env, { success: false, error: 'device chua dang ky' }, 404);
-  const valid = await verifyDeviceKey(deviceKey, env.DEVICE_KEY_PEPPER, device.device_key_hash);
-  if (!valid) return json(env, { success: false, error: 'device_key sai' }, 401);
-
+// One alarm event for an already authenticated device. Shared by the single endpoint and the batch
+// endpoint so both keep identical idempotency (event_id), conflict and cooldown semantics.
+// Returns { status, payload, schedule } - the caller sends the HTTP response and starts delivery once.
+async function recordAlarmEvent(env, device, deviceId, body, fields) {
+  const { alarmType, message, severity, state, temperature, humidity } = fields;
   const now = Date.now();
   const suppliedId=body?.event_id;
   if (suppliedId !== undefined && !/^[a-zA-Z0-9_-]{1,64}$/.test(String(suppliedId)))
-    return json(env,{success:false,error:'INVALID_EVENT_ID'},400);
+    return { status: 400, payload: {success:false,error:'INVALID_EVENT_ID'} };
   const eventId=suppliedId || crypto.randomUUID();
   const existing=await findAlarmEvent(env,deviceId,eventId);
   if (existing) {
     const saved=JSON.parse(existing.payload).data;
     if (saved.alarmType!==alarmType || saved.state!==state || saved.message!==message)
-      return json(env,{success:false,error:'EVENT_ID_CONFLICT'},409);
-    scheduleAlarmDelivery(env,ctx);
-    return json(env,{success:true,durable:true,event_id:eventId,duplicate:true});
+      return { status: 409, payload: {success:false,error:'EVENT_ID_CONFLICT'} };
+    return { status: 200, payload: {success:true,durable:true,event_id:eventId,duplicate:true}, schedule: true };
   }
   await touchDevice(env.DB,deviceId,'online',now);
   const priorState=await getAlarmState(env.DB,deviceId,alarmType);
@@ -301,7 +296,7 @@ async function handleAlarm(request, env, ctx) {
   if (unchanged && now-Number(priorState.last_sent_at || 0)<MIN_ALARM_COOLDOWN_MS) {
     // New firmware retains the event and retries; older firmware preserves its
     // previous throttle semantics. Already-durable duplicates bypass this gate.
-    return json(env,{success:!suppliedId,durable:false,throttled:true},suppliedId?429:200);
+    return { status: suppliedId?429:200, payload: {success:!suppliedId,durable:false,throttled:true} };
   }
   const notification=buildNotificationPayload({deviceId,deviceName:device.device_name,alarmType,severity,state,message,temperature,humidity});
   notification.data.eventId=eventId;notification.data.message=message;
@@ -310,14 +305,81 @@ async function handleAlarm(request, env, ctx) {
   const event=await queueAlarmEvent(env,{deviceId,eventId,alarmType,notification,now});
   const persisted=JSON.parse(event.payload).data;
   if(persisted.alarmType!==alarmType || persisted.state!==state || persisted.message!==message)
-    return json(env,{success:false,error:'EVENT_ID_CONFLICT'},409);
+    return { status: 409, payload: {success:false,error:'EVENT_ID_CONFLICT'} };
   // The receipt above remains valid even if ancillary history updates fail.
   try {
     await upsertAlarmState(env.DB,{deviceId,alarmType,active:state==='active',firstSentAt:now,lastSentAt:now,lastMessage:message});
     await insertAlarmLog(env.DB,{deviceId,alarmType,severity,state,message,temperature,humidity,notificationSent:false,now});
   } catch(error) {console.error('[alarm] history failed',String(error?.message || error));}
-  scheduleAlarmDelivery(env,ctx);
-  return json(env,{success:true,durable:true,event_id:event.event_id});
+  return { status: 200, payload: {success:true,durable:true,event_id:event.event_id}, schedule: true };
+}
+
+async function handleAlarm(request, env, ctx) {
+  const body = await readJson(request);
+  const deviceId = String(body?.device_id || '').trim();
+  const deviceKey = String(body?.device_key || '');
+  const fields = alarmFields(body);
+
+  if (!isValidDeviceId(deviceId) || !fields.alarmType || !fields.message) {
+    return json(env, { success: false, error: 'thieu device_id/alarm_type/message' }, 400);
+  }
+
+  const device = await getDeviceByDeviceId(env.DB, deviceId);
+  if (!device) return json(env, { success: false, error: 'device chua dang ky' }, 404);
+  const valid = await verifyDeviceKey(deviceKey, env.DEVICE_KEY_PEPPER, device.device_key_hash);
+  if (!valid) return json(env, { success: false, error: 'device_key sai' }, 401);
+
+  const result = await recordAlarmEvent(env, device, deviceId, body, fields);
+  if (result.schedule) scheduleAlarmDelivery(env,ctx);
+  return json(env, result.payload, result.status);
+}
+
+// -------------------------- Endpoint: nhieu bao dong trong 1 request --------------------------
+// The ESP32 pays one TLS handshake per request (RAM it has to take from the realtime link), so it
+// sends its queued events together. Auth once, then each event goes through recordAlarmEvent in
+// order; results are per event so the device removes exactly the ones that became durable.
+// After one event of an alarm type fails, later events of that type are skipped (kept in order).
+const MAX_ALARM_BATCH = 8;
+async function handleAlarmBatch(request, env, ctx) {
+  const body = await readJson(request);
+  const deviceId = String(body?.device_id || '').trim();
+  const deviceKey = String(body?.device_key || '');
+  const events = Array.isArray(body?.events) ? body.events : null;
+  if (!isValidDeviceId(deviceId) || !events || events.length === 0 || events.length > MAX_ALARM_BATCH) {
+    return json(env, { success: false, error: 'thieu device_id/events (1..' + MAX_ALARM_BATCH + ')' }, 400);
+  }
+  const device = await getDeviceByDeviceId(env.DB, deviceId);
+  if (!device) return json(env, { success: false, error: 'device chua dang ky' }, 404);
+  const valid = await verifyDeviceKey(deviceKey, env.DEVICE_KEY_PEPPER, device.device_key_hash);
+  if (!valid) return json(env, { success: false, error: 'device_key sai' }, 401);
+
+  const results = [];
+  const failedTypes = new Set();
+  let schedule = false;
+  for (const event of events) {
+    const fields = alarmFields(event);
+    const eventId = event?.event_id === undefined ? undefined : String(event.event_id);
+    if (!fields.alarmType || !fields.message || eventId === undefined) {
+      results.push({ event_id: eventId, status: 400, success: false, durable: false, error: 'thieu event_id/alarm_type/message' });
+      continue;
+    }
+    if (failedTypes.has(fields.alarmType)) {
+      results.push({ event_id: eventId, status: 409, success: false, durable: false, error: 'SKIPPED_AFTER_FAILURE' });
+      continue;
+    }
+    let outcome;
+    try {
+      outcome = await recordAlarmEvent(env, device, deviceId, event, fields);
+    } catch (error) {
+      console.error('[alarm] batch event failed', String(error?.message || error));
+      outcome = { status: 500, payload: { success: false, durable: false, error: 'STORAGE_ERROR' } };
+    }
+    if (outcome.schedule) schedule = true;
+    if (outcome.payload.durable !== true) failedTypes.add(fields.alarmType);
+    results.push({ ...outcome.payload, durable: outcome.payload.durable === true, event_id: eventId, status: outcome.status });
+  }
+  if (schedule) scheduleAlarmDelivery(env, ctx);
+  return json(env, { success: true, results });
 }
 
 // -------------------------- Endpoint: dang ky / huy Push subscription --------------------------
@@ -729,6 +791,9 @@ export default {
       }
       if (url.pathname === '/api/device/alarm' && request.method === 'POST') {
         return await handleAlarm(request, env, ctx);
+      }
+      if (url.pathname === '/api/device/alarms' && request.method === 'POST') {
+        return await handleAlarmBatch(request, env, ctx);
       }
       if (['/api/device/verify-pin','/api/device/mqtt-session','/api/device/sign-mqtt','/api/device/session-check'].includes(url.pathname)) {
         return json(env, { success:false, error:'ACCOUNT_UPGRADE_REQUIRED' }, 410);
