@@ -70,6 +70,7 @@ struct Scenario {
   double extraLossW = 0, extraLossUntilS = 0;  // legacy "vent" event: extra W/degC while t in [changeAtS, until)
   float spBefore = NAN;          // setpoint_step: SP before eventAtS
   uint32_t clockOffset = 0;  // millis() starts here (rollover tests)
+  double metricsFromS = 3600;  // vent events before this are warm-up and not scored
   bool trace = false;
   std::ostream *traceOut = nullptr;
   std::ostream *debugOut = nullptr;  // per-sample controller internals (development)
@@ -95,9 +96,16 @@ struct Result {
   std::vector<VentRecord> vents;
   double ventDevMax = 0, postVentOvershootMax = 0, ventRecoveryMax = 0, ventEnergyMean = 0, ventWindupMax = 0;
   double ventDevMean = 0, postVentOvershootMean = 0;
-  int ventEvents = 0;
-  // safety
+  int ventEvents = 0, ventDropEvents = 0;
+  // safety / learning integrity
   uint32_t unsafeHeatTicks = 0;
+  uint32_t faultUpdates = 0;       // learner regression updates while a fault/disturbance window was open
+  double timeReconvergeS = -1;     // after a hardware change: first time conf>=60 and gain error <= 25 %
+  double minHintAfterChange = 1.0; // lowest startup-hint strength seen after the change (authority)
+  double minFfAfterChange = 1e9, maxFfAfterChange = 0;
+  double confAfterReboot = -1;
+  uint32_t overshootGuards = 0;
+  uint32_t mismatchKh = 0, mismatchHold = 0;
 };
 
 constexpr double HighC = 38.2, EmergencyC = 39.0;
@@ -170,6 +178,7 @@ inline Result run(const Plant &base, const Scenario &sc) {
   bool ventOpen = false;
   double integralAtVent = 0, integralPeak = 0;
   std::vector<std::pair<double, double>> ventSpans;
+  uint32_t lastUpdates = 0;
   bool frozenActive = false;
   float frozenValue = 0;
   bool jumped = false;
@@ -208,6 +217,7 @@ inline Result run(const Plant &base, const Scenario &sc) {
       configure(*h, sc);
       MayapThermal::profileStorage.resetForTest();
       h->heatRestartNotBefore_ = 0;
+      lastUpdates = 0;
     }
     h->abnormalResetLatched_ = powerLoss;
     h->testModeActive_ = testMode;
@@ -245,10 +255,15 @@ inline Result run(const Plant &base, const Scenario &sc) {
     h->cycle(now, sampleTick && h->sensorUsable_);
     if ((tick % 200U) == 0U) MayapThermal::profileStorage.service(now);
     if (sc.debugOut && sampleTick && t >= sc.debugFrom && t < sc.debugTo) {
+      const auto st0 = h->outputs_.state();
       (*sc.debugOut) << static_cast<int>(t) << " pv=" << temp << " fed=" << fed << " err=" << (sp - fed) << " req=" << h->pidPower_
                      << " I=" << h->pid_.integral() << " ff=" << h->pid_.feedForwardApplied() << " cap=" << h->startupHeat_.lastCeiling()
                      << " peak=" << h->startupHeat_.predictedPeak() << " slope=" << h->startupHeat_.slope()
-                     << " phase=" << static_cast<int>(h->startupHeat_.phase()) << " eff=" << h->adaptiveThermal_.decision().effective << '\n';
+                     << " phase=" << static_cast<int>(h->startupHeat_.phase()) << " eff=" << h->adaptiveThermal_.decision().effective
+                     << " vent=" << st0.ventFan << ' ' << MayapThermal::ventPhaseName(h->thermalV1_.plan().ventPhase) << " vff=" << h->thermalV1_.plan().ventFF
+                     << " hff=" << h->thermalV1_.plan().holdFF << " ventPct=" << h->thermalV1_.plan().hint.ventPct
+                     << " ventConf=" << static_cast<int>(h->thermalV1_.learner().profile().ventConfidence)
+                     << " kv=" << h->thermalV1_.learner().profile().ventCoolingGain << '\n';
     }
 
     const auto st = h->outputs_.state();
@@ -308,6 +323,27 @@ inline Result run(const Plant &base, const Scenario &sc) {
       r.vents.push_back(vr); ventOpen = false;
     }
     ventPrev = ventNow;
+    // ---- learning integrity / hardware-change tracking ------------------------------------------
+    {
+      const bool faultWin = (lossSensor || badSample || frozen || testMode || heaterOff || cut || powerLoss || missing) ||
+                            (ev != "none" && t >= e0 && t < e0 + 100 &&
+                             (ev == "sensor_loss" || ev == "sensor_invalid" || ev == "sensor_frozen" || ev == "manual_test" ||
+                              ev == "heater_off" || ev == "safety_cut" || ev == "power_loss" || ev == "missing_samples" ||
+                              ev == "power_recovery"));
+      const uint32_t u = h->thermalV1_.learner().updates();
+      if (faultWin && u > lastUpdates) r.faultUpdates += (u - lastUpdates);
+      lastUpdates = u;
+      if (changed && sc.mode != Mode::Baseline) {
+        const auto &pf = h->thermalV1_.learner().profile();
+        const double truthKh = base.khTrue() * sc.effScale / sc.capScale;
+        if (r.timeReconvergeS < 0 && t > sc.changeAtS + 60 && pf.confidence >= 60 &&
+            std::fabs(pf.heaterGain - truthKh) / truthKh <= 0.25) r.timeReconvergeS = t - sc.changeAtS;
+        r.minHintAfterChange = std::min<double>(r.minHintAfterChange, h->thermalV1_.plan().hint.valid ? h->thermalV1_.plan().hint.strength : 0.0);
+        r.minFfAfterChange = std::min<double>(r.minFfAfterChange, (h->thermalV1_.plan().assist.feedForward + h->thermalV1_.plan().assist.addForward));
+        r.maxFfAfterChange = std::max<double>(r.maxFfAfterChange, (h->thermalV1_.plan().assist.feedForward + h->thermalV1_.plan().assist.addForward));
+      }
+      if (rebooted && r.confAfterReboot < 0 && t >= sc.eventAtS + 120) r.confAfterReboot = h->thermalV1_.learner().profile().confidence;
+    }
     // ---- learning trace ------------------------------------------------------------------------------
     const auto &prof = h->thermalV1_.learner().profile();
     if (sc.mode != Mode::Baseline) {
@@ -325,8 +361,8 @@ inline Result run(const Plant &base, const Scenario &sc) {
                      << MayapThermal::learnStateName(L.state()) << ',' << prof.heaterGain << ',' << prof.heaterDelaySec << ','
                      << prof.holdPowerPct << ',' << prof.coastRiseC << ',' << prof.ventCoolingGain << ','
                      << L.predictionError() << ',' << L.mismatch() << ',' << MayapThermal::ventPhaseName(h->thermalV1_.plan().ventPhase)
-                     << ',' << h->thermalV1_.plan().assist.feedForward << ',' << h->pid_.integral() << ','
-                     << MayapThermal::gateReasonName(L.gate()) << ',' << h->runtime_.heaterPower << '\n';
+                     << ',' << (h->thermalV1_.plan().assist.feedForward + h->thermalV1_.plan().assist.addForward) << ',' << h->pid_.integral() << ','
+                     << MayapThermal::gateReasonName(L.gate()) << ',' << h->runtime_.heaterPower << ',' << L.holdWindows() << ',' << L.infoSlow() << '\n';
     }
     (void)elapsedBefore;
   }
@@ -345,7 +381,9 @@ inline Result run(const Plant &base, const Scenario &sc) {
   r.confidence = prof.confidence; r.state = prof.state; r.ventConf = prof.ventConfidence;
   r.gainEst = prof.heaterGain; r.delayEst = prof.heaterDelaySec; r.holdEst = prof.holdPowerPct;
   r.coastEst = prof.coastRiseC; r.ventEst = prof.ventCoolingGain; r.predErr = hp->thermalV1_.learner().predictionError();
-  r.mismatchEvents = 0; r.outliers = hp->thermalV1_.learner().outliers();
+  r.mismatchEvents = hp->thermalV1_.learner().mismatchEvents(); r.outliers = hp->thermalV1_.learner().outliers();
+  r.overshootGuards = hp->thermalV1_.overshootEvents();
+  r.mismatchKh = hp->thermalV1_.learner().mismatchBy(1); r.mismatchHold = hp->thermalV1_.learner().mismatchBy(2);
   r.saves = MayapThermal::profileStorage.saves();
   // truth is the plant AFTER any scheduled change
   Plant truth = base;
@@ -360,31 +398,40 @@ inline Result run(const Plant &base, const Scenario &sc) {
     r.coastErrC = prof.coastRiseC - coastTruthC(truth);
     if (truth.ventG > 0 && ventTruth(truth, sp) > 0) r.ventErrPct = 100.0 * (prof.ventCoolingGain - ventTruth(truth, sp)) / ventTruth(truth, sp);
   }
-  // per-vent metrics from the 10 Hz-decimated record (1 s resolution)
-  const double settleFrom = 3600;  // ignore the first hour (heat-up / learning)
-  double devSum = 0, postSum = 0;
+  // per-vent metrics from the 1 s record. The DROP is measured against PV just before the vent
+  // and only for events that start near SP (a vent during heat-up has no "deviation" to score).
+  const double settleFrom = sc.metricsFromS;  // vent events before this are warm-up
+  double dropSum = 0, postSum = 0;
+  int dropEvents = 0;
   for (auto &v : r.vents) {
     if (v.start < settleFrom) continue;
     const size_t s0 = static_cast<size_t>(v.start), s1 = std::min(sec_temp.size() - 1, static_cast<size_t>(v.end));
-    double minDev = 0, postMax = -1000, onS = 0;
-    for (size_t i = s0; i <= s1 && i < sec_temp.size(); ++i) { minDev = std::min(minDev, sec_temp[i] - sp); onS += sec_on[i]; }
-    size_t pe = std::min(sec_temp.size() - 1, s1 + 900);
-    for (size_t i = s1; i <= pe; ++i) { postMax = std::max(postMax, sec_temp[i] - sp); if (i > s1) onS += sec_on[i] * 0.0; }
+    if (s0 >= sec_temp.size()) continue;
+    const double tStart = sec_temp[s0];
+    const bool nearSp = std::fabs(tStart - sp) <= 0.5;
+    double minT = tStart, onS = 0;
+    for (size_t i = s0; i <= s1 && i < sec_temp.size(); ++i) { minT = std::min<double>(minT, sec_temp[i]); onS += sec_on[i]; }
+    const size_t pe = std::min(sec_temp.size() - 1, s1 + 900);
+    double postMax = -1000;
+    for (size_t i = s1; i <= pe; ++i) { postMax = std::max<double>(postMax, sec_temp[i] - sp); }
+    for (size_t i = s1 + 1; i <= std::min(sec_temp.size() - 1, s1 + 300); ++i) onS += sec_on[i];
     double rec = 900;
     for (size_t i = s1; i <= pe; ++i) {
       bool ok = true;
       for (size_t j = i; j <= std::min(pe, i + 60); ++j) if (std::fabs(sec_temp[j] - sp) > 0.15) { ok = false; break; }
       if (ok) { rec = static_cast<double>(i - s1); break; }
     }
-    v.minDev = minDev; v.postMax = postMax; v.recoverS = rec; v.heaterOnS = onS;
+    v.minDev = tStart - minT; v.postMax = postMax; v.recoverS = rec; v.heaterOnS = onS;
     ++r.ventEvents;
-    r.ventDevMax = std::max(r.ventDevMax, -minDev);
     r.postVentOvershootMax = std::max(r.postVentOvershootMax, postMax);
     r.ventRecoveryMax = std::max(r.ventRecoveryMax, rec);
     r.ventWindupMax = std::max(r.ventWindupMax, v.windup);
-    devSum += -minDev; postSum += postMax; r.ventEnergyMean += onS;
+    postSum += postMax; r.ventEnergyMean += onS;
+    if (nearSp) { ++dropEvents; dropSum += v.minDev; r.ventDevMax = std::max(r.ventDevMax, v.minDev); }
   }
-  if (r.ventEvents) { r.ventDevMean = devSum / r.ventEvents; r.postVentOvershootMean = postSum / r.ventEvents; r.ventEnergyMean /= r.ventEvents; }
+  r.ventDropEvents = dropEvents;
+  if (r.ventEvents) { r.postVentOvershootMean = postSum / r.ventEvents; r.ventEnergyMean /= r.ventEvents; }
+  if (dropEvents) r.ventDevMean = dropSum / dropEvents;
   return r;
 }
 

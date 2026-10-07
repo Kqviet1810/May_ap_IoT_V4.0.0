@@ -100,6 +100,84 @@ static int shardRun(const std::vector<Case> &cases, int shard, int shards, std::
   return 0;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Ventilation scenarios (the exhaust fan is owned by the real profile logic; thermal only coordinates)
+// ---------------------------------------------------------------------------------------------
+struct VentCase { Plant p; Scenario sc; std::string plant, strength, schedule; };
+static std::vector<VentCase> ventCases() {
+  struct PL { const char *n; double cap, loss, dead, lag; };
+  const PL plants[] = {{"light", 180000, 120, 5, 8}, {"medium", 600000, 180, 15, 8}, {"heavy", 1600000, 300, 30, 8}};
+  struct EX { const char *n; double g; };
+  const EX exhaust[] = {{"weak", 40}, {"medium", 120}, {"strong", 300}};
+  struct SC { const char *n; unsigned cycle, duty; double firstAtS; double changeAtS; double ventScale; };
+  const SC scheds[] = {{"short_3min", 20, 15, 4000, -1, 1}, {"long_12min", 40, 30, 4000, -1, 1}, {"repeated_3min_12cycle", 12, 25, 4000, -1, 1},
+                       {"during_heatup", 40, 10, 400, -1, 1}, {"near_sp", 40, 10, 2400, -1, 1}, {"after_stable_hold", 40, 10, 6000, -1, 1},
+                       {"fan_effect_x2_midrun", 20, 15, 4000, 10800, 2.0}};
+  std::vector<VentCase> out;
+  for (const PL &pl : plants) for (const EX &ex : exhaust) for (const SC &sch : scheds) {
+    VentCase c; c.p.eff = 1.0; c.p.capacity = pl.cap; c.p.loss = pl.loss; c.p.dead = pl.dead; c.p.lag = pl.lag; c.p.ambient = 20;
+    c.p.resolution = 0.1; c.p.ventG = ex.g;
+    c.sc.sp = 37.5f; c.sc.durationS = 21600; c.sc.ventProfile = true; c.sc.ventCycleMin = sch.cycle; c.sc.ventDutyPct = sch.duty;
+    const unsigned cycleSec = sch.cycle * 60;
+    c.sc.ventOffsetSec = cycleSec - (static_cast<unsigned>(sch.firstAtS) % cycleSec);
+    if (c.sc.ventOffsetSec >= cycleSec) c.sc.ventOffsetSec -= cycleSec;
+    c.sc.changeAtS = sch.changeAtS; c.sc.ventScale = sch.ventScale;
+    c.sc.metricsFromS = (std::string(sch.n) == "during_heatup" || std::string(sch.n) == "near_sp") ? 0.0 : 3600.0;
+    c.plant = pl.n; c.strength = ex.n; c.schedule = sch.n;
+    out.push_back(c);
+  }
+  return out;
+}
+static const char *VHEADER =
+    "plant,exhaust,schedule,mode,vent_events,drop_events,vent_dev_max,vent_dev_mean,post_vent_overshoot_max,post_vent_overshoot_mean,recovery_s_max,"
+    "heater_on_s_mean,integral_windup_max,high,emergency,mae_tail,ripple,confidence,vent_confidence,vent_gain_est,vent_gain_true,vent_err_pct,kh_err_pct\n";
+
+// ---------------------------------------------------------------------------------------------
+// Hardware change
+// ---------------------------------------------------------------------------------------------
+struct HwCase { Plant p; Scenario sc; std::string label, change; };
+static std::vector<HwCase> hwCases() {
+  std::vector<HwCase> out;
+  struct PL { const char *n; double cap, loss, dead, lag; };
+  const PL plants[] = {{"light_d15", 180000, 120, 15, 8}, {"medium_d15", 600000, 180, 15, 8}, {"medium_d60", 600000, 180, 60, 8}, {"heavy_d30", 1600000, 300, 30, 8}};
+  struct CH { const char *n; double eff, vent; };
+  const CH changes[] = {{"heater_100_to_150", 1.5, 1.0}, {"heater_100_to_60", 0.6, 1.0}, {"vent_1_to_2", 1.0, 2.0}, {"no_change_control", 1.0, 1.0}};
+  for (const PL &pl : plants) for (const CH &ch : changes) {
+    HwCase c; c.p.eff = 1.0; c.p.capacity = pl.cap; c.p.loss = pl.loss; c.p.dead = pl.dead; c.p.lag = pl.lag; c.p.ambient = 20; c.p.resolution = 0.1;
+    c.p.ventG = 120;
+    c.sc.sp = 37.5f; c.sc.durationS = 25200; c.sc.changeAtS = 10800; c.sc.effScale = ch.eff; c.sc.ventScale = ch.vent;
+    c.sc.ventProfile = true; c.sc.ventCycleMin = 20; c.sc.ventDutyPct = 15; c.sc.ventOffsetSec = 20 * 60 - 700;
+    c.label = pl.n; c.change = ch.n; out.push_back(c);
+  }
+  return out;
+}
+static const char *HHEADER =
+    "plant,change,mode,high,emergency,mae_tail,p95_tail,ripple_tail,overshoot,conf_final,min_conf_after,t_qualified_s,t_mismatch_s,t_reconverge_s,"
+    "min_hint_after,ff_min_after,ff_max_after,kh_err_pct,delay_err_s,vent_err_pct,mismatch_final,guard_events\n";
+
+// ---------------------------------------------------------------------------------------------
+// Sensor / disturbance faults and learning integrity
+// ---------------------------------------------------------------------------------------------
+struct FaultCase { Plant p; Scenario sc; std::string label; };
+static std::vector<FaultCase> faultCases() {
+  std::vector<FaultCase> out;
+  struct PL { const char *n; double cap, loss, dead, lag, res; };
+  const PL plants[] = {{"medium_d15", 600000, 180, 15, 8, 0.1}, {"heavy_d60", 1600000, 300, 60, 8, 0.1}};
+  const char *events[] = {"sensor_loss", "sensor_invalid", "sudden_jump", "sensor_frozen", "noisy", "jitter", "missing_samples", "reboot",
+                          "manual_test", "heater_off", "safety_cut", "power_loss", "door", "rollover", "vent_transition"};
+  for (const PL &pl : plants) for (const char *ev : events) {
+    FaultCase c; c.p.capacity = pl.cap; c.p.loss = pl.loss; c.p.dead = pl.dead; c.p.lag = pl.lag; c.p.resolution = pl.res; c.p.ambient = 20; c.p.ventG = 120;
+    c.sc.sp = 37.5f; c.sc.durationS = 14400; c.sc.eventAtS = 7200; c.sc.event = ev; c.label = std::string(pl.n) + "/" + ev;
+    if (std::string(ev) == "rollover") { c.sc.event = "none"; c.sc.clockOffset = 0xFFFFFFFFU - 1000U - 7200000U + 5U; }
+    if (std::string(ev) == "vent_transition") { c.sc.event = "none"; c.sc.ventProfile = true; c.sc.ventCycleMin = 20; c.sc.ventDutyPct = 15; c.sc.ventOffsetSec = 20 * 60 - 7000; }
+    if (std::string(ev) == "door") c.sc.eventValue = 2.0;
+    out.push_back(c);
+  }
+  return out;
+}
+static const char *FHEADER =
+    "case,mode,high,emergency,overshoot,mae_tail,ripple_tail,conf_final,state,fault_updates,conf_after_reboot,guard_events,gain_err_pct\n";
+
 int main(int argc, char **argv) {
   std::string cmd = argc > 1 ? argv[1] : "one";
   std::cout << std::fixed << std::setprecision(4);
@@ -121,7 +199,7 @@ int main(int argc, char **argv) {
     }
     sc.label = "one";
     if (sc.trace) { sc.traceOut = &std::cerr;
-      std::cerr << "label,mode,t,temp,fed,sp,duty,vent,conf,state,gain,delay,hold,coast,ventGain,predErr,mismatch,ventPhase,ff,integral,gate,req\n"; }
+      std::cerr << "label,mode,t,temp,fed,sp,duty,vent,conf,state,gain,delay,hold,coast,ventGain,predErr,mismatch,ventPhase,ff,integral,gate,req,holdWin,info\n"; }
     const Result r = run(p, sc);
     if (csv) { std::cout << HEADER; row(std::cout, "one", p, sc, r); }
     else {
@@ -134,6 +212,7 @@ int main(int argc, char **argv) {
                   << " est=" << r.delayEst << " hold true=" << holdTruthPct(p, sc.sp) << " est=" << r.holdEst << " coast true=" << coastTruthC(p)
                   << " est=" << r.coastEst << " vent true=" << ventTruth(p, sc.sp) << " est=" << r.ventEst << " conf=" << r.ventConf
                   << " predErr=" << r.predErr << " tQual=" << r.timeQualifiedS << "\n";
+      std::cout << "mismatch events=" << r.mismatchEvents << " (by Kh-ratio=" << r.mismatchKh << ", by hold=" << r.mismatchHold << ")\n";
       if (r.ventEvents) std::cout << "vents=" << r.ventEvents << " devMax=" << r.ventDevMax << " postMax=" << r.postVentOvershootMax
                                   << " recMax=" << r.ventRecoveryMax << " windupMax=" << r.ventWindupMax << " energyMean=" << r.ventEnergyMean << "\n";
     }
@@ -147,7 +226,67 @@ int main(int argc, char **argv) {
     if (shard == 0) *o << HEADER;
     return shardRun(cmd == "matrix" ? matrixCases() : legacyCases(), shard, shards, *o, {Mode::Baseline, Mode::Adaptive});
   }
-  if (cmd == "count") { std::cout << "matrix=" << matrixCases().size() << " legacy788=" << legacyCases().size() << "\n"; return 0; }
+  if (cmd == "vent") {
+    const int shard = argc > 2 ? std::atoi(argv[2]) : 0, shards = argc > 3 ? std::atoi(argv[3]) : 1;
+    std::ostream *o = &std::cout; std::ofstream f;
+    if (argc > 4) { f.open(argv[4]); o = &f; }
+    *o << std::fixed << std::setprecision(4);
+    if (shard == 0) *o << VHEADER;
+    const auto cases = ventCases();
+    for (size_t i = 0; i < cases.size(); ++i) {
+      if (static_cast<int>(i % shards) != shard) continue;
+      for (Mode m : {Mode::Baseline, Mode::LearnNoVent, Mode::Adaptive}) {
+        Scenario sc = cases[i].sc; sc.mode = m; sc.label = cases[i].plant + "/" + cases[i].strength + "/" + cases[i].schedule;
+        const Result r = run(cases[i].p, sc);
+        *o << cases[i].plant << ',' << cases[i].strength << ',' << cases[i].schedule << ',' << modeName(m) << ',' << r.ventEvents << ',' << r.ventDropEvents << ',' << r.ventDevMax << ','
+           << r.ventDevMean << ',' << r.postVentOvershootMax << ',' << r.postVentOvershootMean << ',' << r.ventRecoveryMax << ',' << r.ventEnergyMean << ','
+           << r.ventWindupMax << ',' << r.high << ',' << r.emergency << ',' << r.mae << ',' << r.ripple << ',' << r.confidence << ',' << r.ventConf << ','
+           << r.ventEst << ',' << ventTruth(cases[i].p, 37.5) << ',' << r.ventErrPct << ',' << r.khEstErrPct << '\n';
+      }
+    }
+    return 0;
+  }
+  if (cmd == "hwchange") {
+    const int shard = argc > 2 ? std::atoi(argv[2]) : 0, shards = argc > 3 ? std::atoi(argv[3]) : 1;
+    std::ostream *o = &std::cout; std::ofstream f;
+    if (argc > 4) { f.open(argv[4]); o = &f; }
+    *o << std::fixed << std::setprecision(4);
+    if (shard == 0) *o << HHEADER;
+    const auto cases = hwCases();
+    for (size_t i = 0; i < cases.size(); ++i) {
+      if (static_cast<int>(i % shards) != shard) continue;
+      for (Mode m : {Mode::Baseline, Mode::Adaptive}) {
+        Scenario sc = cases[i].sc; sc.mode = m; sc.label = cases[i].label + "/" + cases[i].change;
+        const Result r = run(cases[i].p, sc);
+        *o << cases[i].label << ',' << cases[i].change << ',' << modeName(m) << ',' << r.high << ',' << r.emergency << ',' << r.mae << ',' << r.p95 << ',' << r.ripple << ','
+           << r.overshoot << ',' << r.confidence << ',' << r.minConfAfterChange << ',' << r.timeQualifiedS << ',' << r.timeMismatchS << ',' << r.timeReconvergeS << ','
+           << r.minHintAfterChange << ',' << r.minFfAfterChange << ',' << r.maxFfAfterChange << ',' << r.khEstErrPct << ',' << r.delayErrS << ',' << r.ventErrPct << ','
+           << r.mismatchEvents << ',' << r.overshootGuards << '\n';
+      }
+    }
+    return 0;
+  }
+  if (cmd == "faults") {
+    const int shard = argc > 2 ? std::atoi(argv[2]) : 0, shards = argc > 3 ? std::atoi(argv[3]) : 1;
+    std::ostream *o = &std::cout; std::ofstream f;
+    if (argc > 4) { f.open(argv[4]); o = &f; }
+    *o << std::fixed << std::setprecision(4);
+    if (shard == 0) *o << FHEADER;
+    const auto cases = faultCases();
+    for (size_t i = 0; i < cases.size(); ++i) {
+      if (static_cast<int>(i % shards) != shard) continue;
+      for (Mode m : {Mode::Baseline, Mode::Adaptive}) {
+        Scenario sc = cases[i].sc; sc.mode = m; sc.label = cases[i].label;
+        const Result r = run(cases[i].p, sc);
+        *o << cases[i].label << ',' << modeName(m) << ',' << r.high << ',' << r.emergency << ',' << r.overshoot << ',' << r.mae << ',' << r.ripple << ',' << r.confidence << ','
+           << MayapThermal::learnStateName(static_cast<MayapThermal::LearnState>(r.state)) << ',' << r.faultUpdates << ',' << r.confAfterReboot << ',' << r.overshootGuards << ','
+           << r.khEstErrPct << '\n';
+      }
+    }
+    return 0;
+  }
+  if (cmd == "count") { std::cout << "matrix=" << matrixCases().size() << " legacy788=" << legacyCases().size() << " vent=" << ventCases().size()
+    << " hwchange=" << hwCases().size() << " faults=" << faultCases().size() << "\n"; return 0; }
   if (cmd == "mini") {  // quick development matrix: 54 representative plants, BASELINE vs ADAPTIVE
     int pass[2] = {0, 0}, n = 0, high[2] = {0, 0}, em[2] = {0, 0};
     double maeSum[2] = {0, 0}, maeMax[2] = {0, 0}, ovMax[2] = {-9, -9};

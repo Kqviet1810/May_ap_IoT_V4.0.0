@@ -71,6 +71,9 @@ class ThermalController {
     // one: a transient ceiling (startup brake) must not make the FF look "removed", or the
     // bumpless transfer would later subtract it from the integral and cancel its purpose.
     const float ff = assist ? clampFloat(assist->feedForward, 0.0f, 100.0f) : 0.0f;
+    // Known-disturbance feed-forward (vent): new load, so it is added on top and never traded
+    // with the integral (which would cancel it).
+    const float addFf = assist ? clampFloat(assist->addForward, 0.0f, 100.0f) : 0.0f;
     if (!initialized_) {
       initialized_ = true;
       lastInput_ = input;
@@ -79,7 +82,7 @@ class ThermalController {
       // A (re)started controller begins from "heater off": the feed-forward applies at once
       // instead of being subtracted from the integral, which would cancel its purpose.
       ffApplied_ = ff;
-      output_ = clampFloat(ff + cfg.kp * (beta_ * setpoint - input), 0.0f, maxOut);
+      output_ = clampFloat(ff + addFf + cfg.kp * (beta_ * setpoint - input), 0.0f, maxOut);
       return output_;
     }
 
@@ -120,14 +123,14 @@ class ThermalController {
     // The ceiling blocks growth only: an integral already above it may still unwind.
     if (isfinite(integralCeil))
       candidateIntegral = fminf(candidateIntegral, fmaxf(integralCeil, integral_));
-    const float pp = p + ff;  // feed-forward shifts the proportional operating point
+    const float pp = p + ff + addFf;  // feed-forward shifts the proportional operating point
     // Output bounds: legacy [0, maxOut], optionally narrowed around the feed-forward by the
     // V1 correction-authority limiter (never widened).
     float lo = 0.0f, hi = maxOut;
     if (assist && isfinite(assist->corrBase)) {
       const float authority = fmaxf(0.0f, assist->corrBase) + fmaxf(0.0f, assist->corrPerC) * fabsf(error);
-      lo = fmaxf(0.0f, ff - authority);
-      hi = fminf(maxOut, ff + authority);
+      lo = fmaxf(0.0f, ff + addFf - authority);
+      hi = fminf(maxOut, ff + addFf + authority);
       if (lo > hi) lo = hi;
     }
     const float unsaturated = pp + candidateIntegral + d;
@@ -256,7 +259,9 @@ class ThermalStartupController {
       horizonMs = static_cast<uint32_t>(clampFloat((hint_.delaySec+6.0f)*0.5f, 6.0f, 120.0f))*2000U;
     // Learned hold power (average ACTUAL duty at the setpoint) replaces the slow legacy
     // integrator in proportion to the hint strength.
-    const float holdEff = hs > 0.0f ? holdPower_ + hs*(clampFloat(hint_.holdPct,0.0f,maxPower)-holdPower_) : holdPower_;
+    const float holdBase = hs > 0.0f ? holdPower_ + hs*(clampFloat(hint_.holdPct,0.0f,maxPower)-holdPower_) : holdPower_;
+    // A known vent removes heat: the duty needed just to stand still is higher while it runs.
+    const float holdEff = clampFloat(holdBase + (hs > 0.0f ? hs*hint_.ventPct : 0.0f), 0.0f, maxPower);
     const uint8_t recentBuckets = static_cast<uint8_t>(horizonMs/2000U);
     uint32_t recentOnMs = 0;
     for (uint8_t i = 0; i < recentBuckets; ++i)

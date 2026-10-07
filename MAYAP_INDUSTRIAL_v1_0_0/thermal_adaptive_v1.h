@@ -203,9 +203,16 @@ class AdaptiveV1 {
     plan_.ventPhase = vent_.phase();
     plan_.ventFF = usable ? vent_.ff() : 0.0f;
     plan_.holdFF = hold;
+    // The startup ceiling must know that a vent is (about to be) removing heat, or it clips the
+    // compensation at "hold + 3 %". Only PREPARE/ACTIVE count: in RECOVERY the heat that is
+    // still in flight is real surplus and must be braked.
+    if (plan_.hint.valid && ventCoordination_ &&
+        (vent_.phase() == VentPhase::Prepare || vent_.phase() == VentPhase::Active))
+      plan_.hint.ventPct = plan_.ventFF;
     plan_.ventTrustPct = static_cast<uint8_t>(std::min(100.0f, vt * 100.0f));
     if (!ventCoordination_) plan_.ventFF = 0.0f;
-    plan_.assist.feedForward = plan_.holdFF + plan_.ventFF;
+    plan_.assist.feedForward = plan_.holdFF;
+    plan_.assist.addForward = plan_.ventFF;
     // Correction-authority limiter: ripple budget / (Kh * D). Only with a trusted hold and gain,
     // so a plant without a known hold keeps the full legacy range.
     if (usable && hold > 0.0f && learner_.gainTrust() >= 0.5f && learner_.delayTrust() >= 0.4f) {
