@@ -3,6 +3,7 @@
   "singleEepromReviewNote": "2026-10-01: reviewed config-only fingerprint update for one AT24C512 at 0x50, 32-bit 64KiB capacity, 128B pages/126B Wire payload and seven-day history in a separate region. Config/Batch/Reminder schemas and existing slot addresses, thermal/output safety, Tiny protocol and signed Web transactions remain unchanged.",
   "stabilityReviewNote": "2026-09-30: reviewed changes limited to Tiny HIGH frame completion, network memory admission, build ID, nonblocking diagnostic drain/compact status, and OTA admission profile. Integrated origin/main E503 transition reconciliation and Arduino OTA window unchanged. Thermal control, fault/output safety, configuration schema and Web signed transaction bodies retain their existing fingerprints.",
   "turningReviewNote": "2026-10-05: reviewed MachineController fingerprint update limited to turning schedule preservation: homing no longer re-anchors, manual re-anchor persists immediately, and interval/enable edits reproject from the last real turn. PID, thermal safety, output arbitration, schemas, ATtiny and Web transaction logic are unchanged.",
+  "stackReviewNote": "2026-10-07: reviewed config.h fingerprint update limited to NETWORK_TASK_STACK_BYTES 12288 -> 8192 (bench peak 2.5 kB used; static RAM returned to the TLS heap) plus its comment. Control, HMI, supervisor, WDT, thermal/output safety, schemas and Web transactions are unchanged.",
   "entries": [
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/boot_policy.h",
@@ -58,7 +59,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "d7da174ae72ce0addb657dd67d88d25dc0bc425aeaf996cd49df1d0385d63ad7",
+      "sha256": "ff9d58cc5970bfd49c352e4e40cd40dcf131fb767b6019dda4fc6053fb623691",
       "filter": "config"
     },
     {

@@ -190,8 +190,9 @@ void controlTask(void *parameter) {
 #if MAYAP_DIAGNOSTIC_SERIAL
     if (elapsedMs(now, lastStackReportAt) >= TASK_STACK_MONITOR_MS) {
       lastStackReportAt = now;
+      static TaskHandle_t loopTaskHandle = xTaskGetHandle("loopTask");   // looked up once (diagnostic only)
       mayapSerialPrintf(false,
-          "[TASK] stack ctrl=%u hmi=%u sup=%u net=%u mqtt=%u cloud=%u ota=%u bytes ctrl=%lu/%luus hmi=%lu/%luus\n",
+          "[TASK] stack ctrl=%u hmi=%u sup=%u net=%u mqtt=%u cloud=%u ota=%u loop=%u bytes ctrl=%lu/%luus hmi=%lu/%luus\n",
           static_cast<unsigned>(uxTaskGetStackHighWaterMark(controlTaskHandle)),
           static_cast<unsigned>(uxTaskGetStackHighWaterMark(hmiTaskHandle)),
           static_cast<unsigned>(uxTaskGetStackHighWaterMark(supervisorTaskHandle)),
@@ -199,6 +200,7 @@ void controlTask(void *parameter) {
           mqttTaskHandle ? static_cast<unsigned>(uxTaskGetStackHighWaterMark(mqttTaskHandle)) : 0U,
           cloudTaskHandle ? static_cast<unsigned>(uxTaskGetStackHighWaterMark(cloudTaskHandle)) : 0U,
           otaTaskHandle ? static_cast<unsigned>(uxTaskGetStackHighWaterMark(otaTaskHandle)) : 0U,
+          loopTaskHandle ? static_cast<unsigned>(uxTaskGetStackHighWaterMark(loopTaskHandle)) : 0U,
           static_cast<unsigned long>(__atomic_load_n(&controlLastCycleUs, __ATOMIC_ACQUIRE)),
           static_cast<unsigned long>(__atomic_load_n(&controlMaxCycleUs, __ATOMIC_ACQUIRE)),
           static_cast<unsigned long>(__atomic_load_n(&hmiLastCycleUs, __ATOMIC_ACQUIRE)),
