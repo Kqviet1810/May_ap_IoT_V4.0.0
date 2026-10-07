@@ -141,7 +141,8 @@ class AdaptiveV1 {
   const Plan &plan() const { return plan_; }
 
   void setEnabled(bool on) {
-    if (!on && learner_.enabled()) { vent_.reset(); plan_ = Plan{}; }
+    // Disabling (maintenance, plant change) forgets what was learned: re-enabling must requalify.
+    if (!on && learner_.enabled()) { vent_.reset(); plan_ = Plan{}; learner_.reset(); stickyKiLimit_ = 0.0f; }
     learner_.setEnabled(on);
   }
   void tick(uint32_t now, bool actualOn) { learner_.tick(now, actualOn); }

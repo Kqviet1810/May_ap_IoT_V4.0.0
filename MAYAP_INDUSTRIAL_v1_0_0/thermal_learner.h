@@ -323,7 +323,11 @@ class ThermalLearner {
       return GateReason::Door;
     if (std::isfinite(lastSp_) && std::fabs(in.sp - lastSp_) > 0.01f) {
       // A setpoint edit is a one-shot disturbance: drop the windows that span both operating points.
-      lastSp_ = in.sp; invalidate(now, GateReason::Settling, false); return GateReason::Settling;
+      lastSp_ = in.sp; invalidate(now, GateReason::Settling, false);
+      // Delay candidates look back up to DelayGrid[max] before the window: keep the gate shut until
+      // no candidate can pair actuator history from before the edit with post-edit temperature.
+      settleUntil_ = now + Policy::SettleMs + static_cast<uint32_t>(DelayGrid[Cands - 1] * 1000.0f);
+      return GateReason::Settling;
     }
     lastSp_ = in.sp;
     if (settleUntil_ != 0U && static_cast<int32_t>(now - settleUntil_) < 0) return GateReason::Settling;

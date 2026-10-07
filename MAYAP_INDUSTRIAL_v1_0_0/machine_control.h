@@ -6244,8 +6244,14 @@ class MachineController {
     ventInfo_.active = outputs_.state().ventFan;
     ventInfo_.forced = req.ventFanForceOn || adaptiveCoolingRequested();
     ventInfo_.startsInSec = ventStartsInSec;
+    // A schedule shorter than the vent relay's minimum-on time ends while the fan keeps running:
+    // report "ends now" (not "unknown") so the compensation fades instead of snapping back.
+    if (ventInfo_.active && ventRemainingSec < 0.0f && !ventInfo_.forced && !profileVentActive &&
+        !scheduledVentActive && config_.ventScheduleEnabled && !config_.ventAutoEnabled)
+      ventRemainingSec = 0.0f;
     ventInfo_.remainingSec = ventRemainingSec;
-    const MayapThermal::Plan &v1plan = thermalV1_.update(now, normalSsrPermit && actuatorReady && config_.controlMode == ControlMode::Pid,
+    const MayapThermal::Plan &v1plan = thermalV1_.update(now, normalSsrPermit && actuatorReady && config_.controlMode == ControlMode::Pid &&
+        MAYAP_ADAPTIVE_OBSERVER_ONLY == 0,
         autotune_.running(), ventInfo_, temperature_, config_.targetTemp, pid_.integral(),
         config_.highTempAlarm);
     publishThermalLearning(now);

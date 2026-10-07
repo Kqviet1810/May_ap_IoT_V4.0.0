@@ -170,7 +170,11 @@ static void learnerTests() {
     const uint32_t now = r.lastNow + 2000;
     LearnInput in; in.pv = r.lastPv; in.raw = r.lastPv; in.sp = 41.0f; in.high = 500; in.sensor = true; in.fanStable = true;
     Hints h; r.L.sample(now, in, h); CHECK(r.L.gate() == GateReason::Settling);
-    r.L.sample(now + 2000, in, h); CHECK(r.L.gate() == GateReason::Settling); }
+    r.L.sample(now + 2000, in, h); CHECK(r.L.gate() == GateReason::Settling);
+    // still shut after settle + 2W: the longest delay candidate would pair pre-edit actuator history
+    uint32_t t = now + 2000;
+    for (int i = 0; i < 150; ++i) { t += 2000; r.L.sample(t, in, h); }   // 300 s
+    CHECK(r.L.gate() == GateReason::Settling); }
   // Bounds: nothing learned leaves the persistent limits, whatever the plant.
   const double effs[] = {0.2, 2.5};
   for (double e : effs) { Rig r; r.eff = e; r.run(); CHECK(profileRangesValid(r.L.profile())); }
@@ -277,6 +281,12 @@ static void plannerTests() {
     VentInfo v; v.active = true; uint32_t t = trainedNow; float m = 0;
     for (int i = 0; i < 60; ++i, t += 2000) m = std::max(m, a.update(t, true, false, v, 40.0f, 40.0f, 0).ventFF);
     CHECK(m == 0.0f); }
+  // Disable (maintenance / plant change) then re-enable: nothing learned before is trusted any more.
+  { AdaptiveV1 a; train(a, 4.0, false);
+    CHECK(a.update(trainedNow, true, false, VentInfo{}, 39.9f, 40.0f, 0).assist.feedForward > 0);
+    a.setEnabled(false); a.setEnabled(true);
+    const Plan &pl = a.update(trainedNow + 2000, true, false, VentInfo{}, 39.9f, 40.0f, 0);
+    CHECK(pl.assist.feedForward == 0 && !pl.hint.valid && std::isinf(pl.assist.kiMax)); }
   // Overshoot guard: a real overshoot withdraws the profile (lock-out), whatever the confidence.
   { AdaptiveV1 a; train(a, 4.0, false);
     CHECK(a.update(trainedNow, true, false, VentInfo{}, 39.9f, 40.0f, 0).assist.feedForward > 0);
