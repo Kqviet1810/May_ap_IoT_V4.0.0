@@ -16,7 +16,13 @@ test('Cloud and OTA transient TLS users share nonblocking admission with memory 
   assert.match(gate, /class MayapNetworkBatchOperation/);
   assert.match(gate, /~MayapTlsOperation/);
   // Busy admission must not consume an explicit OTA request/check.
-  assert.match(ota, /if \(!tlsOperation\) return;[^\n]*\n\s*__atomic_store_n\(&applyRequestFlag/);
+  assert.match(ota, /if \(!tlsOperation\) \{[^}]*return;\s*\}[^\n]*\n\s*__atomic_store_n\(&applyRequestFlag/);
+  // One TLS context at a time: HTTPS is refused while the MQTT socket is resident and asks the realtime owner to close.
+  assert.match(gate, /const bool overlap = acquired_ && https && mayapMqttTlsResident\(\)/);
+  assert.match(gate, /mayapSetMqttTlsResident/);
+  assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/mqtt_transport.h'), /mayapSetMqttTlsResident\(true\)[\s\S]*mayapSetMqttTlsResident\(false\)/);
+  // Apply and check both use the OTA admission kind (never the MQTT kind's smaller budget).
+  assert.doesNotMatch(ota, /MayapTlsOperation tlsOperation;/);
 });
 
 test('OTA keeps physical confirmation, maintenance interlock and strict byte/signature boundaries', () => {

@@ -11,12 +11,13 @@ uint32_t millis() { return clockMs; }
 void mayapSerialPrintf(bool,const char*,...) {}
 bool credentialsConfigured() { return true; }
 struct { bool connected=false; bool isConnected() const { return connected; } int RSSI() const { return -50; } uint32_t localIP() const { return 1234; } } WiFi;
-constexpr int WIFI_PS_NONE=0, ESP_OK=0;
+constexpr int WIFI_PS_NONE=0, WIFI_PS_MIN_MODEM=1, ESP_OK=0;
 static bool wifiPowerModeAppliedValid=false;
-static unsigned powerCalls=0; static int powerResult=ESP_OK;
-int esp_wifi_set_ps(int mode) { assert(mode==WIFI_PS_NONE); ++powerCalls; return powerResult; }
+static unsigned powerCalls=0; static int powerResult=ESP_OK, lastPsMode=-1;
+int esp_wifi_set_ps(int mode) { ++powerCalls; lastPsMode=mode; return powerResult; }
 namespace MayapNetworkInternal {}
 #include "actual-wifi-globals.inc"
+static MayapWifiPower::Mode wifiPowerModeApplied=MayapWifiPower::Mode::Performance;
 #include "actual-wifi-publish.inc"
 #include "actual-wifi-getters.inc"
 void sample(uint32_t time,bool raw) {
@@ -67,11 +68,28 @@ int main() {
  clockMs=9*3600000U; publish(NetworkStateCode::Connecting,false);
  clockMs+=4000; publish(NetworkStateCode::Connecting,false);
  assert(publishedConnected && !mayapGetRawNetworkStatus().connected);
- // Fixed owner-only power policy: one successful application per association,
- // bounded retry on failure, never modem sleep regardless of browser activity.
- WiFi.connected=true; applyWifiPowerMode(); applyWifiPowerMode(); assert(powerCalls==1);
+ // Power policy (wifi_power_policy.h), applied only by networkTask: PERFORMANCE for the first 15 minutes after
+ // power-up and while the Web is in use, MIN_MODEM after 15 idle minutes, PERFORMANCE again at the first activity.
+ using namespace MayapWifiPower;
+ const uint32_t MIN=60000U;
+ clockMs=2*60*MIN;                                   // 2 h after boot, never any Web activity
+ WiFi.connected=true; applyWifiPowerMode(); applyWifiPowerMode();
+ assert(powerCalls==1 && lastPsMode==WIFI_PS_MIN_MODEM && wifiPowerModeApplied==Mode::Save);
  WiFi.connected=false; applyWifiPowerMode(); assert(powerCalls==1 && !wifiPowerModeAppliedValid);
- WiFi.connected=true; powerResult=-1; applyWifiPowerMode(); assert(!wifiPowerModeAppliedValid);
- powerResult=ESP_OK; applyWifiPowerMode(); applyWifiPowerMode(); assert(powerCalls==3);
+ WiFi.connected=true; powerResult=-1; applyWifiPowerMode(); assert(!wifiPowerModeAppliedValid);   // driver refused: retry
+ powerResult=ESP_OK; applyWifiPowerMode(); applyWifiPowerMode(); assert(powerCalls==3 && lastPsMode==WIFI_PS_MIN_MODEM);
+ noteWebActivity(clockMs); applyWifiPowerMode();      // a Web tab opens: awake at once
+ assert(powerCalls==4 && lastPsMode==WIFI_PS_NONE && wifiPowerModeApplied==Mode::Performance);
+ clockMs+=15*MIN-1U; applyWifiPowerMode(); assert(powerCalls==4);          // 14 min 59 s: still awake
+ noteWebActivity(clockMs); clockMs+=15*MIN-1U; applyWifiPowerMode(); assert(powerCalls==4);   // activity restarts the 15 min
+ clockMs+=1U; applyWifiPowerMode(); assert(powerCalls==5 && lastPsMode==WIFI_PS_MIN_MODEM);
+ noteAlarmActivity(clockMs); applyWifiPowerMode();    // an alarm in flight wakes the radio
+ assert(powerCalls==6 && lastPsMode==WIFI_PS_NONE);
+ clockMs+=2*MIN-1U; applyWifiPowerMode(); assert(powerCalls==6);
+ clockMs+=1U; applyWifiPowerMode(); assert(powerCalls==7 && lastPsMode==WIFI_PS_MIN_MODEM);
+ // Power-up: the first 15 minutes are awake, whatever millis() says about wrap-around later.
+ Internal::webAt=0U; Internal::alarmSeen=0U;
+ assert(desired(14*MIN)==Mode::Performance && desired(15*MIN)==Mode::Save);
+ Internal::webAt=0xFFFFFFFFU-MIN; assert(desired(10*MIN)==Mode::Performance && desired(14*MIN+MIN)==Mode::Save);
  std::puts("Production Wi-Fi flap publication: raw admission, router reboot, 1000 reconnects, 8h loss, Internet-only failure and wrap PASS");
 }

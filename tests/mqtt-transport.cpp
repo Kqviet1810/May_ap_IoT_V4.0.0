@@ -454,6 +454,26 @@ int main() {
     clearSlots();
   }
 
+  // 18. Exclusive TLS: the socket counts as the one TLS context from the start of the handshake until it is closed
+  //     (any failure path included), so an HTTPS session can only start after MQTT released its memory.
+  resetWorld(); mqttTlsResidentRef() = false;
+  CHECK(!mayapMqttTlsResident());
+  connectNow(); CHECK(mayapMqttTlsResident() && mayapMqttTransportConnected());
+  g_yield = true; tick(1); CHECK(!mayapMqttTlsResident() && !net.open);              // Cloud asked: closed and released
+  g_yield = false;
+  for (uint8_t refusedCode : {5U, 4U}) {                                              // broker refuses CONNECT: never left resident
+    resetWorld(); g_connackCode = refusedCode; mayapMqttTransportBegin(); tick(1); tick(STA_STABLE_MS);
+    CHECK(!mayapMqttTransportConnected() && !mayapMqttTlsResident() && !net.open);
+  }
+  resetWorld(); net.allowConnect = false; mayapMqttTransportBegin(); tick(1); tick(STA_STABLE_MS);
+  CHECK(!mayapMqttTlsResident());                                                     // TLS connect failure
+  resetWorld(); g_silentBroker = true; mayapMqttTransportBegin(); tick(1); tick(STA_STABLE_MS);
+  CHECK(!mayapMqttTlsResident());                                                     // handshake timeout
+  resetWorld(); connectNow(); CHECK(mayapMqttTlsResident());
+  g_networkStatus.connected = false; tick(1); CHECK(!mayapMqttTlsResident());         // Wi-Fi lost
+  resetWorld(); connectNow(); g_pressure = true; tick(1); CHECK(!mayapMqttTlsResident());   // memory pressure
+  g_pressure = false;
+
   printf("mqtt transport host tests PASS\n");
   return 0;
 }

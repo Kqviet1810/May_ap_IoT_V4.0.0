@@ -410,11 +410,16 @@ inline void mayapFirmwareWebApplyNow() {
 // nua, dinh ky tu kiem tra ban moi khi dang ONLINE.
 inline void mayapFirmwareWebUpdate(uint32_t now) {
   using namespace MayapFirmwareWebInternal;
+  // HTTPS never coexists with the MQTT socket: the admission below makes the realtime owner close first, and
+  // refusals are retried every few seconds instead of every 30 ms.
+  static uint32_t admissionRetryAt = 0U;
+  if (admissionRetryAt != 0U && static_cast<int32_t>(now - admissionRetryAt) < 0) return;
   if (__atomic_load_n(&applyRequestFlag, __ATOMIC_ACQUIRE)) {
-    MayapTlsOperation tlsOperation;
-    if (!tlsOperation) return; // keep the accepted request pending, never lose it
+    MayapTlsOperation tlsOperation(MayapTlsKind::Ota);
+    if (!tlsOperation) { admissionRetryAt = now + 3000U; return; } // keep the accepted request pending, never lose it
     __atomic_store_n(&applyRequestFlag, 0U, __ATOMIC_RELEASE);
     mayapFirmwareWebApplyNow();
+    mayapReleaseCloudTlsYield();   // a failed update returns here: realtime may reconnect
     return;
   }
 
@@ -426,8 +431,9 @@ inline void mayapFirmwareWebUpdate(uint32_t now) {
   if (!MayapFirmwareCheck::due(now, lastCheckAt, checkNow, FIRMWARE_FIRST_CHECK_DELAY_MS,
                                FIRMWARE_CHECK_INTERVAL_MS, jitterMs)) return;
   MayapTlsOperation tlsOperation(MayapTlsKind::Ota);
-  if (!tlsOperation) return; // retry next loop, not a whole interval later
+  if (!tlsOperation) { admissionRetryAt = now + 3000U; return; } // retry in seconds, not a whole interval later
   if (checkNow) __atomic_store_n(&checkNowRequestFlag, 0U, __ATOMIC_RELEASE);
   lastCheckAt = now;
   mayapFirmwareWebCheck();
+  mayapReleaseCloudTlsYield();     // the short HTTPS session is over: realtime may reconnect
 }

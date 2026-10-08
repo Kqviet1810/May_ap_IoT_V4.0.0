@@ -121,9 +121,12 @@ if "healthRestartRequested" in ino or "HealthMonitor," in ino:
 require(ino, "mayapOnlineIoEnter", "atomic Online admission before owner I/O")
 require(network, "mayapOnlineOwnersDrained()", "radio mutation requires owner drain ACKs")
 require(network, "safe STA reconnect", "runtime Wi-Fi recovery is non-destructive")
-require(network, "esp_wifi_set_ps(WIFI_PS_NONE)", "fixed mains Wi-Fi power policy")
-if "WIFI_PS_MIN_MODEM" in network or "serviceWifiPowerMode" in realtime:
-    raise SystemExit("FAIL: dynamic Wi-Fi power-save policy reintroduced")
+# Wi-Fi power: PERFORMANCE while the Web is used and for 15 min after, modem sleep only after that quiet period
+# (wifi_power_policy.h). The driver is touched by networkTask alone; other tasks only report activity.
+require(network, "MayapWifiPower::desired(now)", "time-based Wi-Fi power policy")
+require(network, "WIFI_PS_NONE", "PERFORMANCE mode is applied")
+if "serviceWifiPowerMode" in realtime or "WIFI_PS_MIN_MODEM" in realtime:
+    raise SystemExit("FAIL: per-lease/per-error dynamic Wi-Fi power toggling reintroduced")
 if "WiFi.disconnect(true, false)" in network:
     raise SystemExit("FAIL: destructive STA teardown reintroduced")
 if "esp_wifi_set_ps(" in realtime or "esp_wifi_get_ps(" in realtime:

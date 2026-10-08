@@ -5,6 +5,7 @@
   "turningReviewNote": "2026-10-05: reviewed MachineController fingerprint update limited to turning schedule preservation: homing no longer re-anchors, manual re-anchor persists immediately, and interval/enable edits reproject from the last real turn. PID, thermal safety, output arbitration, schemas, ATtiny and Web transaction logic are unchanged.",
   "stackReviewNote": "2026-10-07: reviewed config.h fingerprint update limited to NETWORK_TASK_STACK_BYTES 12288 -> 8192 (bench peak 2.5 kB used; static RAM returned to the TLS heap) plus its comment. Control, HMI, supervisor, WDT, thermal/output safety, schemas and Web transactions are unchanged.",
   "arduinoOtaRemovalReviewNote": "2026-10-08: reviewed removal of ArduinoOTA (LAN upload; direct flashing is USB only). config.h: OTA_PASSWORD and its comments removed; FIRMWARE_CHECK_INTERVAL_MS 6 h -> 24 h plus FIRMWARE_CHECK_JITTER_MS and FIRMWARE_FIRST_CHECK_DELAY_MS; OTA task comments updated. ota_web_update.h: mayapFirmwareWebUpdate() only changes WHEN the periodic check is due (firmware_check_policy.h: first check 10 min after power-up, then daily plus per-boot jitter, check-now immediate); mayapFirmwareWebApplyNow() is unchanged except for the comment block around it. Apply still requires mayapFirmwareMaintenanceReady() and an operator confirmation; signed metadata, SHA-256, rollback, control, PID, thermal/output safety, HMI, schemas and Web transactions are untouched.",
+  "mqttPrimaryFallbackReviewNote": "2026-10-08: reviewed MQTT-primary / cold-standby-alarm change. network_io_guard.h: HTTPS operations (Cloud/OTA) are refused while the MQTT socket is resident and ask the realtime owner to close (one TLS context at a time, counters contexts_max/overlap_violations/overlap_denied); admission thresholds and the MQTT lease are unchanged. mayapFirmwareWebUpdate(): OTA kind admission, 3 s retry after a refused admission, yield released after the HTTPS session; mayapFirmwareWebApplyNow() unchanged. No control, PID, thermal/output safety, HMI, WDT, schema or Web transaction body changed; communication failure still has no restart authority.",
   "entries": [
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/boot_policy.h",
@@ -28,7 +29,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/network_io_guard.h",
-      "sha256": "5796b4050ca76571afaf3f0b3ee221f42c954fe58705d998c698d1bc6c65a896"
+      "sha256": "3dec1f26bdb368d304322c32c9b73d70084c7e712268b9fcb98d34d43a19ba43"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/attiny_bus.h",
@@ -153,7 +154,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/ota_web_update.h",
-      "sha256": "da34f9c25fc06c8d18342c42fbe9672ccd3f24b2a256df9e4396d850e43fbb0f",
+      "sha256": "0b8540042bd842cc1481a97ef5e35e91bff5b3404eb5dec1b74276a8ec719f2f",
       "signature": "inline void mayapFirmwareWebUpdate("
     },
     {

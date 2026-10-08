@@ -41,6 +41,7 @@ snapshot; foreground/background browser activity also selected modem sleep.
   mean Wi-Fi loss. Stable state never admits network I/O.
 * Explicit OFFLINE/unconfigured publishes immediately. Existing owner-drained
   radio stop, reconnect, backoff, portal and deep-recovery transaction retained.
+* **[Cập nhật 2026-10-08: xem doc/NETWORK_MQTT_PRIMARY.md — PERFORMANCE cố định chỉ còn trong 15 phút đầu và khi còn dùng Web; sau 15 phút không dùng Web mới modem sleep, một quy tắc theo thời gian do networkTask áp dụng.]**
 * Fixed `WIFI_PS_NONE`, applied exclusively by networkTask and reapplied after
   association/recovery. The realtime power mailbox and SAVE/PERFORMANCE policy
   are removed. Failed driver application retries without log flooding.

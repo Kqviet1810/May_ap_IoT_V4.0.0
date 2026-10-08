@@ -8,6 +8,8 @@
 #include "cloud_alarm_receipt.h"
 #include "light_alarm_policy.h"
 #include "mqtt_uplink.h"
+#include "alarm_fallback_policy.h"
+#include "wifi_power_policy.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -567,10 +569,10 @@ inline bool postJson(const char *path, const JsonDocument &doc, const char *logT
     return false;
   }
   // A TLS lease held by someone else (typically the ~2.5 s realtime handshake) is waited out, never
-  // pre-empted: asking realtime to yield mid-handshake aborted every reconnect while alarms were
-  // queued, so the Web stayed offline for the whole backlog. Only a real heap shortage asks for a yield.
-  if (urgent && !mayapTlsBusy() && ESP.getFreeHeap()<73728U) mayapRequestCloudTlsYield(millis(),true);
-  MayapTlsOperation tlsOperation(MayapTlsKind::Cloud);
+  // pre-empted: asking realtime to yield mid-handshake aborted every reconnect while alarms were queued.
+  // The admission below refuses while the MQTT socket is resident and asks it to close (never two TLS
+  // contexts at once), then starts only once MQTT gave its memory back and the heap check passes.
+  MayapTlsOperation tlsOperation(MayapTlsKind::Cloud, urgent);
   if (!tlsOperation) {
     static uint32_t lastAdmissionLogAt = 0U;
     if (lastAdmissionLogAt == 0U || elapsedMs(millis(), lastAdmissionLogAt) >= 30000U) {
@@ -728,33 +730,24 @@ inline uint8_t awaitUplink(const int8_t *slots, uint8_t count) {
   return durable;
 }
 
+// Heartbeat rides the MQTT link only. HTTPS is reserved for alarms MQTT cannot carry, so a silent MQTT link
+// means "no heartbeat" (the Worker then reports the device unreachable) - never a reason to open a second TLS
+// session. A miss is not a Cloud failure: no back-off, the next heartbeat is due in CLOUD_HEARTBEAT_INTERVAL_MS.
 inline bool sendHeartbeat() {
-  JsonDocument doc;
-  doc["device_id"] = mayapDeviceIdText();
-  doc["device_key"] = mayapDeviceSecret();
-  // Worker dung co nay de quyet dinh co bao "mat ket noi" hay khong - chi bao
-  // khi dang co me ap chay tai lan heartbeat gan nhat (xem checkDeviceConnectivity
-  // trong cloudflare/src/index.js). processingRuntime duoc lam moi moi chu ky
-  // kiem tra (CLOUD_CHECK_INTERVAL_MS), du moi cho heartbeat moi 30s.
-  doc["batch_running"] = processingRuntime.batchRunning;
-  // The MQTT link is already open: let it carry the heartbeat (no second TLS session, so realtime never has
-  // to yield for it). Fall back to HTTPS when it is down, missing the PUBACK, or the Worker is not updated.
-  if (MayapUplink::available(millis())) {
-    char json[48];
-    snprintf(json, sizeof(json), "{\"batch_running\":%s}", processingRuntime.batchRunning ? "true" : "false");
-    const int8_t slot = MayapUplink::offer(MayapUplink::Kind::Heartbeat, json, strlen(json), millis());
-    if (slot >= 0) {
-      if (awaitUplink(&slot, 1U)) {
-        requestDeferred = false;
-        mayapSerialPrintf(false, "[CLOUD] heartbeat -> MQTT durable\n");
-        return true;
-      }
-      MayapUplink::suspect(millis());
-      mayapSerialPrintf(false, "[CLOUD] heartbeat: no MQTT PUBACK, using HTTPS for %lus\n",
-          static_cast<unsigned long>(MayapUplink::SUSPECT_MS / 1000UL));
-    }
+  requestDeferred = true;
+  if (!MayapUplink::available(millis())) return false;
+  char json[48];
+  snprintf(json, sizeof(json), "{\"batch_running\":%s}", processingRuntime.batchRunning ? "true" : "false");
+  const int8_t slot = MayapUplink::offer(MayapUplink::Kind::Heartbeat, json, strlen(json), millis());
+  if (slot < 0) return false;
+  if (awaitUplink(&slot, 1U)) {
+    mayapSerialPrintf(false, "[CLOUD] heartbeat -> MQTT durable\n");
+    return true;
   }
-  return postJson("/api/device/heartbeat", doc, "heartbeat");
+  MayapUplink::suspect(millis());
+  mayapSerialPrintf(false, "[CLOUD] heartbeat: no MQTT PUBACK (uplink suspect %lus)\n",
+      static_cast<unsigned long>(MayapUplink::SUSPECT_MS / 1000UL));
+  return false;
 }
 
 inline void alarmEventId(const OutboxItem &item, char (&eventId)[40]) {
@@ -835,13 +828,9 @@ inline uint8_t sendAlarmsUplink(const uint8_t *idx, uint8_t count, uint8_t *sent
 // Sends the events at queue positions idx[0..count) and returns a bitmask (bit k = idx[k]) of the ones the
 // Worker made durable; *sentMask marks those that were part of the request. One event (or an older Worker
 // without the batch endpoint) uses the original single-event endpoint.
-inline uint8_t sendAlarms(const uint8_t *idx, uint8_t count, uint8_t *sentMask) {
+inline uint8_t sendAlarmsHttps(const uint8_t *idx, uint8_t count, uint8_t *sentMask) {
   *sentMask = 0U;
   if (count == 0U) return 0U;
-  if (MayapUplink::available(millis())) {
-    const uint8_t durable = sendAlarmsUplink(idx, count, sentMask);
-    if (*sentMask != 0U) return durable;
-  }
   JsonDocument doc;
   doc["device_id"] = mayapDeviceIdText();
   doc["device_key"] = mayapDeviceSecret();
@@ -892,6 +881,48 @@ inline uint8_t sendAlarms(const uint8_t *idx, uint8_t count, uint8_t *sentMask) 
     mayapSerialPrintf(false, "[CLOUD] event=%s age=%lums durable_ack=%u batch=%u\n", ids[k],
         static_cast<unsigned long>(elapsedMs(millis(), outboxAt(idx[k]).detectedAt)),
         (durable >> k) & 1U ? 1U : 0U, static_cast<unsigned>(used));
+  return durable;
+}
+
+// Where do these alarms go? MQTT whenever the link carries them; HTTPS only as the emergency fallback decided by
+// alarm_fallback_policy.h (see there). A "wait" is deliberately silent: nothing is sent, nothing is penalised.
+static MayapAlarmFallback::Gate fallbackGate;
+inline uint8_t sendAlarms(const uint8_t *idx, uint8_t count, uint8_t *sentMask) {
+  *sentMask = 0U;
+  if (count == 0U) return 0U;
+  uint32_t now = millis();
+  MayapWifiPower::noteAlarmActivity(now);     // an alarm in flight keeps the radio out of modem sleep
+  if (MayapUplink::available(now)) {
+    const uint8_t durable = sendAlarmsUplink(idx, count, sentMask);
+    if (*sentMask != 0U) {
+      if (durable != 0U) fallbackGate.onMqttDelivered();     // realtime delivers again: the fallback sleeps
+      return durable;
+    }
+  }
+  now = millis();
+  uint32_t oldest = 0U;
+  bool critical = false;
+  for (uint8_t k = 0U; k < count; ++k) {
+    const OutboxItem &item = outboxAt(idx[k]);
+    const uint32_t age = elapsedMs(now, item.detectedAt);
+    if (age > oldest) oldest = age;
+    critical = critical || item.severity == NotifyLevel::Critical;
+  }
+  const NetworkStatus status = mayapGetRawNetworkStatus();
+  const bool wifiUp = status.requestedMode == ConnectivityMode::Online && status.connected;
+  if (MayapAlarmFallback::decide(fallbackGate, now, MayapUplink::available(now), wifiUp, registered, oldest,
+                                 critical) != MayapAlarmFallback::Route::Https) {
+    requestDeferred = true;
+    return 0U;
+  }
+  mayapSerialPrintf(false, "[CLOUD] FALLBACK HTTPS: MQTT cannot carry %u alarm(s), oldest %lus, attempt %lu heap=%lu\n",
+      static_cast<unsigned>(count), static_cast<unsigned long>(oldest / 1000UL),
+      static_cast<unsigned long>(fallbackGate.attempts + 1U), static_cast<unsigned long>(ESP.getFreeHeap()));
+  const uint8_t durable = sendAlarmsHttps(idx, count, sentMask);
+  if (!requestDeferred) {                                    // an HTTPS request was really made
+    fallbackGate.onAttempt(millis(), durable != 0U, esp_random());
+    if (durable == 0U) mayapReleaseCloudTlsYield();           // failed: let realtime come back, retry later
+  }
   return durable;
 }
 

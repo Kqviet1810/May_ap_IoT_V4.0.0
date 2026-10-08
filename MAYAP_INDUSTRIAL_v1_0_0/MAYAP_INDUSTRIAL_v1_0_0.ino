@@ -209,6 +209,13 @@ void controlTask(void *parameter) {
           static_cast<unsigned long>(ESP.getFreeHeap()),
           static_cast<unsigned long>(ESP.getMinFreeHeap()),
           static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+      // Exclusive TLS: contexts_max must stay 1 and overlap_violations 0 for the whole uptime.
+      mayapSerialPrintf(false,
+          "[TLS-GUARD] contexts_max=%u overlap_violations=%lu overlap_denied=%lu mqtt_resident=%u\n",
+          static_cast<unsigned>(mayapTlsContextsMax()),
+          static_cast<unsigned long>(mayapTlsOverlapViolations()),
+          static_cast<unsigned long>(mayapTlsOverlapDenied()),
+          mayapMqttTlsResident() ? 1U : 0U);
     }
 #endif
 

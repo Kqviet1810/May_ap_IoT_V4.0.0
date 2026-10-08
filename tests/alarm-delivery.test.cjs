@@ -238,11 +238,21 @@ test('uplink end to end: device alarm/heartbeat over MQTT is PUBACKed only once 
   assert.deepEqual(await publish(14,'heartbeat',JSON.stringify({batch_running:true})),[14]);
   const row=h.sql.prepare('SELECT batch_running,status,last_seen FROM devices WHERE device_id=?').get(id);
   assert.equal(row.batch_running,1);assert.equal(row.status,'online');assert.ok(row.last_seen>0);
-  assert.deepEqual(ingestCalls,['alarm','alarm','alarm','alarm','heartbeat']);
+  assert.deepEqual(ingestCalls,['alarm','alarm','alarm','alarm','heartbeat']);   // (the HTTPS fallback below never touches the broker)
+  // Cold-standby HTTPS fallback (independent Worker endpoint, device_key auth) carrying an alarm MQTT already stored:
+  // same event_id -> duplicate receipt, still one row. The reverse order (HTTPS first, MQTT resend) is the same lookup.
+  const https=async(events)=>{const stub=globalThis.Response;globalThis.Response=NativeResponse;try{return await (await h.batch(events)).json();}finally{globalThis.Response=stub;}};
+  const viaHttps=await https([{event_id:'fe6e-00000001',alarm_type:'FAULT_130',severity:'critical',state:'active',message:'off'}]);
+  assert.deepEqual([viaHttps.results[0].durable,viaHttps.results[0].duplicate],[true,true]);
+  assert.equal(count(),2);
+  const fresh=await https([{event_id:'fe6e-00000009',alarm_type:'FAULT_131',severity:'critical',state:'active',message:'x'}]);
+  assert.equal(fresh.results[0].durable,true);assert.equal(count(),3);
+  assert.deepEqual(await publish(16,'alarm',JSON.stringify({event_id:'fe6e-00000009',alarm_type:'FAULT_131',severity:'critical',state:'active',message:'x'})),[16]);
+  assert.equal(count(),3);                                       // MQTT resend of what HTTPS stored: acknowledged, not duplicated
   // Wrong secret on the Worker side (misconfigured deploy): nothing is stored and the device gets no PUBACK.
   h.env.MQTT_DEVICE_SECRET='rotated-elsewhere';
   assert.deepEqual(await publish(15,'alarm',event('fe6e-00000003','active','off')),[]);
-  assert.equal(count(),2);
+  assert.equal(count(),3);
   await Promise.all(h.jobs);
  }finally{global.fetch=originalFetch;}
 });

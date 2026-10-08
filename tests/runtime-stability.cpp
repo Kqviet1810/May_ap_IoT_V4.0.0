@@ -145,6 +145,28 @@ int main() {
   ESP.free=49152;
   { MayapTlsOperation mqtt; assert(mqtt); }
   assert(!mayapTlsBusy() && mayapTlsDeferredCount()>=4);
+  // Exclusive TLS: an HTTPS session (Cloud alarm fallback, registration, OTA) never starts while the MQTT socket is
+  // resident; it asks the realtime owner to close and starts only after MQTT gave its memory back.
+  MayapNetworkIoInternal::cloudYieldUntil=MayapNetworkIoInternal::cloudYieldRetryAt=MayapNetworkIoInternal::cloudUrgentRetryAt=0U;
+  ESP.free=125000; ESP.largest=47092;
+  mayapSetMqttTlsResident(true);
+  assert(mayapMqttTlsResident());
+  { MayapTlsOperation cloud(MayapTlsKind::Cloud,true); assert(!cloud && !mayapTlsBusy()); }
+  assert(mayapCloudTlsYieldRequested(clockMs) && mayapTlsOverlapDenied()==1);
+  { MayapTlsOperation ota(MayapTlsKind::Ota); assert(!ota); }
+  assert(mayapTlsOverlapDenied()==2 && mayapTlsContextsMax()==1 && mayapTlsOverlapViolations()==0);
+  mayapSetMqttTlsResident(false);                    // MQTT closed: memory is back
+  mayapSetMqttTlsResident(false);                    // idempotent
+  { MayapTlsOperation ota(MayapTlsKind::Ota); assert(ota && mayapTlsBusy());
+    mayapReleaseCloudTlsYield();
+    MayapTlsOperation mqtt; assert(!mqtt); }         // and MQTT cannot start a handshake while HTTPS holds the lease
+  assert(!mayapTlsBusy() && mayapTlsContextsMax()==1 && mayapTlsOverlapViolations()==0);
+  mayapSetMqttTlsResident(true);                     // a violation would be counted if an HTTPS context ever overlapped it
+  mayapTlsContextEnter(); assert(mayapTlsOverlapViolations()==1 && mayapTlsContextsMax()==2);
+  mayapTlsContextLeave(); mayapSetMqttTlsResident(false);
+  MayapNetworkIoInternal::overlapViolations=0U; MayapNetworkIoInternal::contextsMax=0U;
+  MayapNetworkIoInternal::cloudYieldUntil=MayapNetworkIoInternal::cloudYieldRetryAt=MayapNetworkIoInternal::cloudUrgentRetryAt=0U;
+  ESP.free=85000; ESP.largest=40000;
   using namespace MayapCloudInternal;
   outboxCount=2;
   dispatch(clockMs);

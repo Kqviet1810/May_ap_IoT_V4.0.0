@@ -3,6 +3,7 @@
 #include "config.h"
 #include "service_recovery.h"
 #include "wifi_stable_state.h"
+#include "wifi_power_policy.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
@@ -62,6 +63,7 @@ static bool radioActive = false;
 static uint32_t connectionStartedAt = 0U;
 // Mains-powered controller: only networkTask applies fixed awake STA policy.
 static bool wifiPowerModeAppliedValid = false;
+static MayapWifiPower::Mode wifiPowerModeApplied = MayapWifiPower::Mode::Performance;
 // Backoff RIENG cua STA Wi-Fi, doc lap voi backoff cua MQTT (transaction_bridge.h)
 // va Cloud Push (cloud_alert_link.h) - loi/reset o tang nao khong dung cham
 // tang khac. Khong con dung 2 bien lastRetryAt/lastStartAttemptAt + hang so co
@@ -194,12 +196,18 @@ inline bool startStation(uint32_t now) {
   return true;
 }
 
+// PERFORMANCE while the Web is in use and for 15 min after, MIN_MODEM after that (wifi_power_policy.h). Applied only
+// here (networkTask), re-applied after every association/recovery, retried on driver failure without log flooding.
 inline void applyWifiPowerMode() {
   if (!WiFi.isConnected()) { wifiPowerModeAppliedValid = false; return; }
-  if (wifiPowerModeAppliedValid) return;
-  if (esp_wifi_set_ps(WIFI_PS_NONE) != ESP_OK) return;
+  const uint32_t now = millis();
+  const MayapWifiPower::Mode want = MayapWifiPower::desired(now);
+  if (wifiPowerModeAppliedValid && want == wifiPowerModeApplied) return;
+  if (esp_wifi_set_ps(want == MayapWifiPower::Mode::Save ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE) != ESP_OK) return;
   wifiPowerModeAppliedValid = true;
-  mayapSerialPrintf(false, "[WIFI-RECOVERY] power=PERFORMANCE (fixed mains policy)\n");
+  wifiPowerModeApplied = want;
+  mayapSerialPrintf(false, "[WIFI-RECOVERY] power=%s\n",
+      want == MayapWifiPower::Mode::Save ? "SAVE (Web idle 15 min)" : "PERFORMANCE");
 }
 
 // ------------------------------ Cong 1 doi Wi-Fi -----------------------------

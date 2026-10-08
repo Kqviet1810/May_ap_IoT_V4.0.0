@@ -203,6 +203,7 @@ inline void stopClient(bool graceful) {
     }
   }
   net.stop();
+  mayapSetMqttTlsResident(false);   // memory is back before any HTTPS session may start
   connected = false;
   MayapUplink::onLinkDown();
   linkFailed = false;
@@ -370,6 +371,7 @@ inline Connect connectClient() {
   using namespace MayapMqttWire;
   MayapTlsOperation tls(MayapTlsKind::Mqtt);
   if (!tls) return Connect::Busy;
+  mayapSetMqttTlsResident(true);   // from here until stopClient()/a failed attempt the socket counts as THE TLS context
   buildIdentity();
   if (!netConfigured) {
     // Same transport settings as the V2 owner.
@@ -524,6 +526,7 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
     if (!backoff.ready(now) || !clockValid()) return;  // certificate dates need real time
     if (MayapRecovery::age(now, staUpSince) < STA_STABLE_MS) return;   // a flapping Wi-Fi gets no TLS handshakes
     Connect result = connectClient();
+    if (result != Connect::Ok) mayapSetMqttTlsResident(false);   // every failure path already ran net.stop()
     if (result == Connect::Failed && mayapCloudTlsYieldRequested(millis())) {
       // Cloud asked for the heap while this handshake ran: contention, not a broker failure.
       mayapSerialPrintf(false, "[MQTT] connect aborted: Cloud needs the TLS lease, retry soon\n");

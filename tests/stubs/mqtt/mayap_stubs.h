@@ -79,6 +79,11 @@ inline bool mayapCloudTlsYieldRequested(uint32_t) {
   if (g_yieldAfterCalls > 0U && --g_yieldAfterCalls == 0U) g_yield = true;
   return g_yield;
 }
+// Exclusive-TLS bookkeeping of the real guard (network_io_guard.h): the WSS socket counts as THE TLS context.
+inline bool &mqttTlsResidentRef() { static bool resident = false; return resident; }
+inline unsigned &mqttTlsResidentFlips() { static unsigned flips = 0U; return flips; }
+inline void mayapSetMqttTlsResident(bool resident) { if (mqttTlsResidentRef() != resident) ++mqttTlsResidentFlips(); mqttTlsResidentRef() = resident; }
+inline bool mayapMqttTlsResident() { return mqttTlsResidentRef(); }
 inline void mayapOnlineOwnerQuiet(MayapRecovery::Service) {}
 inline bool mayapOnlineIoEnter(MayapRecovery::Service) { return g_ioEnterOk; }
 inline void mayapOnlineIoLeave(MayapRecovery::Service) {}

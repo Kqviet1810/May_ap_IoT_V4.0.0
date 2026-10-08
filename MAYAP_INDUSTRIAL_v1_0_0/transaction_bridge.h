@@ -7,6 +7,7 @@
 
 #include "protocol_limits.h"
 #include "realtime_publish_policy.h"
+#include "wifi_power_policy.h"
 #include <ArduinoJson.h>
 #include <mbedtls/md.h>
 #include <time.h>
@@ -1140,6 +1141,9 @@ inline void dispatchApplicationMessage(const char *channel, const uint8_t *paylo
   if (!channel || length > MayapProtocol::FRAME_NORMAL_CAP) return;
   JsonDocument wireDoc;
   if (deserializeJson(wireDoc, payload, length) != DeserializationError::Ok) return;
+  // Any Web contact (an open tab's session, a command, a config/history request) keeps the radio awake and
+  // returns it to PERFORMANCE at once if it had gone to modem sleep after 15 idle minutes.
+  if (strcmp(channel, "session") != 0 || (wireDoc["active"] | false)) MayapWifiPower::noteWebActivity(millis());
   if (!strcmp(channel, "session")) {
     handleSessionMessage(wireDoc);
     return;

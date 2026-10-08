@@ -10,7 +10,37 @@ static uint32_t deferred = 0U;
 static uint32_t cloudYieldUntil = 0U, cloudYieldRetryAt = 0U;
 static uint8_t cloudActive = 0U;
 static uint32_t cloudUrgentRetryAt=0U;
+// ONE TLS context at a time, ever. The resident MQTT/WSS socket (~43 kB) counts as a context; an HTTPS
+// operation (alarm fallback, registration, OTA) may only start after MQTT has closed and given its memory back.
+// `contextsMax` is the high-water mark the diagnostics print and the tests assert on (must stay <= 1).
+static uint8_t mqttResident = 0U;
+static uint8_t contexts = 0U, contextsMax = 0U;
+static uint32_t overlapDenied = 0U, overlapViolations = 0U;
 }
+inline void mayapTlsContextEnter() {
+  using namespace MayapNetworkIoInternal;
+  const uint8_t now = __atomic_add_fetch(&contexts, 1U, __ATOMIC_ACQ_REL);
+  uint8_t peak = __atomic_load_n(&contextsMax, __ATOMIC_ACQUIRE);
+  while (now > peak && !__atomic_compare_exchange_n(&contextsMax, &peak, now, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {}
+  if (now > 1U) __atomic_fetch_add(&overlapViolations, 1U, __ATOMIC_RELAXED);
+}
+inline void mayapTlsContextLeave() {
+  using namespace MayapNetworkIoInternal;
+  if (__atomic_load_n(&contexts, __ATOMIC_ACQUIRE) > 0U) __atomic_sub_fetch(&contexts, 1U, __ATOMIC_ACQ_REL);
+}
+// Owner (mqttTask) only: the WSS socket exists / no longer exists.
+inline void mayapSetMqttTlsResident(bool resident) {
+  using namespace MayapNetworkIoInternal;
+  const uint8_t was = __atomic_exchange_n(&mqttResident, resident ? 1U : 0U, __ATOMIC_ACQ_REL);
+  if (resident && !was) mayapTlsContextEnter();
+  else if (!resident && was) mayapTlsContextLeave();
+}
+inline bool mayapMqttTlsResident() {
+  return __atomic_load_n(&MayapNetworkIoInternal::mqttResident, __ATOMIC_ACQUIRE) != 0U;
+}
+inline uint8_t mayapTlsContextsMax() { return __atomic_load_n(&MayapNetworkIoInternal::contextsMax, __ATOMIC_RELAXED); }
+inline uint32_t mayapTlsOverlapViolations() { return __atomic_load_n(&MayapNetworkIoInternal::overlapViolations, __ATOMIC_RELAXED); }
+inline uint32_t mayapTlsOverlapDenied() { return __atomic_load_n(&MayapNetworkIoInternal::overlapDenied, __ATOMIC_RELAXED); }
 // Cloud requests a bounded RAM handoff; only the realtime owner closes its
 // socket. A failed Cloud task cannot keep realtime paused indefinitely.
 inline bool mayapRequestCloudTlsYield(uint32_t now, bool urgent = false) {
@@ -68,19 +98,25 @@ class MayapNetworkBatchOperation {
 };
 class MayapTlsOperation {
  public:
-  explicit MayapTlsOperation(MayapTlsKind kind = MayapTlsKind::Mqtt) {
+  // `urgent` (an alarm that could not go over MQTT) may ask the realtime owner to close more often.
+  explicit MayapTlsOperation(MayapTlsKind kind = MayapTlsKind::Mqtt, bool urgent = false) {
     kind_ = kind;
     uint8_t expected = 0U;
     acquired_ = __atomic_compare_exchange_n(&MayapNetworkIoInternal::tlsBusy,
         &expected, 1U, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
-    // Cloud/OTA coexist with the resident MQTT TLS connection. The old
-    // 32 KiB admission was below even one TLS working set on this N8 board.
+    // HTTPS (Cloud/OTA) never coexists with the MQTT socket: while MQTT is resident the operation is
+    // refused and the realtime owner is asked to close; only after it released its ~43 kB may the HTTPS
+    // session start (and only with enough free heap and one large block for the handshake).
     const uint32_t freeBudget = kind == MayapTlsKind::Mqtt ? 49152U : 73728U;
-    if (acquired_ && (ESP.getFreeHeap() < freeBudget || ESP.getMaxAllocHeap() < 24576U)) {
+    const bool https = kind != MayapTlsKind::Mqtt;
+    const bool overlap = acquired_ && https && mayapMqttTlsResident();
+    if (acquired_ && (overlap || ESP.getFreeHeap() < freeBudget || ESP.getMaxAllocHeap() < 24576U)) {
       __atomic_store_n(&MayapNetworkIoInternal::tlsBusy, 0U, __ATOMIC_RELEASE);
       acquired_ = false;
-      if (kind == MayapTlsKind::Cloud) mayapRequestCloudTlsYield(millis());
+      if (overlap) __atomic_fetch_add(&MayapNetworkIoInternal::overlapDenied, 1U, __ATOMIC_RELAXED);
+      if (https) mayapRequestCloudTlsYield(millis(), urgent);
     }
+    if (acquired_ && https) mayapTlsContextEnter();
     if (acquired_ && kind == MayapTlsKind::Cloud)
       __atomic_store_n(&MayapNetworkIoInternal::cloudActive, 1U, __ATOMIC_RELEASE);
     if (!acquired_) __atomic_fetch_add(&MayapNetworkIoInternal::deferred, 1U, __ATOMIC_RELAXED);
@@ -91,6 +127,7 @@ class MayapTlsOperation {
       // otherwise WS reconnect wins the required HTTP send gap every time.
       __atomic_store_n(&MayapNetworkIoInternal::cloudActive, 0U, __ATOMIC_RELEASE);
     }
+    if (acquired_ && kind_ != MayapTlsKind::Mqtt) mayapTlsContextLeave();
     if (acquired_) __atomic_store_n(&MayapNetworkIoInternal::tlsBusy, 0U, __ATOMIC_RELEASE);
   }
   explicit operator bool() const { return acquired_; }

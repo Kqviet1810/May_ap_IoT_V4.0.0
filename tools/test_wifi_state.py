@@ -13,6 +13,8 @@ with tempfile.TemporaryDirectory() as name:
     globals=src[src.index('static volatile uint8_t publishedState'):src.index('static bool radioActive')]
     policy=root/'MAYAP_INDUSTRIAL_v1_0_0/wifi_stable_state.h'
     if policy.exists(): globals=policy.read_text()+'\n'+globals
+    power=(root/'MAYAP_INDUSTRIAL_v1_0_0/wifi_power_policy.h').read_text().replace('#pragma once','').replace('#include <stdint.h>','')
+    globals=power+'\n'+globals
     (out/'actual-wifi-globals.inc').write_text(globals)
     (out/'actual-wifi-publish.inc').write_text(function('inline void publish(')+'\n'+function('inline void applyWifiPowerMode('))
     (out/'actual-wifi-getters.inc').write_text(function('inline NetworkStatus mayapGetNetworkStatus(')+'\n'+function('inline NetworkStatus mayapGetRawNetworkStatus(')+'\n'+function('inline void tickStableWifi('))
