@@ -709,9 +709,10 @@ inline bool sendResetPin() {
   return true;
 }
 
-// Waits (bounded) for the MQTT task to publish the offered slots and for the broker's PUBACK, which the
-// broker only sends once the Worker stored the event. Returns a bitmask (bit k = slots[k]) of the durable ones.
-// Slots that did not finish are cancelled/orphaned, never left behind.
+// Waits (bounded) for the MQTT task to publish the offered slots and for the broker's PUBACK, which the broker sends once
+// the event is in its own durable queue (BROKER_STORED). Returns a bitmask (bit k = slots[k]) of the acknowledged ones.
+// Slots that did not finish are cancelled/orphaned, never left behind. A timeout while the link is still open asks the MQTT
+// owner for a transport probe (PINGREQ) - evidence about the socket, collected without touching it - and nothing more.
 inline uint8_t awaitUplink(const int8_t *slots, uint8_t count) {
   const uint32_t startedAt = millis();
   const uint32_t ackWait = MayapUplink::ackWaitMs();   // adaptive: a few smoothed round trips, 1.5..4 s
@@ -728,16 +729,22 @@ inline uint8_t awaitUplink(const int8_t *slots, uint8_t count) {
   uint8_t durable = 0U;
   for (uint8_t k = 0U; k < count; ++k)
     if (MayapUplink::finish(slots[k]) == MayapUplink::State::Acked) durable |= static_cast<uint8_t>(1U << k);
+  if (durable != static_cast<uint8_t>((1U << count) - 1U) && MayapUplink::linkUp()) MayapUplink::requestProbe(millis());
   return durable;
 }
 
-static uint8_t uplinkMisses = 0U;       // consecutive uplink events (alarm or heartbeat) the broker did not acknowledge
-static uint32_t lastUplinkOkAt = 0U;    // last durable (PUBACKed) MQTT uplink; 0 = none since boot (see beaconSilentMs)
+static uint8_t uplinkMisses = 0U;       // consecutive ALARM publishes the broker did not acknowledge (ingest trouble, not transport)
+static uint32_t firstMissAt = 0U;       // when that streak began (0 = no streak)
+static uint32_t ackTimeouts = 0U, heartbeatTimeouts = 0U;   // diagnostics since boot
+static uint32_t lastUplinkOkAt = 0U;    // last acknowledged (BROKER_STORED) MQTT uplink; 0 = none since boot (see beaconSilentMs)
 static uint32_t nextBeaconAt = 0U;
+static bool beaconRetryPending = false;       // the beacon was due but the TLS slot was still MQTT's: retry as soon as MQTT has let go
+static uint32_t beaconRetryAt = 0U;
 
 // Heartbeat rides the MQTT link only. HTTPS is reserved for alarms MQTT cannot carry, so a silent MQTT link
 // means "no heartbeat" (the Worker then reports the device unreachable) - never a reason to open a second TLS
-// session. A miss is not a Cloud failure: no back-off, the next heartbeat is due in CLOUD_HEARTBEAT_INTERVAL_MS.
+// session. A miss is not a Cloud failure and not a transport verdict: no back-off, no suspicion of the link (a probe
+// cross-checks it), the next heartbeat is due in CLOUD_HEARTBEAT_INTERVAL_MS.
 inline bool sendHeartbeat() {
   requestDeferred = true;
   if (!MayapUplink::available(millis())) return false;
@@ -746,15 +753,12 @@ inline bool sendHeartbeat() {
   const int8_t slot = MayapUplink::offer(MayapUplink::Kind::Heartbeat, json, strlen(json), millis());
   if (slot < 0) return false;
   if (awaitUplink(&slot, 1U)) {
-    uplinkMisses = 0U;
     lastUplinkOkAt = millis();
     mayapSerialPrintf(false, "[CLOUD] heartbeat -> MQTT durable\n");
     return true;
   }
-  if (uplinkMisses < 255U) ++uplinkMisses;
-  MayapUplink::suspect(millis());
-  mayapSerialPrintf(false, "[CLOUD] heartbeat: no MQTT PUBACK (uplink suspect %lus)\n",
-      static_cast<unsigned long>(MayapUplink::SUSPECT_MS / 1000UL));
+  ++heartbeatTimeouts;
+  mayapSerialPrintf(false, "[CLOUD] heartbeat: no MQTT PUBACK (INGEST_TIMEOUT, link stays open, transport probe requested)\n");
   return false;
 }
 
@@ -834,12 +838,17 @@ inline uint8_t sendAlarmsUplink(const uint8_t *idx, uint8_t count, uint8_t *sent
         (durable >> k) & 1U ? 1U : 0U, static_cast<unsigned>(offered));
   if (durable != 0U) {
     uplinkMisses = 0U;
+    firstMissAt = 0U;
     lastUplinkOkAt = millis();
   } else {
+    // INGEST_TIMEOUT: the broker did not store/acknowledge in time. The socket is judged only by transport evidence (a probe
+    // was requested above); the events stay in the outbox and are retried over MQTT with their own back-off. Same event_id,
+    // so the broker's deduplication makes the retry safe.
     if (uplinkMisses < 255U) ++uplinkMisses;
-    MayapUplink::suspect(millis());
-    mayapSerialPrintf(false, "[CLOUD] no MQTT PUBACK for %u alarm(s): HTTPS for %lus\n", static_cast<unsigned>(offered),
-        static_cast<unsigned long>(MayapUplink::SUSPECT_MS / 1000UL));
+    if (firstMissAt == 0U) firstMissAt = millis() ? millis() : 1U;
+    ++ackTimeouts;
+    mayapSerialPrintf(false, "[CLOUD] no MQTT PUBACK for %u alarm(s): INGEST_TIMEOUT misses=%u, link kept, retry over MQTT\n",
+        static_cast<unsigned>(offered), static_cast<unsigned>(uplinkMisses));
   }
   return durable;
 }
@@ -924,9 +933,11 @@ inline MayapAlarmFallback::LinkView alarmLinkView(uint32_t now, bool wifiUp) {
                       : (static_cast<int32_t>(h.nextAttemptAt - now) <= 0 ? 0UL : h.nextAttemptAt - now);
   v.failures = h.failures;
   v.losses2min = MayapUplink::recentLosses(h, now, MayapAlarmFallback::FLAP_WINDOW_MS);
-  v.uplinkSuspect = MayapUplink::suspected(now);
-  v.uplinkMisses = uplinkMisses;
   v.rxAgeMs = h.lastRxAt == 0U ? 0U : elapsedMs(now, h.lastRxAt);
+  v.probePending = MayapUplink::probePending(h);
+  v.probeAgeMs = v.probePending ? elapsedMs(now, h.probeSentAt) : 0U;
+  v.starved = uplinkMisses >= MayapAlarmFallback::STARVE_MISSES && firstMissAt != 0U &&
+              elapsedMs(now, firstMissAt) >= MayapAlarmFallback::STARVE_MS;
   v.fallbackSessionActive = mayapCloudTlsYieldRequested(now);
   return v;
 }
@@ -947,7 +958,13 @@ inline bool sendBeaconIfDue() {
   doc["device_id"] = mayapDeviceIdText();
   doc["device_key"] = mayapDeviceSecret();
   doc["batch_running"] = processingRuntime.batchRunning;
+  MayapUplink::setYieldWhy(MayapUplink::YieldWhy::Beacon);
   const bool ok = postJson("/api/device/heartbeat", doc, "beacon");
+  MayapUplink::setYieldWhy(MayapUplink::YieldWhy::Other);
+  // Admission refused because MQTT still held the TLS slot (it was asked to close): come back in a moment instead of after a
+  // whole heartbeat period, otherwise MQTT reconnects in between and the beacon would never get its turn.
+  beaconRetryPending = requestDeferred;
+  beaconRetryAt = millis() + 500U;
   if (!requestDeferred) nextBeaconAt = millis() + MayapAlarmFallback::BEACON_INTERVAL_MS + (esp_random() % (MayapAlarmFallback::JITTER_MAX_MS + 1U));
   if (!ok && !requestDeferred) mayapReleaseCloudTlsYield();         // failed: let realtime come back
   return ok;
@@ -966,32 +983,53 @@ inline uint8_t sendAlarms(const uint8_t *idx, uint8_t count, uint8_t *sentMask) 
     if (age > oldest) oldest = age;
     critical = critical || item.severity == NotifyLevel::Critical;
   }
-  if (MayapUplink::available(now)) {
-    const uint32_t routedAt = now;
-    const uint8_t durable = sendAlarmsUplink(idx, count, sentMask);
-    if (*sentMask != 0U) {
-      lastAlarmTiming = {oldest, elapsedMs(millis(), routedAt), MayapAlarmFallback::Cause::Healthy, false, durable != 0U};
-      mayapSerialPrintf(false, "[ALARM-TIMING] via=mqtt delivered=%u detect_to_route=%lums route_to_ack=%lums\n",
-          durable != 0U ? 1U : 0U, static_cast<unsigned long>(oldest), static_cast<unsigned long>(lastAlarmTiming.routeToAckMs));
-      if (durable != 0U) fallbackGate.onMqttDelivered();     // realtime delivers again: the fallback sleeps
-      return durable;
-    }
-    now = millis();
-  }
+  // The route is decided from TRANSPORT evidence first (alarm_fallback_policy.h): Healthy -> MQTT is the only road, whatever the
+  // acknowledgements did before; Probing -> a PINGREQ is out, wait for the verdict; Down/Flapping/HalfOpen -> HTTPS may take the
+  // TLS slot. The one exception is a CRITICAL alarm the broker has not stored for STARVE_MS over several attempts (`starved`):
+  // it may use HTTPS even on a talking link, on the critical ladder, with that reason on record. The MQTT attempt is a lambda so
+  // a starved alarm whose HTTPS ladder says "wait" still keeps trying MQTT meanwhile.
   const NetworkStatus status = mayapGetRawNetworkStatus();
   const bool wifiUp = status.requestedMode == ConnectivityMode::Online && status.connected;
+  uint8_t mqttDurable = 0U;
+  auto tryMqtt = [&]() -> bool {
+    if (!MayapUplink::available(now)) return false;
+    const uint32_t routedAt = now;
+    mqttDurable = sendAlarmsUplink(idx, count, sentMask);
+    if (*sentMask == 0U) { now = millis(); return false; }
+    lastAlarmTiming = {oldest, elapsedMs(millis(), routedAt), MayapAlarmFallback::Cause::Healthy, false, mqttDurable != 0U};
+    mayapSerialPrintf(false, "[ALARM-TIMING] via=mqtt delivered=%u detect_to_route=%lums route_to_ack=%lums\n",
+        mqttDurable != 0U ? 1U : 0U, static_cast<unsigned long>(oldest), static_cast<unsigned long>(lastAlarmTiming.routeToAckMs));
+    if (mqttDurable != 0U) fallbackGate.onMqttDelivered();     // realtime delivers again: the fallback sleeps
+    return true;
+  };
   MayapAlarmFallback::Cause cause = MayapAlarmFallback::Cause::Healthy;
-  if (MayapAlarmFallback::decide(fallbackGate, now, alarmLinkView(now, wifiUp), oldest, critical, &cause) !=
-      MayapAlarmFallback::Route::Https) {
+  bool wantProbe = false;
+  const MayapAlarmFallback::LinkView view = alarmLinkView(now, wifiUp);
+  const MayapAlarmFallback::Route route = MayapAlarmFallback::decide(fallbackGate, now, view, oldest, critical, &cause, &wantProbe);
+  if (wantProbe) MayapUplink::requestProbe(now);            // silent socket: cross-check it before anybody takes the TLS slot
+  const bool starved = cause == MayapAlarmFallback::Cause::BrokerNotStoring;
+  if (route == MayapAlarmFallback::Route::Mqtt) {
+    if (tryMqtt()) return mqttDurable;
+    requestDeferred = true;                                  // no free slot / link just went down: try again, penalise nothing
+    return 0U;
+  }
+  if (route != MayapAlarmFallback::Route::Https) {
+    if (starved && tryMqtt()) return mqttDurable;
     requestDeferred = true;
     return 0U;
   }
-  mayapSerialPrintf(false, "[CLOUD] FALLBACK HTTPS: MQTT cannot carry %u alarm(s) cause=%s critical=%u oldest=%lums attempt=%lu heap=%lu\n",
+  mayapSerialPrintf(false, "[CLOUD] FALLBACK HTTPS: MQTT cannot carry %u alarm(s) cause=%s critical=%u oldest=%lums attempt=%lu rxAge=%lums probe=%s misses=%u heap=%lu\n",
       static_cast<unsigned>(count), MayapAlarmFallback::causeText(cause), critical ? 1U : 0U,
       static_cast<unsigned long>(oldest), static_cast<unsigned long>(fallbackGate.attempts + 1U),
+      static_cast<unsigned long>(view.rxAgeMs), view.probePending ? "unanswered" : "n/a", static_cast<unsigned>(uplinkMisses),
       static_cast<unsigned long>(ESP.getFreeHeap()));
+  using MayapUplink::YieldWhy;
+  MayapUplink::setYieldWhy(cause == MayapAlarmFallback::Cause::HalfOpen ? YieldWhy::AlarmHalfOpen
+      : cause == MayapAlarmFallback::Cause::Flapping ? YieldWhy::AlarmFlapping
+      : cause == MayapAlarmFallback::Cause::BrokerNotStoring ? YieldWhy::AlarmStarved : YieldWhy::AlarmDown);
   const uint32_t routedAt = millis();
   const uint8_t durable = sendAlarmsHttps(idx, count, sentMask);
+  MayapUplink::setYieldWhy(YieldWhy::Other);
   if (!requestDeferred) {                                    // an HTTPS request was really made
     fallbackGate.onAttempt(millis(), durable != 0U, critical, esp_random());
     lastAlarmTiming = {oldest, elapsedMs(millis(), routedAt), cause, true, durable != 0U};
@@ -999,6 +1037,7 @@ inline uint8_t sendAlarms(const uint8_t *idx, uint8_t count, uint8_t *sentMask) 
         MayapAlarmFallback::causeText(cause), durable != 0U ? 1U : 0U, static_cast<unsigned long>(oldest),
         static_cast<unsigned long>(lastAlarmTiming.routeToAckMs));
     if (durable == 0U) mayapReleaseCloudTlsYield();           // failed: let realtime come back, retry later
+    else { uplinkMisses = 0U; firstMissAt = 0U; }             // delivered by the fallback: the starvation streak is over
   }
   return durable;
 }
@@ -1028,16 +1067,21 @@ inline void drainOutbox(uint32_t now) {
     if(acceptedMask&(1U<<k)) removeOutboxAt(idx[k]);
     else if((sentMask&(1U<<k)) && !requestDeferred) outboxAt(idx[k]).retry.onFailure(millis());
   }
+  // The fallback is over once nothing is waiting: give the TLS slot back NOW so realtime reconnects at once instead of
+  // after the bounded lease (up to 15 s of Web offline for nothing).
+  if(outboxCount==0U && fallbackGate.armed && mayapCloudTlsYieldRequested(millis())) mayapReleaseCloudTlsYield();
 }
 
 inline void serviceHeartbeat(uint32_t now) {
-  if (!timeReached(now, lastHeartbeatAt + CLOUD_HEARTBEAT_INTERVAL_MS)) return;
+  const bool retryOnly = beaconRetryPending && timeReached(now, beaconRetryAt) &&
+                         !timeReached(now, lastHeartbeatAt + CLOUD_HEARTBEAT_INTERVAL_MS);
+  if (!retryOnly && !timeReached(now, lastHeartbeatAt + CLOUD_HEARTBEAT_INTERVAL_MS)) return;
   if (!cloudBackoff.ready(now)) return;
   const NetworkStatus status = mayapGetRawNetworkStatus();
   if (!(status.requestedMode == ConnectivityMode::Online && status.connected)) return;
-  lastHeartbeatAt = now;
+  if (!retryOnly) lastHeartbeatAt = now;
   // MQTT first; only when it has been silent for BEACON_SILENT_MS does a missed heartbeat turn into an HTTPS beacon.
-  const bool delivered = sendHeartbeat() || sendBeaconIfDue();
+  const bool delivered = (!retryOnly && sendHeartbeat()) || sendBeaconIfDue();
   if (delivered) {
     cloudBackoff.onSuccess();
   } else {

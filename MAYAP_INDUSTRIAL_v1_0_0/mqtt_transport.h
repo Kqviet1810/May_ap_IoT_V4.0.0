@@ -42,7 +42,11 @@ constexpr size_t PACKET_BUFFER = 2120U;             // MQTT packet: 2047 B paylo
 constexpr size_t TX_HEADROOM = MayapMqttWs::MAX_HEADER;   // WebSocket header is written in front of the packet
 static_assert(PACKET_BUFFER >= MayapProtocol::FRAME_NORMAL_CAP + 72U, "MQTT packet buffer smaller than a contract frame");
 constexpr uint8_t QOS1_INFLIGHT_MAX = 8U;           // PUBACK round trip via Cloudflare is ~100-400 ms; 4 filled during command bursts
-constexpr uint32_t QOS1_STUCK_MS = 15000UL;
+// Terminal command ACKs (channel "ack") are what the Web waits for; config/history reports and presence are bulk. Bulk
+// publishers may never take the last QOS1_RESERVED_FOR_ACK window slots, so a config/history burst cannot starve an ACK.
+constexpr uint8_t QOS1_RESERVED_FOR_ACK = 3U;
+constexpr uint32_t QOS1_STUCK_MS = 15000UL;         // oldest in-flight packet without PUBACK for this long ...
+constexpr uint32_t STUCK_SILENCE_MS = 10000UL;      // ... AND nothing at all received for this long = dead link; otherwise the entry just expires
 constexpr uint32_t STEP_TIMEOUT_MS = 5000UL;        // WebSocket upgrade / CONNACK / SUBACK wait
 constexpr size_t UPGRADE_RESPONSE_MAX = 768U;       // bounded HTTP response header (held in rxBuffer)
 constexpr uint32_t CLOCK_VALID_AFTER = 1700000000UL; // TLS certificate dates need real time
@@ -71,6 +75,12 @@ static uint32_t lastRxAt = 0U, lastTxAt = 0U;
 static uint32_t lastDiagAt = 0U;
 #endif
 static uint32_t droppedOversize = 0U, droppedForeign = 0U;
+static uint32_t qos1Expired = 0U, refusedBulk = 0U, refusedAck = 0U;
+static uint16_t brokerCloseCode = 0U;               // WebSocket CLOSE the broker sent (0 = none seen on this link)
+static char brokerCloseReason[24] = "";
+// Why the MQTT owner closed or lost its socket, counted for the whole uptime (printed with the 10 s diagnostic line).
+enum class CloseKind : uint8_t { Radio, Memory, CloudTls, Isolated, Lost, COUNT };
+static uint32_t closeCount[static_cast<uint8_t>(CloseKind::COUNT)] = {};
 static uint8_t carry[64];                          // raw bytes that followed a handshake packet
 static size_t carryLength = 0U;
 // Realtime is best-effort and must never starve Wi-Fi or Cloud. The shared BackoffTimer starts at
@@ -146,6 +156,15 @@ inline void inflightAck(uint16_t id) {
     return;
   }
 }
+// Drops in-flight entries older than QOS1_STUCK_MS on a link that is demonstrably alive (it is still delivering bytes to us):
+// the PUBACK is not coming, but that is not the socket's fault and closing a talking socket would only cost the Web its realtime.
+inline void inflightExpire(uint32_t now) {
+  while (inflightCount > 0U && MayapRecovery::age(now, inflightAt[0]) >= QOS1_STUCK_MS) {
+    for (uint8_t j = 0U; j + 1U < inflightCount; ++j) { inflightId[j] = inflightId[j + 1U]; inflightAt[j] = inflightAt[j + 1U]; }
+    --inflightCount;
+    ++qos1Expired;
+  }
+}
 inline uint16_t allocPacketId() {
   if (++nextPacketId == 0U) nextPacketId = 1U;
   return nextPacketId;
@@ -161,7 +180,14 @@ inline bool publishChannel(const char *channel, const char *payload, size_t leng
     if (!strcmp(candidate.channel, channel)) { policy = &candidate; break; }
   if (!policy || length == 0U || length >= MayapProtocol::FRAME_NORMAL_CAP) return false;
   const uint32_t now = millis();
-  if (track && policy->qos > 0U && inflightCount >= QOS1_INFLIGHT_MAX) return false;  // bounded; bridge retries next cycle
+  if (track && policy->qos > 0U) {
+    const bool terminalAck = !strcmp(channel, "ack");
+    const uint8_t budget = terminalAck ? QOS1_INFLIGHT_MAX : static_cast<uint8_t>(QOS1_INFLIGHT_MAX - QOS1_RESERVED_FOR_ACK);
+    if (inflightCount >= budget) {                      // bounded; the bridge retries with back-off, ACKs keep their reserve
+      if (terminalAck) ++refusedAck; else ++refusedBulk;
+      return false;
+    }
+  }
   char topic[64];
   const int n = snprintf(topic, sizeof(topic), "%s/%s/%s", TOPIC_ROOT, MayapRealtimeInternal::deviceId, channel);
   if (n <= 0 || static_cast<size_t>(n) >= sizeof(topic)) return false;
@@ -211,6 +237,8 @@ inline void stopClient(bool graceful) {
   inflightClear();
   parser.reset();
   ws.reset();
+  brokerCloseCode = 0U;
+  brokerCloseReason[0] = '\0';
 }
 
 // Dispatches one complete broker->device packet. PUBLISH goes straight to the bridge: this
@@ -253,8 +281,15 @@ inline bool handleControl() {
     case PING:
       memcpy(txMqtt(), ws.control(), ws.controlLength());
       return sendFrame(ws.controlLength(), PONG);
-    case CLOSE:
+    case CLOSE: {
+      const uint8_t *body = ws.control();
+      const size_t length = ws.controlLength();
+      brokerCloseCode = length >= 2U ? static_cast<uint16_t>((body[0] << 8U) | body[1]) : 1005U;
+      const size_t reasonLength = length > 2U ? (length - 2U < sizeof(brokerCloseReason) - 1U ? length - 2U : sizeof(brokerCloseReason) - 1U) : 0U;
+      if (reasonLength) memcpy(brokerCloseReason, body + 2U, reasonLength);
+      brokerCloseReason[reasonLength] = '\0';
       return false;
+    }
     default:
       return true;
   }
@@ -471,11 +506,20 @@ inline void pumpUplink(uint32_t now) {
   }
 }
 
+// Liveness is judged from the socket and from bytes the broker sent, never from a PUBACK alone:
+//   * a failed write, a protocol error or a closed socket                        -> dead
+//   * nothing received for 1.5 keepalives (PINGRESP would have arrived)         -> dead (half-open)
+//   * a QoS1 packet unacknowledged for QOS1_STUCK_MS while ALSO silent          -> dead
+//   * a QoS1 packet unacknowledged for QOS1_STUCK_MS on a link that still delivers bytes -> alive; the entry just expires
 inline bool linkAlive(uint32_t now) {
   if (linkFailed || parser.fatal() || ws.fatal() || !net.connected()) return false;
-  if (inflightCount > 0U && MayapRecovery::age(now, inflightAt[0]) >= QOS1_STUCK_MS) return false;
+  const uint32_t silence = MayapRecovery::age(now, lastRxAt);
+  if (inflightCount > 0U && MayapRecovery::age(now, inflightAt[0]) >= QOS1_STUCK_MS) {
+    if (silence >= STUCK_SILENCE_MS) return false;
+    inflightExpire(now);
+  }
   // Broker silent for 1.5 keepalives: half-open link.
-  return MayapRecovery::age(now, lastRxAt) < static_cast<uint32_t>(KEEPALIVE_SEC) * 1500UL;
+  return silence < static_cast<uint32_t>(KEEPALIVE_SEC) * 1500UL;
 }
 
 }  // namespace MayapMqttInternal
@@ -499,9 +543,17 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
   const bool yielding = mayapCloudTlsYieldRequested(now);
   const bool pressure = mayapOnlineMemoryPressure();
   if (closing || mayapServiceIsolated(MayapRecovery::Service::Mqtt, now) || pressure || yielding) {
-    if (connected)
-      mayapSerialPrintf(false, "[MQTT] closed on purpose (%s) heap=%lu\n", closing ? "radio" : pressure ? "memory" : yielding ? "cloud-tls" : "isolated",
-                        static_cast<unsigned long>(ESP.getFreeHeap()));
+    if (connected) {
+      const CloseKind kind = closing ? CloseKind::Radio : pressure ? CloseKind::Memory : yielding ? CloseKind::CloudTls : CloseKind::Isolated;
+      ++closeCount[static_cast<uint8_t>(kind)];
+      const MayapUplink::Health h = MayapUplink::healthSnapshot();
+      mayapSerialPrintf(false, "[MQTT] closed on purpose (%s) why=%s rxAge=%lums probe=%s inflight=%u heap=%lu\n",
+                        closing ? "radio" : pressure ? "memory" : yielding ? "cloud-tls" : "isolated",
+                        kind == CloseKind::CloudTls ? MayapUplink::yieldWhyText(MayapUplink::yieldWhy()) : "n/a",
+                        static_cast<unsigned long>(h.lastRxAt ? MayapRecovery::age(now, h.lastRxAt) : 0UL),
+                        MayapUplink::probePending(h) ? "unanswered" : h.probes ? "answered" : "none",
+                        static_cast<unsigned>(inflightCount), static_cast<unsigned long>(ESP.getFreeHeap()));
+    }
     stopClient(true);
     if (!closing) backoff.holdOff(now, yielding && !pressure ? YIELD_RESUME_MS : RETRY_STEPS_MS[0]);
     MayapUplink::healthClosed(now, backoff.nextAttemptAt);   // deliberate: a short hold-off, not a failure
@@ -548,9 +600,11 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
     return;
   }
   if (!linkAlive(now) || !pump()) {
-    mayapSerialPrintf(false, "[MQTT] link lost (tx=%u fatal=%u open=%u inflight=%u)\n", static_cast<unsigned>(linkFailed),
+    ++closeCount[static_cast<uint8_t>(CloseKind::Lost)];
+    mayapSerialPrintf(false, "[MQTT] link lost (tx=%u fatal=%u open=%u inflight=%u rxAge=%lums brokerClose=%u '%s')\n", static_cast<unsigned>(linkFailed),
                       static_cast<unsigned>(parser.fatal()), static_cast<unsigned>(net.connected()),
-                      static_cast<unsigned>(inflightCount));
+                      static_cast<unsigned>(inflightCount), static_cast<unsigned long>(MayapRecovery::age(now, lastRxAt)),
+                      static_cast<unsigned>(brokerCloseCode), brokerCloseReason);
     stopClient(false);
     backoff.onFailure(now);
     MayapUplink::healthLost(now, backoff.nextAttemptAt);
@@ -558,14 +612,24 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
   }
   MayapUplink::healthRx(lastRxAt);
   pumpUplink(now);
-  if (MayapRecovery::age(now, lastTxAt) >= static_cast<uint32_t>(KEEPALIVE_SEC) * 500UL)
+  // On-demand transport probe: the Cloud task saw an acknowledgement come late and wants independent evidence. One PINGREQ;
+  // ANY byte back (PINGRESP, a PUBACK, a command) proves the broker is alive. Rate limited by the uplink mailbox itself.
+  if (MayapUplink::takeProbeRequest() && sendPacket(MayapMqttWire::encodePingreq(txMqtt(), PACKET_BUFFER))) {
+    MayapUplink::noteProbeSent(now);
+  } else if (MayapRecovery::age(now, lastTxAt) >= static_cast<uint32_t>(KEEPALIVE_SEC) * 500UL)
     sendPacket(MayapMqttWire::encodePingreq(txMqtt(), PACKET_BUFFER));
   mayapRealtimeUpdate(millis());
 #if MAYAP_DIAGNOSTIC_SERIAL
   if (lastDiagAt == 0U || MayapRecovery::age(now, lastDiagAt) >= 10000UL) {
     lastDiagAt = now;
+    const MayapUplink::Health h = MayapUplink::healthSnapshot();
     mayapSerialPrintf(false, "[MQTT] up inflight=%u dropBig=%lu dropForeign=%lu\n", static_cast<unsigned>(inflightCount),
                       static_cast<unsigned long>(droppedOversize), static_cast<unsigned long>(droppedForeign));
+    mayapSerialPrintf(false, "[MQTT-STAT] closes radio=%lu mem=%lu cloud-tls=%lu iso=%lu lost=%lu | qos1 expired=%lu refusedBulk=%lu refusedAck=%lu | probes=%lu answered=%lu rttEwma=%ums\n",
+                      static_cast<unsigned long>(closeCount[0]), static_cast<unsigned long>(closeCount[1]), static_cast<unsigned long>(closeCount[2]),
+                      static_cast<unsigned long>(closeCount[3]), static_cast<unsigned long>(closeCount[4]), static_cast<unsigned long>(qos1Expired),
+                      static_cast<unsigned long>(refusedBulk), static_cast<unsigned long>(refusedAck), static_cast<unsigned long>(h.probes),
+                      static_cast<unsigned long>(h.probesAnswered), static_cast<unsigned>(h.rttEwmaMs));
   }
 #endif
 }

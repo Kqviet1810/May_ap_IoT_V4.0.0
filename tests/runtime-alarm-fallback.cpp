@@ -1,4 +1,8 @@
-// MQTT Primary + Cold Standby Alarm: the REAL send path of cloud_alert_link.h (awaitUplink, sendHeartbeat, sendAlarm,
+// MQTT Primary + Cold Standby Alarm. POLICY UNDER TEST (changed deliberately from the earlier "a missed PUBACK = suspect link" design):
+//   * a late or missing PUBACK is an INGEST problem; it never marks the transport suspect and never closes a healthy MQTT socket;
+//   * only transport evidence (socket gone, no byte from the broker AND an unanswered probe) permits the HTTPS fallback, plus one
+//     explicit last resort for a CRITICAL alarm the broker has not stored for 60 s over >= 3 attempts.
+// The REAL send path of cloud_alert_link.h (awaitUplink, sendHeartbeat, sendAlarm,
 // sendAlarmsUplink, sendAlarmsHttps, sendAlarms, drainOutbox) with the REAL TLS admission guard, uplink mailbox, fallback
 // policy and Wi-Fi power policy, against a simulated MQTT owner, a simulated Cloudflare Worker and a heap model built from
 // the bench numbers (idle 125 kB, resident MQTT -43 kB, HTTPS handshake peak -71 kB).
@@ -63,7 +67,7 @@ const char *mayapDeviceSecret(){return "device-key";}
 // It publishes the same Health transitions as mqtt_transport.h: Up on connect, Closed on a deliberate yield, Lost when an
 // established link dies, AttemptFailed when a connect attempt fails, Waiting while a retry is scheduled, Rx on traffic.
 static bool brokerUp=true,brokerAcks=true,brokerSilent=false;
-static uint32_t holdOffUntil=0,mqttConnects=0,mqttClosesForYield=0,mqttAckDelay=150,nextAttemptTry=0;
+static uint32_t holdOffUntil=0,mqttConnects=0,mqttClosesForYield=0,mqttAckDelay=150,nextAttemptTry=0,probesSent=0;
 struct Pending{uint16_t id;uint32_t at;};
 static std::vector<Pending> pendingAcks;
 static uint16_t nextPacketId=1;
@@ -77,6 +81,7 @@ static void mqttOwnerStep(){
     if(mayapCloudTlsYieldRequested(clockMs)){deliberateClose(3000);++mqttClosesForYield;return;}
     if(!brokerUp||!wifi){loseLink(15000);return;}
     if(!brokerSilent)MayapUplink::healthRx(clockMs);
+    if(MayapUplink::takeProbeRequest()){MayapUplink::noteProbeSent(clockMs);++probesSent;}   // PINGREQ; the next healthRx (any byte) answers it
     MayapUplink::expire(clockMs);
     for(int8_t i;(i=MayapUplink::nextQueued())>=0;){
       publishedKinds.push_back(MayapUplink::kind(i)==MayapUplink::Kind::Alarm?"alarm":"heartbeat");
@@ -139,7 +144,8 @@ bool postJson(const char *path,const JsonDocument &doc,const char *,String *resp
 #include "actual-cloud-drain.inc"
 #include "actual-cloud-heartbeat.inc"
 static void cloudRun(uint32_t ms,bool heartbeats=false){   // the Cloud task: drain every 100 ms, optionally heartbeat every 60 s, release the yield when idle
-  for(uint32_t t=0;t<ms;t+=100){
+  const uint32_t end=clockMs+ms;                            // wall clock: a blocking send (PUBACK wait, HTTPS) consumes the budget too
+  while(static_cast<int32_t>(clockMs-end)<0){
     drainOutbox(clockMs);if(heartbeats)serviceHeartbeat(clockMs);
     if(outboxCount==0&&!requestDeferred)mayapReleaseCloudTlsYield();
     simAdvance(100);}
@@ -148,10 +154,10 @@ static void resetWorld(){
   touchUnused();
   closeMqtt();for(int8_t i=0;i<static_cast<int8_t>(MayapUplink::SLOTS);++i)MayapUplink::finish(i);
   outboxHead=outboxTail=outboxCount=0;
-  brokerUp=brokerAcks=serverUp=serverStores=true;brokerSilent=false;serverCode=-1;ageMsSeen.clear();uplinkMisses=0;mqttAckDelay=150;net.connected=true;registered=true;
-  holdOffUntil=0;httpsAt.clear();durableIds.clear();publishedKinds.clear();httpsCalls=httpsOverlap=beaconCalls=0;beaconAt.clear();lastHeartbeatAt=0;lastUplinkOkAt=0;nextBeaconAt=0;cloudBackoff=BackoffTimer{};
+  brokerUp=brokerAcks=serverUp=serverStores=true;brokerSilent=false;serverCode=-1;ageMsSeen.clear();uplinkMisses=0;firstMissAt=0;mqttAckDelay=150;net.connected=true;registered=true;
+  holdOffUntil=0;probesSent=0;mqttClosesForYield=0;httpsAt.clear();durableIds.clear();publishedKinds.clear();httpsCalls=httpsOverlap=beaconCalls=0;beaconAt.clear();lastHeartbeatAt=0;lastUplinkOkAt=0;nextBeaconAt=0;beaconRetryPending=false;cloudBackoff=BackoffTimer{};
   fallbackGate=MayapAlarmFallback::Gate{};
-  MayapUplink::onLinkDown();MayapUplink::clearSuspect();MayapUplink::Internal::health=MayapUplink::Health{};MayapUplink::healthClosed(clockMs,0U);mayapReleaseCloudTlsYield();
+  MayapUplink::onLinkDown();MayapUplink::Internal::health=MayapUplink::Health{};MayapUplink::healthClosed(clockMs,0U);mayapReleaseCloudTlsYield();
   MayapNetworkIoInternal::cloudYieldRetryAt=MayapNetworkIoInternal::cloudUrgentRetryAt=0;
   clockMs+=120000;
 }
@@ -161,6 +167,34 @@ static uint32_t firstHttpsDelay(uint32_t t0){return httpsAt.empty()?0xFFFFFFFFU:
 int main(){
  using namespace MayapCloudInternal;
  using MayapAlarmFallback::Cause;
+ // 0. The invariant behind the field bug, exhaustively: whatever the acknowledgement history, a link that is up and whose broker is
+ //    talking (a byte within HALF_OPEN_RX_MS) NEVER routes to HTTPS and never counts as a confirmed-bad transport - except the one
+ //    explicit last resort (critical && starved). Beacons likewise never fire on such a link.
+ {
+  using namespace MayapAlarmFallback;
+  uint32_t cases=0;
+  for(uint32_t rx:{0u,1u,5000u,14999u,15001u,19999u,20000u})
+   for(int probePending=0;probePending<2;++probePending)for(uint32_t probeAge:{0u,3999u,4000u,60000u})
+    for(int starved=0;starved<2;++starved)for(int critical=0;critical<2;++critical)for(int fb=0;fb<2;++fb)
+     for(uint32_t oldest:{0u,1000u,60000u,3600000u}){
+      LinkView v;v.wifiUp=true;v.registered=true;v.kind=LinkView::Kind::Up;v.rxAgeMs=rx;v.probePending=probePending;v.probeAgeMs=probeAge;
+      v.starved=starved;v.fallbackSessionActive=fb;
+      Gate g;Cause c=Cause::Down;bool wantProbe=true;
+      const Route r=decide(g,clockMs,v,oldest,critical,&c,&wantProbe);
+      ++cases;
+      if(starved&&critical){assert(r==Route::Https&&c==Cause::BrokerNotStoring);}
+      else {assert(r==Route::Mqtt&&c==Cause::Healthy&&!wantProbe);assert(!beaconDue(clockMs+1000000u,1000000u,0u,v));}
+     }
+  for(uint32_t rx:{20001u,45000u,600000u}){            // silent: never an immediate verdict; the probe decides
+   LinkView v;v.wifiUp=true;v.registered=true;v.kind=LinkView::Kind::Up;v.rxAgeMs=rx;
+   Gate g;Cause c;bool wantProbe=false;
+   assert(decide(g,clockMs,v,100000u,true,&c,&wantProbe)==Route::Wait&&c==Cause::Probing&&wantProbe&&!beaconDue(clockMs+1000000u,1000000u,0u,v));
+   v.probePending=true;v.probeAgeMs=3999;assert(decide(g,clockMs,v,100000u,true,&c,&wantProbe)==Route::Wait&&c==Cause::Probing&&!wantProbe);
+   v.probeAgeMs=4000;assert(decide(g,clockMs,v,0u,true,&c)==Route::Https&&c==Cause::HalfOpen&&beaconDue(clockMs+1000000u,1000000u,0u,v));
+   Gate gr;assert(decide(gr,clockMs,v,0u,false,&c)==Route::Wait);   // routine: 20 s grace as for Down
+  }
+  assert(cases==7*2*4*2*2*2*4);
+ }
  // 1. Healthy MQTT: alarms and heartbeat travel over it; HTTPS never wakes, no HTTPS socket/context ever exists.
  resetWorld();connect();
  enqueueRaw("FAULT_130",NotifyLevel::Critical,false,"off",true,29.9f,63.7f);
@@ -200,36 +234,70 @@ int main(){
  resetWorld();connect();deliberateClose(3000);simAdvance(100);
  enqueueRaw("WIFI_SIGNAL_WEAK",NotifyLevel::Warning,false,"weak",false,0,0);
  cloudRun(10000);assert(httpsCalls==0&&outboxCount==0);          // MQTT came back and carried it
- // 5. No PUBACK: the link is up and alive but the broker never acknowledges. With an RTT sample the wait shrinks to 1.5 s; the
- //    critical alarm then falls back at once (cause no-ack), closing MQTT first.
+ // 5. THE FIELD BUG, reproduced: the link is up and the broker is talking, but the alarm's PUBACK does not come in time (D1/ingest slow,
+ //    429 cooldown, queue busy). Before: suspect() -> HTTPS -> MQTT closed on purpose (cloud-tls) -> Web offline. Now: the event is kept
+ //    and retried over MQTT; a probe cross-checks the socket; HTTPS never wakes; MQTT is never closed; no TLS overlap.
  resetWorld();connect();
  enqueueRaw("FAULT_131",NotifyLevel::Warning,false,"x",false,0,0);cloudRun(3000);assert(outboxCount==0);   // seeds the RTT EWMA
  assert(MayapUplink::ackWaitMs()==MayapUplink::ACK_WAIT_MIN_MS);
- brokerAcks=false;t0=clockMs;const uint32_t closes=mqttClosesForYield;
+ brokerAcks=false;t0=clockMs;uint32_t closes=mqttClosesForYield;
+ enqueueRaw("FAULT_130",NotifyLevel::Warning,false,"off",false,0,0);
+ cloudRun(40000);                                                    // routine alarm: never starves into HTTPS
+ assert(httpsCalls==0&&outboxCount==1&&httpsOverlap==0&&mqttClosesForYield==closes&&mayapMqttTlsResident());
+ assert(probesSent>=1&&uplinkMisses>=2&&ackTimeouts>=2);              // transport cross-checked, ingest misses counted, nothing closed
+ assert(MayapUplink::healthSnapshot().probesAnswered>=1);             // the broker answered every probe: the link is healthy
+ {unsigned alarmsPublished=0;for(const std::string&k:publishedKinds)if(k=="alarm")++alarmsPublished;assert(alarmsPublished>=3&&alarmsPublished<=40);}   // retried over MQTT, bounded
+ brokerAcks=true;cloudRun(30000);assert(outboxCount==0&&httpsCalls==0&&mqttClosesForYield==closes);   // ingest recovers: delivered over MQTT
+ //    A slow ingest (PUBACK 6 s, beyond the 4 s wait): same outcome. The orphaned PUBACK frees its slot.
+ resetWorld();connect();mqttAckDelay=6000;closes=mqttClosesForYield;
+ enqueueRaw("FAULT_130",NotifyLevel::Warning,false,"off",false,0,0);enqueueRaw("FAULT_131",NotifyLevel::Warning,false,"x",false,0,0);
+ cloudRun(120000);
+ assert(httpsCalls==0&&mqttClosesForYield==closes&&mayapMqttTlsResident()&&outboxCount==2);
+ mqttAckDelay=1500;cloudRun(60000);assert(outboxCount==0&&httpsCalls==0&&mqttClosesForYield==closes);
+ //    100 alarms in a controlled stream over a healthy link whose PUBACKs take 3.8 s (inside the wait) and then 2 s: all delivered by MQTT.
+ resetWorld();connect();closes=mqttClosesForYield;
+ for(int n=0;n<100;++n){char id[16];snprintf(id,sizeof(id),"STREAM_%d",n%7);
+   enqueueRaw(id,NotifyLevel::Critical,(n/7)%2==1,"m",false,0,0);mqttAckDelay=n<50?3800:2000;cloudRun(3000);}
+ cloudRun(20000);
+ assert(outboxCount==0&&httpsCalls==0&&mqttClosesForYield==closes&&mayapMqttTlsResident()&&durableIds.empty());
+ //    The Worker/D1 being down is invisible to the device: the broker stored the event and acknowledged it.
+ resetWorld();connect();serverUp=false;serverCode=503;closes=mqttClosesForYield;
+ enqueueRaw("FAULT_130",NotifyLevel::Critical,false,"off",false,0,0);cloudRun(5000);
+ assert(outboxCount==0&&httpsCalls==0&&mqttClosesForYield==closes&&lastAlarmTiming.delivered&&!lastAlarmTiming.https);
+ //    Without any RTT sample the wait is still the 4 s cap.
+ resetWorld();connect();brokerAcks=false;
+ enqueueRaw("FAULT_130",NotifyLevel::Warning,false,"off",false,0,0);t0=clockMs;
+ cloudRun(6000);assert(ackTimeouts>=1&&httpsCalls==0&&mqttClosesForYield==0&&clockMs-t0>=6000);
+ // 5b. LAST RESORT, explicit and rare: a CRITICAL alarm the broker has not stored for 60 s over >= 3 attempts, link proven alive by
+ //     traffic and probes. Only then may HTTPS take the TLS slot, on the critical ladder, with the reason on record.
+ resetWorld();connect();brokerAcks=false;t0=clockMs;closes=mqttClosesForYield;
  enqueueRaw("FAULT_130",NotifyLevel::Critical,false,"off",false,0,0);
- cloudRun(15000);
- const uint32_t noAckMs=firstHttpsDelay(t0);
- assert(httpsCalls==1&&outboxCount==0&&httpsOverlap==0&&mqttClosesForYield>closes);
-
- assert(lastAlarmTiming.cause==Cause::NoAck&&noAckMs<=MayapUplink::ACK_WAIT_MIN_MS+1500);
- //    Without any RTT sample the wait is the 4 s cap.
- resetWorld();connect();brokerAcks=false;t0=clockMs;
- enqueueRaw("FAULT_130",NotifyLevel::Critical,false,"off",false,0,0);
- cloudRun(15000);
- const uint32_t noAckColdMs=firstHttpsDelay(t0);
- assert(httpsCalls==1&&outboxCount==0&&noAckColdMs>=MayapUplink::ACK_WAIT_MAX_MS-200&&noAckColdMs<=MayapUplink::ACK_WAIT_MAX_MS+1500);
- // 6. Half-open: "up" but the broker has been silent for > 20 s and nothing is acknowledged.
+ cloudRun(55000);assert(httpsCalls==0&&mqttClosesForYield==closes&&outboxCount==1);      // patient for the first minute
+ cloudRun(60000);
+ const uint32_t starvedMs=firstHttpsDelay(t0);
+ assert(httpsCalls==1&&outboxCount==0&&httpsOverlap==0&&mqttClosesForYield==closes+1);
+ assert(lastAlarmTiming.https&&lastAlarmTiming.cause==Cause::BrokerNotStoring&&starvedMs>=MayapAlarmFallback::STARVE_MS&&starvedMs<=MayapAlarmFallback::STARVE_MS+20000);
+ assert(uplinkMisses==0&&firstMissAt==0);                                                // delivered: the streak is over
+ //     ...and MQTT is given back at once when the fallback finished (not after a 15 s lease)
+ {const uint32_t t1=clockMs;brokerAcks=true;cloudRun(12000);assert(mayapMqttTlsResident());(void)t1;}
+ const uint32_t noAckColdMs=starvedMs;
+ // 6. Half-open, proven independently of any acknowledgement: the broker has sent nothing for > 20 s AND the probe (PINGREQ) goes
+ //    unanswered for 4 s. Only then is the transport called gone.
  resetWorld();connect();brokerSilent=true;simAdvance(25000);t0=clockMs;
  enqueueRaw("FAULT_130",NotifyLevel::Critical,false,"off",false,0,0);
  cloudRun(15000);
- assert(httpsCalls==1&&outboxCount==0&&lastAlarmTiming.cause==Cause::HalfOpen);
- // 7. Broker/Worker behind the link is not storing: alive link (fresh traffic), several unacknowledged events.
- resetWorld();connect();brokerAcks=false;
- assert(!sendHeartbeat());MayapUplink::clearSuspect();assert(!sendHeartbeat());
- assert(uplinkMisses==2);
- enqueueRaw("FAULT_130",NotifyLevel::Critical,false,"off",false,0,0);
+ assert(probesSent>=1&&httpsCalls==1&&outboxCount==0&&lastAlarmTiming.cause==Cause::HalfOpen);
+ assert(firstHttpsDelay(t0)>=MayapAlarmFallback::PROBE_WAIT_MS-200&&firstHttpsDelay(t0)<=MayapAlarmFallback::PROBE_WAIT_MS+2500);   // waited for the probe, no longer
+ //    Silent for less than the half-open window: no verdict, no HTTPS (the alarm waits for the pending link rather than guessing).
+ resetWorld();connect();brokerSilent=true;simAdvance(10000);
+ enqueueRaw("FAULT_130",NotifyLevel::Critical,false,"off",false,0,0);cloudRun(8000);
+ assert(httpsCalls==0&&mayapMqttTlsResident());
+ // 7. A silent-but-answering broker (probe answered) is a healthy transport whatever the acknowledgements say: no verdict at all.
+ resetWorld();connect();brokerAcks=false;uplinkMisses=0;
+ assert(!sendHeartbeat());assert(!sendHeartbeat());assert(heartbeatTimeouts==2U);
+ enqueueRaw("FAULT_130",NotifyLevel::Warning,false,"off",false,0,0);
  cloudRun(10000);
- assert(httpsCalls==1&&outboxCount==0&&lastAlarmTiming.cause==Cause::NotStoring);
+ assert(httpsCalls==0&&mqttClosesForYield==0&&mayapMqttTlsResident());
  // 8. Flapping: three losses inside two minutes. Even though each reconnect is "due in 3 s", the fallback does not wait for a
  //    link that keeps dying.
  resetWorld();
@@ -300,6 +368,16 @@ int main(){
  brokerUp=true;cloudRun(300000,true);                                                         // MQTT returns: beacons stop
  const unsigned beaconsAfterRecovery=beaconCalls;
  cloudRun(600000,true);assert(beaconCalls==beaconsAfterRecovery);
+ // G. A healthy socket whose heartbeat PUBACKs do not come back (ingest slow/stuck) NEVER beacons: no HTTPS, no TLS yield, MQTT stays up
+ //    for the whole half hour. (Before: lastUplinkOk went stale, the suspect link made the beacon due, HTTPS closed MQTT.)
+ resetWorld();connect();brokerAcks=false;
+ cloudRun(1800000,true);
+ assert(beaconCalls==0&&httpsCalls==0&&mqttClosesForYield==0&&mayapMqttTlsResident()&&heartbeatTimeouts>=25);
+ //    ...and when the transport is really half-open (silent + unanswered probe) the beacon does come, because the Worker would otherwise
+ //    declare the machine offline.
+ resetWorld();connect();brokerSilent=true;
+ cloudRun(900000,true);
+ assert(beaconCalls>=5&&httpsOverlap==0);
  // A link that is merely closed for a moment (Recovering) never beacons.
  resetWorld();connect();deliberateClose(3000);simAdvance(100);lastUplinkOkAt=clockMs-MayapAlarmFallback::BEACON_SILENT_MS-1;
  cloudRun(61000,true);assert(beaconCalls==0);
@@ -330,9 +408,10 @@ int main(){
  assert(mayapTlsContextsMax()==1&&mayapTlsOverlapViolations()==0&&httpsOverlap==0);
  assert(ESP.minFree>=50000);
  std::printf("Alarm fallback: MQTT primary, HTTPS cold standby PASS\n"
-   "  critical fallback delay: link gone %lums (was >=10000), no PUBACK %lums with RTT sample / %lums without, routine gone %lums, recovering link: MQTT carries it (HTTPS 0)\n"
-   "  MQTT route->ack %lums; storm bound %u HTTPS attempts/h on the critical ladder; exclusive TLS contexts_max=%u overlap=%lu denied=%lu; model min free heap %lu B, min largest block %lu B\n",
-   static_cast<unsigned long>(downCriticalMs),static_cast<unsigned long>(noAckMs),static_cast<unsigned long>(noAckColdMs),static_cast<unsigned long>(downRoutineMs),
+   "  critical fallback delay: link gone %lums (was >=10000), starved-critical last resort %lums (first minute always MQTT), routine gone %lums, recovering link: MQTT carries it (HTTPS 0)\n"
+   "  late/missing PUBACK on a talking link: 0 HTTPS, 0 MQTT closes, probes answered; MQTT route->ack %lums; storm bound %u HTTPS attempts/h on the critical ladder;\n"
+   "  exclusive TLS contexts_max=%u overlap=%lu denied=%lu; model min free heap %lu B, min largest block %lu B\n",
+   static_cast<unsigned long>(downCriticalMs),static_cast<unsigned long>(noAckColdMs),static_cast<unsigned long>(downRoutineMs),
    static_cast<unsigned long>(mqttRoute),stormCalls,
    static_cast<unsigned>(mayapTlsContextsMax()),static_cast<unsigned long>(mayapTlsOverlapViolations()),static_cast<unsigned long>(mayapTlsOverlapDenied()),
    static_cast<unsigned long>(ESP.minFree),static_cast<unsigned long>(ESP.minLargest));

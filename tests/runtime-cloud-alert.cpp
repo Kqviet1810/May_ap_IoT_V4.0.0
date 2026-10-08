@@ -45,6 +45,11 @@ uint8_t sendAlarms(const uint8_t*idx,uint8_t count,uint8_t*sentMask){
  for(uint8_t k=0;k<count;++k){OutboxItem&it=outboxAt(idx[k]);it.attempted=true;sent.push_back(it.alarmType);*sentMask|=1U<<k;
   if(success&&((acceptOnlyMask>>k)&1U))accepted|=1U<<k;}
  return accepted;}
+// drainOutbox hands the TLS slot back once a fallback delivery emptied the outbox; the real policy objects are exercised in
+// tests/runtime-alarm-fallback.cpp, here they are inert.
+struct {bool armed=false;} fallbackGate;
+bool mayapCloudTlsYieldRequested(uint32_t){return false;}
+void mayapReleaseCloudTlsYield(){}
 #include "actual-cloud-drain.inc"
 }
 int main(){

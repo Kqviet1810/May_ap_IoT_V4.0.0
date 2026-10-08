@@ -125,7 +125,7 @@ static void installBroker() {
 static void resetWorld() {
   net = WiFiClientSecure();
   parser.reset(); ws.reset(); connected = false; linkFailed = false; staUpSince = 0U; carryLength = 0U; inflightCount = 0U; nextPacketId = 1U;
-  droppedOversize = droppedForeign = 0U; backoff = Retry();
+  droppedOversize = droppedForeign = 0U; qos1Expired = refusedBulk = refusedAck = 0U; backoff = Retry();
   g_log.clear(); MayapRealtimeInternal::g_delivered.clear(); g_realtimeUpdates = 0U;
   g_connackCode = 0U; g_silentBroker = false; g_subackFirst = 1U; g_upgradeMode = UpgradeMode::Good;
   g_upgraded = false; g_clientFrameBad = false; g_request.clear(); g_clientPings = g_clientPongs = g_clientCloses = 0U; g_clientPongPayloads.clear();
@@ -233,12 +233,56 @@ int main() {
   tick(30000); tick(30000);
   CHECK(logged("link lost") && backoff.failures >= 1U && net.stops >= 1U);   // silent broker: dropped (then reconnected after backoff)
 
-  // 6. A QoS1 message nobody acknowledges for 15 s drops the link (the bridge/Web then settle UNCERTAIN).
+  // 6. A QoS1 message nobody acknowledges does NOT drop a link that is still talking (PINGRESP keeps arriving): the entry just
+  //    expires and the window is free again. Only "unacknowledged AND silent" is a dead socket.
   resetWorld(); connectNow();
   inject({0x40, 0x02, 0x00, static_cast<uint8_t>(nextPacketId)}); tick(1);
   CHECK(publishFromBridge("ack", "{\"x\":1}", 7U));
   for (int i = 0; i < 30; ++i) { inject({0xD0, 0x00}); tick(600); }
+  CHECK(mayapMqttTransportConnected() && !logged("link lost"));
+  CHECK(inflightCount == 0U && qos1Expired == 1U);
+  resetWorld(); connectNow();
+  inject({0x40, 0x02, 0x00, static_cast<uint8_t>(nextPacketId)}); tick(1);
+  CHECK(publishFromBridge("ack", "{\"x\":1}", 7U));
+  for (int i = 0; i < 20; ++i) tick(1000);                                   // unacknowledged for 20 s and the broker is silent
   CHECK(logged("link lost") && logged("inflight=1"));
+
+  // 6b. Terminal ACKs keep a reserve of the QoS1 window: config/history/presence ("bulk") may never take the last
+  //     QOS1_RESERVED_FOR_ACK slots, so a report burst cannot starve a command's ACK. Refusals are counted, not silent.
+  resetWorld(); connectNow();
+  inject({0x40, 0x02, 0x00, static_cast<uint8_t>(nextPacketId)}); tick(1);
+  CHECK(inflightCount == 0U);
+  unsigned bulk = 0U; while (publishFromBridge("config/reported", "{\"c\":1}", 8U)) ++bulk;
+  CHECK(bulk == QOS1_INFLIGHT_MAX - QOS1_RESERVED_FOR_ACK && refusedBulk == 1U);
+  for (unsigned i = 0; i < QOS1_RESERVED_FOR_ACK; ++i) CHECK(publishFromBridge("ack", "{\"p\":1}", 8U));   // the reserve is still there
+  CHECK(inflightCount == QOS1_INFLIGHT_MAX && !publishFromBridge("ack", "{}", 2U) && refusedAck == 1U);
+
+  // 6c. Transport probe: a late acknowledgement asks for ONE PINGREQ; ANY byte back proves the broker alive; an unanswered probe
+  //     stays "pending" (the Cloud task's evidence for a half-open socket) and is not repeated sooner than PROBE_MIN_GAP_MS.
+  {
+    using namespace MayapUplink;
+    resetWorld(); Internal::health = Health{}; connectNow(); net.sent.clear();
+    const uint32_t beforeProbes = healthSnapshot().probes;
+    requestProbe(g_millis); tick(1);
+    unsigned pings = 0; for (auto &p : decodeSent()) if (p.type == 12) ++pings;
+    CHECK(pings == 1U && healthSnapshot().probes == beforeProbes + 1U && probePending(healthSnapshot()));
+    net.sent.clear(); requestProbe(g_millis); tick(1);                       // unanswered: no second PINGREQ
+    pings = 0; for (auto &p : decodeSent()) if (p.type == 12) ++pings;
+    CHECK(pings == 0U && probePending(healthSnapshot()));
+    inject({0xD0, 0x00}); tick(1);                                           // PINGRESP
+    CHECK(!probePending(healthSnapshot()) && healthSnapshot().probesAnswered == 1U);
+    net.sent.clear(); tick(PROBE_MIN_GAP_MS + 1U); requestProbe(g_millis); tick(1);
+    pings = 0; for (auto &p : decodeSent()) if (p.type == 12) ++pings;
+    CHECK(pings == 1U);
+    // a probe answered by something other than PINGRESP (a command) counts too
+    injectPublish("mayap/v1/MAP-AABBCCDDEEFF/session", "{\"a\":1}", 0U, 0U); tick(1);
+    CHECK(!probePending(healthSnapshot()));
+  }
+
+  // 6d. Broker CLOSE frames are recorded (code + reason) and appear in the "link lost" line: no more anonymous drops.
+  resetWorld(); connectNow();
+  injectBytes(serverFrame(std::vector<uint8_t>{0x03, 0xF5, 'S', 'L', 'O', 'W'}, 8)); tick(1);
+  CHECK(logged("link lost") && logged("brokerClose=1013 'SLOW'"));
 
   // 7. Refusals and failures back off; nothing is left half-open.
   resetWorld(); g_connackCode = 5U; mayapMqttTransportBegin(); tick(1); tick(STA_STABLE_MS);
@@ -255,7 +299,10 @@ int main() {
   // 8. Gates: Wi-Fi/portal/yield/isolation stop the client; a graceful stop publishes offline then DISCONNECT only
   //    when the offline presence was really written (otherwise the broker must fire the LWT).
   resetWorld(); connectNow(); net.sent.clear();
+  MayapUplink::setYieldWhy(MayapUplink::YieldWhy::AlarmHalfOpen); const uint32_t tlsClosesBefore = closeCount[static_cast<uint8_t>(CloseKind::CloudTls)];
   g_yield = true; tick(1);
+  CHECK(logged("closed on purpose (cloud-tls) why=alarm:half-open-confirmed") && closeCount[static_cast<uint8_t>(CloseKind::CloudTls)] == tlsClosesBefore + 1U);
+  MayapUplink::setYieldWhy(MayapUplink::YieldWhy::Other);
   sent = decodeSent();
   CHECK(!mayapMqttTransportConnected() && !net.open && sent.size() == 2U);
   CHECK(sent[0].type == 3 && str(sent[0].body.data(), sent[0].body.size()).find("\"online\":false") != std::string::npos);
@@ -445,9 +492,13 @@ int main() {
     CHECK(!available(g_millis) && peek(q1) == State::Failed && peek(q2) == State::Failed);
     CHECK(finish(q1) == State::Failed && finish(q2) == State::Failed);
     CHECK(offer(Kind::Alarm, alarm1, strlen(alarm1), g_millis) == -1);                 // no link: nothing can be queued
-    // After a missed PUBACK the Cloud task marks the uplink suspect and uses HTTPS for a while.
+    // A missing PUBACK never makes the uplink unavailable: only the owner's link state does.
     resetWorld(); clearSlots(); connectNow();
-    suspect(g_millis); CHECK(!available(g_millis) && !available(g_millis + SUSPECT_MS - 1U) && available(g_millis + SUSPECT_MS + 1U));
+    CHECK(available(g_millis));
+    const int8_t late = offer(Kind::Alarm, alarm1, strlen(alarm1), g_millis); tick(20);
+    for (int i = 0; i < 40; ++i) { inject({0xD0, 0x00}); tick(1000); }          // 40 s, broker talking, never a PUBACK for the alarm
+    CHECK(available(g_millis) && mayapMqttTransportConnected() && !logged("link lost"));
+    finish(late); resetWorld(); clearSlots(); connectNow();
     // A slot nobody collects cannot live forever.
     const int8_t old = offer(Kind::Alarm, alarm1, strlen(alarm1), g_millis); tick(20); CHECK(peek(old) == State::Sent);
     expire(g_millis + SLOT_MAX_AGE_MS + 1U); CHECK(peek(old) == State::Failed);

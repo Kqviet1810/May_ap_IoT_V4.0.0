@@ -2,9 +2,13 @@
 #include <Arduino.h>
 
 // Device -> cloud uplink over the MQTT/WSS link that is already open: alarms and heartbeats are published
-// on mayap/v1/<id>/alarm and /heartbeat (QoS1). The broker hands them to the main Worker and sends the
-// PUBACK only after the Worker confirmed a durable write, so a PUBACK means "stored", exactly like the
-// HTTPS durable receipt - but without a second TLS session (~70 kB of heap) that forced realtime to yield.
+// on mayap/v1/<id>/alarm and /heartbeat (QoS1). The broker writes the event into its own durable queue and
+// PUBACKs: a PUBACK means BROKER_STORED (not D1_STORED, not PUSH_*). Handing the event to the Worker is the broker's
+// job, retried on its side, so the device never waits for D1 and a missing PUBACK says NOTHING about the transport.
+//
+// Transport health is judged separately, from evidence that does not depend on any acknowledgement: socket state,
+// bytes received from the broker (PINGRESP included) and an explicit probe (PINGREQ sent on demand, answered or not).
+// A late PUBACK only asks for such a probe; it never marks the link suspect and never makes HTTPS take the TLS slot.
 //
 // Two tasks meet here and neither blocks the other: the Cloud task (core 0, prio 1) OFFERS an event and
 // waits a few seconds for its fate; the MQTT task (the only owner of the socket) publishes queued slots
@@ -19,7 +23,7 @@ constexpr size_t PAYLOAD_MAX = 448U;            // one event (or heartbeat) as J
 constexpr uint32_t ACK_WAIT_MAX_MS = 4000UL;    // adaptive PUBACK wait: never longer than this ...
 constexpr uint32_t ACK_WAIT_MIN_MS = 1500UL;    // ... and never shorter than this (see ackWaitMs())
 constexpr uint32_t SLOT_MAX_AGE_MS = 30000UL;   // safety net: no slot outlives this
-constexpr uint32_t SUSPECT_MS = 60000UL;        // after a miss, Cloud uses HTTPS for this long
+constexpr uint32_t PROBE_MIN_GAP_MS = 2000UL;   // an unanswered probe is not repeated sooner than this
 
 enum class Kind : uint8_t { Alarm, Heartbeat };
 enum class State : uint8_t { Free, Queued, Sent, Acked, Failed, Orphan };
@@ -39,8 +43,11 @@ struct Health {
   uint8_t failures = 0U;          // consecutive failed attempts / losses since the last Up
   uint32_t lossAt[3] = {0U, 0U, 0U};   // the last three unexpected losses (ring), 0 = none
   uint8_t lossHead = 0U;
-  uint32_t lastRxAt = 0U;         // last byte received from the broker
+  uint32_t lastRxAt = 0U;         // last byte received from the broker (any packet: PINGRESP, PUBACK, PUBLISH ...)
   uint16_t rttEwmaMs = 0U;        // smoothed PUBLISH->PUBACK time of uplink packets (0 = no sample yet)
+  uint32_t probeSentAt = 0U;      // when the last on-demand PINGREQ left (0 = none since the link came up)
+  bool probeWanted = false;       // the Cloud task asked the MQTT owner for a probe
+  uint32_t probes = 0U, probesAnswered = 0U;   // diagnostics: how often a late PUBACK was cross-checked, and how often the broker answered
 };
 
 struct Slot {
@@ -58,40 +65,41 @@ static Slot slots[SLOTS];
 static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 static bool linkIsUp = false;
 static Health health;
-static uint32_t suspectUntil = 0U;
 static uint32_t sequence = 0U;
+static uint8_t yieldWhy = 0U;
 }  // namespace Internal
+
+// Why the Cloud task is about to take the TLS slot from MQTT, so every deliberate MQTT close carries its evidence in the log.
+// Only the alarm fallback (link confirmed gone / half-open / starved critical) and the broker-outage beacon are alarm reasons;
+// everything else (registration, firmware check, OTA) is `Other`. A late PUBACK is not a reason.
+enum class YieldWhy : uint8_t { Other, AlarmDown, AlarmFlapping, AlarmHalfOpen, AlarmStarved, Beacon };
+inline void setYieldWhy(YieldWhy why) { __atomic_store_n(&Internal::yieldWhy, static_cast<uint8_t>(why), __ATOMIC_RELEASE); }
+inline YieldWhy yieldWhy() { return static_cast<YieldWhy>(__atomic_load_n(&Internal::yieldWhy, __ATOMIC_ACQUIRE)); }
+inline const char *yieldWhyText(YieldWhy why) {
+  switch (why) {
+    case YieldWhy::AlarmDown: return "alarm:link-down"; case YieldWhy::AlarmFlapping: return "alarm:link-flapping";
+    case YieldWhy::AlarmHalfOpen: return "alarm:half-open-confirmed"; case YieldWhy::AlarmStarved: return "alarm:critical-starved";
+    case YieldWhy::Beacon: return "beacon:broker-unreachable"; default: return "other";
+  }
+}
 
 // ---------------------------- Cloud task side ----------------------------
 
-inline bool available(uint32_t now) {
-  using namespace Internal;
-  portENTER_CRITICAL(&mux);
-  const bool ok = linkIsUp && (suspectUntil == 0U || static_cast<int32_t>(now - suspectUntil) >= 0);
-  portEXIT_CRITICAL(&mux);
+// True while the MQTT owner has the link open. A missing PUBACK never changes this: only the owner decides the link is gone.
+inline bool available(uint32_t) {
+  portENTER_CRITICAL(&Internal::mux);
+  const bool ok = Internal::linkIsUp;
+  portEXIT_CRITICAL(&Internal::mux);
   return ok;
 }
 
-// True while an unacknowledged uplink event keeps the link under suspicion (the link itself may still look up).
-inline bool suspected(uint32_t now) {
+// Cloud task: "an acknowledgement is late - cross-check the transport". Cheap and idempotent; the owner sends one PINGREQ.
+inline void requestProbe(uint32_t now) {
   using namespace Internal;
   portENTER_CRITICAL(&mux);
-  const bool s = suspectUntil != 0U && static_cast<int32_t>(now - suspectUntil) < 0;
-  portEXIT_CRITICAL(&mux);
-  return s;
-}
-
-inline void clearSuspect() {
-  portENTER_CRITICAL(&Internal::mux);
-  Internal::suspectUntil = 0U;
-  portEXIT_CRITICAL(&Internal::mux);
-}
-
-inline void suspect(uint32_t now) {
-  using namespace Internal;
-  portENTER_CRITICAL(&mux);
-  suspectUntil = now + SUSPECT_MS;
-  if (suspectUntil == 0U) suspectUntil = 1U;
+  const bool unanswered = health.probeSentAt != 0U && static_cast<int32_t>(health.lastRxAt - health.probeSentAt) <= 0;
+  const bool tooSoon = health.probeSentAt != 0U && static_cast<uint32_t>(now - health.probeSentAt) < PROBE_MIN_GAP_MS;
+  if (!unanswered && !tooSoon) health.probeWanted = true;
   portEXIT_CRITICAL(&mux);
 }
 
@@ -259,6 +267,7 @@ inline void healthUp(uint32_t now) {
   portENTER_CRITICAL(&Internal::mux);
   Health &h = Internal::health;
   h.link = Link::Up; h.since = now; h.nextAttemptAt = 0U; h.failures = 0U; h.lastRxAt = now;
+  h.probeSentAt = 0U; h.probeWanted = false;
   portEXIT_CRITICAL(&Internal::mux);
 }
 inline void healthClosed(uint32_t now, uint32_t nextAttemptAt) {          // deliberate: not a failure
@@ -294,8 +303,28 @@ inline void healthWaiting(uint32_t now, uint32_t nextAttemptAt) {         // idl
 }
 inline void healthRx(uint32_t at) {
   portENTER_CRITICAL(&Internal::mux);
-  Internal::health.lastRxAt = at;
+  Health &h = Internal::health;
+  if (h.probeSentAt != 0U && static_cast<int32_t>(h.lastRxAt - h.probeSentAt) <= 0 && static_cast<int32_t>(at - h.probeSentAt) > 0) ++h.probesAnswered;
+  h.lastRxAt = at;
   portEXIT_CRITICAL(&Internal::mux);
+}
+// MQTT owner: is a probe requested? (clears the request). noteProbeSent() stamps the PINGREQ that went out for it.
+inline bool takeProbeRequest() {
+  portENTER_CRITICAL(&Internal::mux);
+  const bool wanted = Internal::health.probeWanted;
+  Internal::health.probeWanted = false;
+  portEXIT_CRITICAL(&Internal::mux);
+  return wanted;
+}
+inline void noteProbeSent(uint32_t now) {
+  portENTER_CRITICAL(&Internal::mux);
+  Internal::health.probeSentAt = now ? now : 1U;
+  ++Internal::health.probes;
+  portEXIT_CRITICAL(&Internal::mux);
+}
+// Probe state as the Cloud task needs it: pending = a probe left and nothing at all came back since.
+inline bool probePending(const Health &h) {
+  return h.probeSentAt != 0U && static_cast<int32_t>(h.lastRxAt - h.probeSentAt) <= 0;
 }
 inline Health healthSnapshot() {
   portENTER_CRITICAL(&Internal::mux);

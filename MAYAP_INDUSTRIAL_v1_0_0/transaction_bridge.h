@@ -1285,7 +1285,15 @@ inline void expirePendingCommands(uint32_t now) {
 
 }
 
+// Terminal ACKs wait here until the transport accepted them. A refusal (in-flight window full, link closing) is retried with a
+// short exponential back-off (50 ms .. 1 s) instead of every loop pass, and logged at most once per 2 s with the count, so a
+// busy moment neither spins the CPU nor floods the serial buffer. An ACK that was accepted by the socket but whose PUBACK never
+// comes is covered one level up: the Web re-sends the command and replayTerminal() answers it WITHOUT executing it again.
+static uint8_t ackRefusals = 0U;
+static uint32_t ackRetryAt = 0U, ackLogAt = 0U, ackRefusedTotal = 0U, ackRefusedLogged = 0U;
 inline void drainAckOutbox() {
+  const uint32_t startedAt = millis();
+  if (ackRefusals > 0U && static_cast<int32_t>(startedAt - ackRetryAt) < 0) return;
   for (uint8_t i = 0U; i < COMMAND_QUEUE_SIZE + 2U; ++i) {
     AckOutboxItem item;
     portENTER_CRITICAL(&realtimeMux);
@@ -1296,9 +1304,20 @@ inline void drainAckOutbox() {
                                  item.operation, item.receivedAt, item.completedAt,
                                  item.signedAck ? item.ackKey : nullptr);
     if (!sent) {
-      mayapSerialPrintf(false, "[CFG-TX] ACK PUB FAIL id=%s\n", item.requestId);
-      break; // Keep the ACK and retry on the next network cycle.
+      const uint32_t now = millis();
+      if (ackRefusals < 255U) ++ackRefusals;
+      ++ackRefusedTotal;
+      const uint8_t shift = ackRefusals < 5U ? ackRefusals : 5U;
+      ackRetryAt = now + (50UL << shift > 1000UL ? 1000UL : (50UL << shift));
+      if (ackLogAt == 0U || static_cast<uint32_t>(now - ackLogAt) >= 2000UL) {
+        mayapSerialPrintf(false, "[CFG-TX] ACK PUB FAIL id=%s (refused %lu since last log, retry in %lums)\n", item.requestId,
+                          static_cast<unsigned long>(ackRefusedTotal - ackRefusedLogged), static_cast<unsigned long>(ackRetryAt - now));
+        ackLogAt = now ? now : 1U;
+        ackRefusedLogged = ackRefusedTotal;
+      }
+      break; // Keep the ACK and retry after the back-off.
     }
+    ackRefusals = 0U;
     portENTER_CRITICAL(&realtimeMux);
     if (ackOutbox[i].used && ackOutbox[i].completedAt == item.completedAt &&
         !strcmp(ackOutbox[i].requestId, item.requestId))
