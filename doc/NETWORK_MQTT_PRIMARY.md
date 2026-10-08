@@ -20,8 +20,8 @@ thời điểm thử nối kế tiếp, RTT PUBACK làm mượt). Task Cloud ph�
 | Phân loại | Điều kiện (bằng chứng **vận chuyển**, không phải biên nhận) | Cảnh báo nghiêm trọng | Cảnh báo thường |
 |---|---|---|---|
 | Healthy | link Up **và** broker còn gửi byte (≤ 20 s) — bất kể PUBACK trễ/thiếu | MQTT (không bao giờ HTTPS) | MQTT |
-| Probing | link "Up" nhưng im lặng > 20 s: một PINGREQ thăm dò đã gửi | chờ tối đa 4 s cho phán quyết | chờ |
-| HalfOpen | im lặng > 20 s **và** thăm dò không nhận được byte nào trong 4 s | **HTTPS ngay** (sau khi MQTT nhả bộ nhớ) | 20 s |
+| Probing | link "Up" nhưng im lặng 20–30 s: một PINGREQ thăm dò đã gửi | chờ tối đa 4 s cho phán quyết | chờ |
+| HalfOpen | im lặng > 20 s **và** thăm dò không nhận được byte nào trong 4 s; hoặc im lặng ≥ 30 s (hai vòng ping 15 s không được đáp) | **HTTPS ngay** (sau khi MQTT nhả bộ nhớ) | 20 s |
 | Recovering | đóng có chủ đích/đang nối, lần thử kế tiếp ≤ 6 s | chờ tối đa 6 s | chờ 60 s |
 | Down | link mất, thử nối thất bại, hoặc lần thử kế tiếp > 6 s | **HTTPS ngay** | chờ 20 s |
 | Flapping | ≥ 3 lần mất trong 2 phút | HTTPS ngay | 20 s |

@@ -9,6 +9,7 @@
 //
 //   Healthy        link up and the broker is talking (bytes within HALF_OPEN_RX_MS)  -> MQTT, never HTTPS, whatever the PUBACK says
 //   Probing        link "up" but silent > HALF_OPEN_RX_MS: a PINGREQ probe is out     -> wait up to PROBE_WAIT_MS for any answer
+//                  (silence >= HALF_OPEN_HARD_MS is HalfOpen without waiting: the keepalive pings alone prove it)
 //   HalfOpen       the probe got no answer at all: confirmed independently of D1/Worker -> like Down
 //   Recovering     closed on purpose / connecting, next attempt due within 6 s        -> critical waits up to 6 s, routine 60 s
 //   Down           link lost, attempts failing, or the next attempt is > 6 s away      -> critical NOW, routine after 20 s
@@ -32,6 +33,7 @@ constexpr uint32_t ROUTINE_RECOVER_WAIT_MS = 60000UL;
 constexpr uint32_t ROUTINE_DOWN_WAIT_MS = 20000UL;
 constexpr uint32_t HALF_OPEN_RX_MS = 20000UL;        // pings go out every 15 s: silence beyond this is not a healthy link
 constexpr uint32_t PROBE_WAIT_MS = 4000UL;           // a PINGREQ probe must be answered by ANY byte within this
+constexpr uint32_t HALF_OPEN_HARD_MS = 30000UL;      // two keepalive pings (15 s each) unanswered: confirmed even if no probe could be sent
 constexpr uint32_t STARVE_MS = 60000UL;              // a critical alarm unacknowledged this long on a proven-alive link ...
 constexpr uint8_t STARVE_MISSES = 3U;                // ... after at least this many MQTT attempts may use HTTPS
 constexpr uint32_t FLAP_WINDOW_MS = 120000UL;
@@ -82,6 +84,7 @@ struct LinkView {
 inline Cause classify(const LinkView &v) {
   if (v.kind == LinkView::Kind::Up) {
     if (v.rxAgeMs <= HALF_OPEN_RX_MS) return Cause::Healthy;       // the broker is talking: the transport is fine
+    if (v.rxAgeMs >= HALF_OPEN_HARD_MS) return Cause::HalfOpen;     // two keepalive rounds of silence: no probe needed to say so
     if (!v.probePending || v.probeAgeMs < PROBE_WAIT_MS) return Cause::Probing;
     return Cause::HalfOpen;                                         // silent AND the probe went unanswered
   }

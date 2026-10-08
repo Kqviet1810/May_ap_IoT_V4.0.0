@@ -185,13 +185,17 @@ int main(){
       if(starved&&critical){assert(r==Route::Https&&c==Cause::BrokerNotStoring);}
       else {assert(r==Route::Mqtt&&c==Cause::Healthy&&!wantProbe);assert(!beaconDue(clockMs+1000000u,1000000u,0u,v));}
      }
-  for(uint32_t rx:{20001u,45000u,600000u}){            // silent: never an immediate verdict; the probe decides
+  for(uint32_t rx:{20001u,25000u,29999u}){             // silent < 30 s: never an immediate verdict; the probe decides
    LinkView v;v.wifiUp=true;v.registered=true;v.kind=LinkView::Kind::Up;v.rxAgeMs=rx;
    Gate g;Cause c;bool wantProbe=false;
    assert(decide(g,clockMs,v,100000u,true,&c,&wantProbe)==Route::Wait&&c==Cause::Probing&&wantProbe&&!beaconDue(clockMs+1000000u,1000000u,0u,v));
    v.probePending=true;v.probeAgeMs=3999;assert(decide(g,clockMs,v,100000u,true,&c,&wantProbe)==Route::Wait&&c==Cause::Probing&&!wantProbe);
    v.probeAgeMs=4000;assert(decide(g,clockMs,v,0u,true,&c)==Route::Https&&c==Cause::HalfOpen&&beaconDue(clockMs+1000000u,1000000u,0u,v));
    Gate gr;assert(decide(gr,clockMs,v,0u,false,&c)==Route::Wait);   // routine: 20 s grace as for Down
+  }
+  for(uint32_t rx:{30000u,45000u,600000u}){            // silent >= 30 s (two keepalive rounds): confirmed without a probe
+   LinkView v;v.wifiUp=true;v.registered=true;v.kind=LinkView::Kind::Up;v.rxAgeMs=rx;
+   Gate g;Cause c;assert(decide(g,clockMs,v,0u,true,&c)==Route::Https&&c==Cause::HalfOpen&&beaconDue(clockMs+1000000u,1000000u,0u,v));
   }
   assert(cases==7*2*4*2*2*2*4);
  }
