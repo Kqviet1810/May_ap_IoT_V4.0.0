@@ -192,6 +192,20 @@ test('MQTT uplink ingest: signed broker calls write alarms/heartbeats exactly li
   const row=h.sql.prepare('SELECT last_seen,batch_running,status FROM devices WHERE device_id=?').get(h.deviceId);
   assert.equal(row.batch_running,1);assert.equal(row.status,'online');assert.ok(row.last_seen>0);
   const unknown=await (await call({device_id:'MAP-AAAAAAAAAAAA',kind:'heartbeat',data:{}})).json();assert.equal(unknown.durable,false);
+  // Broker queue form: per-event verdicts. Cooldown = `throttled` with the remaining wait (not a failure), a reused id with other
+  // content = `rejected`, a replay = `duplicate`, an unknown device = `rejected` for every event (permanent, not an outage).
+  const batch=async(events,device=h.deviceId)=>(await call({device_id:device,kind:'alarms',events})).json();
+  const mk=(id,extra={})=>({event_id:id,alarm_type:'FAULT_140',state:'active',message:'m',severity:'critical',...extra});
+  const q1=await batch([mk('q-1')]);assert.deepEqual(q1.results.map(r=>r.outcome),['stored']);
+  const q2=await batch([mk('q-1'),mk('q-2'),mk('q-3',{alarm_type:'FAULT_141'})]);
+  assert.deepEqual(q2.results.map(r=>r.outcome),['duplicate','throttled','stored']);
+  assert.ok(q2.results[1].retry_after_ms>=1000&&q2.results[1].retry_after_ms<=15000);
+  const q3=await batch([mk('q-1',{message:'other'}),{event_id:'q-5',alarm_type:'X'}]);
+  assert.deepEqual(q3.results.map(r=>[r.outcome,r.error]),[['rejected','EVENT_ID_CONFLICT'],['rejected','BAD_EVENT']]);
+  const q4=await batch([mk('q-6',{state:'resolved'}),mk('q-7',{state:'active'})]);          // order inside one batch is kept
+  assert.deepEqual(q4.results.map(r=>r.outcome),['stored','stored']);
+  assert.deepEqual((await batch([mk('q-8')],'MAP-AAAAAAAAAAAA')).results.map(r=>[r.outcome,r.error]),[['rejected','DEVICE_NOT_REGISTERED']]);
+  assert.equal((await call({device_id:h.deviceId,kind:'alarms',events:[]})).status,400);
   // Authentication: wrong secret, tampered body, stale or missing timestamp, unknown kind.
   assert.equal((await call(event('u-5'),{secret:'other'})).status,401);
   assert.equal((await call(event('u-5'),{tamper:true})).status,401);
@@ -203,22 +217,26 @@ test('MQTT uplink ingest: signed broker calls write alarms/heartbeats exactly li
  }finally{global.fetch=original;}
 });
 
-// ---- End-to-end simulation of plan B: firmware-shaped MQTT publish -> real broker DO -> real Worker ingest -> D1 ----
+// ---- End-to-end: firmware-shaped MQTT publish -> real broker DO (durable queue) -> real Worker ingest -> D1 ----
+// Contract: a PUBACK on `alarm` means BROKER_STORED (a durable row in the Durable Object). D1_STORED follows when the DO alarm
+// drains the queue into the Worker. The two are different facts and this test keeps them apart.
 const NativeResponse = globalThis.Response;     // captured before the broker harness swaps in its 101-tolerant stub
-test('uplink end to end: device alarm/heartbeat over MQTT is PUBACKed only once it is durable in D1',async()=>{
+test('uplink end to end: PUBACK = BROKER_STORED, D1_STORED follows from the queue, retries are idempotent',async()=>{
  const crypto=require('node:crypto'),wire=require('./fixtures/mqtt-wire.cjs'),harness=require('./fixtures/mqtt-broker-harness.cjs');
  const h=await setup(),originalFetch=global.fetch;global.fetch=async()=>new NativeResponse('',{status:201});
  const secret='uplink-secret';h.env.MQTT_DEVICE_SECRET=secret;
  const worker=(await import('../cloudflare/src/index.js')).default,ctx={waitUntil(p){h.jobs.push(p);}};
- const ingestCalls=[];
+ const ingestCalls=[];let workerDown=false;
  const env={BROKER_DEVICE_SECRET:secret,BROKER_WEB_TOKEN_SECRET:'web-secret',CLOUD_INGEST:{async fetch(url,init){
-  ingestCalls.push(JSON.parse(init.body).kind);
+  const parsed=JSON.parse(init.body);ingestCalls.push(parsed.kind+(parsed.events?':'+parsed.events.map(e=>e.event_id).join(','):''));
+  if(workerDown) throw new Error('worker unreachable');
   const stub=globalThis.Response;globalThis.Response=NativeResponse;     // the Worker answers with real Responses
   try{return await worker.fetch(new Request(url,init),h.env,ctx);}finally{globalThis.Response=stub;}
  }}};
  const id=h.deviceId,password=crypto.createHmac('sha256',secret).update(`mayap-mqtt-device:v1\n${id}`).digest('hex');
  try{
   const b=await harness.makeBroker({env});
+  let clock=Date.now();b.broker._now=()=>clock;
   const {client,server}=await harness.openWebSocket(b.broker,id);
   await harness.feed(b.broker,server,wire.connect({clientId:`esp-${id}`,username:id,password,will:{topic:`mayap/v1/${id}/presence`,qos:1,retain:true,payload:'{"online":false}'}}));
   assert.equal(wire.parseConnack((await harness.clientReceive(client))[0]).returnCode,0);
@@ -227,32 +245,51 @@ test('uplink end to end: device alarm/heartbeat over MQTT is PUBACKed only once 
   const publish=async(packetId,topic,payload)=>{await harness.feed(b.broker,server,wire.publish({topic:`mayap/v1/${id}/${topic}`,qos:1,packetId,payload}));
    return (await harness.clientReceive(client)).map(f=>wire.parsePuback(f).packetId);};
   const count=()=>h.sql.prepare('SELECT COUNT(*) n FROM alarm_events').get().n;
-  assert.deepEqual(await publish(11,'alarm',event('fe6e-00000001','active','off')),[11]);         // durable -> PUBACK
-  assert.equal(count(),1);
-  assert.deepEqual(await publish(11,'alarm',event('fe6e-00000001','active','off')),[11]);         // response lost, device resends: still one row
-  assert.equal(count(),1);
-  assert.deepEqual(await publish(12,'alarm',event('fe6e-00000002','resolved','on')),[12]);        // recovery stored after the alarm
+  const drain=async(advanceMs=0)=>{clock+=advanceMs;await b.broker.alarm();};
+  // BROKER_STORED: PUBACK at once, nothing in D1 yet, and the PUBACK never waited for the Worker.
+  assert.deepEqual(await publish(11,'alarm',event('fe6e-00000001','active','off')),[11]);
+  assert.equal(count(),0);assert.deepEqual(ingestCalls,[]);
+  assert.deepEqual(await publish(11,'alarm',event('fe6e-00000001','active','off')),[11]);         // device resends (link blip): acknowledged, queued once
+  assert.deepEqual(await publish(12,'alarm',event('fe6e-00000002','resolved','on')),[12]);        // recovery behind the alarm
+  await drain();
+  assert.equal(count(),2);                                                                        // D1_STORED, in order
+  assert.deepEqual(h.sql.prepare('SELECT event_id FROM alarm_events ORDER BY order_seq').all().map(r=>r.event_id),['fe6e-00000001','fe6e-00000002']);
+  assert.deepEqual(ingestCalls,['alarms:fe6e-00000001,fe6e-00000002']);                           // one batched request
+  // A conflicting event id is stored by the broker (PUBACK) but the Worker rejects it permanently: visible, never retried.
+  assert.deepEqual(await publish(13,'alarm',event('fe6e-00000001','active','DIFFERENT')),[13]);
+  await drain();
   assert.equal(count(),2);
-  assert.deepEqual(await publish(13,'alarm',event('fe6e-00000001','active','DIFFERENT')),[]);     // conflicting id: not durable -> no PUBACK
-  assert.equal(count(),2);
+  const afterConflict=await b.broker.uplink.status();
+  assert.equal(afterConflict.rejected,1);assert.equal(afterConflict.pending,0);
+  assert.equal(afterConflict.recent_rejected[0].err,'EVENT_ID_CONFLICT');
   assert.deepEqual(await publish(14,'heartbeat',JSON.stringify({batch_running:true})),[14]);
+  await drain();
   const row=h.sql.prepare('SELECT batch_running,status,last_seen FROM devices WHERE device_id=?').get(id);
   assert.equal(row.batch_running,1);assert.equal(row.status,'online');assert.ok(row.last_seen>0);
-  assert.deepEqual(ingestCalls,['alarm','alarm','alarm','alarm','heartbeat']);   // (the HTTPS fallback below never touches the broker)
-  // Cold-standby HTTPS fallback (independent Worker endpoint, device_key auth) carrying an alarm MQTT already stored:
-  // same event_id -> duplicate receipt, still one row. The reverse order (HTTPS first, MQTT resend) is the same lookup.
+  // HTTPS fallback carrying an alarm MQTT already stored: same event_id -> duplicate, still one row.
   const https=async(events)=>{const stub=globalThis.Response;globalThis.Response=NativeResponse;try{return await (await h.batch(events)).json();}finally{globalThis.Response=stub;}};
   const viaHttps=await https([{event_id:'fe6e-00000001',alarm_type:'FAULT_130',severity:'critical',state:'active',message:'off'}]);
   assert.deepEqual([viaHttps.results[0].durable,viaHttps.results[0].duplicate],[true,true]);
   assert.equal(count(),2);
+  // HTTPS stored it first, then the device's MQTT resend arrives: acknowledged (BROKER_STORED) and forwarded as a duplicate.
   const fresh=await https([{event_id:'fe6e-00000009',alarm_type:'FAULT_131',severity:'critical',state:'active',message:'x'}]);
   assert.equal(fresh.results[0].durable,true);assert.equal(count(),3);
   assert.deepEqual(await publish(16,'alarm',JSON.stringify({event_id:'fe6e-00000009',alarm_type:'FAULT_131',severity:'critical',state:'active',message:'x'})),[16]);
-  assert.equal(count(),3);                                       // MQTT resend of what HTTPS stored: acknowledged, not duplicated
-  // Wrong secret on the Worker side (misconfigured deploy): nothing is stored and the device gets no PUBACK.
-  h.env.MQTT_DEVICE_SECRET='rotated-elsewhere';
-  assert.deepEqual(await publish(15,'alarm',event('fe6e-00000003','active','off')),[]);
+  await drain();assert.equal(count(),3);
+  // Worker unreachable (or misconfigured): the device still gets its PUBACK, the event waits in the broker, and the
+  // backlog is observable. When the Worker recovers the queue drains by itself - nothing was lost, nothing duplicated.
+  workerDown=true;
+  assert.deepEqual(await publish(20,'alarm',event('fe6e-00000020','active','off')),[20]);
+  assert.deepEqual(await publish(21,'alarm',JSON.stringify({event_id:'fe6e-00000021',alarm_type:'FAULT_131',severity:'critical',state:'resolved',message:'ok'})),[21]);
+  await drain(); await drain(3000); await drain(6000);
   assert.equal(count(),3);
+  const stuck=await b.broker.uplink.status();
+  assert.equal(stuck.pending,2);assert.equal(stuck.retrying,2);assert.match(stuck.last_error,/FETCH_ERROR/);assert.ok(stuck.oldest_age_ms>=0);
+  workerDown=false;
+  await drain(10000); await drain(60000);
+  assert.equal(count(),5);
+  const healed=await b.broker.uplink.status();
+  assert.equal(healed.pending,0);assert.equal(healed.last_error,'');
   await Promise.all(h.jobs);
  }finally{global.fetch=originalFetch;}
 });

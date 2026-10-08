@@ -23,6 +23,8 @@ export const Topics = Object.freeze({
   // and PUBACKs only once the Worker confirms a durable write.
   alarm: 'alarm',
   heartbeat: 'heartbeat',
+  // Broker -> Web only (live, not retained): what the uplink queue still has to hand to the Worker.
+  uplink: 'uplink',
 });
 
 // Suffix lists keyed by role, enforced AFTER verifying the leading
@@ -49,6 +51,7 @@ const WEB_PUB = new Set([
 const WEB_SUB = new Set([
   Topics.presence, Topics.snapshot, Topics.ack, Topics.log,
   Topics.configReported, Topics.remindersReported, Topics.historyReported,
+  Topics.uplink,
 ]);
 
 // Topics for which broker refuses to retain even if the publisher sets
@@ -57,7 +60,7 @@ export const RETAIN_FORBIDDEN = new Set([
   Topics.command, Topics.configSet, Topics.remindersSet,
   Topics.historyRequest, Topics.snapshot, Topics.ack, Topics.log,
   Topics.historyReported, Topics.configReported, Topics.session,
-  Topics.alarm, Topics.heartbeat,
+  Topics.alarm, Topics.heartbeat, Topics.uplink,
 ]);
 
 // Suffixes handled by the ingest path instead of subscriber fanout.
@@ -68,7 +71,7 @@ export const RETAIN_ALLOWED = new Set([Topics.presence, Topics.remindersReported
 
 // QoS cap per topic suffix (max QoS the broker will fan out at).
 export function topicQosCap(suffix) {
-  if (suffix === Topics.snapshot || suffix === Topics.log || suffix === Topics.session) return 0;
+  if (suffix === Topics.snapshot || suffix === Topics.log || suffix === Topics.session || suffix === Topics.uplink) return 0;
   return 1;
 }
 

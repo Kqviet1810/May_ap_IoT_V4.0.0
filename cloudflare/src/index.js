@@ -296,7 +296,9 @@ async function recordAlarmEvent(env, device, deviceId, body, fields, via = 'http
   if (unchanged && now-Number(priorState.last_sent_at || 0)<MIN_ALARM_COOLDOWN_MS) {
     // New firmware retains the event and retries; older firmware preserves its
     // previous throttle semantics. Already-durable duplicates bypass this gate.
-    return { status: suppliedId?429:200, payload: {success:!suppliedId,durable:false,throttled:true} };
+    // `retry_after_ms` lets the broker queue wait exactly as long as the cooldown still has to run (it is not a failure).
+    return { status: suppliedId?429:200, payload: {success:!suppliedId,durable:false,throttled:true,
+      retry_after_ms: Math.max(1000, MIN_ALARM_COOLDOWN_MS-(now-Number(priorState.last_sent_at || 0)))} };
   }
   const notification=buildNotificationPayload({deviceId,deviceName:device.device_name,alarmType,severity,state,message,temperature,humidity});
   notification.data.eventId=eventId;notification.data.message=message;
@@ -391,10 +393,33 @@ async function handleAlarmBatch(request, env, ctx) {
 // Only the MQTT broker calls this (service binding), signed with the shared device secret; the device itself was
 // authenticated by the broker with its per-device MQTT password. Reuses the exact alarm/heartbeat writes of the HTTPS
 // endpoints. `durable:true` is the only thing that makes the broker PUBACK the device.
+// One queued event -> the verdict the broker queue acts on (see broker/uplink-queue.js applyResults):
+//   stored | duplicate   D1 holds the event and its push jobs (idempotent by event_id: a lost reply is retried safely)
+//   throttled            same alarm type/state inside the 15 s cooldown: not an error, the broker waits `retry_after_ms`
+//   rejected             permanent (bad fields, event_id reused for different content): never retried
+//   error                D1/Worker trouble: retried with backoff
+async function ingestQueuedAlarm(env, device, deviceId, event, failedTypes) {
+  const fields = alarmFields(event);
+  if (!fields.alarmType || !fields.message || event?.event_id === undefined) return { outcome: 'rejected', error: 'BAD_EVENT' };
+  if (failedTypes.has(fields.alarmType)) return { outcome: 'skipped' };   // keeps ACTIVE -> RESOLVED order per alarm type
+  let result;
+  try {
+    result = await recordAlarmEvent(env, device, deviceId, event, fields, 'mqtt');
+  } catch (error) {
+    console.error('[alarm] queued event failed', String(error?.message || error));
+    return { outcome: 'error', error: 'STORAGE_ERROR', schedule: false };
+  }
+  const payload = result.payload || {};
+  if (payload.durable === true) return { outcome: payload.duplicate === true ? 'duplicate' : 'stored', schedule: result.schedule === true };
+  if (payload.throttled === true) return { outcome: 'throttled', retry_after_ms: payload.retry_after_ms };
+  if (result.status === 400 || result.status === 409) return { outcome: 'rejected', error: String(payload.error || 'REJECTED') };
+  return { outcome: 'error', error: String(payload.error || 'NOT_DURABLE') };
+}
+
 async function handleUplink(request, env, ctx) {
   const bodyText = await request.text();
   const secret = String(env.MQTT_DEVICE_SECRET || '');
-  if (bodyText.length > 4096 ||
+  if (bodyText.length > 16384 ||
       !await verifyUplink(secret, request.headers.get('x-mayap-ts'), bodyText, request.headers.get('x-mayap-sig'))) {
     return json(env, { success: false, error: 'UPLINK_AUTH' }, 401);
   }
@@ -402,16 +427,33 @@ async function handleUplink(request, env, ctx) {
   try { message = JSON.parse(bodyText); } catch { return json(env, { success: false, error: 'BAD_JSON' }, 400); }
   const deviceId = String(message?.device_id || '').trim();
   const data = message?.data;
-  if (!isValidDeviceId(deviceId) || !data || typeof data !== 'object') {
-    return json(env, { success: false, error: 'BAD_UPLINK' }, 400);
+  if (!isValidDeviceId(deviceId)) return json(env, { success: false, error: 'BAD_UPLINK' }, 400);
+  if (message.kind === 'alarms') {
+    const events = Array.isArray(message.events) ? message.events : null;
+    if (!events || events.length === 0 || events.length > MAX_ALARM_BATCH) return json(env, { success: false, error: 'BAD_UPLINK' }, 400);
+    const device = await getDeviceByDeviceId(env.DB, deviceId);
+    // An unregistered device is a permanent verdict for these events, not an outage: the broker must not retry them forever.
+    if (!device) return json(env, { success: true, results: events.map(e => ({ event_id: e?.event_id, outcome: 'rejected', error: 'DEVICE_NOT_REGISTERED' })) });
+    const results = [], failedTypes = new Set();
+    let schedule = false;
+    for (const event of events) {
+      const verdict = await ingestQueuedAlarm(env, device, deviceId, event, failedTypes);
+      if (verdict.schedule) schedule = true;
+      if (!['stored', 'duplicate', 'rejected'].includes(verdict.outcome)) failedTypes.add(alarmFields(event).alarmType);
+      results.push({ event_id: event?.event_id, outcome: verdict.outcome, ...(verdict.retry_after_ms ? { retry_after_ms: verdict.retry_after_ms } : {}),
+        ...(verdict.error ? { error: verdict.error } : {}) });
+    }
+    if (schedule) scheduleAlarmDelivery(env, ctx);
+    return json(env, { success: true, results });
   }
+  if (!data || typeof data !== 'object') return json(env, { success: false, error: 'BAD_UPLINK' }, 400);
   const device = await getDeviceByDeviceId(env.DB, deviceId);
   if (!device) return json(env, { success: true, durable: false, error: 'device chua dang ky' });
   if (message.kind === 'heartbeat') {
     await touchDeviceHeartbeat(env.DB, deviceId, Date.now(), Boolean(data.batch_running));
     return json(env, { success: true, durable: true });
   }
-  if (message.kind === 'alarm') {
+  if (message.kind === 'alarm') {   // single-event form kept for older brokers
     const fields = alarmFields(data);
     if (!fields.alarmType || !fields.message || data.event_id === undefined) {
       return json(env, { success: true, durable: false, status: 400, error: 'thieu event_id/alarm_type/message' });

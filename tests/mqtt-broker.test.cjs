@@ -448,64 +448,205 @@ const reply = (body, status = 200) => new NativeResponse(body, { status });
 const durable = (value = true) => reply(JSON.stringify({ success: true, durable: value }));
 const alarmEvent = (id, extra = {}) => JSON.stringify({ event_id: id, alarm_type: 'FAULT_130', state: 'active', message: 'm', severity: 'critical', ...extra });
 
-test('uplink alarm: signed hand-off to the Worker, PUBACK after durable, never fanned out to Web', async () => {
-  const { env, calls } = ingestFixture(() => durable());
+// Contract (intentionally changed from "PUBACK after D1"): PUBACK on `alarm`/`heartbeat` = BROKER_STORED. The Worker is
+// reached afterwards from the DO alarm; a slow, failing or throttling Worker never touches any packet of the device link.
+const publishAlarm = (b, dev, packetId, payload, topic = 'alarm') =>
+  harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/${topic}`, qos: 1, packetId, payload }));
+const pubacks = async (dev) => (await harness.clientReceive(dev.client)).map((f) => wire.parsePuback(f).packetId);
+const results = (events, outcome = 'stored', extra = {}) => reply(JSON.stringify({ success: true,
+  results: events.map((e) => ({ event_id: e.event_id, outcome, ...extra })) }));
+
+test('uplink alarm: PUBACK = BROKER_STORED before any Worker call; signed batched hand-off afterwards; never fanned out to Web', async () => {
+  const { env, calls } = ingestFixture((n, init) => results(JSON.parse(init.body).events));
   const b = await harness.makeBroker({ env });
   const dev = await connectDevice(b.broker);
   const web = await connectWeb(b.broker);
   await harness.feed(b.broker, web.server, wire.subscribe({ packetId: 3, filters: [{ filter: `mayap/v1/${DEV}/#`, qos: 0 }] }));
   await harness.clientReceive(web.client);
-  await harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/alarm`, qos: 1, packetId: 41, payload: alarmEvent('e-1') }));
-  const frames = await harness.clientReceive(dev.client);
-  assert.equal(wire.parsePuback(frames[0]).packetId, 41);
+  await publishAlarm(b, dev, 41, alarmEvent('e-1'));
+  assert.deepEqual(await pubacks(dev), [41]);
+  assert.equal(calls.length, 0, 'the PUBACK did not wait for the Worker');
+  const row = [...b.state.storage.map.keys()].filter((k) => k.startsWith('uq:e:'));
+  assert.equal(row.length, 1, 'the event is a durable row before the PUBACK');
+  await b.broker.alarm();
   assert.equal(calls.length, 1);
   const { body, init } = calls[0];
-  assert.deepEqual(body, { device_id: DEV, kind: 'alarm', data: JSON.parse(alarmEvent('e-1')) });
+  assert.deepEqual(body, { device_id: DEV, kind: 'alarms', events: [JSON.parse(alarmEvent('e-1'))] });
   const ts = init.headers['x-mayap-ts'];
   const expected = crypto.createHmac('sha256', DEV_SECRET).update(`mayap-uplink-ingest:v1\n${ts}\n${init.body}`).digest('hex');
   assert.equal(init.headers['x-mayap-sig'], expected);
-  assert.deepEqual(await harness.clientReceive(web.client), []);        // nothing reaches subscribers
+  assert.equal((await b.broker.uplink.status()).pending, 0);
+  assert.deepEqual((await harness.clientReceive(web.client)).filter((f) => f[0] >> 4 === 3 && !String(Buffer.from(f)).includes('/uplink')), []);   // nothing but status reaches subscribers
 });
 
-test('uplink: no PUBACK when the Worker says not durable, errors, times out, or is missing', async () => {
-  for (const handler of [() => durable(false), () => reply('boom', 500), () => { throw new Error('binding down'); }]) {
+test('uplink: a failing, slow, throttling or missing Worker never withholds the PUBACK and never closes the link', async () => {
+  for (const handler of [() => results([{ event_id: 'e-2' }], 'error'), () => reply('boom', 500), () => { throw new Error('binding down'); }]) {
     const { env } = ingestFixture(handler);
     const b = await harness.makeBroker({ env });
     const dev = await connectDevice(b.broker);
-    await harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/alarm`, qos: 1, packetId: 5, payload: alarmEvent('e-2') }));
-    assert.deepEqual(await harness.clientReceive(dev.client), []);
-    assert.equal(dev.server.closed, false);                                // the link stays up; the device just retries
+    await publishAlarm(b, dev, 5, alarmEvent('e-2'));
+    assert.deepEqual(await pubacks(dev), [5]);
+    await b.broker.alarm();
+    const status = await b.broker.uplink.status();
+    assert.equal(status.pending, 1);                                      // kept, visible, retried with backoff
+    assert.equal(status.retrying, 1);
+    assert.equal(dev.server.closed, false);
   }
-  const b = await harness.makeBroker({ env: envFixture() });               // no CLOUD_INGEST binding: fail closed
+  const b = await harness.makeBroker({ env: envFixture() });               // no CLOUD_INGEST binding: still stored, drain reports NO_INGEST
   const dev = await connectDevice(b.broker);
-  await harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/heartbeat`, qos: 1, packetId: 6, payload: '{"batch_running":false}' }));
-  assert.deepEqual(await harness.clientReceive(dev.client), []);
+  await publishAlarm(b, dev, 6, '{"batch_running":false}', 'heartbeat');
+  assert.deepEqual(await pubacks(dev), [6]);
+  await publishAlarm(b, dev, 7, alarmEvent('e-3'));
+  assert.deepEqual(await pubacks(dev), [7]);
+  await b.broker.alarm();
+  assert.equal((await b.broker.uplink.status()).last_error, 'NO_INGEST');
 });
 
-test('uplink: malformed payload is dropped without PUBACK; ordering is preserved; web cannot publish or subscribe', async () => {
-  const order = [];
+test('uplink: malformed payloads are dropped without PUBACK; web cannot publish or subscribe; per-type order and cooldown are kept', async () => {
+  const seen = [];
+  const verdict = { 'a-1': ['throttled', { retry_after_ms: 5000 }] };
   const { env } = ingestFixture(async (n, init) => {
-    const body = JSON.parse(init.body);
-    if (body.data.event_id === 'slow') await new Promise((resolve) => setTimeout(resolve, 30));
-    order.push(body.data.event_id);
-    return durable();
+    const events = JSON.parse(init.body).events;
+    seen.push(events.map((e) => e.event_id));
+    const failed = new Set();      // the Worker skips later events of an alarm type after one was not accepted
+    return reply(JSON.stringify({ success: true, results: events.map((e) => {
+      if (failed.has(e.alarm_type)) return { event_id: e.event_id, outcome: 'skipped' };
+      const v = verdict[e.event_id];
+      if (v && v[0] !== 'stored') failed.add(e.alarm_type);
+      return v ? { event_id: e.event_id, outcome: v[0], ...v[1] } : { event_id: e.event_id, outcome: 'stored' }; }) }));
   });
   const b = await harness.makeBroker({ env });
+  let clock = 1_000_000; b.broker._now = () => clock;
   const dev = await connectDevice(b.broker);
-  await harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/alarm`, qos: 1, packetId: 7, payload: 'not json' }));
-  assert.deepEqual(await harness.clientReceive(dev.client), []);
-  // Two publishes in flight at once: the second waits for the first (active before resolved).
-  await Promise.all([
-    harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/alarm`, qos: 1, packetId: 8, payload: alarmEvent('slow') })),
-    harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/alarm`, qos: 1, packetId: 9, payload: alarmEvent('fast', { state: 'resolved' }) })),
-  ]);
-  assert.deepEqual(order, ['slow', 'fast']);
-  assert.deepEqual((await harness.clientReceive(dev.client)).map((f) => wire.parsePuback(f).packetId), [8, 9]);
+  await publishAlarm(b, dev, 7, 'not json');
+  await publishAlarm(b, dev, 8, JSON.stringify({ event_id: 'bad id!', alarm_type: 'X', message: 'm' }));
+  assert.deepEqual(await pubacks(dev), []);
+  // ACTIVE (throttled by the Worker cooldown) then RESOLVED of the same type, plus another type.
+  await publishAlarm(b, dev, 9, alarmEvent('a-1'));
+  await publishAlarm(b, dev, 10, alarmEvent('a-2', { state: 'resolved' }));
+  await publishAlarm(b, dev, 11, alarmEvent('b-1', { alarm_type: 'FAULT_131' }));
+  assert.deepEqual(await pubacks(dev), [9, 10, 11]);
+  await b.broker.alarm();
+  assert.deepEqual(seen, [['a-1', 'a-2', 'b-1']]);
+  let status = await b.broker.uplink.status();
+  assert.equal(status.throttled, 1);                                      // a-1 waits for the cooldown; a-2 (same type) is held behind it
+  assert.equal(status.forwarded, 1);                                      // b-1 (other type) is not blocked
+  clock += 1500; await b.broker.alarm();
+  assert.equal(seen.length, 1, 'no retry before the cooldown elapsed');
+  verdict['a-1'] = ['stored', {}];
+  clock += 5000; await b.broker.alarm();
+  assert.deepEqual(seen[1], ['a-1', 'a-2']);                              // order preserved: ACTIVE before RESOLVED
+  status = await b.broker.uplink.status();
+  assert.equal(status.pending, 0);
   const web = await connectWeb(b.broker);
   await harness.feed(b.broker, web.server, wire.subscribe({ packetId: 2, filters: [{ filter: `mayap/v1/${DEV}/alarm`, qos: 0 }] }));
-  assert.deepEqual(wire.parseSuback(await (async () => (await harness.clientReceive(web.client))[0])()).codes, [0x80]);
+  assert.deepEqual(wire.parseSuback((await harness.clientReceive(web.client))[0]).codes, [0x80]);
   await harness.feed(b.broker, web.server, wire.publish({ topic: `mayap/v1/${DEV}/alarm`, qos: 1, packetId: 3, payload: alarmEvent('forged') }));
-  assert.equal(order.length, 2);                                           // the ACL stopped it before ingest
+  assert.equal((await b.broker.uplink.status()).pending, 0);               // the ACL stopped it before the queue
+});
+
+test('uplink: the queue is bounded; a full queue withholds the PUBACK (backpressure) instead of dropping silently', async () => {
+  const { env } = ingestFixture(() => reply('boom', 503));
+  const b = await harness.makeBroker({ env });
+  const dev = await connectDevice(b.broker);
+  for (let i = 0; i < 64; i++) await publishAlarm(b, dev, 100 + i, alarmEvent(`q-${i}`, { alarm_type: `T${i % 5}` }));
+  assert.equal((await pubacks(dev)).length, 64);
+  await publishAlarm(b, dev, 200, alarmEvent('q-over'));
+  assert.deepEqual(await pubacks(dev), []);
+  const status = await b.broker.uplink.status();
+  assert.equal(status.pending, 64);
+  assert.equal(status.overflow, 1);
+  assert.equal(dev.server.closed, false);
+  await publishAlarm(b, dev, 100, alarmEvent('q-0', { alarm_type: 'T0' }));    // a resend of a stored event is always acknowledged
+  assert.deepEqual(await pubacks(dev), [100]);
+});
+
+test('uplink: stored events survive hibernation and drain after the Worker recovers; a lost Worker reply is retried safely', async () => {
+  let workerUp = false;
+  const stored = new Set();
+  const handler = (n, init) => {
+    const events = JSON.parse(init.body).events;
+    if (!workerUp) return reply('down', 503);
+    return reply(JSON.stringify({ success: true, results: events.map((e) => {
+      const dup = stored.has(e.event_id); stored.add(e.event_id); return { event_id: e.event_id, outcome: dup ? 'duplicate' : 'stored' }; }) }));
+  };
+  const first = ingestFixture(handler);
+  let b = await harness.makeBroker({ env: first.env });
+  const dev = await connectDevice(b.broker);
+  await publishAlarm(b, dev, 1, alarmEvent('h-1'));
+  assert.deepEqual(await pubacks(dev), [1]);
+  b = await harness.simulateHibernate(b, first.env);                        // DO evicted: only storage survives
+  workerUp = true;
+  await b.broker.alarm();
+  assert.deepEqual([...stored], ['h-1']);
+  assert.equal((await b.broker.uplink.status()).pending, 0);
+  // Worker stored it but the reply was lost: the row stays pending and the retry gets `duplicate`, no second store.
+  const lost = ingestFixture((n, init) => { handler(n, init); return reply('lost', 502); });
+  const b2 = await harness.makeBroker({ env: lost.env });
+  let clock = 2_000_000; b2.broker._now = () => clock;
+  const dev2 = await connectDevice(b2.broker);
+  await publishAlarm(b2, dev2, 1, alarmEvent('h-2'));
+  await b2.broker.alarm();
+  assert.equal((await b2.broker.uplink.status()).pending, 1);
+  const ok = ingestFixture(handler);
+  b2.broker.env.CLOUD_INGEST = ok.env.CLOUD_INGEST;
+  clock += 2500; await b2.broker.alarm();
+  assert.equal((await b2.broker.uplink.status()).pending, 0);
+  assert.deepEqual([...stored].sort(), ['h-1', 'h-2']);
+});
+
+test('uplink: a slow Worker does not delay PINGRESP, other PUBACKs or the keep-alive supervisor (no await on the network in the packet path)', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const { env } = ingestFixture(async (n, init) => { await gate; return results(JSON.parse(init.body).events); });
+  const b = await harness.makeBroker({ env });
+  const dev = await connectDevice(b.broker);
+  const t0 = Date.now();
+  const alarmDone = (async () => { await publishAlarm(b, dev, 1, alarmEvent('s-1')); return b.broker.alarm(); })();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await harness.feed(b.broker, dev.server, wire.pingreq());
+  await publishAlarm(b, dev, 2, alarmEvent('s-2', { alarm_type: 'FAULT_131' }));
+  await publishAlarm(b, dev, 3, '{"batch_running":true}', 'heartbeat');
+  const frames = await harness.clientReceive(dev.client);
+  const types = frames.map((f) => f[0] >> 4);
+  assert.ok(types.includes(13), 'PINGRESP answered while the Worker call is still pending');
+  assert.deepEqual(frames.filter((f) => f[0] >> 4 === 4).map((f) => wire.parsePuback(f).packetId).sort(), [1, 2, 3]);
+  assert.ok(Date.now() - t0 < 1000);
+  release(); await alarmDone;
+  assert.equal((await b.broker.uplink.status()).pending, 0);
+});
+
+test('keep-alive supervision is deadline-driven, not a 15 s poll: the DO wakes at the earliest real deadline', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const base = Date.now();
+  b.broker._now = () => base;
+  const dev = await connectDevice(b.broker);
+  await b.broker._rescheduleAlarm();
+  const at = await b.state.storage.getAlarm();
+  const keepaliveMs = (await b.broker.state.getWebSockets()[0].deserializeAttachment()).keepaliveMs;
+  assert.ok(Math.abs(at - base - (keepaliveMs * 1.5 + 1000)) <= 1500, `alarm in ${at - base} ms (keep-alive ${keepaliveMs} ms x 1.5 + 1 s), not a fixed 15 s poll`);
+  assert.ok(at - base > 15000);
+  await harness.feed(b.broker, dev.server, wire.pingreq());
+  // Idle with no sockets and no queue: no alarm at all.
+  const empty = await harness.makeBroker({ env: envFixture() });
+  await empty.broker._rescheduleAlarm();
+  assert.equal(await empty.state.storage.getAlarm(), null);
+});
+
+test('uplink status topic: web gets the backlog live and once on subscribe; the device cannot read or write it', async () => {
+  const { env } = ingestFixture(() => reply('down', 503));
+  const b = await harness.makeBroker({ env });
+  const dev = await connectDevice(b.broker);
+  const web = await connectWeb(b.broker);
+  await publishAlarm(b, dev, 1, alarmEvent('w-1'));
+  await pubacks(dev);
+  await harness.feed(b.broker, web.server, wire.subscribe({ packetId: 4, filters: [{ filter: `mayap/v1/${DEV}/uplink`, qos: 1 }] }));
+  const frames = await harness.clientReceive(web.client);
+  assert.deepEqual(wire.parseSuback(frames[0]).codes, [0]);                 // QoS0 only
+  const first = JSON.parse(wire.parsePublish(frames[1]).payload.toString());
+  assert.equal(first.pending, 1);
+  await harness.feed(b.broker, dev.server, wire.subscribe({ packetId: 5, filters: [{ filter: `mayap/v1/${DEV}/uplink`, qos: 0 }] }));
+  assert.deepEqual(wire.parseSuback((await harness.clientReceive(dev.client))[0]).codes, [0x80]);
 });
 
 test('uplink: QoS0 or retained alarm publishes are protocol misuse and never reach the Worker', async () => {

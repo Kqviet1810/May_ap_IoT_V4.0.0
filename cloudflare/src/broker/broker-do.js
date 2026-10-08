@@ -19,17 +19,18 @@ import {
   parseTopic, canPublish, evaluateSubscribe, topicQosCap, requiredPublishQos,
   makeCredentialResolver, UPLINK_SUFFIXES, signUplink,
 } from './acl.js';
+import { UplinkQueue, UQ } from './uplink-queue.js';
 
 // Contract §1 — client keepalive 30..120 s. Zero is explicitly forbidden
 // because retained presence must not stale indefinitely on half-open links.
 const KEEPALIVE_MIN_SEC = 30;
 const KEEPALIVE_MAX_SEC = 120;
 const KEEPALIVE_GRACE = 1.5;
-const ALARM_INTERVAL_MS = 15 * 1000;
+const ALARM_MIN_GAP_MS = 1000;    // never wake more often than this (a stale socket that cannot be closed must not spin the DO)
+const CONNECT_TIMEOUT_MS = 10 * 1000;
+const STATUS_MIN_GAP_MS = 5 * 1000;   // `uplink` status pushes to the Web are rate limited (state edges bypass it)
 const INFLIGHT_LIMIT = 16;        // bounded QoS1 server→client ring
 const RETAINED_LIMIT = 32;        // bounded retained messages per DO
-const UPLINK_PENDING_MAX = 16;    // alarm/heartbeat ingests awaiting the Worker (bounded)
-const UPLINK_TIMEOUT_MS = 5000;   // the device waits for the PUBACK for a few seconds only
 
 const b64enc = (bytes) => {
   // atob/btoa in Workers handle binary strings.
@@ -45,6 +46,8 @@ const b64dec = (s) => {
 };
 
 export class MqttBrokerDO {
+  _now() { return Date.now(); }
+
   constructor(state, env) {
     this.state = state;
     this.env = env;
@@ -59,14 +62,17 @@ export class MqttBrokerDO {
     });
     // Next packet id for server→client QoS1. 1..65535.
     this._packetSeq = 1;
-    // Alarm pump — ensure the alarm is scheduled if we have any sockets.
+    // Durable device->cloud queue (alarms) + latest heartbeat. Its rows live in DO storage, so a hibernation or
+    // restart loses nothing; the clock is replaceable for tests.
+    this.uplink = new UplinkQueue(this.storage, () => this._now());
+    this._draining = false;
+    this._statusAt = 0;
+    this._statusKey = '';
+    // One alarm serves keep-alive supervision AND the uplink drain/retry schedule; it is set to the earliest deadline,
+    // not polled on a fixed period.
     state.blockConcurrencyWhile(async () => {
       this.deviceId = await this.storage.get('deviceId');
-      const existing = typeof state.getWebSockets === 'function'
-        ? state.getWebSockets() : [];
-      if (existing && existing.length > 0) {
-        await this._scheduleAlarm();
-      }
+      await this._rescheduleAlarm();
     });
   }
 
@@ -107,7 +113,7 @@ export class MqttBrokerDO {
       createdAt: Date.now(),
       bufferB64: '',
     });
-    await this._scheduleAlarm();
+    await this._rescheduleAlarm();
     return new Response(null, {
       status: 101,
       webSocket: client,
@@ -162,9 +168,14 @@ export class MqttBrokerDO {
         return this._closeFatal(ws, 1011, err && err.code || 'HANDLER');
       }
     }
-    // Persist decoder buffer across hibernation.
-    att.bufferB64 = b64enc(decoder.buffer);
-    try { ws.serializeAttachment(att); } catch { /* ws may already be gone */ }
+    // Persist decoder buffer across hibernation. Handlers above may have updated the attachment (subs, in-flight
+    // ring, violations) after `att` was read: merge only what this function owns instead of writing back a stale copy.
+    try {
+      const fresh = ws.deserializeAttachment() || att;
+      if (att.lastRxMs) fresh.lastRxMs = Math.max(fresh.lastRxMs || 0, att.lastRxMs);
+      fresh.bufferB64 = b64enc(decoder.buffer);
+      ws.serializeAttachment(fresh);
+    } catch { /* ws may already be gone */ }
   }
 
   async webSocketClose(ws, code, reason, wasClean) {
@@ -203,7 +214,7 @@ export class MqttBrokerDO {
   }
 
   async alarm() {
-    const now = Date.now();
+    const now = this._now();
     const sockets = typeof this.state.getWebSockets === 'function'
       ? this.state.getWebSockets() : [];
     for (const ws of sockets) {
@@ -215,14 +226,38 @@ export class MqttBrokerDO {
           // webSocketClose will publish LWT.
         }
       } else if (att.state === 'await-connect') {
-        if (now - att.createdAt > 10_000) {
+        if (now - att.createdAt > CONNECT_TIMEOUT_MS) {
           try { ws.close(1008, 'CONNECT_TIMEOUT'); } catch {}
         }
       }
     }
-    const remaining = typeof this.state.getWebSockets === 'function'
-      ? this.state.getWebSockets() : [];
-    if (remaining.length > 0) await this._scheduleAlarm();
+    try { await this._drainUplink(); } catch (error) { console.error('[uplink] drain crashed', String((error && error.message) || error)); }
+    await this._rescheduleAlarm();
+  }
+
+  // Next wake = earliest of: a socket's keep-alive deadline, a connect timeout, the uplink queue's next retry.
+  // No fixed polling period: an idle DO with healthy sockets wakes about once per keep-alive window.
+  async _rescheduleAlarm() {
+    const now = this._now();
+    let at = null;
+    const take = (value) => { at = at === null ? value : Math.min(at, value); };
+    const sockets = typeof this.state.getWebSockets === 'function' ? this.state.getWebSockets() : [];
+    for (const ws of sockets) {
+      let att;
+      try { att = ws.deserializeAttachment() || {}; } catch { continue; }
+      if (att.state === 'open' && att.keepaliveMs > 0) take((att.lastRxMs || now) + Math.ceil(att.keepaliveMs * KEEPALIVE_GRACE) + 1000);
+      else if (att.state === 'await-connect') take((att.createdAt || now) + CONNECT_TIMEOUT_MS + 1000);
+    }
+    try {
+      const queued = await this.uplink.nextWake();
+      if (queued !== null) take(queued);
+    } catch (error) { console.error('[uplink] nextWake failed', String((error && error.message) || error)); }
+    if (typeof this.storage.setAlarm !== 'function') return;
+    if (at === null) {
+      try { if (typeof this.storage.deleteAlarm === 'function') await this.storage.deleteAlarm(); } catch {}
+      return;
+    }
+    try { await this.storage.setAlarm(Math.max(at, now + ALARM_MIN_GAP_MS)); } catch {}
   }
 
   // ------------- Packet handling ------------------------------------------
@@ -408,47 +443,124 @@ export class MqttBrokerDO {
     }
   }
 
-  // Device alarm / heartbeat: hand it to the main Worker (service binding CLOUD_INGEST) and PUBACK only
-  // after the Worker confirms a durable write. Anything else - no binding, bad JSON, Worker error, timeout,
-  // throttled/conflicting event - sends NO PUBACK, so the device keeps the event and retries (events are
-  // idempotent by event_id). Jobs run strictly in arrival order so an alarm and its recovery cannot swap.
+  // Device alarm / heartbeat.
+  //
+  //   alarm     PUBACK = BROKER_STORED: the event is a durable row in this Durable Object (ordered, bounded, deduplicated by
+  //             event_id) before the PUBACK leaves. Handing it to the Worker (D1 + Web Push) happens afterwards from the DO
+  //             alarm with retry/backoff (see _drainUplink); a slow or failing Worker therefore never delays any packet of
+  //             the device's link. A full queue withholds the PUBACK (backpressure): the device keeps the event and retries.
+  //   heartbeat PUBACK once the latest value is stored; forwarded to the Worker at most every HEARTBEAT_FORWARD_MS.
+  //
+  // Invalid payloads are dropped without PUBACK, exactly as before. Nothing here awaits the network.
   async _handleUplink(ws, kind, pkt) {
-    const ingest = this.env && this.env.CLOUD_INGEST;
-    const secret = this.env && this.env.BROKER_DEVICE_SECRET;
-    if (!ingest || !secret || (this._uplinkPending || 0) >= UPLINK_PENDING_MAX) return;
     let data;
     try { data = JSON.parse(new TextDecoder().decode(pkt.payload)); } catch { return; }
     if (!data || typeof data !== 'object' || Array.isArray(data)) return;
-    const body = JSON.stringify({ device_id: this.deviceId, kind, data });
-    this._uplinkPending = (this._uplinkPending || 0) + 1;
-    const run = async () => {
-      let durable = false;
-      try {
-        const ts = Date.now();
-        const res = await ingest.fetch('https://ingest.internal/api/internal/uplink', {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-mayap-ts': String(ts),
-            'x-mayap-sig': await signUplink(secret, ts, body),
-          },
-          body,
-          signal: AbortSignal.timeout(UPLINK_TIMEOUT_MS),
-        });
-        if (res.ok) {
-          const out = await res.json();
-          durable = Boolean(out && out.durable === true);
-        }
-      } catch (error) {
-        console.error('[uplink] ingest failed', kind, String((error && error.message) || error));
-      } finally {
-        this._uplinkPending -= 1;
+    let ok = false;
+    try {
+      if (kind === 'heartbeat') {
+        await this.uplink.recordHeartbeat(data);
+        ok = true;
+      } else {
+        const result = await this.uplink.enqueueAlarm(data);
+        ok = result.status === 'stored' || result.status === 'duplicate' || result.status === 'conflict';
       }
-      if (durable && (ws.readyState === undefined || ws.readyState === 1)) ws.send(encodePuback(pkt.packetId));
-    };
-    const chained = (this._uplinkChain || Promise.resolve()).then(run, run);
-    this._uplinkChain = chained;
-    await chained;
+    } catch (error) {
+      console.error('[uplink] store failed', kind, String((error && error.message) || error));
+    }
+    if (ok && (ws.readyState === undefined || ws.readyState === 1)) ws.send(encodePuback(pkt.packetId));
+    await this._wakeSoon();
+    if (kind === 'alarm') await this._publishUplinkStatus(!ok);
+  }
+
+  async _wakeSoon() {
+    if (typeof this.storage.setAlarm !== 'function') return;
+    const now = this._now();
+    try {
+      const current = typeof this.storage.getAlarm === 'function' ? await this.storage.getAlarm() : null;
+      if (current == null || current > now + 100) await this.storage.setAlarm(now + 50);
+    } catch {}
+  }
+
+  async _postUplink(body) {
+    const ingest = this.env && this.env.CLOUD_INGEST;
+    const secret = this.env && this.env.BROKER_DEVICE_SECRET;
+    if (!ingest || !secret) throw Object.assign(new Error('NO_INGEST'), { code: 'NO_INGEST' });
+    const ts = this._now();
+    return ingest.fetch('https://ingest.internal/api/internal/uplink', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-mayap-ts': String(ts),
+        'x-mayap-sig': await signUplink(secret, ts, body),
+      },
+      body,
+      signal: AbortSignal.timeout(UQ.FORWARD_TIMEOUT_MS),
+    });
+  }
+
+  // Forwards queued alarms (batches, oldest first) and the latest heartbeat to the Worker. Runs inside the DO alarm, never
+  // inside a packet handler. Each call is bounded (a few batches); retry timing lives in the rows (`nextAt`).
+  async _drainUplink() {
+    if (this._draining) return;
+    this._draining = true;
+    try {
+      await this.uplink.maintain();
+      for (let round = 0; round < 4; round += 1) {
+        const batch = await this.uplink.pickBatch();
+        if (batch.length === 0) break;
+        let results = null;
+        let failure = null;
+        try {
+          const res = await this._postUplink(JSON.stringify({ device_id: this.deviceId, kind: 'alarms', events: batch.map((row) => row.data) }));
+          if (res.ok) {
+            const out = await res.json();
+            if (out && Array.isArray(out.results)) results = out.results; else failure = 'BAD_REPLY';
+          } else failure = `HTTP_${res.status}`;
+        } catch (error) {
+          failure = error && error.code === 'NO_INGEST' ? 'NO_INGEST' : error && error.name === 'TimeoutError' ? 'TIMEOUT' : 'FETCH_ERROR';
+          console.error('[uplink] forward failed', failure, String((error && error.message) || error));
+        }
+        const { hardFail } = await this.uplink.applyResults(batch, results, failure);
+        if (hardFail) break;
+      }
+      const hb = await this.uplink.heartbeatDue();
+      if (hb) {
+        let ok = false;
+        try {
+          const res = await this._postUplink(JSON.stringify({ device_id: this.deviceId, kind: 'heartbeat', data: { batch_running: hb.batch } }));
+          if (res.ok) { const out = await res.json(); ok = Boolean(out && out.durable === true); }
+        } catch (error) {
+          console.error('[uplink] heartbeat forward failed', String((error && error.message) || error));
+        }
+        await this.uplink.heartbeatDone(hb.at, ok);
+      }
+    } finally {
+      this._draining = false;
+    }
+    await this._publishUplinkStatus(false);
+  }
+
+  // `uplink` topic (broker -> Web, QoS0, not retained): what is waiting for the Worker. Rate limited; a change of the
+  // visible state (pending count or error) goes out at once.
+  async _uplinkStatusPayload() {
+    const status = await this.uplink.status();
+    return status;
+  }
+
+  async _publishUplinkStatus(force) {
+    let status;
+    try { status = await this._uplinkStatusPayload(); } catch { return; }
+    const key = `${status.pending}|${status.retrying}|${status.throttled}|${status.last_error}|${status.rejected}|${status.overflow}|${status.heartbeat_pending ? 1 : 0}`;
+    const now = this._now();
+    if (!force && key === this._statusKey) return;
+    if (!force && now - this._statusAt < STATUS_MIN_GAP_MS && status.pending > 0) return;
+    this._statusKey = key;
+    this._statusAt = now;
+    const payload = new TextEncoder().encode(JSON.stringify(status));
+    try {
+      await this._fanoutPublish({ topic: `${TOPIC_ROOT}/${this.deviceId}/uplink`, qos: 0, retain: false, payload, originWs: null });
+    } catch {}
   }
 
   async _fanoutPublish({ topic, qos, retain, payload, originWs }) {
@@ -513,6 +625,16 @@ export class MqttBrokerDO {
     }
     ws.serializeAttachment(att);
     ws.send(encodeSuback(pkt.packetId, codes));
+    // `uplink` is broker-originated live state (not retained): a new subscriber gets the current picture once.
+    for (let i = 0; i < pkt.filters.length; i++) {
+      if (codes[i] === 0x80) continue;
+      const parsed = parseTopic(this.deviceId, pkt.filters[i].filter);
+      if (parsed.suffix !== 'uplink') continue;
+      try {
+        const payload = new TextEncoder().encode(JSON.stringify(await this._uplinkStatusPayload()));
+        ws.send(encodePublish({ topic: `${TOPIC_ROOT}/${this.deviceId}/uplink`, qos: 0, retain: false, packetId: 0, payload }));
+      } catch {}
+    }
     // Deliver retained for newly accepted subs.
     for (let i = 0; i < pkt.filters.length; i++) {
       if (codes[i] === 0x80) continue;
@@ -579,13 +701,5 @@ export class MqttBrokerDO {
     }
     // Should be unreachable: inflight is bounded at INFLIGHT_LIMIT.
     throw new Error('packet id space exhausted');
-  }
-
-  async _scheduleAlarm() {
-    const current = typeof this.storage.getAlarm === 'function'
-      ? await this.storage.getAlarm() : null;
-    if (current == null) {
-      try { await this.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS); } catch {}
-    }
   }
 }
