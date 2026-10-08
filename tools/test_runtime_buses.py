@@ -47,6 +47,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
     (out / 'actual-cloud-oneshots.inc').write_text(cloud[cloud.index('static bool lastBatchRunning'):cloud.index('// --------------------- Canh bao: den van bat')], encoding='utf-8')
     send_begin=cloud.index('inline uint8_t awaitUplink(')
     (out / 'actual-cloud-send.inc').write_text(cloud[send_begin:cloud.index('inline void drainOutbox(')], encoding='utf-8')
+    (out / 'actual-cloud-heartbeat.inc').write_text(cloud[cloud.index('inline void serviceHeartbeat('):cloud.index('inline void serviceRegister(')], encoding='utf-8')
     begin=cloud.index('inline void drainOutbox(')
     (out / 'actual-cloud-drain.inc').write_text(cloud[begin:cloud.index('inline void serviceHeartbeat(',begin)], encoding='utf-8')
     start = cloud.index('inline void servicePinReset()')

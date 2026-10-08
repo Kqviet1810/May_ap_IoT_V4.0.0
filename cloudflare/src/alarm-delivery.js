@@ -61,7 +61,15 @@ export async function drainAlarmDeliveries(env, { now = Date.now(), limit = 16 }
         .bind(row.event_seq,row.endpoint,token,result.ok?'sent':result.gone?'gone':'pending',attempts,
           finished+Math.max(delay,Math.min(300000,result.retryAfterMs || 0)),result.status || 0).run();
       if (result.gone && sub) await env.DB.prepare('DELETE FROM push_subscriptions WHERE endpoint=?1').bind(row.endpoint).run();
-      console.log(`[alarm] delivery device=${row.device_id} event=${row.event_id} result=${result.ok?'accepted':result.gone?'gone':'retry'} ms=${finished-now}`);
+      // Timing split: how long the device held the event (device_age_ms), how long the Worker held it before this push attempt
+      // (since_received_ms), and the push service call itself (ms). "accepted" = the push service took it, not "displayed".
+      let timing='';
+      try {
+        const data=JSON.parse(row.payload).data || {};
+        if (Number.isFinite(data.receivedAt)) timing+=` since_received_ms=${Math.max(0,finished-data.receivedAt)}`;
+        if (Number.isInteger(data.deviceAgeMs)) timing+=` device_age_ms=${data.deviceAgeMs} via=${data.via || 'https'}`;
+      } catch {}
+      console.log(`[alarm] delivery device=${row.device_id} event=${row.event_id} result=${result.ok?'accepted':result.gone?'gone':'retry'} ms=${finished-now}${timing}`);
     }));
   }
 }
@@ -87,4 +95,32 @@ export async function maintainAlarmDeliveries(env) {
     env.DB.prepare('DELETE FROM alarm_deliveries WHERE event_seq IN (SELECT order_seq FROM alarm_events WHERE created_at<?1)').bind(Date.now()-7*86400000),
     env.DB.prepare('DELETE FROM alarm_events WHERE created_at<?1').bind(Date.now()-7*86400000),
   ]);
+}
+
+// What the Web needs when it has no realtime link: the alarms that are active right now and the latest events with what became
+// of their Push (stored != pushed: `push.sent` is "accepted by the push service", `pending` still has retries ahead).
+export async function alarmStatusSnapshot(env, deviceId, { now = Date.now(), eventLimit = 10 } = {}) {
+  const active = await env.DB.prepare(`SELECT alarm_type,first_sent_at,last_sent_at,last_message FROM alarm_state
+    WHERE device_id=?1 AND active=1 ORDER BY last_sent_at DESC LIMIT 20`).bind(deviceId).all();
+  const recent = await env.DB.prepare(`SELECT e.order_seq,e.event_id,e.alarm_type,e.payload,e.created_at,
+      COUNT(d.endpoint) AS recipients,
+      COALESCE(SUM(d.status='sent'),0) AS sent, COALESCE(SUM(d.status='pending'),0) AS pending,
+      COALESCE(SUM(d.status='gone'),0) AS gone, COALESCE(SUM(d.status='expired'),0) AS expired
+    FROM alarm_events e LEFT JOIN alarm_deliveries d ON d.event_seq=e.order_seq
+    WHERE e.device_id=?1 AND e.created_at>?2 GROUP BY e.order_seq ORDER BY e.order_seq DESC LIMIT ?3`)
+    .bind(deviceId, now - TTL_MS, Math.max(1, Math.min(20, eventLimit))).all();
+  return {
+    server_time: now,
+    alarms: (active.results || []).map(row => ({ alarm_type: row.alarm_type, since: row.first_sent_at, updated: row.last_sent_at, message: row.last_message })),
+    events: (recent.results || []).map(row => {
+      let data = {};
+      try { data = JSON.parse(row.payload).data || {}; } catch {}
+      return {
+        event_id: row.event_id, seq: row.order_seq, alarm_type: row.alarm_type, state: data.state || null, severity: data.severity || null,
+        message: data.message || '', received_at: row.created_at, device_age_ms: Number.isInteger(data.deviceAgeMs) ? data.deviceAgeMs : null,
+        via: data.via || null,
+        push: { recipients: row.recipients, sent: row.sent, pending: row.pending, gone: row.gone, expired: row.expired },
+      };
+    }),
+  };
 }

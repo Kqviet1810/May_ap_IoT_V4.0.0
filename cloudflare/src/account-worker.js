@@ -1,5 +1,6 @@
 import physicalWorker from './reliability-wrapper.js';
 import legacy from './index.js';
+import { alarmStatusSnapshot } from './alarm-delivery.js';
 import { randomToken, verifyDeviceKey, timingSafeEqual } from './auth.js';
 import { signWebToken } from './broker/acl.js';
 import { hash, json, session,
@@ -333,8 +334,15 @@ async function fetchAccount(request, env, ctx) {
       return json({success:true,points:results});
     }
     const subs=await env.DB.prepare('SELECT COUNT(*) AS n FROM push_subscriptions WHERE device_id=? AND user_sub=?').bind(id,auth.user_sub).first();
-    return json({success:true,exists:true,device_id:id,device_name:device.device_name,status:device.status,last_seen:device.last_seen,
-      batch_running:!!device.batch_running,subscription_count:subs.n});
+    const base={success:true,exists:true,device_id:id,device_name:device.device_name,status:device.status,last_seen:device.last_seen,
+      batch_running:!!device.batch_running,subscription_count:subs.n,server_time:Date.now()};
+    // `?alarms=1`: the Web has lost its realtime link and asks the Worker (over plain HTTPS) for the alarm state instead.
+    // Reports what the device told the Worker (MQTT or HTTPS fallback); it says nothing about the Web's own broker connection.
+    if (new URL(request.url).searchParams.get('alarms')==='1') {
+      try { Object.assign(base,await alarmStatusSnapshot(env,id)); }
+      catch (error) { console.error('[status] alarm snapshot failed',String(error?.message || error)); base.alarms_error=true; }
+    }
+    return json(base);
   }
   if (path==='/api/device/revoke-access' && method==='POST') {
     const owner=await permission(env,auth.user_sub,id,true);

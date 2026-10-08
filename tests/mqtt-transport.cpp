@@ -473,6 +473,31 @@ int main() {
   g_networkStatus.connected = false; tick(1); CHECK(!mayapMqttTlsResident());         // Wi-Fi lost
   resetWorld(); connectNow(); g_pressure = true; tick(1); CHECK(!mayapMqttTlsResident());   // memory pressure
   g_pressure = false;
+  resetWorld(); connectNow(); CHECK(mayapMqttTlsResident());                           // link failure (broker silent past the keep-alive)
+  mayapMqttTransportRecover(g_millis); CHECK(!mayapMqttTlsResident() && !net.open);     // supervisor recovery path
+  resetWorld(); connectNow(); g_gateClosing = true; tick(1); CHECK(!mayapMqttTlsResident() && !net.open);   // graceful drain (OTA/portal)
+  g_gateClosing = false;
+  // Ordering: on EVERY close path above the socket was released while the transport still counted as THE resident TLS context,
+  // and the flag dropped only afterwards - so the Cloud task could never open an HTTPS session on memory that was still in use.
+  CHECK(mqttTlsStopRaces() == 0U);
+
+  // 19. Link health published for alarm routing: Up on connect; a deliberate close is Closed (no failure, short hold-off); an
+  //     attempt that fails or an established link that dies is Down with a failure count; losses are remembered for flapping.
+  {
+    using namespace MayapUplink;
+    resetWorld(); Internal::health = Health{}; connectNow();
+    Health h = healthSnapshot(); CHECK(h.link == Link::Up && h.failures == 0U && h.rttEwmaMs == 0U);
+    g_yield = true; tick(1); h = healthSnapshot();
+    CHECK(h.link == Link::Closed && h.failures == 0U && h.nextAttemptAt != 0U && recentLosses(h, g_millis, 120000U) == 0U);
+    g_yield = false;
+    resetWorld(); net.allowConnect = false; mayapMqttTransportBegin(); tick(1); tick(STA_STABLE_MS); h = healthSnapshot();
+    CHECK(h.link == Link::Down && h.failures >= 1U && h.nextAttemptAt != 0U);
+    resetWorld(); connectNow(); mayapMqttTransportRecover(g_millis); h = healthSnapshot();
+    CHECK(h.link == Link::Down && h.failures == 1U && recentLosses(h, g_millis, 120000U) == 1U);
+    CHECK(recentLosses(h, g_millis + 130000U, 120000U) == 0U);                    // old losses age out of the flapping window
+    for (int n = 0; n < 2; ++n) { resetWorld(); connectNow(); mayapMqttTransportRecover(g_millis); }
+    h = healthSnapshot(); CHECK(recentLosses(h, g_millis, 120000U) >= 3U);       // three quick losses = flapping
+  }
 
   printf("mqtt transport host tests PASS\n");
   return 0;

@@ -256,3 +256,60 @@ test('uplink end to end: device alarm/heartbeat over MQTT is PUBACKed only once 
   await Promise.all(h.jobs);
  }finally{global.fetch=originalFetch;}
 });
+
+test('stored is not pushed: receipt says durable, status shows push progress, age and channel are kept',async()=>{
+ const crypto=require('node:crypto'),h=await setup(),original=global.fetch,logs=[],log=console.log,stubResponse=globalThis.Response;
+ globalThis.Response=NativeResponse;     // the Worker answers with real Responses (an earlier harness swapped in a stub)
+ console.log=(...a)=>{logs.push(a.join(' '));};
+ global.fetch=async()=>new Response('',{status:503});                      // the push service is down
+ try{
+  const worker0=(await import('../cloudflare/src/index.js')).default;
+  const resp=await worker0.fetch(new Request('https://worker.test/api/device/alarm',{method:'POST',body:JSON.stringify({device_id:h.deviceId,device_key:'test-device-key',
+   event_id:'age-1',alarm_type:'FAULT_130',state:'active',message:'off',severity:'critical',age_ms:4200,detected_uptime_ms:1000})}),h.env,{waitUntil(p){h.jobs.push(p);}});
+  const res=await resp.json();
+  assert.deepEqual([res.success,res.durable,res.stored],[true,true,true]);   // stored in D1 ...
+  await new Promise(r=>setTimeout(r,150));                                    // the Worker's immediate push attempt (503) has run
+  let snap=await h.delivery.alarmStatusSnapshot(h.env,h.deviceId);
+  assert.equal(snap.events.length,1);
+  assert.deepEqual(snap.events[0].push,{recipients:1,sent:0,pending:1,gone:0,expired:0});   // ... but nothing was pushed yet
+  assert.equal(snap.events[0].device_age_ms,4200);assert.equal(snap.events[0].via,'https');
+  assert.equal(snap.events[0].state,'active');assert.equal(snap.events[0].severity,'critical');
+  assert.deepEqual(snap.alarms.map(a=>a.alarm_type),['FAULT_130']);
+  assert.ok(snap.server_time>0);
+  assert.ok(logs.some(l=>/result=retry/.test(l)&&/device_age_ms=4200 via=https/.test(l)&&/since_received_ms=\d+/.test(l)),logs.join('\n'));
+  // The push service recovers: the same event is now "sent" (accepted by the push service).
+  global.fetch=async()=>new Response('',{status:201});h.sql.exec('UPDATE alarm_deliveries SET next_attempt_at=0,lease_until=0');
+  await h.delivery.drainAlarmDeliveries(h.env);
+  snap=await h.delivery.alarmStatusSnapshot(h.env,h.deviceId);
+  assert.deepEqual(snap.events[0].push,{recipients:1,sent:1,pending:0,gone:0,expired:0});
+  // MQTT channel: tagged "mqtt"; a recovery clears the active alarm from the snapshot.
+  h.env.MQTT_DEVICE_SECRET='uplink-secret';
+  const worker=(await import('../cloudflare/src/index.js')).default;
+  const send=async data=>{const body=JSON.stringify({device_id:h.deviceId,kind:'alarm',data}),ts=Date.now();
+   const sig=crypto.createHmac('sha256','uplink-secret').update(`mayap-uplink-ingest:v1\n${ts}\n${body}`).digest('hex');
+   return (await worker.fetch(new Request('https://worker.test/api/internal/uplink',{method:'POST',headers:{'x-mayap-ts':String(ts),'x-mayap-sig':sig},body}),h.env,{waitUntil(p){h.jobs.push(p);}})).json();};
+  h.sql.exec('UPDATE alarm_state SET last_sent_at=0');                         // past the cooldown
+  assert.equal((await send({event_id:'age-2',alarm_type:'FAULT_130',state:'resolved',message:'on',severity:'critical',age_ms:90})).durable,true);
+  snap=await h.delivery.alarmStatusSnapshot(h.env,h.deviceId);
+  assert.equal(snap.events[0].event_id,'age-2');assert.equal(snap.events[0].via,'mqtt');assert.equal(snap.events[0].device_age_ms,90);
+  assert.deepEqual(snap.alarms,[]);
+  // Negative / absurd ages are ignored rather than trusted.
+  h.sql.exec('UPDATE alarm_state SET last_sent_at=0');
+  assert.equal((await send({event_id:'age-3',alarm_type:'FAULT_130',state:'active',message:'off',severity:'critical',age_ms:-5})).durable,true);
+  snap=await h.delivery.alarmStatusSnapshot(h.env,h.deviceId);assert.equal(snap.events[0].device_age_ms,null);
+  await Promise.all(h.jobs);
+ }finally{global.fetch=original;console.log=log;globalThis.Response=stubResponse;}
+});
+test('D1 fault: a failed write never produces a durable receipt on any channel',async()=>{
+ const crypto=require('node:crypto'),h=await setup(),stubResponse=globalThis.Response;h.env.MQTT_DEVICE_SECRET='uplink-secret';globalThis.Response=NativeResponse;
+ h.env.DB.batch=async()=>{throw Error('injected D1 outage');};
+ const worker=(await import('../cloudflare/src/index.js')).default;
+ const body=JSON.stringify({device_id:h.deviceId,kind:'alarm',data:{event_id:'d1-1',alarm_type:'FAULT_130',state:'active',message:'off',severity:'critical'}}),ts=Date.now();
+ const sig=crypto.createHmac('sha256','uplink-secret').update(`mayap-uplink-ingest:v1\n${ts}\n${body}`).digest('hex');
+ let durable=null,status=0;
+ try{const r=await worker.fetch(new Request('https://worker.test/api/internal/uplink',{method:'POST',headers:{'x-mayap-ts':String(ts),'x-mayap-sig':sig},body}),h.env,{waitUntil(){}});
+  status=r.status;durable=(await r.json()).durable;}catch{status=500;}
+ assert.ok(status>=500||durable===false);assert.notEqual(durable,true);              // broker would not PUBACK -> device keeps the event
+ assert.equal((await h.alarm()).status,500);                                         // HTTPS fallback: 500, no receipt
+ assert.equal(h.sql.prepare('SELECT COUNT(*) n FROM alarm_events').get().n,0);
+});

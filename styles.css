@@ -202,6 +202,10 @@ body[data-page="settings"] .topbar{max-width:none;width:100%}
 .pill.online{background:var(--primarySoft);color:var(--successText)}
 .pill.offline{background:var(--warningSoft);color:var(--warningDark)}
 .pill.soft{background:var(--softBg);color:var(--softText)}
+.serverAlarmBanner{margin:12px 0 0;padding:10px 14px;border:1px solid var(--dangerBorder);border-radius:12px;background:var(--dangerSoft);color:var(--dangerTextStrong);font-size:var(--fs-sm,14px);line-height:1.45}
+.serverAlarmBanner[hidden]{display:none}
+.serverAlarmBanner strong{display:block;font-weight:800;letter-spacing:.2px}
+.serverAlarmBanner small{display:block;margin-top:4px;opacity:.85}
 
 .deviceCompact{padding:22px}
 .deviceHeading{margin:2px 0 0!important;align-self:flex-start;color:var(--ink);font-size:var(--fs-xl)!important;font-weight:700!important;line-height:1.25;letter-spacing:-.3px!important;white-space:nowrap}

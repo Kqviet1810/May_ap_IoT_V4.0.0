@@ -276,7 +276,7 @@ function alarmFields(body) {
 // One alarm event for an already authenticated device. Shared by the single endpoint and the batch
 // endpoint so both keep identical idempotency (event_id), conflict and cooldown semantics.
 // Returns { status, payload, schedule } - the caller sends the HTTP response and starts delivery once.
-async function recordAlarmEvent(env, device, deviceId, body, fields) {
+async function recordAlarmEvent(env, device, deviceId, body, fields, via = 'https') {
   const { alarmType, message, severity, state, temperature, humidity } = fields;
   const now = Date.now();
   const suppliedId=body?.event_id;
@@ -288,7 +288,7 @@ async function recordAlarmEvent(env, device, deviceId, body, fields) {
     const saved=JSON.parse(existing.payload).data;
     if (saved.alarmType!==alarmType || saved.state!==state || saved.message!==message)
       return { status: 409, payload: {success:false,error:'EVENT_ID_CONFLICT'} };
-    return { status: 200, payload: {success:true,durable:true,event_id:eventId,duplicate:true}, schedule: true };
+    return { status: 200, payload: {success:true,durable:true,stored:true,event_id:eventId,duplicate:true}, schedule: true };
   }
   await touchDevice(env.DB,deviceId,'online',now);
   const priorState=await getAlarmState(env.DB,deviceId,alarmType);
@@ -302,6 +302,10 @@ async function recordAlarmEvent(env, device, deviceId, body, fields) {
   notification.data.eventId=eventId;notification.data.message=message;
   notification.data.receivedAt=now;
   notification.data.detectedUptimeMs=Number.isInteger(body?.detected_uptime_ms) ? body.detected_uptime_ms : null;
+  // How long the device held the event before sending it (detection -> send) and the channel it came in on: together with
+  // receivedAt this separates detection, device queueing/fallback, Worker receipt and Push in the logs and the status endpoint.
+  notification.data.deviceAgeMs=Number.isInteger(body?.age_ms) && body.age_ms>=0 && body.age_ms<=7*86400000 ? body.age_ms : null;
+  notification.data.via=via;
   const event=await queueAlarmEvent(env,{deviceId,eventId,alarmType,notification,now});
   const persisted=JSON.parse(event.payload).data;
   if(persisted.alarmType!==alarmType || persisted.state!==state || persisted.message!==message)
@@ -311,7 +315,8 @@ async function recordAlarmEvent(env, device, deviceId, body, fields) {
     await upsertAlarmState(env.DB,{deviceId,alarmType,active:state==='active',firstSentAt:now,lastSentAt:now,lastMessage:message});
     await insertAlarmLog(env.DB,{deviceId,alarmType,severity,state,message,temperature,humidity,notificationSent:false,now});
   } catch(error) {console.error('[alarm] history failed',String(error?.message || error));}
-  return { status: 200, payload: {success:true,durable:true,event_id:event.event_id}, schedule: true };
+  // `durable`/`stored`: the event and its push jobs are in D1. It says nothing about the push itself (see /status `push`).
+  return { status: 200, payload: {success:true,durable:true,stored:true,event_id:event.event_id}, schedule: true };
 }
 
 async function handleAlarm(request, env, ctx) {
@@ -329,7 +334,7 @@ async function handleAlarm(request, env, ctx) {
   const valid = await verifyDeviceKey(deviceKey, env.DEVICE_KEY_PEPPER, device.device_key_hash);
   if (!valid) return json(env, { success: false, error: 'device_key sai' }, 401);
 
-  const result = await recordAlarmEvent(env, device, deviceId, body, fields);
+  const result = await recordAlarmEvent(env, device, deviceId, body, fields, 'https');
   if (result.schedule) scheduleAlarmDelivery(env,ctx);
   return json(env, result.payload, result.status);
 }
@@ -369,7 +374,7 @@ async function handleAlarmBatch(request, env, ctx) {
     }
     let outcome;
     try {
-      outcome = await recordAlarmEvent(env, device, deviceId, event, fields);
+      outcome = await recordAlarmEvent(env, device, deviceId, event, fields, 'https');
     } catch (error) {
       console.error('[alarm] batch event failed', String(error?.message || error));
       outcome = { status: 500, payload: { success: false, durable: false, error: 'STORAGE_ERROR' } };
@@ -411,7 +416,7 @@ async function handleUplink(request, env, ctx) {
     if (!fields.alarmType || !fields.message || data.event_id === undefined) {
       return json(env, { success: true, durable: false, status: 400, error: 'thieu event_id/alarm_type/message' });
     }
-    const outcome = await recordAlarmEvent(env, device, deviceId, data, fields);
+    const outcome = await recordAlarmEvent(env, device, deviceId, data, fields, 'mqtt');
     if (outcome.schedule) scheduleAlarmDelivery(env, ctx);
     return json(env, { success: true, durable: outcome.payload.durable === true, status: outcome.status });
   }

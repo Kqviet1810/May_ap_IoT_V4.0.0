@@ -13,7 +13,8 @@ function browser(overrides = {}, initialStorage = {}) {
     invalidate = (form, id) => { window.invalidField = id; return false; };
     Object.assign(window.hooks, { state, supportsVentProfile, swipeDestination,
       buildConfig, validateTemperatureForm, validateSensorForm, validateVentForm,
-      validateAdvancedForm, REQUIRED_CONFIG_KEYS, VENT_PROFILE_KEYS, createDevice });
+      validateAdvancedForm, REQUIRED_CONFIG_KEYS, VENT_PROFILE_KEYS, createDevice,
+      connectionStatus, pollServerAlerts, syncServerAlertPolling, serverConnectionDetail, renderServerAlarmBanner, setRealtimeStatus, SERVER_ALERT });
   })();`);
   let now = 0, wall = Date.now(), timerId = 0;
   class BrowserDate extends Date { static now() { return wall; } }
@@ -190,4 +191,69 @@ test('clean Web baseline has no old realtime script and disables remote commands
   assert.doesNotMatch(app,/connectRealtime|requestRealtimeSession|MayapRealtime\.Client/);
   const h=browser();
   assert.equal(h.state.realtimeConnected,false);
+});
+
+test('realtime lost: alarm state comes from the Worker over HTTPS, kept apart from "machine lost", and resyncs without stale data', async () => {
+  const h = browser(), calls = [];
+  const banner = { hidden: true, textContent: '', children: [], replaceChildren() { this.children = []; }, append(...n) { this.children.push(...n); } };
+  h.elements.set('serverAlarmBanner', banner);
+  h.document.createElement = () => ({ textContent: '', children: [], append() {} });
+  h.device.snapshot = { runtime: {} }; h.device.snapshotAt = h.now(); h.device.dataSource = 'live';
+  let reply = null;
+  h.context.fetch = async (url) => { calls.push(String(url)); if (!reply) throw new Error('offline');
+    return { ok: true, status: 200, json: async () => reply() }; };
+  const serverReply = (lastSeenAgoMs, alarms) => () => ({ success: true, exists: true, status: 'online', server_time: h.now(),
+    last_seen: h.now() - lastSeenAgoMs, alarms, events: [] });
+  const poll = async () => { await h.pollServerAlerts(); };
+
+  // Realtime up: no polling at all and no server copy.
+  h.state.realtimeConnected = true; h.setRealtimeStatus('ready', 'ok');
+  assert.equal(h.state.serverAlertTimer, 0);
+  assert.equal(calls.length, 0);
+
+  // Realtime drops: nothing changes for the first moments (debounce), then one poll is scheduled, not before.
+  h.state.realtimeConnected = false; h.setRealtimeStatus('connecting', '...');
+  assert.ok(h.state.serverAlertTimer);
+  assert.equal(h.connectionStatus(h.device), 'cache');                    // unchanged until the server answered
+  // The Web itself cannot reach the Worker: NO conclusion about the machine.
+  reply = null; h.elapse(h.SERVER_ALERT.firstDelayMs + 1);
+  await poll();
+  assert.equal(h.device.server.ok, false);
+  assert.equal(h.connectionStatus(h.device), 'cache');
+  assert.match(calls[0], /\/api\/device\/MAP-1234567890AB\/status\?alarms=1$/);
+
+  // Worker answers: the machine reported 30 s ago and has a fault -> "mất realtime", NOT "máy mất kết nối"; the fault is shown.
+  reply = serverReply(30000, [{ alarm_type: 'FAULT_130', message: 'Quá nhiệt', since: 1, updated: 2 }, { alarm_type: 'DEVICE_OFFLINE', message: 'x' }]);
+  await poll();
+  assert.equal(h.connectionStatus(h.device), 'norealtime');
+  assert.doesNotMatch(h.serverConnectionDetail(h.device, 'norealtime'), /Internet|mất mạng|ngoại tuyến/i);
+  h.renderServerAlarmBanner(h.device);
+  assert.equal(banner.hidden, false);
+  assert.equal(banner.children.length >= 3, true);                         // title + FAULT_130 line (DEVICE_OFFLINE excluded) + source note
+  assert.ok(h.state.serverAlertTimer);                                     // keeps polling while realtime is down
+
+  // The Worker has heard nothing for > 3 min on any channel -> "máy mất kết nối".
+  reply = serverReply(200000, []);
+  await poll();
+  assert.equal(h.connectionStatus(h.device), 'devicelost');
+  h.renderServerAlarmBanner(h.device);
+  assert.equal(banner.hidden, true);
+
+  // An answer that arrives AFTER realtime came back is dropped (no stale/duplicate alarm view).
+  reply = serverReply(1000, [{ alarm_type: 'FAULT_130', message: 'old' }]);
+  const late = poll();
+  h.state.realtimeConnected = true; h.setRealtimeStatus('ready', 'ok');
+  await late;
+  assert.equal(h.device.server, null);
+  assert.equal(h.state.serverAlertTimer, 0);
+  h.renderServerAlarmBanner(h.device);
+  assert.equal(banner.hidden, true);
+  assert.notEqual(h.connectionStatus(h.device), 'norealtime');
+});
+
+test('server alert view never outlives its freshness window', () => {
+  const h = browser();
+  h.device.server = { ok: true, at: h.now() - h.SERVER_ALERT.pollMs * 3 - 1, serverTime: h.now(), lastSeen: h.now() - 500000, alarms: [], events: [] };
+  h.state.realtimeConnected = false; h.state.realtimeLostAt = h.now() - 60000;
+  assert.notEqual(h.connectionStatus(h.device), 'devicelost');            // stale copy is ignored: unknown beats wrong
 });

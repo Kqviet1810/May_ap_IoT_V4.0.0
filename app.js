@@ -5,6 +5,12 @@
   const WEB = Object.freeze({ staleAfterMs: 8000, offlineAfterMs: 30000,
     commandTimeoutMs: 10000, configTimeoutMs: 15000, ...window.MAYAP_WEB_CONFIG });
 
+  // Without a realtime link the Web asks the Worker (plain HTTPS, same account session) what the machine last reported. The first
+  // poll waits `firstDelayMs` so a reconnect that takes a second or two never changes the screen; then every `pollMs`, and only while
+  // realtime is down. `deviceSilentMs` matches the Worker's own offline threshold (180 s): the machine beacons at least every ~2 min
+  // over HTTPS while its MQTT path is broken, so a longer silence means it is unreachable on every channel.
+  const SERVER_ALERT = Object.freeze({ firstDelayMs: 4000, pollMs: 20000, deviceSilentMs: 180000 });
+
   let STORAGE = 'mayap.web.v10';
   let RUNTIME_CACHE = `${STORAGE}.runtime.v1`;
   const THEME_STORAGE = 'mayap.theme';
@@ -66,6 +72,9 @@
     selectedId: localStorage.getItem(`${STORAGE}.selected`) || '',
     realtime: null,
     realtimeConnected: false,
+    realtimeLostAt: 0,
+    serverAlertTimer: 0,
+    serverAlertSeq: 0,
     realtimeMessage: 'Chưa kết nối với máy',
     realtimeSessionState: 'idle',
     subscriptions: new Set(),
@@ -821,13 +830,116 @@
 
   function connectionStatus(device) {
     if (!device) return 'none';
-    if (!state.realtimeConnected) return device.snapshot ? 'cache' : 'connecting';
+    if (!state.realtimeConnected) return serverConnectionView(device) || (device.snapshot ? 'cache' : 'connecting');
     // Only a presence received on this connection proves the device's LWT state.
     if (device.presenceEpoch === state.subscriptionEpoch && device.presence?.online === false) return 'offline';
     if (!device.snapshot || !device.snapshotAt) return 'waiting';
     if (device.dataSource !== 'live' || device.liveEpoch !== state.subscriptionEpoch) return 'cache';
     if (Date.now() - device.snapshotAt > WEB.staleAfterMs || device.presence?.online !== true) return 'degraded';
     return 'online';
+  }
+
+
+  // ---- Realtime lost: what the Worker knows (HTTPS), kept strictly apart from "the machine is gone" ----
+  // 'norealtime'  : the Web has no live link, the machine still reports to the Worker (or we cannot tell yet).
+  // 'devicelost'  : the Worker has heard nothing from the machine for longer than the offline threshold, on any channel.
+  // A Web that cannot reach the broker says NOTHING about the machine's Internet: only the Worker's last_seen does.
+  // A server copy older than three poll periods is not shown (switching devices, a stuck timer): unknown beats stale.
+  function serverInfo(device) {
+    const info = device?.server;
+    return info?.ok && !state.realtimeConnected && Date.now() - info.at < SERVER_ALERT.pollMs * 3 ? info : null;
+  }
+
+  function serverAlertAgeMs(device) {
+    const info = serverInfo(device);
+    return info && info.lastSeen > 0 && Number.isFinite(info.serverTime)
+      ? Math.max(0, info.serverTime - info.lastSeen) + Math.max(0, Date.now() - info.at) : null;
+  }
+
+  function serverConnectionView(device) {
+    if (!serverInfo(device) || state.realtimeLostAt === 0) return null;
+    if (Date.now() - state.realtimeLostAt < SERVER_ALERT.firstDelayMs) return null;
+    const age = serverAlertAgeMs(device);
+    if (age === null) return 'norealtime';
+    return age > SERVER_ALERT.deviceSilentMs ? 'devicelost' : 'norealtime';
+  }
+
+  function durationVi(ms) {
+    const seconds = Math.round(ms / 1000);
+    if (seconds < 90) return `${seconds} giây`;
+    const minutes = Math.round(seconds / 60);
+    return minutes < 90 ? `${minutes} phút` : `${Math.round(minutes / 60)} giờ`;
+  }
+
+  function serverConnectionDetail(device, kind) {
+    const age = serverAlertAgeMs(device);
+    if (kind === 'devicelost') return `Máy chủ không nhận tin từ máy suốt ${durationVi(age)} · kiểm tra nguồn và Wi‑Fi của máy`;
+    const alarmCount = (serverInfo(device)?.alarms || []).filter(a => a.alarm_type !== 'DEVICE_OFFLINE').length;
+    return `Mất kết nối thời gian thực · máy vẫn báo về máy chủ ${age === null ? '' : `${durationVi(age)} trước`}`.trim() +
+      (alarmCount ? ' · xem lỗi bên dưới' : '');
+  }
+
+  async function pollServerAlerts() {
+    state.serverAlertTimer = 0;
+    const device = currentDevice();
+    if (!device || state.realtimeConnected || !DEVICE_ID_RE.test(device.id)) return;
+    const seq = ++state.serverAlertSeq;
+    const result = await getCloudJson(`/api/device/${encodeURIComponent(device.id)}/status?alarms=1`);
+    // A late answer must never overwrite the live view or another device: realtime is authoritative the moment it is back.
+    if (seq !== state.serverAlertSeq || state.realtimeConnected || currentDevice()?.id !== device.id) return;
+    if (result.success && !result.alarms_error) {
+      device.server = {
+        ok: true, at: Date.now(), serverTime: Number(result.server_time) || Date.now(), lastSeen: Number(result.last_seen) || 0,
+        alarms: Array.isArray(result.alarms) ? result.alarms : [], events: Array.isArray(result.events) ? result.events : []
+      };
+    } else {
+      // The Web itself could not reach the Worker: that says nothing about the machine, so no machine status is concluded.
+      device.server = { ok: false, at: Date.now(), error: result.error || 'Không tải được trạng thái từ máy chủ', alarms: [], events: [] };
+    }
+    scheduleServerAlertPoll(SERVER_ALERT.pollMs);
+    renderDevice();
+  }
+
+  function scheduleServerAlertPoll(delayMs) {
+    clearTimeout(state.serverAlertTimer);
+    state.serverAlertTimer = state.realtimeConnected ? 0 : setTimeout(pollServerAlerts, delayMs);
+  }
+
+  // Called on every realtime state change. Up: stop polling and drop the server copy (resync: the live snapshot/presence replace it,
+  // nothing stale or duplicated survives). Down: remember when, and start polling after the debounce.
+  function syncServerAlertPolling() {
+    if (state.realtimeConnected) {
+      clearTimeout(state.serverAlertTimer);
+      state.serverAlertTimer = 0;
+      ++state.serverAlertSeq;
+      state.realtimeLostAt = 0;
+      for (const item of state.devices) item.server = null;
+      return;
+    }
+    if (state.realtimeLostAt === 0) state.realtimeLostAt = Date.now();
+    if (!state.serverAlertTimer && currentDevice()) scheduleServerAlertPoll(SERVER_ALERT.firstDelayMs);
+  }
+
+  function renderServerAlarmBanner(device) {
+    const banner = $('serverAlarmBanner');
+    if (!banner) return;
+    const info = serverInfo(device);
+    const alarms = (info ? info.alarms : [])
+      .filter(item => item.alarm_type !== 'DEVICE_OFFLINE');
+    banner.hidden = alarms.length === 0;
+    if (!alarms.length) { banner.textContent = ''; return; }
+    banner.replaceChildren();
+    const title = document.createElement('strong');
+    title.textContent = 'MÁY ĐANG CÓ LỖI';
+    banner.append(title);
+    for (const item of alarms.slice(0, 5)) {
+      const line = document.createElement('div');
+      line.textContent = `${item.alarm_type}${item.message ? ` · ${item.message}` : ''}`;
+      banner.append(line);
+    }
+    const note = document.createElement('small');
+    note.textContent = `Theo máy chủ lúc ${new Date(info.at).toLocaleTimeString('vi-VN')} · không phải dữ liệu realtime`;
+    banner.append(note);
   }
 
   function isDeviceOnline(device = currentDevice()) {
@@ -948,6 +1060,8 @@
       connecting: ['ĐANG KẾT NỐI', 'soft', 'Đang nối máy chủ…'],
       waiting: ['CHỜ THIẾT BỊ', 'soft', 'Đã nối máy chủ · chờ máy'],
       offline: ['NGOẠI TUYẾN', 'offline', 'Máy đã ngắt kết nối'],
+      norealtime: ['MẤT REALTIME', 'soft', device ? serverConnectionDetail(device, 'norealtime') : ''],
+      devicelost: ['MÁY MẤT KẾT NỐI', 'offline', device ? serverConnectionDetail(device, 'devicelost') : ''],
       none: ['CHƯA CÓ MÁY', 'soft', 'Thêm máy để bắt đầu']
     };
     const [label, css, connectionDetail] = labels[connection];
@@ -955,6 +1069,7 @@
       ? `${connection === 'degraded' ? 'Chờ dữ liệu · ' : ''}Đang chuẩn bị quyền điều khiển…` : connectionDetail;
     pill.textContent = label;
     pill.className = `pill ${css}`;
+    renderServerAlarmBanner(device);
     $('wifiConnectionText').textContent = state.realtimeSessionState === 'auth-required' && device
       ? `${detail} · ghép nối lại để điều khiển` : state.realtimeSessionState === 'error' && !state.realtime
         ? 'Chưa nối máy chủ · đang thử lại' : detail;
@@ -2909,6 +3024,7 @@
   function setRealtimeStatus(sessionState, message) {
     state.realtimeSessionState = sessionState;
     state.realtimeMessage = message;
+    syncServerAlertPolling();
     renderDevice();
   }
 

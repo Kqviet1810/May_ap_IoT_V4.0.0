@@ -237,7 +237,7 @@ inline void handlePacket() {
       if (parser.bodyLength() == 2U) {
         const uint16_t id = static_cast<uint16_t>((parser.body()[0] << 8U) | parser.body()[1]);
         inflightAck(id);
-        MayapUplink::onPuback(id);
+        MayapUplink::onPuback(id, millis());
       }
       return;
     default:
@@ -443,6 +443,7 @@ inline Connect connectClient() {
 inline void onConnected() {
   using namespace MayapRealtimeInternal;
   backoff.onSuccess();
+  MayapUplink::healthUp(millis());
   publishPresence(true);
   portENTER_CRITICAL(&realtimeMux);
   if (knownConfigValid) configDirty = true;
@@ -503,6 +504,7 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
                         static_cast<unsigned long>(ESP.getFreeHeap()));
     stopClient(true);
     if (!closing) backoff.holdOff(now, yielding && !pressure ? YIELD_RESUME_MS : RETRY_STEPS_MS[0]);
+    MayapUplink::healthClosed(now, backoff.nextAttemptAt);   // deliberate: a short hold-off, not a failure
     if (ioEntered) { mayapOnlineIoLeave(MayapRecovery::Service::Mqtt); ioEntered = false; }
     // An idle poll is not a drain ACK: the socket above is already closed.
     if (closing) mayapOnlineOwnerQuiet(MayapRecovery::Service::Mqtt);
@@ -515,6 +517,7 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
     stopClient(false);
     backoff.reset(now);
     staUpSince = 0U;
+    MayapUplink::healthClosed(now, 0U);                       // no Wi-Fi: nothing to classify, the Cloud task checks Wi-Fi itself
     return;
   }
   if (staUpSince == 0U) staUpSince = now ? now : 1U;
@@ -523,6 +526,9 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
     ioEntered = true;
   }
   if (!connected) {
+    // Publish when the next attempt is due so alarm routing can tell "back in a few seconds" from "gone".
+    const uint32_t stableAt = staUpSince + STA_STABLE_MS;
+    MayapUplink::healthWaiting(now, static_cast<int32_t>(stableAt - backoff.nextAttemptAt) > 0 ? stableAt : backoff.nextAttemptAt);
     if (!backoff.ready(now) || !clockValid()) return;  // certificate dates need real time
     if (MayapRecovery::age(now, staUpSince) < STA_STABLE_MS) return;   // a flapping Wi-Fi gets no TLS handshakes
     Connect result = connectClient();
@@ -532,8 +538,12 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
       mayapSerialPrintf(false, "[MQTT] connect aborted: Cloud needs the TLS lease, retry soon\n");
       result = Connect::Busy;
     }
-    if (result == Connect::Busy) { backoff.holdOff(millis(), BUSY_RETRY_MS); return; }
-    if (result == Connect::Failed) { backoff.onFailure(millis()); return; }
+    if (result == Connect::Busy) { backoff.holdOff(millis(), BUSY_RETRY_MS); MayapUplink::healthWaiting(millis(), backoff.nextAttemptAt); return; }
+    if (result == Connect::Failed) {
+      backoff.onFailure(millis());
+      MayapUplink::healthAttemptFailed(millis(), backoff.nextAttemptAt);
+      return;
+    }
     onConnected();
     return;
   }
@@ -543,8 +553,10 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
                       static_cast<unsigned>(inflightCount));
     stopClient(false);
     backoff.onFailure(now);
+    MayapUplink::healthLost(now, backoff.nextAttemptAt);
     return;
   }
+  MayapUplink::healthRx(lastRxAt);
   pumpUplink(now);
   if (MayapRecovery::age(now, lastTxAt) >= static_cast<uint32_t>(KEEPALIVE_SEC) * 500UL)
     sendPacket(MayapMqttWire::encodePingreq(txMqtt(), PACKET_BUFFER));
@@ -561,4 +573,5 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
 inline void mayapMqttTransportRecover(uint32_t now) {
   MayapMqttInternal::stopClient(false);
   MayapMqttInternal::backoff.onFailure(now);
+  MayapUplink::healthLost(now, MayapMqttInternal::backoff.nextAttemptAt);
 }

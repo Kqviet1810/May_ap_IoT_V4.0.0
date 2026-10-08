@@ -84,6 +84,9 @@ inline bool &mqttTlsResidentRef() { static bool resident = false; return residen
 inline unsigned &mqttTlsResidentFlips() { static unsigned flips = 0U; return flips; }
 inline void mayapSetMqttTlsResident(bool resident) { if (mqttTlsResidentRef() != resident) ++mqttTlsResidentFlips(); mqttTlsResidentRef() = resident; }
 inline bool mayapMqttTlsResident() { return mqttTlsResidentRef(); }
+// Ordering evidence: how often an OPEN socket was closed while the transport no longer claimed to be the resident TLS context
+// (that would let HTTPS start while the socket's memory is still being freed). Must stay 0.
+inline unsigned &mqttTlsStopRaces() { static unsigned races = 0U; return races; }
 inline void mayapOnlineOwnerQuiet(MayapRecovery::Service) {}
 inline bool mayapOnlineIoEnter(MayapRecovery::Service) { return g_ioEnterOk; }
 inline void mayapOnlineIoLeave(MayapRecovery::Service) {}
@@ -165,7 +168,7 @@ struct WiFiClientSecure {
     return static_cast<int>(n);
   }
   bool connected() { return open; }
-  void stop() { open = false; in.clear(); ++stops; }
+  void stop() { if (open && !mayapMqttTlsResident()) ++mqttTlsStopRaces(); open = false; in.clear(); ++stops; }
 };
 
 #endif

@@ -2,7 +2,7 @@
   "release": "1.1.2",
   "firmware": "1.1.2",
   "hmi": "1.0.0",
-  "web": "1.1.6",
+  "web": "1.1.7",
   "web_storage_schema": 10,
   "attiny_protocol": 4,
   "esp32_core": "3.3.11",
@@ -22,5 +22,5 @@
       "serial_input_sim": false
     }
   },
-  "notes": "Web 1.1.6 hardens Android installed-PWA reopen: canonical scope-root start/id, required runtime shell install, navigation-specific cached fallback and non-ERR_FAILED offline response. Firmware/HMI/control/safety are unchanged."
+  "notes": "Web 1.1.7: when the realtime link is lost the Web asks the Worker over HTTPS for the machine's alarm state and last report, and shows MẤT REALTIME, MÁY MẤT KẾT NỐI and MÁY ĐANG CÓ LỖI as separate states (a Web that cannot reach the broker never concludes the machine lost its Internet); realtime resync drops the server copy. Firmware: alarm fallback adaptive timing and HTTPS beacon during broker outage; Worker records alarm age/channel and exposes push progress. Control/safety/OTA policy unchanged."
 }

@@ -72,6 +72,17 @@ int main() {
  // power-up and while the Web is in use, MIN_MODEM after 15 idle minutes, PERFORMANCE again at the first activity.
  using namespace MayapWifiPower;
  const uint32_t MIN=60000U;
+#if !MAYAP_WIFI_ECO
+ // ECO is OFF (default): the radio is in PERFORMANCE (no power save) at every moment - idle for a day, after Web use, during alarms -
+ // and a mode "change" never touches the driver again, so nothing can drop the link or the MQTT/TLS session.
+ static_assert(!ECO_ENABLED, "ECO must default to OFF");
+ clockMs=2*60*MIN; WiFi.connected=true; applyWifiPowerMode(); applyWifiPowerMode();
+ assert(powerCalls==1 && lastPsMode==WIFI_PS_NONE && wifiPowerModeApplied==Mode::Performance);
+ clockMs=26*60*MIN; applyWifiPowerMode(); noteWebActivity(clockMs); noteAlarmActivity(clockMs); applyWifiPowerMode();
+ clockMs+=3*60*MIN; applyWifiPowerMode(); assert(powerCalls==1 && desired(clockMs)==Mode::Performance);
+ WiFi.connected=false; applyWifiPowerMode(); assert(!wifiPowerModeAppliedValid);                // re-applied after the next association
+ WiFi.connected=true; applyWifiPowerMode(); assert(powerCalls==2 && lastPsMode==WIFI_PS_NONE);
+#else
  clockMs=2*60*MIN;                                   // 2 h after boot, never any Web activity
  WiFi.connected=true; applyWifiPowerMode(); applyWifiPowerMode();
  assert(powerCalls==1 && lastPsMode==WIFI_PS_MIN_MODEM && wifiPowerModeApplied==Mode::Save);
@@ -87,9 +98,12 @@ int main() {
  assert(powerCalls==6 && lastPsMode==WIFI_PS_NONE);
  clockMs+=2*MIN-1U; applyWifiPowerMode(); assert(powerCalls==6);
  clockMs+=1U; applyWifiPowerMode(); assert(powerCalls==7 && lastPsMode==WIFI_PS_MIN_MODEM);
+#endif
  // Power-up: the first 15 minutes are awake, whatever millis() says about wrap-around later.
+#if MAYAP_WIFI_ECO
  Internal::webAt=0U; Internal::alarmSeen=0U;
  assert(desired(14*MIN)==Mode::Performance && desired(15*MIN)==Mode::Save);
  Internal::webAt=0xFFFFFFFFU-MIN; assert(desired(10*MIN)==Mode::Performance && desired(14*MIN+MIN)==Mode::Save);
+#endif
  std::puts("Production Wi-Fi flap publication: raw admission, router reboot, 1000 reconnects, 8h loss, Internet-only failure and wrap PASS");
 }
