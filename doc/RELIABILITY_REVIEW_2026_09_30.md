@@ -35,6 +35,8 @@ Chưa có log RSSI/broker/router thực tế để kết luận mọi lần mấ
 
 ## Arduino OTA theo mỗi reset
 
+> **Đã gỡ bỏ ngày 2026-10-08.** ArduinoOTA (nạp qua LAN từ Arduino IDE), mật khẩu `MAYAP_OTA_PASSWORD` và mDNS không còn trong firmware: nạp trực tiếp chỉ bằng cáp USB, cập nhật từ xa chỉ qua OTA Internet có chữ ký + xác nhận HMI. Phần dưới giữ lại như bằng chứng lịch sử của thiết kế cũ.
+
 1. Reset vật lý EN hoặc cấp nguồn mở cửa sổ 30 phút tính từ uptime, không tính từ lúc Wi-Fi nối.
 2. Chỉ mở khi ONLINE, Wi-Fi đã nối, máy rảnh và interlock bảo trì cho phép.
 3. Một lần bắt đầu upload đã xác thực tiêu thụ lượt, kể cả upload thất bại. Sai mật khẩu trước khi bắt đầu upload không tiêu thụ lượt.

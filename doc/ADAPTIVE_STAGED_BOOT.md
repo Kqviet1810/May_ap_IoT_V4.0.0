@@ -76,7 +76,7 @@ tin lần trước. Chỉ cập nhật RTC khi đổi stage, chuẩn bị restar
 hoặc clear failures; không ghi EEPROM/NVS cho diagnostic này.
 
 Mọi `esp_restart()`/`ESP.restart()` trực tiếp đi qua `mayapRestart(reason, detail)`.
-ArduinoOTA tự restart trong thư viện nên `onEnd()` ghi marker trước khi trả về.
+ArduinoOTA tự restart trong thư viện nên `onEnd()` ghi marker trước khi trả về. (Đã gỡ ArduinoOTA ngày 2026-10-08; restart do Internet OTA vẫn ghi marker qua `mayapRestart(RestartReason::InternetOta)`.)
 Supervisor ghi thêm marker **trước** fallback wait, vì TWDT có thể reset trước
 khi tới lệnh restart. Reset reason thực tế luôn là nguồn phân loại; marker còn
 sót không biến panic/WDT/brownout thành restart OTA có chủ đích.

@@ -226,7 +226,7 @@ static char pendingPassword[WIFI_PORTAL_PASSWORD_MAX + 1U] = "";
 static bool pendingCredentialsReady = false;
 
 // Doi Wi-Fi dung chung radio voi MQTT/Cloud/OTA. Trước khi ha STA phai doi
-// otaTask dong socket/ArduinoOTA xong; neu khong se co race teardown interface
+// otaTask dong socket HTTPS xong; neu khong se co race teardown interface
 // trong luc task khac van dang dung lwIP/TLS.
 static volatile uint8_t portalOtaQuiescedFlag = 0U;
 static uint32_t portalQuiesceStartedAt_ = 0U;
@@ -604,7 +604,7 @@ inline void servicePortal(uint32_t now) {
   if (portalPhase == PortalPhase::Idle) {
     if (!requested) return;
     // Pha 1: cong bo STA offline cho cac client cua networkTask tu dong dong
-    // MQTT/socket; otaTask thay portalRequestFlag va dong ArduinoOTA/HTTPS.
+    // MQTT/socket; otaTask thay portalRequestFlag va dong HTTPS.
     mayapRadioQuiesceBegin();
     portalPhase = PortalPhase::Quiescing;
     portalQuiesceStartedAt_ = now;

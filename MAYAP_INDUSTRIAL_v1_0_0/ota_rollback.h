@@ -11,7 +11,7 @@
 // dung dung thiet ke OTA "2 vi tri" (A/B) co san cua chip ESP32-S3 (xem
 // build-firmware.yml: Partition Scheme "default_8MB" co ota_0 va ota_1,
 // moi vi tri ~3.1MB). Moi lan OTA that su (qua Update.h - xem ota_web_
-// update.h/ota_update.h) CHI GHI DE vao vi tri KHONG dang chay; vi tri
+// update.h) CHI GHI DE vao vi tri KHONG dang chay; vi tri
 // DANG CHAY truoc do van con NGUYEN trong flash cho toi khi no bi mot lan
 // OTA khac ghi de trong tuong lai. File nay chi lam 1 viec don gian va an
 // toan: bao bootloader LAN SAU khoi dong hay doi sang vi tri con lai (KHONG

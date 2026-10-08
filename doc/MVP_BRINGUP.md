@@ -70,3 +70,10 @@ E2E_CHROMIUM=/opt/pw-browsers/chromium node tools/e2e/run_mvp.cjs   # Web thật
 
 `tools/e2e/device_emulator.cjs` là **emulator giao thức** (đọc từ `transaction_bridge.h`), không phải
 firmware: nó chứng minh Web/broker/định dạng HMAC, không chứng minh bộ điều khiển hay heap trên ESP32.
+
+## Nạp firmware (cập nhật 2026-10-08)
+- Nạp trực tiếp: **chỉ bằng cáp USB** (Arduino IDE hoặc esptool). Không còn nạp qua mạng bằng Arduino IDE
+  (ArduinoOTA/mDNS đã gỡ, không còn cổng lắng nghe nào trên LAN và không còn secret `MAYAP_OTA_PASSWORD`).
+- Cập nhật từ xa: OTA Internet qua Cloudflare, có chữ ký số, chỉ nạp sau khi người vận hành xác nhận trên HMI
+  và chỉ khi đã dừng mẻ/tắt công tắc nhiệt. Máy tự hỏi "có bản mới không" mỗi 24 giờ (lệch ngẫu nhiên 0–30 phút,
+  lần đầu 10 phút sau khi bật nguồn); nút "kiểm tra ngay" trên HMI/Web vẫn dùng được.

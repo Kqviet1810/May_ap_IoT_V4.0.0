@@ -72,14 +72,10 @@ static_assert(sizeof(NETWORK_WIFI_PASSWORD) <= 64U,
 static_assert(sizeof(NETWORK_WIFI_HOSTNAME) <= 33U,
               "Wi-Fi hostname toi da 32 ky tu");
 
-// ------------------------- Nap firmware qua Wi-Fi (OTA) -----------------------
-// Cho phep nap code tu Arduino IDE qua mang (Tools > Port > chon may hien qua
-// mDNS) thay vi phai thao vo cam cap USB - xem ota_update.h. Mat khau mac
-// dinh theo yeu cau. Chi co MOT noi nhap mat khau ArduinoOTA:
-// MAYAP_INDUSTRIAL_v1_0_0/build_public.h -> MAYAP_OTA_PASSWORD.
-// De trong se TU DONG TAT ca tinh nang OTA (khong mo cong khong mat khau LAN).
-constexpr char OTA_PASSWORD[] = MAYAP_OTA_PASSWORD;
-static_assert(sizeof(OTA_PASSWORD) <= 64U, "Mat khau OTA toi da 63 ky tu");
+// ------------------------- Nap firmware ------------------------------------
+// Nap truc tiep chi qua cap USB. Khong con nap qua mang bang Arduino IDE (ArduinoOTA/mDNS da
+// bi go bo: khong mo cong lang nghe nao tren LAN). Cap nhat tu xa chi qua Cloudflare co ky so
+// (ota_web_update.h), sau khi nguoi van hanh xac nhan tren HMI.
 
 // ------------------------- Application transaction cadence -------------------
 // Generic bounded publication intervals for a future transport owner.
@@ -147,7 +143,12 @@ constexpr uint32_t CLOUD_HTTP_CONNECT_TIMEOUT_MS = 5000UL;
 // Cap nhat firmware TU XA qua Cloudflare (ota_web_update.h) - nhip tu kiem
 // tra ban moi khi dang ONLINE. Khong can nhanh: nguoi van hanh van phai tu
 // tay xac nhan tren HMI moi thuc su tai ve/nap, day chi la "co gi moi khong".
-constexpr uint32_t FIRMWARE_CHECK_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;  // 6 gio
+// Moi lan kiem tra la mot phien TLS rieng (~70 kB heap luc cao diem) nen chi lam 1 lan/ngay, lech
+// ngau nhien de cac may khong cung goi mot luc, va lan DAU cho vai phut sau khi bat nguon de
+// khong tranh phien TLS voi luc MQTT/Cloud dang bat tay. Nut "kiem tra ngay" van co san.
+constexpr uint32_t FIRMWARE_CHECK_INTERVAL_MS = 24UL * 60UL * 60UL * 1000UL;  // 24 gio
+constexpr uint32_t FIRMWARE_CHECK_JITTER_MS = 30UL * 60UL * 1000UL;           // + 0..30 phut
+constexpr uint32_t FIRMWARE_FIRST_CHECK_DELAY_MS = 10UL * 60UL * 1000UL;      // lan dau: 10 phut sau khi bat nguon
 // Nhip bao "con song" len Worker (cap nhat last_seen/status trong D1). Ngoai
 // hien thi trang thai lien ket tren web, day cung la co so de Worker phat
 // hien mat dien/mat mang (xem cloudflare/src/index.js::checkDeviceConnectivity,
@@ -530,8 +531,8 @@ constexpr uint32_t RESET_STORM_STABLE_CLEAR_MS = 600000UL; // 10 phut chay on di
 // khi vuot RESET_STORM_LIMIT (chi 3 lan). Van de: esp_reset_reason() tra ve
 // CUNG 1 gia tri ESP_RST_SW cho MOI truong hop goi ESP.restart() - khong the
 // phan biet "that su crash-loop bat thuong" voi "nap firmware/quay lai ban
-// cu THANH CONG, tu chu dong khoi dong lai" (ota_web_update.h/ota_rollback.h/
-// ota_update.h). Ket qua: nap OTA vai lan lien tiep trong <10 phut (rat binh
+// cu THANH CONG, tu chu dong khoi dong lai" (ota_web_update.h/ota_rollback.h).
+// Ket qua: nap OTA vai lan lien tiep trong <10 phut (rat binh
 // thuong khi dang phat trien/thu nghiem) se bi tinh nham la "reset bat
 // thuong" du moi lan deu la nap firmware thanh cong, khong lien quan gi den
 // mat dien/loi he thong that.
@@ -686,26 +687,17 @@ constexpr uint32_t CONTROL_TASK_PERIOD_MS = 5UL;
 constexpr uint32_t HMI_TASK_PERIOD_MS = 5UL;
 constexpr uint32_t SUPERVISOR_TASK_PERIOD_MS = 50UL;
 constexpr uint32_t NETWORK_TASK_PERIOD_MS = 250UL;
-// OTA can task RIENG, KHONG dung chung networkTask: cloud_alert_link.h goi
-// HTTP(S) blocking (toi CLOUD_HTTP_TIMEOUT_MS=8s moi lan) tren networkTask -
-// neu ArduinoOTA.handle() nam chung vong lap, loi moi OTA den dung luc do se
-// khong duoc phan hoi kip (da gap thuc te: "No response from device"). Task
-// rieng chay nhip nhanh (30ms) dam bao OTA luon duoc phuc vu dung gio bat ke
-// networkTask dang lam gi - HTTPClient khi cho phan hoi mang van nhuong CPU
-// cho task khac (khong "chiem cung"), nen cach nay loai bo hoan toan rui ro
-// tranh chap, khong chi giam xac suat nhu xep OTA dau vong lap networkTask.
+// Cap nhat firmware tu xa (kiem tra ban moi, tai ve + nap, rollback) chay tren task RIENG, khong
+// chung networkTask va khong chung cloudTask: nap la HTTPS blocking toi 120 s, khong duoc lam tre
+// alarm/heartbeat hay Wi-Fi. (ArduinoOTA da go bo; con lai chi la cac phien HTTPS tuan tu.)
 constexpr uint32_t OTA_TASK_PERIOD_MS = 30UL;
 // ESP-IDF tinh stack task theo byte. Tat ca buffer cap phat tinh, khong phan manh heap.
 constexpr size_t CONTROL_TASK_STACK_BYTES = 8192U;
 constexpr size_t HMI_TASK_STACK_BYTES = 10240U;
 constexpr size_t SUPERVISOR_TASK_STACK_BYTES = 4096U;
-// Tang tu 6144 len 12288: luc dat 6144, otaTask moi chi chay ArduinoOTA (nap
-// qua Arduino IDE). Sau khi them ota_web_update.h (cap nhat firmware tu xa),
-// task nay CON chay them WiFiClientSecure+HTTPClient (TLS toi Cloudflare) +
-// buffer 1KB doc firmware + mbedtls_sha256_context cung luc voi ArduinoOTA -
-// tuong duong hoac nang hon networkTask nhung truoc do chi duoc 1 nua stack
-// cua no. Dat bang networkTask de du du phong, tranh tran stack (co the la
-// nguyen nhan gay treo/khoi dong lai lien tuc da gap thuc te).
+// 12288 giu nguyen sau khi go ArduinoOTA: task van chay WiFiClientSecure+HTTPClient (TLS toi Cloudflare)
+// + buffer 1 kB doc firmware + mbedtls_sha256_context. Dinh stack luc TAI THAT chua duoc do tren
+// mach (log [TASK] chi moi ghi 5,8 kB luc nhan roi); do truoc khi thu nho hoac gop vao task khac.
 constexpr size_t OTA_TASK_STACK_BYTES = 12288U;
 // Bench measurement (PILOT log, 60 s [TASK] report, Wi-Fi + NTP + MQTT + Cloud running): network task used
 // 2.5 kB of 12 kB at its peak. Stacks are static RAM, so every kB removed here is a kB of heap for TLS.

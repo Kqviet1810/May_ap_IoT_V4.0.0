@@ -27,7 +27,6 @@ cloud = read("MAYAP_INDUSTRIAL_v1_0_0/cloud_alert_link.h")
 machine = read("MAYAP_INDUSTRIAL_v1_0_0/machine_control.h")
 network = read("MAYAP_INDUSTRIAL_v1_0_0/network_service.h")
 hmi = read("MAYAP_INDUSTRIAL_v1_0_0/hmi.h")
-ota = read("MAYAP_INDUSTRIAL_v1_0_0/ota_update.h")
 service_recovery = read("MAYAP_INDUSTRIAL_v1_0_0/service_recovery.h")
 runtime_recovery = read("MAYAP_INDUSTRIAL_v1_0_0/runtime_recovery_policy.h")
 realtime = read("MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h")
@@ -64,6 +63,9 @@ for obsolete in (
     "deliveryId", "mayapWebLinkBegin", "mayapWebLinkUpdate",
     "mayapWebSetRuntime", "mayapWebSetConfig", "mayapWebConfirmCommand",
     "mayapWebConfirmConfigSave", "mayapWebPushEventLog",
+    # LAN firmware upload (ArduinoOTA/mDNS) was removed: direct flashing is USB only.
+    "<ArduinoOTA.h>", "ArduinoOTA.", "MAYAP_OTA_PASSWORD", "OTA_PASSWORD",
+    "mayapOtaBegin", "mayapOtaUpdate", "mayapOtaRuntimeRecover", "mayapOtaQuiesceForWifiPortal",
 ):
     if obsolete in production_text:
         raise SystemExit("FAIL: obsolete realtime production identifier: " + obsolete)
@@ -101,10 +103,8 @@ require(network, "WiFi.disconnect(false, false)", "portal disconnect keeps radio
 require(network, "portalOtaQuiescedFlag", "portal/OTA quiesce handshake")
 require(network, "portalPhase != PortalPhase::Quiescing", "cancel during quiesce must not touch radio")
 require(network, "[PORTAL-PANIC] stage=", "portal panic RTC breadcrumb")
-require(ota, "mayapOtaQuiesceForWifiPortal", "ArduinoOTA portal quiesce helper")
-require(ota, "if (MayapOtaInternal::inProgress)", "do not abort active ArduinoOTA")
 require(ino, "mayapWifiPortalExclusiveRequested()", "otaTask portal exclusion")
-require(ino, "mayapSetWifiPortalOtaQuiesced(quiesced)", "otaTask quiesce acknowledgement")
+require_re(ino, r"void otaTask\(.*?mayapSetWifiPortalOtaQuiesced\(true\)", "otaTask quiesce acknowledgement")
 require(config, "WIFI_PORTAL_MAX_OPEN_MS = 120000UL", "Wi-Fi portal 2 minute network timeout")
 require(config, "WIFI_PORTAL_UI_IDLE_TIMEOUT_MS = 120000UL", "Wi-Fi portal 2 minute HMI timeout")
 

@@ -32,12 +32,15 @@ test('OTA keeps physical confirmation, maintenance interlock and strict byte/sig
   assert.match(hmi, /!ack.ok && command.type == HmiCommandType::FirmwareWebApply/);
 });
 
-test('Wi-Fi guide uses HMI, and ArduinoOTA has one empty tracked password source', () => {
+test('Wi-Fi guide uses HMI, and ArduinoOTA (LAN upload) stays removed: USB flashing + signed web OTA only', () => {
   const html = read('index.html');
   assert.match(html, /Cài đặt chung → Hệ thống → Đổi Wi‑Fi/);
   assert.doesNotMatch(html, /Giữ nút BOOT/);
   const publicBuild = read('MAYAP_INDUSTRIAL_v1_0_0/build_public.h');
-  assert.match(publicBuild, /^#define MAYAP_OTA_PASSWORD ""$/m);
+  assert.doesNotMatch(publicBuild, /OTA_PASSWORD/);
+  for (const gone of ['ota_update.h', 'arduino_ota_window.h'])
+    assert.equal(fs.existsSync(path.resolve(__dirname, '../MAYAP_INDUSTRIAL_v1_0_0/' + gone)), false, gone);
+  assert.doesNotMatch(read('MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino'), /ArduinoOTA|mayapOtaBegin|mayapOtaUpdate/);
   assert.equal(fs.existsSync(path.resolve(__dirname, '../MAYAP_INDUSTRIAL_v1_0_0/build_secrets.h')), false);
   assert.doesNotMatch(publicBuild, /MAYAP_MQTT/);
 });

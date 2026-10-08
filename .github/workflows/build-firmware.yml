@@ -136,24 +136,6 @@ jobs:
           python3 tools/test_runtime_buses.py --sanitize --check-regression
           python3 tools/test_single_eeprom.py --sanitize
 
-      - name: Nap OTA credential vao diem cau hinh duy nhat
-        env:
-          MAYAP_OTA_PASSWORD: ${{ secrets.MAYAP_OTA_PASSWORD }}
-        run: |
-          python3 - <<'PYOTA'
-          import json, os
-          from pathlib import Path
-          release = os.getenv("GITHUB_REF", "").startswith("refs/tags/") or os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch"
-          password = os.getenv("MAYAP_OTA_PASSWORD", "") if release else "__ci_ota_password__"
-          path = Path("MAYAP_INDUSTRIAL_v1_0_0/build_public.h")
-          text = path.read_text(encoding="utf-8")
-          needle = '#define MAYAP_OTA_PASSWORD ""'
-          if text.count(needle) != 1:
-              raise SystemExit("MAYAP_OTA_PASSWORD must have exactly one empty tracked definition")
-          replacement = "#define MAYAP_OTA_PASSWORD " + json.dumps(password)
-          path.write_text(text.replace(needle, replacement, 1), encoding="utf-8")
-          PYOTA
-
       - name: Kiem tra JavaScript
         run: |
           node --check app.js
@@ -220,38 +202,19 @@ jobs:
             --verbose \
             MAYAP_INDUSTRIAL_v1_0_0 2>&1 | tee /tmp/mayap-compile.log
 
-      - name: Measure feature-complete firmware size (OTA linked in every event type)
+      - name: Measure firmware size and verify ArduinoOTA/mDNS are gone
         shell: bash
         run: |
           set -euo pipefail
-          # The release/dispatch artifact follows the MAYAP_OTA_PASSWORD secret: with an empty
-          # secret mayapOtaEnabled() is false and the linker drops ArduinoOTA/ESPmDNS (~18.5 kB Flash,
-          # ~1.8 kB RAM). The size gate must measure the feature-complete image, so when the artifact
-          # build has OTA off, build a separate measurement image (not published) with OTA on.
-          HDR=MAYAP_INDUSTRIAL_v1_0_0/build_public.h
+          # Direct flashing is USB only; ArduinoOTA (LAN upload) and its mDNS responder were removed on purpose.
+          # One build is both the published artifact and the size-gate measurement.
           NM=$(find "$HOME/.arduino15/packages/esp32/tools" -type f -name 'xtensa-esp32s3-elf-nm' -print -quit)
           test -n "$NM"
-          ARTIFACT_ELF=$(ls build/*.elf | head -n 1)
-          echo "OTA symbols (ArduinoOTAClass) in the ${MAYAP_BUILD_PROFILE} artifact ELF: $("$NM" -C "$ARTIFACT_ELF" | grep -c 'ArduinoOTAClass::' || true)"
-          if grep -q '^#define MAYAP_OTA_PASSWORD ""' "$HDR"; then
-            echo "::warning::MAYAP_OTA_PASSWORD is empty for this ${GITHUB_EVENT_NAME} build: the ${MAYAP_BUILD_PROFILE} artifact has OTA DISABLED. Set the repository secret."
-            cp "$HDR" /tmp/build_public.h.orig
-            sed -i 's|^#define MAYAP_OTA_PASSWORD ""|#define MAYAP_OTA_PASSWORD "__ci_ota_password__"|' "$HDR"
-            arduino-cli compile \
-              --fqbn "${{ env.MAYAP_FQBN }}" \
-              --build-property "compiler.cpp.extra_flags=${MAYAP_CPP_FLAGS} -DMAYAP_BUILD_REVISION=${GITHUB_SHA:0:12}" \
-              --output-dir ./build-size \
-              --verbose \
-              MAYAP_INDUSTRIAL_v1_0_0 2>&1 | tee /tmp/mayap-size.log
-            cp /tmp/build_public.h.orig "$HDR"
-            MEASURED_ELF=$(ls build-size/*.elf | head -n 1)
-          else
-            cp /tmp/mayap-compile.log /tmp/mayap-size.log
-            MEASURED_ELF="$ARTIFACT_ELF"
-          fi
-          OTA_SYMS=$("$NM" -C "$MEASURED_ELF" | grep -c 'ArduinoOTAClass::' || true)
-          echo "OTA symbols in the measured (gated) ELF: ${OTA_SYMS}"
-          test "$OTA_SYMS" -gt 0 || { echo "::error::the size gate would measure a firmware without OTA"; exit 1; }
+          ELF=$(ls build/*.elf | head -n 1)
+          OTA_SYMS=$("$NM" -C "$ELF" | grep -Ec 'ArduinoOTAClass::|MDNSResponder::' || true)
+          echo "ArduinoOTA/mDNS symbols in the ELF: ${OTA_SYMS}"
+          test "$OTA_SYMS" -eq 0 || { echo "::error::ArduinoOTA/mDNS is linked again (LAN upload must stay removed)"; exit 1; }
+          cp /tmp/mayap-compile.log /tmp/mayap-size.log
           echo "measured: $(grep -E 'Sketch uses|Global variables use' /tmp/mayap-size.log | tr '\n' ' ')"
 
       - name: Verify the MQTT/WSS owner is native (no esp-mqtt, no esp_websocket_client, no extra task, no linker hack)

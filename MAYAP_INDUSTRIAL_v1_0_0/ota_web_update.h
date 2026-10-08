@@ -6,6 +6,7 @@
 #include "network_io_guard.h"
 #include "bounded_http.h"
 #include "firmware_update_guard.h"
+#include "firmware_check_policy.h"
 #include <Arduino.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
@@ -17,16 +18,16 @@
 #include <algorithm>
 #include <esp_ota_ops.h>
 
-// Cap nhat firmware TU XA qua Cloudflare Worker - KHAC HAN ota_update.h (do
-// la nap qua Arduino IDE, bat buoc CUNG mang LAN, dung ArduinoOTA). File nay
-// dung kenh HTTPS da co san toi CLOUD_API_HOST (cung host voi cloud_alert_
-// link.h) nen hoat dong duoc TU XA, khong can cung mang - phu hop quan ly
-// nhieu may lap dat o nhieu noi.
+// Cap nhat firmware TU XA qua Cloudflare Worker (la cach cap nhat qua mang DUY NHAT: ArduinoOTA da
+// go bo, nap truc tiep chi bang cap USB). Dung kenh HTTPS da co san toi CLOUD_API_HOST (cung host
+// voi cloud_alert_link.h) nen hoat dong duoc TU XA, khong can cung mang - phu hop quan ly nhieu
+// may lap dat o nhieu noi.
 //
 // Luong hoat dong (an toan la uu tien hang dau, day la thiet bi dieu khien
 // nhiet dang ap trung that):
-//  1. Dinh ky (moi FIRMWARE_CHECK_INTERVAL_MS) khi ONLINE, hoi Worker "co ban
-//     moi hon khong" - CHI hoi, KHONG tu tai ve.
+//  1. Dinh ky (moi FIRMWARE_CHECK_INTERVAL_MS + lech ngau nhien, lan dau sau
+//     FIRMWARE_FIRST_CHECK_DELAY_MS) khi ONLINE, hoi Worker "co ban moi hon
+//     khong" - CHI hoi, KHONG tu tai ve.
 //  2. Neu co, hien dong "Cap nhat firmware" trong muc KET NOI tren HMI.
 //     Nguoi van hanh phai tu bam va XAC NHAN - khong bao gio tu dong tai ve/
 //     flash khi chua duoc dong y, tranh gian doan mot me dang ap ma khong ai
@@ -39,11 +40,8 @@
 //     hoac mang dut giua chung - Update.abort(), GIU NGUYEN firmware dang
 //     chay, bao loi ro rang, KHONG khoi dong lai vao firmware loi/thieu.
 //
-// Chay tren otaTask (xem .ino) - CUNG task voi ota_update.h (nap qua Arduino
-// IDE), vi ca hai deu la "dang ghi flash" nen tu nhien loai tru lan nhau (1
-// task chi lam 1 viec 1 luc), va ca hai deu can tach khoi networkTask vi ly
-// do da neu trong ota_update.h (networkTask co the blocking toi 8s/lan boi
-// MQTT/Cloud Push).
+// Chay tren otaTask (xem .ino), tach khoi networkTask vi nap la HTTPS blocking (toi 120 s) va 1 task
+// chi lam 1 viec 1 luc nen tu nhien loai tru lan nhau.
 namespace MayapFirmwareWebInternal {
 
 static uint32_t lastCheckAt = 0U;
@@ -424,9 +422,11 @@ inline void mayapFirmwareWebUpdate(uint32_t now) {
   if (netStatus.requestedMode != ConnectivityMode::Online || !netStatus.connected) return;
 
   const bool checkNow = __atomic_load_n(&checkNowRequestFlag, __ATOMIC_ACQUIRE) != 0U;
-  if (!checkNow && lastCheckAt != 0U && (now - lastCheckAt) < FIRMWARE_CHECK_INTERVAL_MS) return;
+  static const uint32_t jitterMs = esp_random() % (FIRMWARE_CHECK_JITTER_MS + 1U);   // per boot
+  if (!MayapFirmwareCheck::due(now, lastCheckAt, checkNow, FIRMWARE_FIRST_CHECK_DELAY_MS,
+                               FIRMWARE_CHECK_INTERVAL_MS, jitterMs)) return;
   MayapTlsOperation tlsOperation(MayapTlsKind::Ota);
-  if (!tlsOperation) return; // retry next loop, not six hours later
+  if (!tlsOperation) return; // retry next loop, not a whole interval later
   if (checkNow) __atomic_store_n(&checkNowRequestFlag, 0U, __ATOMIC_RELEASE);
   lastCheckAt = now;
   mayapFirmwareWebCheck();

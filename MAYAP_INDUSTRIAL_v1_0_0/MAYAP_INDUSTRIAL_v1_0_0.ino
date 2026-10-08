@@ -30,7 +30,6 @@ void mayapI2cUnlock() {
 #include "i2c_supervisor.h"
 #include "service_recovery.h"
 #include "network_service.h"
-#include "ota_update.h"
 #include "ota_web_update.h"
 #include "ota_rollback.h"
 #include "hmi.h"
@@ -375,21 +374,21 @@ void otaTask(void *parameter) {
   (void)parameter;
   mayapSetRadioOtaQuiesced(false);
   mayapServiceAdmit(MayapRecovery::Service::Ota);
-  mayapOtaBegin();
   __atomic_store_n(&otaReady, 1U, __ATOMIC_RELEASE);
   TickType_t lastWake = xTaskGetTickCount();
   for (;;) {
     const uint32_t now = millis();
-    if (mayapServiceRecoveryRequested(MayapRecovery::Service::Ota) && mayapOtaRuntimeRecover(now)) {
+    // Firmware updates are HTTPS requests that run to completion inside this task (no listening socket
+    // is kept open), so there is nothing to tear down: a recovery request completes at once and the
+    // portal / radio-recovery / isolation handshake below is acknowledged immediately.
+    if (mayapServiceRecoveryRequested(MayapRecovery::Service::Ota)) {
       mayapServiceRecoveryComplete(MayapRecovery::Service::Ota);
     }
     if (mayapWifiPortalExclusiveRequested() || mayapRadioRecoveryRequested() ||
         mayapServiceIsolated(MayapRecovery::Service::Ota, now)) {
-      const bool quiesced = mayapOtaQuiesceForWifiPortal();
-      mayapSetWifiPortalOtaQuiesced(quiesced);
-      mayapSetRadioOtaQuiesced(quiesced);
-      if (quiesced) mayapOnlineOwnerQuiet(MayapRecovery::Service::Ota);
-      if (!quiesced) mayapOtaUpdate(now);
+      mayapSetWifiPortalOtaQuiesced(true);
+      mayapSetRadioOtaQuiesced(true);
+      mayapOnlineOwnerQuiet(MayapRecovery::Service::Ota);
       mayapServiceBeat(MayapRecovery::Service::Ota);
       vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(OTA_TASK_PERIOD_MS));
       continue;
@@ -401,7 +400,6 @@ void otaTask(void *parameter) {
     }
     mayapSetRadioOtaQuiesced(false);
     mayapSetWifiPortalOtaQuiesced(false);
-    mayapOtaUpdate(now);
     mayapFirmwareWebUpdate(now);
     mayapFirmwareRollbackUpdate(now);
     mayapOnlineIoLeave(MayapRecovery::Service::Ota);

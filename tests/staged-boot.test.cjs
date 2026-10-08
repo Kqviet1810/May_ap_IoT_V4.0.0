@@ -40,7 +40,7 @@ test('admission follows local, Wi-Fi, MQTT, Cloud, OTA order with owner-only ini
     last = pos;
   }
   for (const [task, begin] of [['networkTask', 'mayapNetworkBegin'], ['mqttTask', 'mayapRealtimeBegin'],
-    ['cloudTask', 'mayapCloudAlertBegin'], ['otaTask', 'mayapOtaBegin']])
+    ['cloudTask', 'mayapCloudAlertBegin']])
     assert.match(body(ino, `void ${task}(`), new RegExp(`${begin}\\(\\)`));
   // Deferred initialization must not overwrite an Online configuration read from EEPROM.
   assert.doesNotMatch(body(read(dir + 'network_service.h'), 'inline void mayapNetworkBegin()'), /__atomic_store_n\(&requestedMode/);
@@ -65,14 +65,14 @@ test('Supervisor admission gates retain fatal thresholds and persist reason befo
   assert.match(body(ino, 'void networkTask('), /mayapBootStage\(\) < MayapBoot::Stage::Ota[\s\S]*mayapSetWifiPortalOtaQuiesced\(true\)/);
 });
 
-test('all explicit restarts are reasoned and ArduinoOTA automatic restart has a marker', () => {
+test('all explicit restarts are reasoned and the web OTA restart has a marker', () => {
   for (const file of fs.readdirSync(path.resolve(__dirname, '..', dir)).filter((f) => /\.(h|ino)$/.test(f))) {
     if (file === 'boot_diagnostic.h') continue;
     const source = read(dir + file).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
     assert.doesNotMatch(source, /\b(?:esp_restart|ESP\.restart)\s*\(/, file);
   }
   assert.match(diagnostic, /mayapBootPlanRestart\(reason, detail\);\s*esp_restart\(\)/);
-  assert.match(read(dir + 'ota_update.h'), /mayapBootPlanRestart\(MayapBoot::RestartReason::ArduinoOta/);
+  assert.match(read(dir + 'ota_web_update.h'), /mayapRestart\(MayapBoot::RestartReason::InternetOta/);
   assert.match(diagnostic, /RTC_DATA_ATTR/);
   assert.match(diagnostic, /RTC_NOINIT_ATTR/);
   assert.doesNotMatch(diagnostic, /EEPROM|Preferences/);

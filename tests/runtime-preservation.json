@@ -4,6 +4,7 @@
   "stabilityReviewNote": "2026-09-30: reviewed changes limited to Tiny HIGH frame completion, network memory admission, build ID, nonblocking diagnostic drain/compact status, and OTA admission profile. Integrated origin/main E503 transition reconciliation and Arduino OTA window unchanged. Thermal control, fault/output safety, configuration schema and Web signed transaction bodies retain their existing fingerprints.",
   "turningReviewNote": "2026-10-05: reviewed MachineController fingerprint update limited to turning schedule preservation: homing no longer re-anchors, manual re-anchor persists immediately, and interval/enable edits reproject from the last real turn. PID, thermal safety, output arbitration, schemas, ATtiny and Web transaction logic are unchanged.",
   "stackReviewNote": "2026-10-07: reviewed config.h fingerprint update limited to NETWORK_TASK_STACK_BYTES 12288 -> 8192 (bench peak 2.5 kB used; static RAM returned to the TLS heap) plus its comment. Control, HMI, supervisor, WDT, thermal/output safety, schemas and Web transactions are unchanged.",
+  "arduinoOtaRemovalReviewNote": "2026-10-08: reviewed removal of ArduinoOTA (LAN upload; direct flashing is USB only). config.h: OTA_PASSWORD and its comments removed; FIRMWARE_CHECK_INTERVAL_MS 6 h -> 24 h plus FIRMWARE_CHECK_JITTER_MS and FIRMWARE_FIRST_CHECK_DELAY_MS; OTA task comments updated. ota_web_update.h: mayapFirmwareWebUpdate() only changes WHEN the periodic check is due (firmware_check_policy.h: first check 10 min after power-up, then daily plus per-boot jitter, check-now immediate); mayapFirmwareWebApplyNow() is unchanged except for the comment block around it. Apply still requires mayapFirmwareMaintenanceReady() and an operator confirmation; signed metadata, SHA-256, rollback, control, PID, thermal/output safety, HMI, schemas and Web transactions are untouched.",
   "entries": [
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/boot_policy.h",
@@ -59,7 +60,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "ff9d58cc5970bfd49c352e4e40cd40dcf131fb767b6019dda4fc6053fb623691",
+      "sha256": "484d7875eebd6374f7a076a67047b7c100249517819af721ae2c2131c7c64381",
       "filter": "config"
     },
     {
@@ -152,7 +153,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/ota_web_update.h",
-      "sha256": "2271c81a9d971eff255c51ed668582f7ae305e6344d8066a8d4b8dff49bfe43b",
+      "sha256": "da34f9c25fc06c8d18342c42fbe9672ccd3f24b2a256df9e4396d850e43fbb0f",
       "signature": "inline void mayapFirmwareWebUpdate("
     },
     {

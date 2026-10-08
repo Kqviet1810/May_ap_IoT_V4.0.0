@@ -4,9 +4,6 @@
 // MAYAP v3.8.0 - TRACKED BUILD CONFIG
 //
 // Identity/command keys are generated and stored separately per device in NVS.
-// ArduinoOTA co DUY NHAT mot diem nhap mat khau trong file nay.
-// Ban tren Git phai de MAYAP_OTA_PASSWORD rong; chi dien local truoc khi build
-// bang Arduino IDE va KHONG commit mat khau that.
 // ============================================================================
 
 #define MAYAP_WIFI_SSID ""
@@ -17,11 +14,6 @@
 #define MAYAP_ENABLE_LEGACY_DEVICE_MIGRATION 0
 
 #define MAYAP_CLOUD_API_HOST "mayap-push-worker.vietk-mayaptrung.workers.dev"
-
-// DIEM NHAP MAT KHAU DUY NHAT cho Arduino IDE LAN OTA.
-// De "" = tat OTA. Khi can nap qua Wi-Fi, dien mat khau tai day roi build local.
-// GitHub Actions chi tam thay dong nay trong workspace CI.
-#define MAYAP_OTA_PASSWORD ""
 
 // Trust bundle cho hai dich vu HTTPS/TLS dang dung:
 // - GTS Root R4: Cloudflare Worker/Google Trust Services chain hien tai.

@@ -202,3 +202,47 @@ test('MQTT uplink ingest: signed broker calls write alarms/heartbeats exactly li
   await Promise.all(h.jobs);
  }finally{global.fetch=original;}
 });
+
+// ---- End-to-end simulation of plan B: firmware-shaped MQTT publish -> real broker DO -> real Worker ingest -> D1 ----
+const NativeResponse = globalThis.Response;     // captured before the broker harness swaps in its 101-tolerant stub
+test('uplink end to end: device alarm/heartbeat over MQTT is PUBACKed only once it is durable in D1',async()=>{
+ const crypto=require('node:crypto'),wire=require('./fixtures/mqtt-wire.cjs'),harness=require('./fixtures/mqtt-broker-harness.cjs');
+ const h=await setup(),originalFetch=global.fetch;global.fetch=async()=>new NativeResponse('',{status:201});
+ const secret='uplink-secret';h.env.MQTT_DEVICE_SECRET=secret;
+ const worker=(await import('../cloudflare/src/index.js')).default,ctx={waitUntil(p){h.jobs.push(p);}};
+ const ingestCalls=[];
+ const env={BROKER_DEVICE_SECRET:secret,BROKER_WEB_TOKEN_SECRET:'web-secret',CLOUD_INGEST:{async fetch(url,init){
+  ingestCalls.push(JSON.parse(init.body).kind);
+  const stub=globalThis.Response;globalThis.Response=NativeResponse;     // the Worker answers with real Responses
+  try{return await worker.fetch(new Request(url,init),h.env,ctx);}finally{globalThis.Response=stub;}
+ }}};
+ const id=h.deviceId,password=crypto.createHmac('sha256',secret).update(`mayap-mqtt-device:v1\n${id}`).digest('hex');
+ try{
+  const b=await harness.makeBroker({env});
+  const {client,server}=await harness.openWebSocket(b.broker,id);
+  await harness.feed(b.broker,server,wire.connect({clientId:`esp-${id}`,username:id,password,will:{topic:`mayap/v1/${id}/presence`,qos:1,retain:true,payload:'{"online":false}'}}));
+  assert.equal(wire.parseConnack((await harness.clientReceive(client))[0]).returnCode,0);
+  // Exactly the JSON the firmware builds in sendAlarmsUplink()/sendHeartbeat().
+  const event=(eventId,state,message)=>JSON.stringify({event_id:eventId,alarm_type:'FAULT_130',severity:'critical',state,message,temperature:29.9,humidity:63.7,detected_uptime_ms:129825});
+  const publish=async(packetId,topic,payload)=>{await harness.feed(b.broker,server,wire.publish({topic:`mayap/v1/${id}/${topic}`,qos:1,packetId,payload}));
+   return (await harness.clientReceive(client)).map(f=>wire.parsePuback(f).packetId);};
+  const count=()=>h.sql.prepare('SELECT COUNT(*) n FROM alarm_events').get().n;
+  assert.deepEqual(await publish(11,'alarm',event('fe6e-00000001','active','off')),[11]);         // durable -> PUBACK
+  assert.equal(count(),1);
+  assert.deepEqual(await publish(11,'alarm',event('fe6e-00000001','active','off')),[11]);         // response lost, device resends: still one row
+  assert.equal(count(),1);
+  assert.deepEqual(await publish(12,'alarm',event('fe6e-00000002','resolved','on')),[12]);        // recovery stored after the alarm
+  assert.equal(count(),2);
+  assert.deepEqual(await publish(13,'alarm',event('fe6e-00000001','active','DIFFERENT')),[]);     // conflicting id: not durable -> no PUBACK
+  assert.equal(count(),2);
+  assert.deepEqual(await publish(14,'heartbeat',JSON.stringify({batch_running:true})),[14]);
+  const row=h.sql.prepare('SELECT batch_running,status,last_seen FROM devices WHERE device_id=?').get(id);
+  assert.equal(row.batch_running,1);assert.equal(row.status,'online');assert.ok(row.last_seen>0);
+  assert.deepEqual(ingestCalls,['alarm','alarm','alarm','alarm','heartbeat']);
+  // Wrong secret on the Worker side (misconfigured deploy): nothing is stored and the device gets no PUBACK.
+  h.env.MQTT_DEVICE_SECRET='rotated-elsewhere';
+  assert.deepEqual(await publish(15,'alarm',event('fe6e-00000003','active','off')),[]);
+  assert.equal(count(),2);
+  await Promise.all(h.jobs);
+ }finally{global.fetch=originalFetch;}
+});
