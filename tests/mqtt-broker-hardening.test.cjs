@@ -111,7 +111,7 @@ test('§2 packetId is per-connection and persists via attachment', async () => {
   for (const id of ids) assert.ok(id >= 1 && id <= 0xffff);
 });
 
-test('§2 slow consumer: inflight full → broker closes, no silent drop', async () => {
+test('§2 burst beyond the window is queued in order and released as PUBACKs arrive: nobody is disconnected, nothing dropped', async () => {
   const b = await harness.makeBroker({ env: envFixture() });
   const d = await dev(b.broker);
   await harness.feed(b.broker, d.server, wire.subscribe({
@@ -119,15 +119,62 @@ test('§2 slow consumer: inflight full → broker closes, no silent drop', async
   }));
   await harness.clientReceive(d.client);
   const w = await web(b.broker);
-  // Fire 17 commands at a device that never PUBACKs.
-  for (let i = 0; i < 17; i++) {
+  // 40 commands arrive faster than the device can PUBACK (the field bug: the 17th used to close the device with 1013).
+  for (let i = 0; i < 40; i++) {
     await harness.feed(b.broker, w.server, wire.publish({
       topic: `mayap/v1/${DEV}/command`, qos: 1, packetId: 100 + i, payload: `cmd-${i}`,
     }));
   }
-  // The 17th publish fills the ring; broker closes the slow device.
-  assert.equal(d.server.closed, true, 'slow consumer must be closed');
+  assert.equal(d.server.closed, false, 'a burst is not a slow consumer');
+  assert.equal(w.server.closed, false);
+  let att = d.server.deserializeAttachment();
+  assert.equal(att.inflight.length, 16);
+  assert.equal(att.pend, 24);
+  // The device acknowledges what it got; the broker releases the queue in order.
+  const received = [];
+  for (let round = 0; round < 10; round++) {
+    const frames = await harness.clientReceive(d.client);
+    for (const f of frames) {
+      const p = wire.parsePublish(f);
+      received.push(p.payload.toString());
+      await harness.feed(b.broker, d.server, wire.puback({ packetId: p.packetId }));
+    }
+    if (frames.length === 0) break;
+  }
+  assert.deepEqual(received, Array.from({ length: 40 }, (_, i) => `cmd-${i}`), 'every command, once, in order');
+  att = d.server.deserializeAttachment();
+  assert.equal(att.pend, 0);
+  assert.deepEqual(att.inflight, []);
+  assert.equal([...b.state.storage.map.keys()].filter((k) => k.startsWith('pend:')).length, 0, 'queue storage is empty');
+});
+
+test('§2 a consumer that is genuinely stuck is still closed: window full and unacknowledged for 20 s, or the queue itself full', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const base = Date.now(); let clock = base; b.broker._now = () => clock;
+  const d = await dev(b.broker);
+  await harness.feed(b.broker, d.server, wire.subscribe({ packetId: 1, filters: [{ filter: `mayap/v1/${DEV}/command`, qos: 1 }] }));
+  await harness.clientReceive(d.client);
+  const w = await web(b.broker);
+  const send = (i) => harness.feed(b.broker, w.server, wire.publish({ topic: `mayap/v1/${DEV}/command`, qos: 1, packetId: 1000 + i, payload: `cmd-${i}` }));
+  for (let i = 0; i < 17; i++) await send(i);            // 16 in flight + 1 queued
+  assert.equal(d.server.closed, false);
+  clock = base + 21000;                                   // the oldest in-flight packet has been unacknowledged for > 20 s
+  await send(17);
+  assert.equal(d.server.closed, true);
   assert.equal(d.server.closeCode, 1013);
+  await b.broker.webSocketClose(d.server, 1013, 'SLOW_CONSUMER', true);   // what the runtime calls after close()
+  assert.equal([...b.state.storage.map.keys()].filter((k) => k.startsWith('pend:')).length, 0, 'closing removes the connection queue');
+  // Queue bound: a consumer that never acknowledges and never ages is closed once the queue holds 128.
+  const c = await harness.makeBroker({ env: envFixture() });
+  const d2 = await dev(c.broker);
+  await harness.feed(c.broker, d2.server, wire.subscribe({ packetId: 1, filters: [{ filter: `mayap/v1/${DEV}/command`, qos: 1 }] }));
+  await harness.clientReceive(d2.client);
+  const w2 = await web(c.broker);
+  for (let i = 0; i < 16 + 128; i++) await harness.feed(c.broker, w2.server, wire.publish({ topic: `mayap/v1/${DEV}/command`, qos: 1, packetId: 1 + i, payload: 'x' }));
+  assert.equal(d2.server.closed, false);
+  await harness.feed(c.broker, w2.server, wire.publish({ topic: `mayap/v1/${DEV}/command`, qos: 1, packetId: 999, payload: 'overflow' }));
+  assert.equal(d2.server.closed, true);
+  assert.equal(d2.server.closeCode, 1013);
 });
 
 test('§2 PUBACK clears exactly its id, inflight shrinks', async () => {

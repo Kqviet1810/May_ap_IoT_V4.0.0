@@ -135,6 +135,10 @@
       }
       if (reply.control) { readOnlyDevices.delete(device.id); await storeControlSession(device, reply.control); }
       else readOnlyDevices.add(device.id);
+      // A reconnect of the socket that is already open must not be refused for an old token: refresh what it will send, without
+      // touching the open connection.
+      const live = state.realtime;
+      if (live && live.deviceId === device.id) live.updateCredentials?.(reply.mqtt);
       return reply;
     })().finally(() => mqttSessionRequests.delete(device.id));
     mqttSessionRequests.set(device.id, request);
@@ -2989,12 +2993,75 @@
     fetchMqttSession(device).then(() => { if (device.id === state.selectedId) renderDevice(); }).catch(() => {});
   }
 
-  // The broker token is short-lived and bound to this device and account: reconnect
-  // with a fresh one shortly before it expires or whenever the broker refuses it.
+  // The broker token is short-lived and bound to this device and account, and the broker checks it only when a socket
+  // CONNECTS (plus, for a socket that outlives its token, a bounded grace after which it closes it). So a healthy socket is
+  // never closed by the Web to "renew": a replacement socket is opened with a fresh token FIRST (make-before-break), it
+  // subscribes, and only then does it become the live one; the old one is ended a moment later so its in-flight QoS1
+  // publishes can still be acknowledged. Nothing is shown as offline and no message is lost in between (both sockets are
+  // subscribed during the overlap; only the live one delivers).
+  // Only when there is no healthy socket (the broker refused the token, the socket is already down) is the full
+  // disconnect/connect used - that interruption is real, not caused by the renewal.
+  const RENEW_BEFORE_MS = 300000, RENEW_RETRY_MS = 10000;
+  let standbyRenewal = null, renewRetryAt = 0;
   function renewDeviceChannel(device) {
     if (!device || device.id !== state.selectedId) return;
-    disconnectDeviceChannel();
-    connectDeviceChannel(device).catch(console.error);
+    const active = state.realtime;
+    if (!active || !active.connected || active.deviceId !== device.id) {
+      disconnectDeviceChannel();
+      connectDeviceChannel(device).catch(console.error);
+      return;
+    }
+    if (standbyRenewal || Date.now() < renewRetryAt) return;
+    const job = standbyRenewal = { done: false };
+    const finish = (retry) => { job.done = true; if (standbyRenewal === job) standbyRenewal = null; if (retry) renewRetryAt = Date.now() + RENEW_RETRY_MS; };
+    const token = realtimeToken;
+    fetchMqttSession(device).then((reply) => {
+      if (job.done) return;
+      if (token !== realtimeToken || state.realtime !== active) { finish(false); return; }
+      let next = null, latestPresence = null, swapped = false;
+      const ref = { transport: null };
+      const handlers = realtimeHandlers(device, token, ref);
+      const live = () => !job.done && token === realtimeToken && state.realtime === active;
+      try {
+        next = window.MayapMqttTransport.create({
+          deviceId: device.id, url: reply.mqtt.url, username: reply.mqtt.username, password: reply.mqtt.password,
+          expiresAt: reply.mqtt.expiresAt, reconnectPeriod: 0,
+          clientId: `mayap-web-${Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => b.toString(16).padStart(2, '0')).join('')}`,
+          keepalive: WEB.keepaliveSeconds, connectTimeout: WEB.connectTimeoutMs,
+          // Before the swap the live socket delivers everything; the standby only remembers the latest retained presence.
+          onMessage: (channel, payload) => {
+            if (swapped) handlers.onMessage(channel, payload);
+            else if (channel === 'presence') latestPresence = payload;
+          },
+          onState: (stateName, error) => {
+            if (swapped) { handlers.onState(stateName, error); return; }
+            if (job.done) return;
+            if (stateName === 'ready') {
+              if (!live()) { try { next.end(); } catch (_) {} finish(false); return; }
+              // Swap: from here on `next` is the transport of record and behaves exactly like a first connection that
+              // just became ready, except that nothing is torn down or shown as offline. The old socket stops delivering
+              // (identity check in its handlers) and is closed after a short drain so its in-flight QoS1 publishes settle.
+              swapped = true;
+              ref.transport = next;
+              state.realtime = next;
+              state.realtimeExpiresAt = next.tokenExpiresAt;
+              next.enableReconnect(WEB.reconnectPeriodMs);
+              finish(false);
+              setTimeout(() => { try { active.end(); } catch (_) {} }, 2500);
+              if (latestPresence) dispatchRealtimeMessage(device, 'presence', latestPresence);
+              activateSelectedSession(false);
+              return;
+            }
+            if (['closed', 'offline', 'error', 'reconnecting'].includes(stateName)) {
+              try { next.end(); } catch (_) {}
+              finish(true);                                   // the healthy socket keeps serving; try again shortly
+            }
+          },
+        });
+      } catch (error) { console.error(error); finish(true); return; }
+      // A replacement that never becomes ready must not linger.
+      setTimeout(() => { if (!job.done) { try { next?.end(); } catch (_) {} finish(true); } }, WEB.connectTimeoutMs + 5000);
+    }).catch((error) => { console.warn('[REALTIME] token renewal failed; the open connection is kept', error?.code || error); finish(true); });
   }
 
   function activateSelectedSession(sync = false) {
@@ -3009,7 +3076,7 @@
     // session is QoS 0: keep asking for sync until a complete config and a fresh
     // snapshot arrive, then fall back to plain keep-alive refreshes.
     state.sessionTimer = setInterval(() => {
-      if (state.realtimeExpiresAt && state.realtimeExpiresAt - Date.now() < 120000) return renewDeviceChannel(device);
+      if (state.realtimeExpiresAt && state.realtimeExpiresAt - Date.now() < RENEW_BEFORE_MS) renewDeviceChannel(device);   // background; the session refresh below still runs
       ensureControlGrant(device);
       sendSession(device.id, true, selectedNeedsSync());
     }, WEB.sessionRefreshMs);
@@ -3060,6 +3127,52 @@
     }
   }
 
+  // The live behaviour of a transport: messages go to the protocol handlers, connection changes drive the epoch / status / session
+  // timers. A handler is live only while its transport is the transport of record (so the socket that was replaced stops talking
+  // the moment the replacement takes over, and the same code serves the first connection and the make-before-break replacement).
+  function realtimeHandlers(device, token, ref) {
+    const isLive = () => token === realtimeToken && (!ref.transport || state.realtime === ref.transport || state.realtime === null);
+    return {
+      isLive,
+      onMessage: (channel, payload) => {
+        if (!isLive()) return;
+        const target = state.devices.find((item) => item.id === device.id);
+        if (target) dispatchRealtimeMessage(target, channel, payload);
+      },
+      onState: (next, error) => {
+        if (!isLive()) return;
+        // Every connection change starts a new epoch so presence/snapshot from a
+        // previous socket can never prove the current device state.
+        state.subscriptionEpoch++;
+        state.subscriptions.clear();
+        if (next === 'subscribing') {
+          state.realtimeConnected = false;
+          setRealtimeStatus('connecting', 'Đang đăng ký kênh dữ liệu…');
+          return;
+        }
+        if (next === 'ready') {
+          state.realtimeConnected = true;
+          if (ref.transport?.tokenExpiresAt) state.realtimeExpiresAt = ref.transport.tokenExpiresAt;
+          ensureControlGrant(device);
+          setRealtimeStatus('ready', 'Đã kết nối máy chủ');
+          activateSelectedSession(true);
+          return;
+        }
+        state.realtimeConnected = false;
+        clearInterval(state.sessionTimer);
+        clearSyncRetries();
+        // CONNACK 4/5: the token expired or was refused; fetch a new one.
+        if (next === 'error' && error && (error.code === 4 || error.code === 5)) {
+          setTimeout(() => { if (token === realtimeToken) renewDeviceChannel(device); }, 1000);
+        }
+        setRealtimeStatus(next === 'error' && !state.realtime ? 'error' : 'connecting',
+          next === 'reconnecting' ? 'Đang kết nối lại với máy…'
+            : next === 'offline' ? 'Thiết bị của bạn đang mất Internet'
+              : error ? 'Kết nối máy chủ gặp lỗi. Đang thử lại…' : 'Kết nối bị gián đoạn');
+      },
+    };
+  }
+
   async function connectDeviceChannel(device) {
     if (!device || connectingDeviceId === device.id) return;
     disconnectDeviceChannel();
@@ -3087,6 +3200,8 @@
     }
     if (token !== realtimeToken) return;
     state.realtimeExpiresAt = Number(reply.mqtt.expiresAt || 0) * 1000;
+    const ref = { transport: null };
+    const handlers = realtimeHandlers(device, token, ref);
     let transport;
     try {
     transport = window.MayapMqttTransport.create({
@@ -3094,42 +3209,8 @@
       clientId: `mayap-web-${Array.from(crypto.getRandomValues(new Uint8Array(6)),
         (b) => b.toString(16).padStart(2, '0')).join('')}`,
       keepalive: WEB.keepaliveSeconds, reconnectPeriod: WEB.reconnectPeriodMs,
-      connectTimeout: WEB.connectTimeoutMs,
-      onMessage: (channel, payload) => {
-        if (token !== realtimeToken) return;
-        const target = state.devices.find((item) => item.id === device.id);
-        if (target) dispatchRealtimeMessage(target, channel, payload);
-      },
-      onState: (next, error) => {
-        if (token !== realtimeToken) return;
-        // Every connection change starts a new epoch so presence/snapshot from a
-        // previous socket can never prove the current device state.
-        state.subscriptionEpoch++;
-        state.subscriptions.clear();
-        if (next === 'subscribing') {
-          state.realtimeConnected = false;
-          setRealtimeStatus('connecting', 'Đang đăng ký kênh dữ liệu…');
-          return;
-        }
-        if (next === 'ready') {
-          state.realtimeConnected = true;
-          ensureControlGrant(device);
-          setRealtimeStatus('ready', 'Đã kết nối máy chủ');
-          activateSelectedSession(true);
-          return;
-        }
-        state.realtimeConnected = false;
-        clearInterval(state.sessionTimer);
-        clearSyncRetries();
-        // CONNACK 4/5: the token expired or was refused; fetch a new one.
-        if (next === 'error' && error && (error.code === 4 || error.code === 5)) {
-          setTimeout(() => { if (token === realtimeToken) renewDeviceChannel(device); }, 1000);
-        }
-        setRealtimeStatus(next === 'error' && !state.realtime ? 'error' : 'connecting',
-          next === 'reconnecting' ? 'Đang kết nối lại với máy…'
-            : next === 'offline' ? 'Thiết bị của bạn đang mất Internet'
-              : error ? 'Kết nối máy chủ gặp lỗi. Đang thử lại…' : 'Kết nối bị gián đoạn');
-      },
+      connectTimeout: WEB.connectTimeoutMs, expiresAt: reply.mqtt.expiresAt,
+      onMessage: handlers.onMessage, onState: handlers.onState,
     });
     } catch (error) {
       console.error(error);
@@ -3138,6 +3219,7 @@
       retryLater();
       return;
     }
+    ref.transport = transport;
     state.realtime = transport;
   }
 

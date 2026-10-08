@@ -10,6 +10,8 @@
   const SUBSCRIPTIONS = [
     ['presence', 1], ['snapshot', 0], ['ack', 1], ['log', 0],
     ['config/reported', 1], ['history/reported', 1],
+    // Broker-originated live state: how many device alarms the broker still has to hand to the Worker (QoS0, not retained).
+    ['uplink', 0],
   ];
   const noop = () => {};
 
@@ -27,16 +29,29 @@
     const client = window.mqtt.connect(url, {
       protocolVersion: 4, clean: true, clientId, username, password,
       keepalive: options.keepalive || 30,
-      reconnectPeriod: options.reconnectPeriod || 3000,
+      // 0 = never reconnect by itself (a standby socket that fails is simply replaced by the caller).
+      reconnectPeriod: options.reconnectPeriod === 0 ? 0 : (options.reconnectPeriod || 3000),
       connectTimeout: options.connectTimeout || 10000,
       resubscribe: false,
     });
     let ready = false;
     let ended = false;
+    let tokenExp = Number(options.expiresAt || 0) * 1000;   // ms; when the broker stops accepting THIS socket's credentials
 
     const transport = {
       deviceId, client,
       get connected() { return ready && client.connected === true && !ended; },
+      get tokenExpiresAt() { return tokenExp; },
+      // Credentials used by this client's NEXT automatic reconnect (the open socket is not touched). The broker checks a token
+      // only at CONNECT, so a fresh one must be in place before a reconnect happens - never by closing a healthy socket.
+      // A standby socket is created without auto-reconnect; once it has become the live one it needs the normal behaviour.
+      enableReconnect(ms) { if (!ended) client.options.reconnectPeriod = ms || 3000; },
+      updateCredentials(mqttReply) {
+        if (ended || !mqttReply || typeof mqttReply.password !== 'string') return;
+        client.options.username = mqttReply.username || client.options.username;
+        client.options.password = mqttReply.password;
+        if (!client.connected) tokenExp = Number(mqttReply.expiresAt || 0) * 1000;
+      },
       // Resolves on the broker PUBACK for QoS 1. That is transport delivery only:
       // the caller must still wait for the device's terminal ACK.
       publish(channel, wire, { qos = 1 } = {}) {

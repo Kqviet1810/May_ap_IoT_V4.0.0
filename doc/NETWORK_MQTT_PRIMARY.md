@@ -17,27 +17,32 @@ Ngược lại MQTT không thể bắt tay TLS khi HTTPS đang giữ lease. Bộ
 Chủ MQTT công bố tình trạng link (`mqtt_uplink.h` `Health`: Up / Closed có chủ đích / Connecting / Down, số lần lỗi, 3 lần mất gần nhất, thời điểm nhận byte cuối,
 thời điểm thử nối kế tiếp, RTT PUBACK làm mượt). Task Cloud phân loại rồi quyết định:
 
-| Phân loại | Điều kiện | Cảnh báo nghiêm trọng | Cảnh báo thường |
+| Phân loại | Điều kiện (bằng chứng **vận chuyển**, không phải biên nhận) | Cảnh báo nghiêm trọng | Cảnh báo thường |
 |---|---|---|---|
-| Healthy | link Up và PUBACK đều | MQTT (không bao giờ HTTPS) | MQTT |
-| Recovering | đóng có chủ đích/đang nối, lần thử kế tiếp ≤ 6 s | chờ tối đa 6 s (MQTT thường về kịp, tránh bắt tay TLS thừa) | chờ 60 s |
-| Down | link mất, thử nối thất bại, hoặc lần thử kế tiếp > 6 s | **HTTPS ngay** (trước đây bắt buộc chờ 10 s) | chờ 20 s |
-| Flapping | ≥ 3 lần mất trong 2 phút | HTTPS ngay (không chờ link cứ chết) | 20 s |
-| NoAck | link Up nhưng 1 PUBACK trễ quá thời gian chờ thích nghi (1,5–4 s = 3×RTT+0,5 s) | HTTPS ngay (sau khi MQTT nhả bộ nhớ) | 20 s |
-| HalfOpen | "Up" nhưng im lặng > 20 s và PUBACK thiếu | HTTPS ngay | 20 s |
-| NotStoring | link sống nhưng ≥ 2 PUBACK thiếu liên tiếp (broker/Worker/D1 không lưu) | HTTPS ngay | 20 s |
+| Healthy | link Up **và** broker còn gửi byte (≤ 20 s) — bất kể PUBACK trễ/thiếu | MQTT (không bao giờ HTTPS) | MQTT |
+| Probing | link "Up" nhưng im lặng > 20 s: một PINGREQ thăm dò đã gửi | chờ tối đa 4 s cho phán quyết | chờ |
+| HalfOpen | im lặng > 20 s **và** thăm dò không nhận được byte nào trong 4 s | **HTTPS ngay** (sau khi MQTT nhả bộ nhớ) | 20 s |
+| Recovering | đóng có chủ đích/đang nối, lần thử kế tiếp ≤ 6 s | chờ tối đa 6 s | chờ 60 s |
+| Down | link mất, thử nối thất bại, hoặc lần thử kế tiếp > 6 s | **HTTPS ngay** | chờ 20 s |
+| Flapping | ≥ 3 lần mất trong 2 phút | HTTPS ngay | 20 s |
+| BrokerNotStoring | *chỉ nghiêm trọng*: link sống nhưng broker không lưu cùng cảnh báo suốt ≥ 60 s qua ≥ 3 lần thử | HTTPS (phương án cuối, thang back-off nghiêm trọng, ghi rõ lý do) | không bao giờ |
+
+**PUBACK trễ/thiếu không còn là bằng chứng link xấu.** Nó chỉ (1) giữ sự kiện trong outbox và thử lại qua MQTT bằng back-off riêng của sự kiện (cùng
+`event_id` nên broker dedupe), (2) yêu cầu chủ MQTT gửi một PINGREQ thăm dò để có bằng chứng độc lập, (3) tăng bộ đếm `INGEST_TIMEOUT`. Không còn `suspect()`;
+không còn đường logic từ một lần PUBACK quá hạn tới việc đóng socket MQTT khỏe. Mọi lần MQTT bị đóng có chủ đích đều ghi lý do và bằng chứng:
+`[MQTT] closed on purpose (cloud-tls) why=alarm:half-open-confirmed rxAge=… probe=unanswered …`, và bộ đếm `[MQTT-STAT] closes radio/mem/cloud-tls/iso/lost`.
 
 Mọi đường HTTPS còn cần: Wi-Fi lên **và** máy đã đăng ký **và** back-off cho phép. Hai thang back-off **tách biệt**: nghiêm trọng 5 s, 15 s, 30 s, 1, 2, 5 phút (+≤5 s jitter);
 thường 30 s, 1, 2, 5, 10 phút. Một lần thành công chỉ đặt khoảng cách 1 s (cảnh báo sau đó là thật). Thang thường dài không bao giờ làm chậm cảnh báo nghiêm trọng mới.
 MQTT chuyển được lại → fallback ngủ, hai thang về đầu. Trong một giờ Cloudflare/Internet hỏng: tối đa ~17 lần HTTPS (không bão kết nối lại), không mất cảnh báo.
 
 **Không hứa 0,2 s.** Các chặng đo riêng (log `[ALARM-TIMING]` + `[CLOUD] event=... age=...` + Worker `since_received_ms`/`device_age_ms`):
-(1) phát hiện lỗi → vào outbox (do điều khiển/HMI, không đổi); (2) quyết định chuyển kênh: mô phỏng 0 ms khi MQTT đã xác nhận mất, ≤ 1,5–4 s khi chỉ thiếu PUBACK
-(chờ PUBACK thích nghi), 20 s cảnh báo thường; (3) HTTPS được chấp nhận: MQTT phải nhả bộ nhớ trước (mô hình ≈ 2,5 s bắt tay+gửi); (4) Worker nhận (`received_at`, `device_age_ms`);
+(1) phát hiện lỗi → vào outbox (do điều khiển/HMI, không đổi); (2) quyết định chuyển kênh: 0 ms khi MQTT đã xác nhận mất, ≈ 4 s khi phải thăm dò link im lặng, 20 s cảnh báo thường;
+PUBACK trễ **không** chuyển kênh; (3) HTTPS được chấp nhận: MQTT phải nhả bộ nhớ trước (mô hình ≈ 2,5 s bắt tay+gửi); (4) Worker nhận (`received_at`, `device_age_ms`);
 (5) Push do dịch vụ push nhận (`push.sent`), không phải "đã hiển thị". Số liệu mô phỏng là mô hình, **chưa đo trên mạch**.
 
 **Beacon HTTPS khi MQTT hỏng kéo dài.** Heartbeat chạy trên MQTT; nếu broker/DO hỏng, Worker sẽ thấy `last_seen` cũ và (khi đang ấp) báo `DEVICE_OFFLINE` nghiêm trọng dù máy bình thường.
-Sau 90 s không có uplink MQTT nào được PUBACK (và link không ở trạng thái Recovering), tick heartbeat 60 s gửi một `POST /api/device/heartbeat` nhỏ qua HTTPS — thực tế mỗi ~2 phút,
+Sau 90 s không có uplink MQTT nào được PUBACK **và transport bị xác nhận hỏng** (Down/Flapping/HalfOpen; Healthy, Probing, Recovering không bao giờ beacon), tick heartbeat 60 s gửi một `POST /api/device/heartbeat` nhỏ qua HTTPS — thực tế mỗi ~2 phút,
 dưới ngưỡng offline 180 s của Worker, cùng cổng TLS độc quyền, dừng ngay khi MQTT chuyển được lại.
 
 ### Độc lập của đường HTTPS với broker Durable Object

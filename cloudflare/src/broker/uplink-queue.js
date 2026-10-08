@@ -18,7 +18,10 @@ export const UQ = Object.freeze({
   MAX_AGE_MS: 24 * 60 * 60 * 1000,   // an event the Worker never accepted is dropped as `expired` (visible) after this
   BATCH_MAX: 8,
   FORWARD_TIMEOUT_MS: 8000,
-  BACKOFF_MS: Object.freeze([2000, 5000, 15000, 60000, 300000]),
+  // Retry ladder for a Worker that is down or erroring: quick at first, never longer than a minute (an alarm must not wait
+  // minutes after the Worker is back), +-20 % jitter so 20 devices do not hit a recovering Worker in the same second.
+  BACKOFF_MS: Object.freeze([2000, 5000, 15000, 30000, 60000]),
+  JITTER: 0.2,
   THROTTLE_MIN_MS: 1000,
   THROTTLE_MAX_MS: 16000,
   HEARTBEAT_FORWARD_MS: 30000,
@@ -44,10 +47,16 @@ export function validateAlarm(data) {
 }
 
 export class UplinkQueue {
-  constructor(storage, now = () => Date.now()) {
+  constructor(storage, now = () => Date.now(), rand = () => Math.random()) {
     this.storage = storage;
     this.now = now;
+    this.rand = rand;
     this._chain = Promise.resolve();   // serialises enqueue so the seq counter never races (also in a non-gated stub)
+  }
+
+  _backoff(step) {
+    const base = UQ.BACKOFF_MS[Math.min(UQ.BACKOFF_MS.length - 1, Math.max(0, step))];
+    return Math.round(base * (1 - UQ.JITTER + 2 * UQ.JITTER * this.rand()));
   }
 
   _serial(fn) {
@@ -159,9 +168,8 @@ export class UplinkQueue {
         stat.ring = [...(stat.ring || []), { id: row.id, type: row.type, err: row.err, at: now }].slice(-UQ.REJECT_RING);
       } else {
         // Worker/D1 unavailable, timeout, malformed answer, or a later event skipped behind a failed one: retry with backoff.
-        const step = Math.min(UQ.BACKOFF_MS.length - 1, row.attempts - 1);
         row.state = 'retrying';
-        row.nextAt = now + UQ.BACKOFF_MS[step];
+        row.nextAt = now + this._backoff(row.attempts - 1);
         row.err = failure ? String(failure).slice(0, 48) : String((verdict && verdict.error) || outcome || 'NO_RESULT').slice(0, 48);
         hardFail = true;
         stat.err = row.err; stat.errAt = now;
@@ -178,17 +186,23 @@ export class UplinkQueue {
     const now = this.now();
     const hb = await this.storage.get(KEY_HB);
     if (!hb || !hb.dirty) return null;
-    const waitBackoff = hb.fails > 0 ? UQ.BACKOFF_MS[Math.min(UQ.BACKOFF_MS.length - 1, hb.fails - 1)] : UQ.HEARTBEAT_FORWARD_MS;
-    if (hb.fwdAt && now - hb.fwdAt < Math.min(waitBackoff, hb.fails > 0 ? waitBackoff : UQ.HEARTBEAT_FORWARD_MS)) return null;
+    const wait = hb.fails > 0 ? this._hbWait(hb) : UQ.HEARTBEAT_FORWARD_MS;
+    if (hb.fwdAt && now - hb.fwdAt < wait) return null;
     return hb;
+  }
+
+  // Heartbeat retry wait after `fails` consecutive failures: the same ladder, deterministic per failure count (stored in the row).
+  _hbWait(hb) {
+    if (!hb.wait) hb.wait = this._backoff(hb.fails - 1);
+    return hb.wait;
   }
 
   async heartbeatDone(sentAt, ok) {
     const now = this.now();
     const hb = await this.storage.get(KEY_HB);
     if (!hb) return;
-    if (ok) { hb.fwdAt = now; hb.fails = 0; if (hb.at <= sentAt) hb.dirty = false; }
-    else { hb.fwdAt = now; hb.fails = Math.min(255, (hb.fails || 0) + 1); }
+    if (ok) { hb.fwdAt = now; hb.fails = 0; hb.wait = 0; if (hb.at <= sentAt) hb.dirty = false; }
+    else { hb.fwdAt = now; hb.fails = Math.min(255, (hb.fails || 0) + 1); hb.wait = this._backoff(hb.fails - 1); }
     await this.storage.put(KEY_HB, hb);
   }
 
@@ -221,7 +235,7 @@ export class UplinkQueue {
     for (const row of await this._rows()) if (UNFINISHED.has(row.state)) take(Math.max(row.nextAt, now));
     const hb = await this.storage.get(KEY_HB);
     if (hb && hb.dirty) {
-      const wait = hb.fails > 0 ? UQ.BACKOFF_MS[Math.min(UQ.BACKOFF_MS.length - 1, hb.fails - 1)] : UQ.HEARTBEAT_FORWARD_MS;
+      const wait = hb.fails > 0 ? this._hbWait(hb) : UQ.HEARTBEAT_FORWARD_MS;
       take(Math.max(now, (hb.fwdAt || 0) + wait));
     }
     return at;

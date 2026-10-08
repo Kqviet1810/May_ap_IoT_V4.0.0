@@ -205,7 +205,9 @@ export function makeCredentialResolver({ deviceSecret, webTokenSecret } = {}) {
     const pwd = passwordBytes ? new TextDecoder('utf-8', { fatal: false }).decode(passwordBytes) : '';
     if (devSecret && username === deviceId && /^[0-9a-f]{64}$/.test(pwd) &&
         constantTimeEqual(pwd, await deriveDevicePassword(devSecret, deviceId))) return { role: 'device' };
-    if (secret && await verifyWebToken(secret, deviceId, username, pwd)) return { role: 'web' };
+    if (secret && await verifyWebToken(secret, deviceId, username, pwd)) {
+      return { role: 'web', expiresAt: Number(/^v1\.(\d{1,12})\./.exec(pwd)[1]) };   // seconds; the broker bounds the socket's life by it
+    }
     return null;
   };
 }

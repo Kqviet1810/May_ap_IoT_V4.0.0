@@ -28,8 +28,19 @@ const KEEPALIVE_MAX_SEC = 120;
 const KEEPALIVE_GRACE = 1.5;
 const ALARM_MIN_GAP_MS = 1000;    // never wake more often than this (a stale socket that cannot be closed must not spin the DO)
 const CONNECT_TIMEOUT_MS = 10 * 1000;
+// A Web socket outlives its token only briefly: the Web opens a replacement (make-before-break) several minutes before expiry,
+// and a socket that did not get replaced is closed this long after its token expired. Without this a revoked or stale
+// credential could keep an old socket alive indefinitely, because tokens are only checked at CONNECT.
+const WEB_TOKEN_GRACE_MS = 2 * 60 * 1000;
 const STATUS_MIN_GAP_MS = 5 * 1000;   // `uplink` status pushes to the Web are rate limited (state edges bypass it)
-const INFLIGHT_LIMIT = 16;        // bounded QoS1 server→client ring
+const INFLIGHT_LIMIT = 16;        // bounded QoS1 server→client window (in flight, waiting for the consumer's PUBACK)
+// A burst larger than the window (40 commands from the Web, a config report in chunks, a run of terminal ACKs) is NORMAL: the
+// consumer needs one round trip to catch up. The excess waits in a bounded, durable per-connection queue and is released as
+// PUBACKs free the window - in order, nothing dropped, nobody disconnected. Only a consumer that is genuinely stuck (window
+// full with its oldest packet unacknowledged for PEND_STALE_MS, or the queue itself full) is closed (1013 SLOW_CONSUMER).
+const PEND_MAX = 128;
+const PEND_STALE_MS = 20 * 1000;
+const PEND_PREFIX = 'pend:';
 const RETAINED_LIMIT = 32;        // bounded retained messages per DO
 
 const b64enc = (bytes) => {
@@ -65,8 +76,10 @@ export class MqttBrokerDO {
     // Durable device->cloud queue (alarms) + latest heartbeat. Its rows live in DO storage, so a hibernation or
     // restart loses nothing; the clock is replaceable for tests.
     this.uplink = new UplinkQueue(this.storage, () => this._now());
-    this._draining = false;
+    this._drainingAlarms = false;
+    this._drainingHeartbeat = false;
     this._statusAt = 0;
+    this._statusDirty = false;
     this._statusKey = '';
     // One alarm serves keep-alive supervision AND the uplink drain/retry schedule; it is set to the earliest deadline,
     // not polled on a fixed period.
@@ -181,6 +194,7 @@ export class MqttBrokerDO {
   async webSocketClose(ws, code, reason, wasClean) {
     const att = ws.deserializeAttachment() || {};
     this.decoders.delete(ws);
+    if (att.pend > 0) await this._purgePending(att.clientId);
     if (att.state === 'open' && att.lwt && !att.disconnected) {
       const topic = att.lwt.topic;
       const parsed = parseTopic(this.deviceId, topic);
@@ -224,6 +238,8 @@ export class MqttBrokerDO {
         if (att.lastRxMs && now - att.lastRxMs > limit) {
           try { ws.close(1001, 'KEEPALIVE'); } catch {}
           // webSocketClose will publish LWT.
+        } else if (att.role === 'web' && att.tokenExp && now > att.tokenExp + WEB_TOKEN_GRACE_MS) {
+          try { ws.close(1008, 'TOKEN_EXPIRED'); } catch {}
         }
       } else if (att.state === 'await-connect') {
         if (now - att.createdAt > CONNECT_TIMEOUT_MS) {
@@ -232,6 +248,7 @@ export class MqttBrokerDO {
       }
     }
     try { await this._drainUplink(); } catch (error) { console.error('[uplink] drain crashed', String((error && error.message) || error)); }
+    try { await this._sweepPending(sockets); } catch { /* best effort */ }
     await this._rescheduleAlarm();
   }
 
@@ -245,9 +262,13 @@ export class MqttBrokerDO {
     for (const ws of sockets) {
       let att;
       try { att = ws.deserializeAttachment() || {}; } catch { continue; }
-      if (att.state === 'open' && att.keepaliveMs > 0) take((att.lastRxMs || now) + Math.ceil(att.keepaliveMs * KEEPALIVE_GRACE) + 1000);
+      if (att.state === 'open' && att.keepaliveMs > 0) {
+        take((att.lastRxMs || now) + Math.ceil(att.keepaliveMs * KEEPALIVE_GRACE) + 1000);
+        if (att.role === 'web' && att.tokenExp) take(att.tokenExp + WEB_TOKEN_GRACE_MS + 1000);
+      }
       else if (att.state === 'await-connect') take((att.createdAt || now) + CONNECT_TIMEOUT_MS + 1000);
     }
+    if (this._statusDirty) take(this._statusAt + STATUS_MIN_GAP_MS + 100);
     try {
       const queued = await this.uplink.nextWake();
       if (queued !== null) take(queued);
@@ -257,7 +278,9 @@ export class MqttBrokerDO {
       try { if (typeof this.storage.deleteAlarm === 'function') await this.storage.deleteAlarm(); } catch {}
       return;
     }
-    try { await this.storage.setAlarm(Math.max(at, now + ALARM_MIN_GAP_MS)); } catch {}
+    // Only an OVERDUE deadline is pushed out by the minimum gap (it protects against a tight loop). A deadline in the near future
+    // is kept exactly: re-scheduling from a socket event must never postpone an alarm that is already due soon.
+    try { await this.storage.setAlarm(at <= now ? now + ALARM_MIN_GAP_MS : at); } catch {}
   }
 
   // ------------- Packet handling ------------------------------------------
@@ -317,12 +340,15 @@ export class MqttBrokerDO {
     }
     att.state = 'open';
     att.role = resolved.role;
+    att.tokenExp = resolved.role === 'web' && Number.isFinite(resolved.expiresAt) ? resolved.expiresAt * 1000 : 0;
     att.clientId = pkt.clientId || `anon-${Math.random().toString(36).slice(2, 8)}`;
     att.keepaliveMs = keepaliveSec * 1000;
     att.lastRxMs = Date.now();
     att.subs = {}; // suffix -> grantedQos
     att.inflight = []; // [{packetId, deliveredAt}]
     att.nextPacketId = 1; // per-connection, persists via attachment
+    att.pend = 0; att.pendSeq = 0;
+    await this._purgePending(att.clientId);   // a previous connection with this client id may have left queued messages
     att.violations = 0;
     att.disconnected = false;
     if (pkt.will) {
@@ -500,12 +526,18 @@ export class MqttBrokerDO {
   }
 
   // Forwards queued alarms (batches, oldest first) and the latest heartbeat to the Worker. Runs inside the DO alarm, never
-  // inside a packet handler. Each call is bounded (a few batches); retry timing lives in the rows (`nextAt`).
+  // inside a packet handler. The two streams are independent: a slow heartbeat call never holds back an alarm batch and vice
+  // versa. Each call is bounded (a few batches); retry timing lives in the rows (`nextAt`).
   async _drainUplink() {
-    if (this._draining) return;
-    this._draining = true;
+    try { await this.uplink.maintain(); } catch (error) { console.error('[uplink] maintain failed', String((error && error.message) || error)); }
+    await Promise.all([this._drainAlarms(), this._drainHeartbeat()]);
+    await this._publishUplinkStatus(false);
+  }
+
+  async _drainAlarms() {
+    if (this._drainingAlarms) return;
+    this._drainingAlarms = true;
     try {
-      await this.uplink.maintain();
       for (let round = 0; round < 4; round += 1) {
         const batch = await this.uplink.pickBatch();
         if (batch.length === 0) break;
@@ -523,22 +555,30 @@ export class MqttBrokerDO {
         }
         const { hardFail } = await this.uplink.applyResults(batch, results, failure);
         if (hardFail) break;
-      }
-      const hb = await this.uplink.heartbeatDue();
-      if (hb) {
-        let ok = false;
-        try {
-          const res = await this._postUplink(JSON.stringify({ device_id: this.deviceId, kind: 'heartbeat', data: { batch_running: hb.batch } }));
-          if (res.ok) { const out = await res.json(); ok = Boolean(out && out.durable === true); }
-        } catch (error) {
-          console.error('[uplink] heartbeat forward failed', String((error && error.message) || error));
-        }
-        await this.uplink.heartbeatDone(hb.at, ok);
+        await this._publishUplinkStatus(false);
       }
     } finally {
-      this._draining = false;
+      this._drainingAlarms = false;
     }
-    await this._publishUplinkStatus(false);
+  }
+
+  async _drainHeartbeat() {
+    if (this._drainingHeartbeat) return;
+    this._drainingHeartbeat = true;
+    try {
+      const hb = await this.uplink.heartbeatDue();
+      if (!hb) return;
+      let ok = false;
+      try {
+        const res = await this._postUplink(JSON.stringify({ device_id: this.deviceId, kind: 'heartbeat', data: { batch_running: hb.batch } }));
+        if (res.ok) { const out = await res.json(); ok = Boolean(out && out.durable === true); }
+      } catch (error) {
+        console.error('[uplink] heartbeat forward failed', String((error && error.message) || error));
+      }
+      await this.uplink.heartbeatDone(hb.at, ok);
+    } finally {
+      this._drainingHeartbeat = false;
+    }
   }
 
   // `uplink` topic (broker -> Web, QoS0, not retained): what is waiting for the Worker. Rate limited; a change of the
@@ -553,8 +593,12 @@ export class MqttBrokerDO {
     try { status = await this._uplinkStatusPayload(); } catch { return; }
     const key = `${status.pending}|${status.retrying}|${status.throttled}|${status.last_error}|${status.rejected}|${status.overflow}|${status.heartbeat_pending ? 1 : 0}`;
     const now = this._now();
-    if (!force && key === this._statusKey) return;
-    if (!force && now - this._statusAt < STATUS_MIN_GAP_MS && status.pending > 0) return;
+    if (!force && key === this._statusKey) { this._statusDirty = false; return; }
+    if (!force && now - this._statusAt < STATUS_MIN_GAP_MS && status.pending > 0) {
+      this._statusDirty = true;                       // rate limited: the DO alarm publishes the final state when the window ends
+      return;
+    }
+    this._statusDirty = false;
     this._statusKey = key;
     this._statusAt = now;
     const payload = new TextEncoder().encode(JSON.stringify(status));
@@ -585,19 +629,20 @@ export class MqttBrokerDO {
       let packetId = 0;
       if (outQos > 0) {
         att.inflight = att.inflight || [];
-        // Phase 2B.1 §2 — bounded, non-dropping. When a slow consumer fills
-        // its inflight ring, we DO NOT silently discard a QoS1 message. The
-        // broker closes that connection (slow-consumer backpressure); the
-        // client reconnects (clean session) and any state-changing control
-        // layer above us retries per Transaction V2.
-        if (att.inflight.length >= INFLIGHT_LIMIT) {
-          try { peer.serializeAttachment(att); } catch {}
-          this._closeFatal(peer, 1013, 'SLOW_CONSUMER');
-          closed.push(peer);
+        // Window full, or older messages are already waiting (order!): queue behind them. Close only a consumer that is stuck.
+        if (att.inflight.length >= INFLIGHT_LIMIT || (att.pend || 0) > 0) {
+          const oldest = att.inflight.length ? att.inflight[0].deliveredAt : 0;
+          const stuck = att.inflight.length >= INFLIGHT_LIMIT && oldest && this._now() - oldest > PEND_STALE_MS;
+          const queued = !stuck && await this._enqueuePending(peer, att, { topic, qos: outQos, retain, payloadB64: b64enc(payload) });
+          if (!queued) {
+            try { peer.serializeAttachment(att); } catch {}
+            this._closeFatal(peer, 1013, 'SLOW_CONSUMER');
+            closed.push(peer);
+          }
           continue;
         }
         packetId = this._nextOutboundPacketId(att);
-        att.inflight.push({ packetId, deliveredAt: Date.now() });
+        att.inflight.push({ packetId, deliveredAt: this._now() });
         peer.serializeAttachment(att);
       }
       try {
@@ -607,10 +652,64 @@ export class MqttBrokerDO {
     return closed;
   }
 
+  // ---- bounded durable per-connection queue behind the QoS1 window --------------------------------------------------------
+  _pendKey(att, n) { return `${PEND_PREFIX}${att.clientId}:${String(n).padStart(10, '0')}`; }
+
+  async _enqueuePending(peer, att, message) {
+    if ((att.pend || 0) >= PEND_MAX || !att.clientId) return false;
+    att.pendSeq = (att.pendSeq || 0) + 1;
+    try { await this.storage.put(this._pendKey(att, att.pendSeq), message); } catch { return false; }
+    att.pend = (att.pend || 0) + 1;
+    try { peer.serializeAttachment(att); } catch {}
+    return true;
+  }
+
+  // Sends queued messages while the window has room (called after every PUBACK from that consumer). Oldest first.
+  async _drainPending(ws, att) {
+    att.inflight = att.inflight || [];
+    if (!(att.pend > 0) || !att.clientId) return;
+    const listed = await this.storage.list({ prefix: `${PEND_PREFIX}${att.clientId}:` });
+    const keys = [...listed.keys()].sort();
+    for (const key of keys) {
+      if (att.inflight.length >= INFLIGHT_LIMIT) break;
+      const message = listed.get(key);
+      await this.storage.delete(key);
+      att.pend = Math.max(0, (att.pend || 0) - 1);
+      if (!message) continue;
+      const packetId = this._nextOutboundPacketId(att);
+      att.inflight.push({ packetId, deliveredAt: this._now() });
+      try {
+        ws.send(encodePublish({ topic: message.topic, qos: message.qos, retain: message.retain, packetId, payload: b64dec(message.payloadB64) }));
+      } catch { /* peer closed */ }
+    }
+    if (keys.length === 0) att.pend = 0;
+    try { ws.serializeAttachment(att); } catch {}
+  }
+
+  // Queued messages of connections that no longer exist (a crash between close and cleanup) are removed here.
+  async _sweepPending(sockets) {
+    const live = new Set();
+    for (const ws of sockets) { try { const a = ws.deserializeAttachment() || {}; if (a.clientId) live.add(a.clientId); } catch { /* skip */ } }
+    const listed = await this.storage.list({ prefix: PEND_PREFIX });
+    for (const key of listed.keys()) {
+      const clientId = key.slice(PEND_PREFIX.length, key.lastIndexOf(':'));
+      if (!live.has(clientId)) await this.storage.delete(key);
+    }
+  }
+
+  async _purgePending(clientId) {
+    if (!clientId) return;
+    try {
+      const listed = await this.storage.list({ prefix: `${PEND_PREFIX}${clientId}:` });
+      for (const key of listed.keys()) await this.storage.delete(key);
+    } catch { /* storage unavailable: the alarm sweep removes strays */ }
+  }
+
   async _handlePuback(ws, att, pkt) {
     if (!att.inflight) return;
     att.inflight = att.inflight.filter((e) => e.packetId !== pkt.packetId);
     ws.serializeAttachment(att);
+    if (att.pend > 0) await this._drainPending(ws, att);
   }
 
   async _handleSubscribe(ws, att, pkt) {
@@ -649,13 +748,15 @@ export class MqttBrokerDO {
       let packetId = 0;
       if (outQos > 0) {
         att.inflight = att.inflight || [];
-        if (att.inflight.length >= INFLIGHT_LIMIT) {
-          try { ws.serializeAttachment(att); } catch {}
-          this._closeFatal(ws, 1013, 'SLOW_CONSUMER_RETAINED');
-          return;
+        if (att.inflight.length >= INFLIGHT_LIMIT || (att.pend || 0) > 0) {
+          if (!await this._enqueuePending(ws, att, { topic, qos: outQos, retain: true, payloadB64: stored.payloadB64 })) {
+            try { ws.serializeAttachment(att); } catch {}
+            this._closeFatal(ws, 1013, 'SLOW_CONSUMER_RETAINED');
+          }
+          continue;
         }
         packetId = this._nextOutboundPacketId(att);
-        att.inflight.push({ packetId, deliveredAt: Date.now() });
+        att.inflight.push({ packetId, deliveredAt: this._now() });
         ws.serializeAttachment(att);
       }
       try {

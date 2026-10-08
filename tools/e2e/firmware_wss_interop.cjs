@@ -48,7 +48,7 @@ async function main() {
     const brokerLog = fs.createWriteStream(path.join(out, 'broker.log'));
     const broker = spawn(path.join(root, 'cloudflare/node_modules/.bin/wrangler'), ['dev', '--config', 'wrangler-broker.toml', '--port', String(PORT),
       '--local', '--var', `BROKER_DEVICE_SECRET:${DEVICE_SECRET}`, '--var', `BROKER_WEB_TOKEN_SECRET:${WEB_TOKEN_SECRET}`],
-      { cwd: path.join(root, 'cloudflare'), stdio: ['ignore', 'pipe', 'pipe'] });
+      { cwd: path.join(root, 'cloudflare'), stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     broker.stdout.pipe(brokerLog); broker.stderr.pipe(brokerLog); children.push(broker);
     await until('broker up', async () => { try { return (await fetch(`http://127.0.0.1:${PORT}/healthz`)).status < 500; } catch (_) { return false; } }, 60000, 500);
 
@@ -105,6 +105,31 @@ async function main() {
     await until('presence online again', () => seen.some((m) => m.topic === `${prefix}/presence` && m.payload.includes('"online":true')), 15000);
     record('firmware reconnects and republishes presence online', true);
 
+    // 8b. Command burst (item E of the field log): 40 Web commands at once, each acknowledged by the firmware with a QoS1 ack. The
+    //     firmware's in-flight window must not pin at 8, no "ACK PUB FAIL" refusal may be needed for a normal burst, and every
+    //     terminal ack must reach the Web.
+    seen.length = 0;
+    const burst = 40;
+    for (let n = 0; n < burst; n += 1) web.publish(`${prefix}/command`, JSON.stringify({ v: 2, requestId: `R-burst-${n}` }), { qos: 1 });
+    web.on('close', () => console.log('  [debug] web socket closed during burst'));
+    try { await until('burst acks', () => seen.filter((m) => m.topic === `${prefix}/ack`).length >= burst, 30000, 100); } catch (e) { console.log(client.lines.filter((l) => /ACKED|STAT|inflight|MQTT/.test(l)).slice(-25).join('\n')); console.log(`  [debug] acks seen ${seen.filter((m) => m.topic === `${prefix}/ack`).length}/${burst}, web connected=${web.connected}`); throw e; }
+    record(`QoS1 burst: ${burst} Web commands -> ${burst} firmware terminal acks all reach the Web`,
+      seen.filter((m) => m.topic === `${prefix}/ack`).length === burst);
+
+    // 8c. Alarms through the REAL uplink mailbox + transport + broker with NO Worker behind the broker (the broker is started
+    //     alone here): PUBACK = BROKER_STORED comes back at once, nothing waits for D1, the link does not move.
+    {
+      const alarmRun = spawn(exe, [DEVICE_ID, DEVICE_PASSWORD, '14'], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, UPLINK_ALARMS: '5' } });
+      const lines2 = []; alarmRun.stdout.on('data', (d) => { for (const l of d.toString().split('\n')) if (l) lines2.push(l); });
+      children.push(alarmRun);
+      await new Promise((resolve) => alarmRun.on('exit', resolve));
+      const acked = lines2.filter((l) => /^ALARM \d+ ACKED/.test(l)).map((l) => Number(l.split(' ')[3]));
+      const stat = lines2.find((l) => l.startsWith('STAT')) || '';
+      record('firmware uplink mailbox -> broker: 5 alarms PUBACKed (BROKER_STORED) < 1 s each with no Worker behind the broker; no close, no loss',
+        acked.length === 5 && Math.max(...acked) < 1000 && /closes=0\/0\/0\/0 lost=0/.test(stat) && lines2.some((l) => l.includes('DONE connected=1')),
+        `PUBACK ms: ${acked.join(',')}; ${stat}`);
+    }
+
     // 9. Wrong password is refused and the firmware stays offline.
     const bad = spawn(exe, [DEVICE_ID, 'f'.repeat(64), '8'], { stdio: ['ignore', 'pipe', 'pipe'] });
     const badLines = []; bad.stdout.on('data', (d) => badLines.push(d.toString()));
@@ -113,7 +138,8 @@ async function main() {
     record('a firmware session with a wrong per-device password is refused', !badLines.join('').includes('wss+mqtt up') && badLines.join('').includes('DONE connected=0'));
     web.end(true);
   } finally {
-    for (const c of children) { try { c.kill('SIGKILL'); } catch (_) { /* gone */ } }
+    // detached children (wrangler + its workerd) are signalled as a group; the rest individually
+    for (const c of children) { try { process.kill(c.spawnargs[0].endsWith('wrangler') ? -c.pid : c.pid, 'SIGKILL'); } catch (_) { /* gone */ } }
   }
   const failed = results.filter((ok) => !ok).length;
   console.log(`\n${results.length - failed}/${results.length} interop checks passed`);

@@ -92,6 +92,23 @@ jobs:
       - name: Firmware MQTT/WSS transport vs the real broker Durable Object (workerd)
         run: node tools/e2e/firmware_wss_interop.cjs /tmp/mayap-fw-wss
 
+      - name: End-to-end Web (Chromium) - real broker Durable Object - device emulator, incl. make-before-break token renewal
+        run: node tools/e2e/run_mvp.cjs /tmp/mayap-e2e-mvp
+
+      - name: Alarm uplink resilience on the real broker Durable Object (slow/down/throttling Worker, queue overflow, broker restart, 20 devices)
+        run: node tools/e2e/uplink_resilience.cjs /tmp/mayap-e2e-uplink
+
+      - name: Keep end-to-end logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-realtime-alarm-logs
+          path: |
+            /tmp/mayap-e2e-mvp
+            /tmp/mayap-e2e-uplink
+            /tmp/mayap-fw-wss
+          if-no-files-found: ignore
+
       - name: AT24C512 driver regression
         run: python3 tools/test_single_eeprom.py --sanitize --check-regression
 

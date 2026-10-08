@@ -329,9 +329,10 @@ test('inflight ring is bounded (16)', async () => {
       payload: `cmd-${i}`,
     }));
   }
-  // Device never PUBACKs — all remain pending but capped at 16.
+  // Device never PUBACKs — 16 stay in flight, the rest wait in the bounded queue (not in the in-flight ring).
   const att = dev.server.deserializeAttachment();
   assert.ok(att.inflight.length <= 16, `inflight=${att.inflight.length}`);
+  assert.equal(att.inflight.length + att.pend, 20);
 });
 
 test('hibernation: retained + attachment survive broker re-instantiation', async () => {
@@ -516,7 +517,7 @@ test('uplink: malformed payloads are dropped without PUBACK; web cannot publish 
       return v ? { event_id: e.event_id, outcome: v[0], ...v[1] } : { event_id: e.event_id, outcome: 'stored' }; }) }));
   });
   const b = await harness.makeBroker({ env });
-  let clock = 1_000_000; b.broker._now = () => clock;
+  let clock = 1_000_000; b.broker._now = () => clock; b.broker.uplink.rand = () => 0.5;
   const dev = await connectDevice(b.broker);
   await publishAlarm(b, dev, 7, 'not json');
   await publishAlarm(b, dev, 8, JSON.stringify({ event_id: 'bad id!', alarm_type: 'X', message: 'm' }));
@@ -583,7 +584,7 @@ test('uplink: stored events survive hibernation and drain after the Worker recov
   // Worker stored it but the reply was lost: the row stays pending and the retry gets `duplicate`, no second store.
   const lost = ingestFixture((n, init) => { handler(n, init); return reply('lost', 502); });
   const b2 = await harness.makeBroker({ env: lost.env });
-  let clock = 2_000_000; b2.broker._now = () => clock;
+  let clock = 2_000_000; b2.broker._now = () => clock; b2.broker.uplink.rand = () => 0.5;
   const dev2 = await connectDevice(b2.broker);
   await publishAlarm(b2, dev2, 1, alarmEvent('h-2'));
   await b2.broker.alarm();
@@ -656,4 +657,43 @@ test('uplink: QoS0 or retained alarm publishes are protocol misuse and never rea
   await harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/alarm`, qos: 0, payload: alarmEvent('q0') }));
   await harness.feed(b.broker, dev.server, wire.publish({ topic: `mayap/v1/${DEV}/heartbeat`, qos: 1, retain: true, packetId: 4, payload: '{}' }));
   assert.equal(calls.length, 0);
+});
+
+test('web socket lifetime: a socket that outlives its token (not replaced by the Web) is closed after a bounded grace; the device never is', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const base = Date.now();
+  let clock = base; b.broker._now = () => clock;
+  const dev = await connectDevice(b.broker);
+  const { client, server } = await harness.openWebSocket(b.broker, DEV);
+  await harness.feed(b.broker, server, wire.connect({ clientId: 'web-life', username: 'web:u1', password: webToken('web:u1', DEV, 600) }));
+  assert.equal(wire.parseConnack((await harness.clientReceive(client))[0]).returnCode, 0);
+  assert.ok((server.deserializeAttachment().tokenExp - base) > 590000);
+  clock = base + 600000 + 60000;                       // token expired a minute ago: still inside the grace
+  server.serializeAttachment({ ...server.deserializeAttachment(), lastRxMs: clock });
+  dev.server.serializeAttachment({ ...dev.server.deserializeAttachment(), lastRxMs: clock });
+  await b.broker.alarm();
+  assert.equal(server.closed, false);
+  clock = base + 600000 + 125000 + 1000;               // past exp + grace
+  server.serializeAttachment({ ...server.deserializeAttachment(), lastRxMs: clock });
+  dev.server.serializeAttachment({ ...dev.server.deserializeAttachment(), lastRxMs: clock });
+  await b.broker.alarm();
+  assert.equal(server.closed, true);
+  assert.equal(server.closeReason, 'TOKEN_EXPIRED');
+  assert.equal(dev.server.closed, false);              // a device socket has no token lifetime
+});
+
+test('re-scheduling from socket events never postpones a retry that is already due soon (probe/reconnect storms cannot starve the uplink queue)', async () => {
+  let calls = 0;
+  const { env } = ingestFixture(() => { calls += 1; return reply('down', 503); });
+  const b = await harness.makeBroker({ env });
+  let clock = 5_000_000; b.broker._now = () => clock; b.broker.uplink.rand = () => 0.5;
+  const dev = await connectDevice(b.broker);
+  await publishAlarm(b, dev, 1, alarmEvent('s-1'));
+  await b.broker.alarm();                                   // first attempt fails: next retry at +2000
+  const due = await b.state.storage.getAlarm();
+  assert.equal(due, clock + 2000);
+  for (let n = 0; n < 10; n++) { clock += 150; await b.broker._rescheduleAlarm(); }   // socket events keep re-scheduling
+  assert.equal(await b.state.storage.getAlarm(), due, 'the retry deadline did not move');
+  clock = due + 1; await b.broker.alarm();
+  assert.equal(calls, 2);
 });

@@ -1,0 +1,15 @@
+# TEST ONLY. A stand-in for the main Worker (name must match the service binding in wrangler-broker.toml) that also fronts the
+# real broker Worker on one port: /mqtt/* -> broker, /api/internal/uplink -> scripted ingest (slow / down / throttling / lost reply),
+# /__ctl and /__stats -> test control. It lets tools/e2e/uplink_resilience.cjs drive the REAL broker Durable Object on workerd.
+name = "mayap-push-worker"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[services]]
+binding = "BROKER"
+service = "mayap-mqtt-broker"
+
+[[kv_namespaces]]
+binding = "STORE"
+id = "e2e-store"

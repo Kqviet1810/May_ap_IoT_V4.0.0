@@ -1,8 +1,8 @@
 {
-  "release": "1.1.2",
-  "firmware": "1.1.2",
+  "release": "1.1.3",
+  "firmware": "1.1.3",
   "hmi": "1.0.0",
-  "web": "1.1.7",
+  "web": "1.1.8",
   "web_storage_schema": 10,
   "attiny_protocol": 4,
   "esp32_core": "3.3.11",
@@ -22,5 +22,5 @@
       "serial_input_sim": false
     }
   },
-  "notes": "Web 1.1.7: when the realtime link is lost the Web asks the Worker over HTTPS for the machine's alarm state and last report, and shows MẤT REALTIME, MÁY MẤT KẾT NỐI and MÁY ĐANG CÓ LỖI as separate states (a Web that cannot reach the broker never concludes the machine lost its Internet); realtime resync drops the server copy. Firmware: alarm fallback adaptive timing and HTTPS beacon during broker outage; Worker records alarm age/channel and exposes push progress. Control/safety/OTA policy unchanged."
+  "notes": "Firmware 1.1.3 / Web 1.1.8 / broker+Worker: a late or missing alarm PUBACK is an ingest problem, never a reason to close a healthy MQTT socket (transport judged from socket state, bytes received and an on-demand PINGREQ probe); alarm PUBACK = BROKER_STORED (durable queue in the broker Durable Object, forwarded to the Worker with retry/backoff, per-event verdicts, observable backlog); broker QoS1 window overflow queues instead of closing the device/Web socket (was close 1013 SLOW_CONSUMER); deadline-driven DO alarms; ACK window reserve and back-off; Web replaces its broker token make-before-break; explicit MQTT close reasons in the log. Control/safety/thermal/OTA policy unchanged."
 }

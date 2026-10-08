@@ -47,17 +47,28 @@ trong cùng kết nối → đóng kết nối. Publish hợp lệ reset bộ đ
 | `history/request` | Web → ESP32 | **1** | false | 1 |
 | `session` | Web → ESP32 | **0** | false | **0** |
 
-- **Uplink `alarm` / `heartbeat` (ESP32 → Worker, không fanout).** Payload JSON một sự kiện
+- **Uplink `alarm` / `heartbeat` (ESP32 → broker → Worker, không fanout).** Payload JSON một sự kiện
   (`alarm`: `event_id`, `alarm_type`, `severity`, `state`, `message`, `temperature?`, `humidity?`,
   `detected_uptime_ms` — cùng trường với `POST /api/device/alarms`; `heartbeat`: `batch_running`).
-  Broker không lưu/không phát cho subscriber; nó ký (`x-mayap-ts`, `x-mayap-sig` =
-  HMAC-SHA256 theo `MQTT_DEVICE_SECRET`) rồi chuyển cho Worker chính qua service binding
-  `CLOUD_INGEST` (`POST /api/internal/uplink`) và **chỉ PUBACK sau khi Worker xác nhận đã ghi bền**
-  (`durable:true`). Không PUBACK khi: payload sai JSON, Worker lỗi/timeout, sự kiện bị từ chối
-  (xung đột `event_id`, throttle cooldown), hoặc thiếu binding/secret — thiết bị giữ sự kiện và thử lại
-  (idempotent theo `event_id`; sau 1 lần thiếu PUBACK nó dùng HTTPS trong 60 s). Các job của cùng một
-  kết nối chạy tuần tự đúng thứ tự đến (alarm trước, recovery sau). Web không được publish/subscribe
-  hai topic này.
+  **PUBACK = `BROKER_STORED`** — chỉ vậy: sự kiện đã là một dòng bền trong Durable Object Storage
+  (`uq:e:*`, có thứ tự, dedupe theo `event_id`, tối đa 64 sự kiện chưa chuyển) *trước khi* PUBACK rời broker.
+  PUBACK **không** có nghĩa D1 đã ghi (`D1_STORED`) hay Push đã gửi (`PUSH_*`). Broker không chờ Worker để trả
+  PUBACK: Worker/D1 chậm, lỗi, throttle cooldown hay mất phản hồi không bao giờ làm trễ PUBACK, PINGRESP hay
+  gói nào khác của thiết bị. Sau đó, từ DO alarm, broker ký (`x-mayap-ts`, `x-mayap-sig` = HMAC-SHA256 theo
+  `MQTT_DEVICE_SECRET`) và chuyển theo lô ≤ 8 sự kiện (`kind:"alarms"`) cho Worker chính qua service binding
+  `CLOUD_INGEST` (`POST /api/internal/uplink`). Worker trả phán quyết **theo từng sự kiện**:
+  `stored` | `duplicate` (đã ghi, an toàn khi phản hồi mất) | `throttled` + `retry_after_ms` (cooldown 15 s: chờ, không
+  phải lỗi) | `rejected` (vĩnh viễn: sai trường, `event_id` tái dùng khác nội dung, máy chưa đăng ký) | lỗi/timeout
+  (thử lại với back-off 2/5/15/30/60 s ±20 %). Thứ tự `ACTIVE → RESOLVED` của cùng `alarm_type` được giữ
+  (sự kiện sau chờ sự kiện trước). Heartbeat: broker lưu bản mới nhất, PUBACK ngay, chuyển Worker ≤ mỗi 30 s,
+  độc lập với luồng alarm. Hàng đợi đầy (64) → **không PUBACK** (backpressure có đếm `overflow`), thiết bị giữ sự kiện;
+  sự kiện quá 24 h chưa được Worker nhận bị đánh dấu `expired` (hiển thị, không mất âm thầm). Payload sai (JSON,
+  `event_id` không hợp lệ) bị bỏ không PUBACK. Một `event_id` đã có với **nội dung khác** được PUBACK nhưng ghi vào
+  `recent_rejected` (lỗi thiết bị, không phải gửi lại). Web không publish/subscribe `alarm`/`heartbeat`.
+- **`uplink` (broker → Web, QoS0, không retain).** Trạng thái quan sát được của hàng đợi:
+  `{pending, retrying, throttled, oldest_age_ms, forwarded, rejected, expired, overflow, last_ok_at, last_error,
+  last_error_at, recent_rejected[], heartbeat_pending, at}`. Gửi một lần khi Web subscribe và khi trạng thái đổi
+  (giới hạn 1 lần/5 s, trạng thái cuối luôn được gửi). Thiết bị không subscribe/publish topic này.
 
 - **LWT** của ESP32: topic `presence`, payload `{"online":false,...}`,
   QoS 1, retain `true`. Khi broker fire LWT, retained store phải được
@@ -135,11 +146,15 @@ trong cùng kết nối → đóng kết nối. Publish hợp lệ reset bộ đ
     `nextPacketId` **per-connection** (không chia sẻ giữa client); không
     bao giờ tái dùng packetId đang inflight.
 - Clearing retained: PUBLISH payload rỗng + retain=1 → xoá key storage.
-- **Backpressure** cho QoS1: khi `inflight.length == 16`, broker không
-  drop silently. Đóng slow consumer bằng close code 1013 "SLOW_CONSUMER"
-  và dừng fanout tới nó. Transaction V2 ở tầng trên tự retry.
-- Alarm định kỳ 15 s để kiểm tra keepalive quá hạn (1.5× keepalive) và
-  giải phóng LWT.
+- **Backpressure** cho QoS1: cửa sổ in-flight 16 gói/kết nối. Một loạt vượt cửa sổ (40 lệnh Web, một cụm ACK,
+  config chia chunk) là **bình thường**: phần dư nằm trong hàng đợi **bền, có giới hạn 128, đúng thứ tự** (`pend:<clientId>:<n>`)
+  và được thả khi PUBACK giải phóng cửa sổ; không drop, không đóng ai. Chỉ một consumer thật sự kẹt (cửa sổ đầy và gói cũ nhất
+  chưa được PUBACK > 20 s, hoặc hàng đợi 128 đầy) mới bị đóng bằng close code 1013 "SLOW_CONSUMER". *(Trước đây gói thứ 17
+  trong một đợt gửi liền đã đóng socket của thiết bị — nguyên nhân `link lost … inflight=8` trên mạch.)*
+- DO alarm **theo hạn chót, không poll cố định**: thức ở thời điểm sớm nhất trong {hạn keepalive của socket
+  (lastRx + 1,5× keepalive), hạn kết nối chờ CONNECT, lần thử lại kế tiếp của hàng đợi uplink, hạn token Web + 2 phút}.
+  Hạn gần không bị dời bởi sự kiện socket khác. Socket Web sống lâu hơn token quá 2 phút bị đóng (`TOKEN_EXPIRED`); Web thay token
+  make-before-break trước hạn nên người dùng không thấy gián đoạn.
 
 ## 7. Parser
 

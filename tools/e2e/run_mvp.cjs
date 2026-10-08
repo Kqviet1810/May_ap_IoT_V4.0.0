@@ -65,7 +65,7 @@ async function until(label, probe, timeoutMs = 15000, stepMs = 100) {
 }
 function spawnLogged(command, args, options, logName) {
   const log = fs.createWriteStream(path.join(out, logName));
-  const child = spawn(command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   child.stdout.pipe(log);
   child.stderr.pipe(log);
   return child;
@@ -141,12 +141,18 @@ async function main() {
     const page = await context.newPage();
     const pageErrors = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
+    if (process.env.E2E_DEBUG) page.on('console', (message) => console.log('  [page]', message.type(), message.text()));
     await page.goto(`http://127.0.0.1:${WEB_PORT}/`, { waitUntil: 'domcontentloaded' });
     const connection = () => page.evaluate(() => document.body.dataset.connection);
     const text = (selector) => page.locator(selector).first().textContent();
 
     // 1. Presence + 2. live snapshot
     await until('web online', async () => (await connection()) === 'online', 20000);
+    // From here until the deliberate device loss (W1b) the Web must NEVER leave "online": the first broker token is short
+    // (100 s), so the Web renews it during these steps. Break-before-make would show connecting/offline in this window.
+    const samples = [];
+    let sampling = true;
+    const sampler = (async () => { while (sampling) { try { samples.push(await connection()); } catch (_) {} await sleep(60); } })();
     record('W1 presence: Web shows device online from retained presence on a real broker', true);
     const before = emulator.stats.snapshots;
     await sleep(3500);
@@ -211,6 +217,20 @@ async function main() {
     record('W5c late terminal ACK after UNCERTAIN settles the transaction (V2 late-ACK)', true,
       `light ${lightMid} -> ${(await text('#outputLight')).trim()}`);
 
+    // W6 token renewal while following realtime: the 100 s token was replaced (>= 2 /api/mqtt-session) without the Web ever
+    // leaving "online", and the Web kept receiving snapshots and executing commands across the swap (W2..W5c above).
+    await until('token renewed', async () => sessionRequests.length >= 2, 20000);
+    await sleep(3500);                                      // the old socket is ended 2.5 s after the swap
+    const beforeSwapCheck = emulator.stats.snapshots;
+    await sleep(2500);
+    sampling = false; await sampler;
+    const notOnline = samples.filter((value) => value !== 'online');
+    record('W6 token renewal is make-before-break: the Web never left "online" while the token was replaced',
+      sessionRequests.length >= 2 && notOnline.length === 0 && samples.length > 50,
+      `${samples.length} samples, ${notOnline.length} not online (${[...new Set(notOnline)].join(',') || '-'}), ${sessionRequests.length} session request(s)`);
+    record('W6b snapshots keep flowing on the replacement socket after the swap',
+      emulator.stats.snapshots - beforeSwapCheck >= 2, `${emulator.stats.snapshots - beforeSwapCheck} snapshots in 2.5 s`);
+
     // Reconnect: abrupt device loss -> retained LWT -> Web offline; new device session -> online
     emulator.dropConnection();
     await until('web offline via LWT', async () => (await connection()) === 'offline', 15000);
@@ -233,7 +253,7 @@ async function main() {
   } finally {
     try { emulator && emulator.stop(); } catch (_) {}
     try { browser && await browser.close(); } catch (_) {}
-    for (const child of children) { try { child.kill('SIGTERM'); } catch (_) {} }
+    for (const child of children) { try { process.kill(-child.pid, 'SIGTERM'); } catch (_) {} }   // group: wrangler + workerd
     fs.writeFileSync(path.join(out, 'e2e-mvp.json'), JSON.stringify({ at: new Date().toISOString(), results }, null, 2));
     const failed = results.filter((item) => !item.ok);
     console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
