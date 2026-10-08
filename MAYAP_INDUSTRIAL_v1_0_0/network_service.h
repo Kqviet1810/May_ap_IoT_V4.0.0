@@ -61,6 +61,19 @@ static MayapNetwork::StableWifiState stableWifi;
 
 static bool radioActive = false;
 static uint32_t connectionStartedAt = 0U;
+// Why the driver last dropped the station and when (event task writes, networkTask reads). The reason code says whether the AP was not
+// found (201), refused auth/assoc (202/203/2/4), timed out the 4-way handshake (204/15), or beacons stopped (200/205): the one fact
+// that separates "weak/blocked Wi-Fi" from everything else, which the firmware never logged before.
+static volatile uint32_t staDisconnectAt = 0U;
+static volatile uint8_t staDisconnectReason = 0U;
+static bool staEventRegistered = false;
+inline void onStaDisconnected(arduino_event_id_t, arduino_event_info_t info) {
+  const uint32_t at = millis();
+  staDisconnectReason = static_cast<uint8_t>(info.wifi_sta_disconnected.reason);
+  staDisconnectAt = at ? at : 1U;
+  mayapSerialPrintf(false, "[WIFI] sta disconnected reason=%u rssi=%d\n",
+      static_cast<unsigned>(info.wifi_sta_disconnected.reason), static_cast<int>(info.wifi_sta_disconnected.rssi));
+}
 // Mains-powered controller: only networkTask applies fixed awake STA policy.
 static bool wifiPowerModeAppliedValid = false;
 static MayapWifiPower::Mode wifiPowerModeApplied = MayapWifiPower::Mode::Performance;
@@ -187,6 +200,11 @@ inline bool startStation(uint32_t now) {
     return false;
   }
   (void)WiFi.setAutoReconnect(false);
+  if (!staEventRegistered) {
+    WiFi.onEvent(onStaDisconnected, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+    staEventRegistered = true;
+  }
+  staDisconnectAt = 0U;
   const char *password = activePassword[0] == '\0' ? nullptr : activePassword;
   (void)WiFi.begin(activeSsid, password);
   radioActive = true;
@@ -961,6 +979,7 @@ inline bool mayapNetworkDeepRecoveryUpdate(uint32_t now, bool externalIoBusy) {
     }
     radioActive = true;
     connectionStartedAt = now;
+    staDisconnectAt = 0U;
     wifiPowerModeAppliedValid = false;
     deepPolicy.started(now);
     staBackoff.onFailure(now);
@@ -1109,7 +1128,13 @@ inline void mayapNetworkUpdate(uint32_t now) {
 
   publish(NetworkStateCode::Connecting, false);
   deepPolicy.offline(now);
-  if (elapsedMs(now, connectionStartedAt) < NETWORK_CONNECT_TIMEOUT_MS) {
+  // The driver already reported this attempt over (and with auto-reconnect off nothing retries on its own): do not sit out the rest
+  // of the long timeout.
+  const uint32_t startedAt = connectionStartedAt;
+  const uint32_t droppedAt = staDisconnectAt;
+  const bool driverGaveUp = droppedAt != 0U && static_cast<int32_t>(droppedAt - startedAt) >= 0 &&
+      elapsedMs(now, droppedAt) >= NETWORK_DRIVER_GAVE_UP_MS;
+  if (!driverGaveUp && elapsedMs(now, connectionStartedAt) < NETWORK_CONNECT_TIMEOUT_MS) {
     return;  // van con trong thoi gian cho hop ly cho lan thu hien tai
   }
   if (!staBackoff.ready(now)) return;  // dang trong thoi gian lui backoff

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config.h"
+#include "firmware_check_policy.h"
 #include "network_io_guard.h"
 #include <Arduino.h>
 #include <WiFi.h>
@@ -54,7 +55,19 @@ inline void ensureIdentity() {
 }
 
 using PublishCallback = bool (*)(const char *, const char *, size_t);
+// How many bulk QoS1 packets the transport can take right now (0 = wait). Asked BEFORE a report is built: a full window used to cost
+// a rebuilt-and-discarded 38-field JSON document (plus up to five serialised chunks) per retry, hundreds of times per minute, and the
+// transient allocations took the heap down to 15 KB. nullptr = no limit (host tests, other transports).
+using CapacityCallback = uint8_t (*)();
 static PublishCallback publishCallback = nullptr;
+static CapacityCallback bulkCapacityCallback = nullptr;
+inline bool bulkHasRoom() { return bulkCapacityCallback == nullptr || bulkCapacityCallback() > 0U; }
+// A multi-part config report is resumable: the parts already published for this revision are not rebuilt or resent when the window
+// was full, the report just continues where it stopped (the Web assembles parts in order per boot+revision). A new connection starts over.
+static uint32_t reportRevision = 0U;
+static uint8_t reportPartsSent = 0U;
+static bool reportActive = false;
+inline void resetReportProgress() { reportActive = false; reportPartsSent = 0U; }
 static MayapRealtimePublish::BootstrapCadence bootstrapCadence;
 static uint32_t lastSnapshotPublishAt = 0U;
 static bool forceSnapshotPublish = false;
@@ -282,6 +295,8 @@ inline bool publishPresence(bool online) {
 }
 
 inline bool publishConfigReport(const MachineConfig &cfg, uint32_t revision) {
+  if (!bulkHasRoom()) return false;   // nothing built, nothing allocated: the service retries on its next pass
+  if (!reportActive || reportRevision != revision) { reportActive = true; reportRevision = revision; reportPartsSent = 0U; }
   char verifiedId[REALTIME_REQUEST_ID_CAPACITY] = "";
   portENTER_CRITICAL(&realtimeMux);
   if (revision == lastVerifiedConfigRevision)
@@ -383,14 +398,19 @@ inline bool publishConfigReport(const MachineConfig &cfg, uint32_t revision) {
     chunk["config"][key] = field.value();
     if (measureJson(chunk) > 850U) {
       chunk["config"].as<JsonObject>().remove(key);
-      if (!publishJson("config/reported", chunk, false)) return false;
+      if (part >= reportPartsSent) {                       // parts below reportPartsSent already reached the broker
+        if (!bulkHasRoom() || !publishJson("config/reported", chunk, false)) return false;
+        reportPartsSent = static_cast<uint8_t>(part + 1U);
+      }
       ++part;
       beginChunk();
       chunk["config"][key] = field.value();
     }
   }
   chunk["done"] = true;
-  return publishJson("config/reported", chunk, false);
+  if (part >= reportPartsSent && (!bulkHasRoom() || !publishJson("config/reported", chunk, false))) return false;
+  resetReportProgress();
+  return true;
 }
 
 
@@ -1326,14 +1346,24 @@ inline void drainAckOutbox() {
   }
 }
 
+// A burst of saves (the setpoint stepped with +/- ten times in a few seconds) is ONE report of the final state: the report waits until
+// the revision has been quiet for CONFIG_SETTLE_MS. A report already under way is finished at once, whatever the revision does.
+constexpr uint32_t CONFIG_SETTLE_MS = 300UL;
 inline void serviceConfigPublish() {
+  static uint32_t seenRevision = 0U, seenAt = 0U;
+  const uint32_t now = millis();
   portENTER_CRITICAL(&realtimeMux);
   const bool dirty = configDirty;
-  configDirty = false;
   const MachineConfig cfg = knownConfig;
   const uint32_t revision = realtimeConfigRevision;
   portEXIT_CRITICAL(&realtimeMux);
-  if (dirty && !publishConfigReport(cfg, revision)) {
+  if (revision != seenRevision) { seenRevision = revision; seenAt = now; }
+  if (!dirty) return;
+  if (!(reportActive && reportRevision == revision) && static_cast<uint32_t>(now - seenAt) < CONFIG_SETTLE_MS) return;
+  portENTER_CRITICAL(&realtimeMux);
+  configDirty = false;
+  portEXIT_CRITICAL(&realtimeMux);
+  if (!publishConfigReport(cfg, revision)) {
     portENTER_CRITICAL(&realtimeMux); configDirty = true; portEXIT_CRITICAL(&realtimeMux);
   }
 }
@@ -1412,7 +1442,11 @@ inline void serviceEventLogPublish() {
 
 // ================================ API cong khai ================================
 
-inline void mayapRealtimeBegin() { MayapRealtimeInternal::ensureIdentity(); }
+inline bool mayapWebInUse() { return MayapRealtimeInternal::webSessionActive; }
+inline void mayapRealtimeBegin() {
+  MayapRealtimeInternal::ensureIdentity();
+  MayapFirmwareCheck::busyProbe() = mayapWebInUse;   // the daily firmware check (HTTPS) waits while the Web is being used
+}
 inline void mayapMqttRecover(uint32_t) {}
 inline void mayapRealtimeUpdate(uint32_t now) {
   using namespace MayapRealtimeInternal;

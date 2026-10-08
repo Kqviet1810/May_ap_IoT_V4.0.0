@@ -1018,11 +1018,22 @@ inline uint8_t sendAlarms(const uint8_t *idx, uint8_t count, uint8_t *sentMask) 
     requestDeferred = true;
     return 0U;
   }
-  mayapSerialPrintf(false, "[CLOUD] FALLBACK HTTPS: MQTT cannot carry %u alarm(s) cause=%s critical=%u oldest=%lums attempt=%lu rxAge=%lums probe=%s misses=%u heap=%lu\n",
-      static_cast<unsigned>(count), MayapAlarmFallback::causeText(cause), critical ? 1U : 0U,
-      static_cast<unsigned long>(oldest), static_cast<unsigned long>(fallbackGate.attempts + 1U),
-      static_cast<unsigned long>(view.rxAgeMs), view.probePending ? "unanswered" : "n/a", static_cast<unsigned>(uplinkMisses),
-      static_cast<unsigned long>(ESP.getFreeHeap()));
+  // This pass repeats every 100 ms while the TLS slot is deferred (200 identical lines in 20 s at boot, which also flooded the serial
+  // ring): log it when the attempt or the cause changes, and at most every 5 s otherwise.
+  static uint32_t fallbackLoggedAt = 0U, fallbackLoggedAttempt = 0xFFFFFFFFUL;
+  static uint8_t fallbackLoggedCause = 0xFFU;
+  const uint32_t attemptNo = static_cast<uint32_t>(fallbackGate.attempts + 1U);
+  if (fallbackLoggedAt == 0U || attemptNo != fallbackLoggedAttempt || static_cast<uint8_t>(cause) != fallbackLoggedCause ||
+      elapsedMs(now, fallbackLoggedAt) >= 5000U) {
+    fallbackLoggedAt = now ? now : 1U;
+    fallbackLoggedAttempt = attemptNo;
+    fallbackLoggedCause = static_cast<uint8_t>(cause);
+    mayapSerialPrintf(false, "[CLOUD] FALLBACK HTTPS: MQTT cannot carry %u alarm(s) cause=%s critical=%u oldest=%lums attempt=%lu rxAge=%lums probe=%s misses=%u heap=%lu\n",
+        static_cast<unsigned>(count), MayapAlarmFallback::causeText(cause), critical ? 1U : 0U,
+        static_cast<unsigned long>(oldest), static_cast<unsigned long>(attemptNo),
+        static_cast<unsigned long>(view.rxAgeMs), view.probePending ? "unanswered" : "n/a", static_cast<unsigned>(uplinkMisses),
+        static_cast<unsigned long>(ESP.getFreeHeap()));
+  }
   using MayapUplink::YieldWhy;
   MayapUplink::setYieldWhy(cause == MayapAlarmFallback::Cause::HalfOpen ? YieldWhy::AlarmHalfOpen
       : cause == MayapAlarmFallback::Cause::Flapping ? YieldWhy::AlarmFlapping

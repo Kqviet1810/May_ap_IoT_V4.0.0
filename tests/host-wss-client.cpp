@@ -12,7 +12,7 @@ char g_mqttKey[65] = "";
 bool g_gateClosing = false, g_isolated = false, g_pressure = false, g_yield = false, g_ioEnterOk = true, g_tlsAllowed = true;
 unsigned g_yieldAfterCalls = 0U;
 unsigned g_beats = 0U, g_realtimeUpdates = 0U;
-NetworkStatus g_networkStatus{ConnectivityMode::Online, true};
+NetworkStatus g_networkStatus{ConnectivityMode::Online, true, -45};
 std::vector<MayapRealtimeInternal::Delivered> MayapRealtimeInternal::g_delivered;
 
 #include "mqtt_transport.h"

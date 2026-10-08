@@ -25,6 +25,7 @@ function envFixture() {
   return {
     BROKER_DEVICE_SECRET: DEV_SECRET,
     BROKER_WEB_TOKEN_SECRET: WEB_TOKEN_SECRET,
+    PRESENCE_GRACE_MS: '0',   // these suites pin the immediate will; the reconnect grace has its own tests below
   };
 }
 
@@ -696,4 +697,136 @@ test('re-scheduling from socket events never postpones a retry that is already d
   assert.equal(await b.state.storage.getAlarm(), due, 'the retry deadline did not move');
   clock = due + 1; await b.broker.alarm();
   assert.equal(calls, 2);
+});
+
+// ---- Device reconnect grace: the Web sees "reconnecting", not "offline", for a short outage --------------------------------
+
+const graceEnv = (ms = 30000) => ({ ...envFixture(), PRESENCE_GRACE_MS: String(ms) });
+const presencePayloads = (frames) => frames.filter((f) => (f[0] >> 4) === 3).map((f) => wire.parsePublish(f)).filter((p) => p.topic === `mayap/v1/${DEV}/presence`)
+  .map((p) => JSON.parse(p.payload.toString('utf-8')));
+
+async function webWatchingPresence(broker) {
+  const web = await connectWeb(broker);
+  await harness.feed(broker, web.server, wire.subscribe({ packetId: 1, filters: [{ filter: `mayap/v1/${DEV}/presence`, qos: 1 }] }));
+  await harness.clientReceive(web.client);
+  return web;
+}
+
+test('GRACE: an unclean device close announces "reconnecting" (not offline) and keeps the last report', async () => {
+  const b = await harness.makeBroker({ env: graceEnv() });
+  const web = await webWatchingPresence(b.broker);
+  const dev = await connectDevice(b.broker);
+  await harness.feed(b.broker, dev.server, wire.publish({
+    topic: `mayap/v1/${DEV}/presence`, qos: 1, retain: true, packetId: 4, payload: '{"online":true,"fw":"1.1.4","rssi":-45}',
+  }));
+  await harness.clientReceive(web.client);
+  let clock = Date.now(); b.broker._now = () => clock;
+  await b.broker.webSocketClose(dev.server, 1006, 'abnormal', false);
+  const seen = presencePayloads(await harness.clientReceive(web.client));
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].online, false);
+  assert.equal(seen[0].state, 'reconnecting');
+  assert.equal(seen[0].fw, '1.1.4');                       // the device's last report stays visible
+  assert.equal(seen[0].rssi, -45);
+  assert.ok(seen[0].graceUntil >= clock + 29000);
+  // A Web that connects during the grace is told the same by the retained message.
+  const late = await connectWeb(b.broker);
+  await harness.feed(b.broker, late.server, wire.subscribe({ packetId: 2, filters: [{ filter: `mayap/v1/${DEV}/presence`, qos: 1 }] }));
+  const lateSeen = presencePayloads(await harness.clientReceive(late.client));
+  assert.equal(lateSeen.length, 1);
+  assert.equal(lateSeen[0].state, 'reconnecting');
+  // The DO is woken for the end of the grace.
+  assert.ok(await b.state.storage.getAlarm() <= clock + 30000 + 1000);
+});
+
+test('GRACE: the device comes back inside the grace -> no offline is ever announced; the alarm is a no-op', async () => {
+  const b = await harness.makeBroker({ env: graceEnv() });
+  const web = await webWatchingPresence(b.broker);
+  const first = await connectDevice(b.broker);
+  let clock = Date.now(); b.broker._now = () => clock;
+  await b.broker.webSocketClose(first.server, 1006, 'abnormal', false);
+  await harness.clientReceive(web.client);                 // "reconnecting"
+  clock += 5000;
+  const second = await connectDevice(b.broker);
+  await harness.feed(b.broker, second.server, wire.publish({
+    topic: `mayap/v1/${DEV}/presence`, qos: 1, retain: true, packetId: 9, payload: '{"online":true}',
+  }));
+  const back = presencePayloads(await harness.clientReceive(web.client));
+  assert.equal(back.length, 1);
+  assert.equal(back[0].online, true);
+  clock += 60000;                                          // far past the grace
+  await b.broker.alarm();
+  assert.deepEqual(presencePayloads(await harness.clientReceive(web.client)), []);   // nothing flipped to offline
+  assert.equal(await b.state.storage.get('grace'), undefined);
+});
+
+test('GRACE: nobody returns -> the alarm at the end of the grace publishes the final offline once', async () => {
+  const b = await harness.makeBroker({ env: graceEnv(20000) });
+  const web = await webWatchingPresence(b.broker);
+  const dev = await connectDevice(b.broker);
+  await harness.feed(b.broker, dev.server, wire.publish({
+    topic: `mayap/v1/${DEV}/presence`, qos: 1, retain: true, packetId: 4, payload: '{"online":true,"fw":"1.1.4"}',
+  }));
+  await harness.clientReceive(web.client);
+  let clock = Date.now(); b.broker._now = () => clock;
+  dev.server.closed = true;                                // what the runtime does before it calls webSocketClose
+  await b.broker.webSocketClose(dev.server, 1006, 'abnormal', false);
+  await harness.clientReceive(web.client);
+  clock += 10000; await b.broker.alarm();
+  assert.deepEqual(presencePayloads(await harness.clientReceive(web.client)), []);   // still inside the grace
+  clock += 11000; await b.broker.alarm();
+  const final = presencePayloads(await harness.clientReceive(web.client));
+  assert.equal(final.length, 1);
+  assert.equal(final[0].online, false);
+  assert.equal(final[0].state, 'offline');
+  assert.equal(final[0].fw, '1.1.4');
+  assert.equal(final[0].graceUntil, undefined);
+  clock += 5000; await b.broker.alarm();
+  assert.deepEqual(presencePayloads(await harness.clientReceive(web.client)), []);   // exactly once
+  const retained = await b.state.storage.get('retained:presence');
+  assert.equal(JSON.parse(Buffer.from(retained.payloadB64, 'base64').toString('utf-8')).state, 'offline');
+});
+
+test('GRACE: a clean DISCONNECT (the device said goodbye) is not deferred, and Web sockets never get a grace', async () => {
+  const b = await harness.makeBroker({ env: graceEnv() });
+  const web = await webWatchingPresence(b.broker);
+  const dev = await connectDevice(b.broker);
+  await harness.feed(b.broker, dev.server, wire.publish({
+    topic: `mayap/v1/${DEV}/presence`, qos: 1, retain: true, packetId: 4, payload: '{"online":false}',
+  }));
+  await harness.clientReceive(web.client);
+  await harness.feed(b.broker, dev.server, wire.disconnect());
+  await b.broker.webSocketClose(dev.server, 1000, 'done', true);
+  assert.deepEqual(presencePayloads(await harness.clientReceive(web.client)), []);
+  assert.equal(await b.state.storage.get('grace'), undefined);
+  // A Web socket with a will keeps the old behaviour.
+  const w2 = await harness.openWebSocket(b.broker, DEV);
+  await harness.feed(b.broker, w2.server, wire.connect({
+    clientId: 'web-will', username: 'web:u1', password: webToken('web:u1'),
+    will: { topic: `mayap/v1/${DEV}/session`, qos: 0, retain: false, payload: '{"active":false}' },
+  }));
+  await harness.clientReceive(w2.client);
+  await b.broker.webSocketClose(w2.server, 1006, 'abnormal', false);
+  assert.equal(await b.state.storage.get('grace'), undefined);
+});
+
+test('GRACE: a stale close after the device already reconnected (takeover) announces nothing', async () => {
+  const b = await harness.makeBroker({ env: graceEnv() });
+  const web = await webWatchingPresence(b.broker);
+  const first = await connectDevice(b.broker);
+  const second = await connectDevice(b.broker);            // takeover: the first socket is closed by the broker
+  await harness.clientReceive(web.client);
+  await b.broker.webSocketClose(first.server, 1000, 'TAKEOVER', true);
+  assert.deepEqual(presencePayloads(await harness.clientReceive(web.client)), []);
+  assert.equal(await b.state.storage.get('grace'), undefined);
+  assert.ok(second.server);
+});
+
+test('GRACE: PRESENCE_GRACE_MS=0 restores the immediate will', async () => {
+  const b = await harness.makeBroker({ env: graceEnv(0) });
+  const web = await webWatchingPresence(b.broker);
+  const dev = await connectDevice(b.broker);
+  await b.broker.webSocketClose(dev.server, 1006, 'abnormal', false);
+  const seen = presencePayloads(await harness.clientReceive(web.client));
+  assert.deepEqual(seen, [{ online: false }]);
 });

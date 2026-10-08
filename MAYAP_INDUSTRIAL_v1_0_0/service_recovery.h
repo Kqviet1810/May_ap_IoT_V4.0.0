@@ -96,7 +96,7 @@ inline void mayapServiceSupervisorUpdate(uint32_t now) {
     const bool admitted = __atomic_load_n(&slot.admitted, __ATOMIC_ACQUIRE) != 0U;
     const uint32_t beat = __atomic_load_n(&slot.beat, __ATOMIC_ACQUIRE);
     const uint32_t ack = __atomic_load_n(&slot.ack, __ATOMIC_ACQUIRE);
-    if (admitted && MayapRecovery::age(now, beat) <= MayapRecovery::SERVICE_TIMEOUT_MS[i])
+    if (admitted && MayapRecovery::silence(now, beat) <= MayapRecovery::SERVICE_TIMEOUT_MS[i])
       __atomic_store_n(&slot.degraded, 0U, __ATOMIC_RELEASE);
     const auto action = watches[i].update(now, admitted, beat, ack,
         MayapRecovery::SERVICE_TIMEOUT_MS[i]);
@@ -106,8 +106,9 @@ inline void mayapServiceSupervisorUpdate(uint32_t now) {
         __atomic_store_n(&slot.isolateAt, now, __ATOMIC_RELEASE);
         __atomic_store_n(&slot.isolated, 1U, __ATOMIC_RELEASE);
       }
-      mayapSerialPrintf(false, "[SERVICE-RECOVERY] %s %s\n", MayapServiceInternal::names[i],
-          action == MayapRecovery::Action::Reinit ? "OWNER REINIT REQUEST" : "ISOLATE");
+      mayapSerialPrintf(false, "[SERVICE-RECOVERY] %s %s silent=%lums now=%lu beat=%lu\n", MayapServiceInternal::names[i],
+          action == MayapRecovery::Action::Reinit ? "OWNER REINIT REQUEST" : "ISOLATE",
+          static_cast<unsigned long>(MayapRecovery::silence(now, beat)), static_cast<unsigned long>(now), static_cast<unsigned long>(beat));
     } else if (action == MayapRecovery::Action::Degraded) {
       __atomic_store_n(&slot.degraded, 1U, __ATOMIC_RELEASE);
       mayapSerialPrintf(false,

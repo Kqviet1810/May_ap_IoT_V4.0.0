@@ -31,7 +31,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "1.1.3";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "1.1.4";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -775,7 +775,11 @@ struct BackoffTimer {
 };
 
 // Wi-Fi chi chay o task rieng core 0; khong duoc goi tu task dieu khien.
-constexpr uint32_t NETWORK_CONNECT_TIMEOUT_MS = 20000UL;
+// An association attempt is given 12 s (it was 20 s: a whole boot spent 20 s on one attempt that never answered, then connected 5.5 s
+// after the retry). If the driver itself reports the attempt over (STA_DISCONNECTED: no AP found, auth/assoc failure, handshake
+// timeout) the wait ends NETWORK_DRIVER_GAVE_UP_MS later: with auto-reconnect disabled nothing else will happen on its own.
+constexpr uint32_t NETWORK_CONNECT_TIMEOUT_MS = 12000UL;
+constexpr uint32_t NETWORK_DRIVER_GAVE_UP_MS = 4000UL;
 // Cong 1 doi Wi-Fi: mo AP toi da 2 phut cho nguoi dung nhap SSID/mat khau moi,
 // sau do tu dong dong portal va quay lai ket noi binh thuong.
 constexpr uint32_t WIFI_PORTAL_MAX_OPEN_MS = 120000UL;

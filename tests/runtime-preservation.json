@@ -61,7 +61,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "62d2ba2e980e12e7ad39f47042a286698dd943b8b76901330dbcce15b0425af7",
+      "sha256": "2be2ce76d6f34f12548770c72f7de9acdb6fbf1650fca4bbdc2ec91c2531a381",
       "filter": "config"
     },
     {
@@ -448,6 +448,7 @@
   "pidSetpointReviewNote": "2026-10-03: reviewed PID config-save correction. Setpoint edits and unrelated MachineConfig saves no longer invoke bumpless I re-projection or reset derivative timing; only control mode, Kp/Ki/Kd and maxHeaterPower changes do. Gain/cap changes remain bumpless at the previous setpoint, and safety/PDM/sensor behavior is unchanged.",
   "notesUiOnlyResetReviewNote": "2026-10-03: removed the complete legacy Ghi chú persistence path (ESP32 EEPROM store/service/retry, realtime notes channels and persistence tests). notes.js/notes.css remain as UI only. Controller/safety/config/reminder/history storage semantics are unchanged.",
   "thermalFinalHardeningReviewNote": "2026-10-03: reviewed thermal safety hardening: Test Mode keeps High/Emergency protection, negative calibration cannot lower raw overheat safety, sensor timeout becomes fixed fail-safe legacy field, running-batch setpoint preserves the safety/vent envelope, E114 retains triggering crossing detail, and zero-authority PID is rejected. Physical thermal performance remains a commissioning item.",
+  "release114ReviewNote": "2026-10-08: reviewed 1.1.4 config.h changes: MAYAP_FIRMWARE_VERSION and NETWORK_CONNECT_TIMEOUT_MS (20 s -> 12 s) with the new NETWORK_DRIVER_GAVE_UP_MS (4 s): the Wi-Fi association wait ends sooner when the driver itself reports the attempt over. MachineConfig layout, thermal control, SSR/output arbitration, turning, vent, HMI and safety logic are unchanged; the firmware change is confined to the network/MQTT path (mqtt_transport.h, transaction_bridge.h config report, firmware_check_policy.h, runtime_recovery_policy.h ServiceWatch silence arithmetic, network_service.h disconnect reason logging).",
   "release113ReviewNote": "2026-10-08: reviewed 1.1.3 version-only config.h change (MAYAP_FIRMWARE_VERSION). The firmware change in this release is confined to the network/alarm path (mqtt_uplink.h, alarm_fallback_policy.h, cloud_alert_link.h, mqtt_transport.h, transaction_bridge.h ACK retry); MachineConfig layout, thermal control, SSR/output arbitration, turning, vent, HMI and safety logic are unchanged.",
   "release112ReviewNote": "2026-10-03: reviewed 1.1.2 version-only config change after thermal hardening. Functional MachineConfig layout/safety logic is unchanged by the version bump; runtime-preservation fingerprint updated accordingly.",
   "noteJournalReviewNote": "Reviewed journal integration in MachineController and Web ACK handling; removed legacy reminder-only transaction branches from startTransaction, sweepUncertain and handleReminderReport. Control, safety, config, batch, history, OTA and recovery fingerprints remain unchanged.",

@@ -12,7 +12,7 @@ char g_mqttKey[65] = "";
 bool g_gateClosing = false, g_isolated = false, g_pressure = false, g_yield = false, g_ioEnterOk = true, g_tlsAllowed = true;
 unsigned g_yieldAfterCalls = 0U;
 unsigned g_beats = 0U, g_realtimeUpdates = 0U;
-NetworkStatus g_networkStatus{ConnectivityMode::Online, true};
+NetworkStatus g_networkStatus{ConnectivityMode::Online, true, -45};
 std::vector<MayapRealtimeInternal::Delivered> MayapRealtimeInternal::g_delivered;
 
 #include "mqtt_transport.h"
@@ -126,11 +126,14 @@ static void resetWorld() {
   net = WiFiClientSecure();
   parser.reset(); ws.reset(); connected = false; linkFailed = false; staUpSince = 0U; carryLength = 0U; inflightCount = 0U; nextPacketId = 1U;
   droppedOversize = droppedForeign = 0U; qos1Expired = refusedBulk = refusedAck = 0U; backoff = Retry();
+  ctrlCount = 0U; txBlocked = false; gateRefused = false; stallSince = 0U; txRefused = txDropped = txCtrlQueued = advisoryShed = 0U;
+  writeMaxMs = loopMaxMs = 0U; heapLowWater = 0xFFFFFFFFUL; lostReason = ""; brokerIp = 0U; brokerIpTrusted = false; connectedAt = 0U; stableLatched = true;
+  dnsOk() = true; dnsLookups() = 0U;
   g_log.clear(); MayapRealtimeInternal::g_delivered.clear(); g_realtimeUpdates = 0U;
   g_connackCode = 0U; g_silentBroker = false; g_subackFirst = 1U; g_upgradeMode = UpgradeMode::Good;
   g_upgraded = false; g_clientFrameBad = false; g_request.clear(); g_clientPings = g_clientPongs = g_clientCloses = 0U; g_clientPongPayloads.clear();
   g_gateClosing = g_isolated = g_pressure = g_yield = false; g_ioEnterOk = g_tlsAllowed = true; g_yieldAfterCalls = 0U;
-  g_networkStatus = NetworkStatus{ConnectivityMode::Online, true};
+  g_networkStatus = NetworkStatus{ConnectivityMode::Online, true, -45};
   strcpy(g_mqttKey, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
   g_epoch = 1800000000U;
   installBroker();
@@ -304,6 +307,12 @@ int main() {
   CHECK(logged("closed on purpose (cloud-tls) why=alarm:half-open-confirmed") && closeCount[static_cast<uint8_t>(CloseKind::CloudTls)] == tlsClosesBefore + 1U);
   MayapUplink::setYieldWhy(MayapUplink::YieldWhy::Other);
   sent = decodeSent();
+  // A yield for the TLS slot is a PLANNED short close: no "offline" announcement and no DISCONNECT, so the broker keeps the device in
+  // its reconnect grace (the Web shows "reconnecting") instead of declaring it offline.
+  CHECK(!mayapMqttTransportConnected() && !net.open && sent.empty());
+  // A radio change (Wi-Fi portal / credentials) is the one close that says goodbye: offline presence, then DISCONNECT.
+  resetWorld(); connectNow(); net.sent.clear(); g_gateClosing = true; tick(1);
+  sent = decodeSent();
   CHECK(!mayapMqttTransportConnected() && !net.open && sent.size() == 2U);
   CHECK(sent[0].type == 3 && str(sent[0].body.data(), sent[0].body.size()).find("\"online\":false") != std::string::npos);
   CHECK(sent[1].type == 14);
@@ -319,10 +328,9 @@ int main() {
   resetWorld(); connectNow();
   mayapMqttTransportRecover(g_millis);
   CHECK(!mayapMqttTransportConnected() && inflightCount == 0U);
-  tick(100); CHECK(!mayapMqttTransportConnected());       // backoff running
-  tick(10000); CHECK(!mayapMqttTransportConnected());       // still inside the 15 s retry gap
-  tick(10000); tick(1);
-  CHECK(mayapMqttTransportConnected() && net.connects == 2U);   // initial + one fresh handshake after the backoff
+  // A supervisor re-init is a request, not a failure: no backoff step on top of its own pause, the very next pass reconnects.
+  tick(1);
+  CHECK(mayapMqttTransportConnected() && net.connects == 2U);   // initial + one fresh handshake right away
   // 10. WebSocket upgrade failures never reach MQTT and back off with nothing left open.
   for (UpgradeMode mode : {UpgradeMode::BadAccept, UpgradeMode::Status403, UpgradeMode::Extension, UpgradeMode::WrongProtocol,
                            UpgradeMode::Oversize, UpgradeMode::NoTerminator}) {
@@ -397,21 +405,35 @@ int main() {
   for (int i = 0; i < 20; ++i) { publishFromBridge("snapshot", "{\"t\":1}", 7U); tick(1); }
   publishFromBridge("ack", std::string(2000, 'a').c_str(), 2000U);
   CHECK(!g_clientFrameBad);
-  g_yield = true; tick(1);
-  CHECK(g_clientCloses == 1U && !g_clientFrameBad);          // graceful stop: DISCONNECT then WebSocket CLOSE
+  g_gateClosing = true; tick(1);
+  CHECK(g_clientCloses == 1U && !g_clientFrameBad);          // graceful stop (radio change): DISCONNECT then WebSocket CLOSE
 
-  // 15. Realtime never storms: failed handshakes are spaced 15 s, 30 s, 60 s ... (not 1 s), a Wi-Fi that has
-  //     been up for less than STA_STABLE_MS gets no TLS attempt, and a Cloud yield holds the next one off too.
+  // 15. Realtime never storms and never idles: after a failed handshake the retries climb 0.5-1 s, 1-2 s, 2-4 s, 4-8 s, 7.5-15 s
+  //     (equal jitter), a Wi-Fi that has been up for less than STA_STABLE_MS gets no TLS attempt, and a Cloud yield holds the next one off too.
   resetWorld(); g_connackCode = 5U; mayapMqttTransportBegin();
-  tick(1); tick(5000); CHECK(net.connects == 0U);          // Wi-Fi up for 5 s only: no handshake yet
-  tick(STA_STABLE_MS); CHECK(net.connects == 1U && backoff.failures == 1U);
-  tick(10000); CHECK(net.connects == 1U);                  // first retry gap is >= 15 s
-  tick(8000); CHECK(net.connects == 2U && backoff.failures == 2U);
-  tick(20000); CHECK(net.connects == 2U);                  // second gap is >= 30 s
-  tick(15000); CHECK(net.connects == 3U);
+  tick(1); tick(STA_STABLE_MS - 500U); CHECK(net.connects == 0U);   // Wi-Fi up for too short a time: no handshake yet
+  tick(500U); CHECK(net.connects == 1U && backoff.failures == 1U);
+  {
+    const uint32_t cap[] = {1000U, 2000U, 4000U, 8000U, 15000U, 30000U, 60000U};
+    for (unsigned gap = 0U; gap < 6U; ++gap) {
+      const unsigned before = net.connects;
+      uint32_t waited = 0U;
+      while (net.connects == before && waited < 70000U) { tick(100); waited += 100U; }
+      CHECK(net.connects == before + 1U);
+      CHECK(waited + 100U >= cap[gap] / 2U && waited <= cap[gap] + 100U);   // inside [cap/2, cap] of this rung
+    }
+  }
   unsigned attempts = net.connects;
-  for (int i = 0; i < 60; ++i) tick(1000);                 // one minute of failures: at most one more attempt
-  CHECK(net.connects <= attempts + 1U);
+  for (int i = 0; i < 240; ++i) tick(1000);                 // four minutes of a dead broker: the ladder tops out at 30-60 s, no storm
+  CHECK(net.connects <= attempts + 10U);
+  // The ladder resets only after the link stayed up STABLE_UP_MS: a link that connects and dies at once keeps escalating.
+  resetWorld(); connectNow(); const uint8_t stepAfterFirst = backoff.step;
+  backoff.step = 3U;                                         // as if three attempts had failed before this one succeeded
+  for (unsigned i = 0U; i < 25U; ++i) { tick(1000); lastRxAt = g_millis; inflightClear(); }
+  CHECK(backoff.step == 3U);                                 // up for 25 s: still not trusted
+  for (unsigned i = 0U; i < 6U; ++i) { tick(1000); lastRxAt = g_millis; inflightClear(); }
+  CHECK(mayapMqttTransportConnected() && backoff.step == 0U);   // up for 31 s: the ladder starts over
+  (void)stepAfterFirst;
   resetWorld(); connectNow(); g_yield = true; tick(1); g_yield = false;
   tick(1000); CHECK(!mayapMqttTransportConnected());        // right after a Cloud yield: briefly held off
   tick(YIELD_RESUME_MS); tick(1000); CHECK(mayapMqttTransportConnected());   // ...then back within seconds, not 15 s+
@@ -421,7 +443,7 @@ int main() {
   CHECK(net.connects == 0U && backoff.failures == 0U && backoff.step == 0U);
   g_tlsAllowed = true; tick(BUSY_RETRY_MS + 1000U); CHECK(mayapMqttTransportConnected());
   resetWorld(); connectNow(); g_networkStatus.connected = false; tick(1);
-  g_networkStatus.connected = true; tick(1); tick(5000);
+  g_networkStatus.connected = true; tick(1); tick(STA_STABLE_MS - 500U);
   CHECK(!mayapMqttTransportConnected());                   // Wi-Fi flapped: waits for stability again
   tick(STA_STABLE_MS); CHECK(mayapMqttTransportConnected());
 
@@ -543,12 +565,104 @@ int main() {
     g_yield = false;
     resetWorld(); net.allowConnect = false; mayapMqttTransportBegin(); tick(1); tick(STA_STABLE_MS); h = healthSnapshot();
     CHECK(h.link == Link::Down && h.failures >= 1U && h.nextAttemptAt != 0U);
+    // A supervisor re-init is a request, not evidence against the transport: Closed, no failure, not a loss.
     resetWorld(); connectNow(); mayapMqttTransportRecover(g_millis); h = healthSnapshot();
-    CHECK(h.link == Link::Down && h.failures == 1U && recentLosses(h, g_millis, 120000U) == 1U);
+    CHECK(h.link == Link::Closed && h.failures == 0U && recentLosses(h, g_millis, 120000U) == 0U);
+    // A socket that dies under us IS a loss, remembered for the flapping window.
+    resetWorld(); connectNow(); net.open = false; tick(1); h = healthSnapshot();
+    CHECK(h.link == Link::Down && h.failures == 1U && recentLosses(h, g_millis, 120000U) == 1U && logged("link lost reason=socket-closed"));
     CHECK(recentLosses(h, g_millis + 130000U, 120000U) == 0U);                    // old losses age out of the flapping window
-    for (int n = 0; n < 2; ++n) { resetWorld(); connectNow(); mayapMqttTransportRecover(g_millis); }
+    for (int n = 0; n < 2; ++n) { resetWorld(); connectNow(); net.open = false; tick(1); }
     h = healthSnapshot(); CHECK(recentLosses(h, g_millis, 120000U) >= 3U);       // three quick losses = flapping
   }
+
+  // 20. The owner never waits inside net.write(): a socket that cannot take bytes (TCP window full) neither blocks the task nor kills
+  //     the link. Control frames wait in order, Reliable frames are refused (their owners retry), Droppable ones are dropped, and only
+  //     a socket that stays unwritable for TX_STALL_MS while the broker is silent too is declared dead - with the reason in the log.
+  {
+    resetWorld(); connectNow(); net.sent.clear(); inflightClear();
+    net.txReady = false;
+    CHECK(!publishFromBridge("ack", "{\"v\":2}", 7U) && gateRefused && !linkFailed && txRefused == 1U);
+    CHECK(!publishFromBridge("snapshot", "{\"t\":1}", 7U) && txDropped == 1U && !linkFailed);
+    CHECK(net.sent.empty() && inflightCount == 0U && mayapMqttTransportConnected());     // nothing written, nothing tracked, link intact
+    CHECK(bulkSlotsFree() == 0U);                                                       // the bridge is told to wait
+    injectPublish(std::string("mayap/v1/") + MayapRealtimeInternal::deviceId + "/command", "{\"x\":1}", 1, 77);
+    tick(5); lastRxAt = g_millis;
+    CHECK(ctrlCount == 1U && net.sent.empty() && mayapMqttTransportConnected());         // the PUBACK for the command waits in the control queue
+    net.txReady = true; tick(5);
+    {
+      const std::vector<Packet> out = decodeSent();
+      CHECK(ctrlCount == 0U && stallSince == 0U && !txBlocked && out.size() >= 1U && out[0].type == 4 && out[0].body.size() == 2U &&
+            ((out[0].body[0] << 8) | out[0].body[1]) == 77);                             // flushed in order once the socket recovered
+    }
+    CHECK(bulkSlotsFree() == QOS1_INFLIGHT_MAX - QOS1_RESERVED_FOR_ACK);
+
+    // Alarms: a queued uplink slot is NOT failed because the socket is momentarily unwritable - it goes out as soon as it can.
+    {
+      using namespace MayapUplink;
+      resetWorld(); onLinkDown(); for (int8_t i = 0; i < static_cast<int8_t>(SLOTS); ++i) finish(i);
+      connectNow(); inflightClear();
+      const char *alarm = "{\"event_id\":\"g1\",\"alarm_type\":\"FAULT_130\",\"state\":\"active\"}";
+      const int8_t slot = offer(Kind::Alarm, alarm, strlen(alarm), g_millis);
+      CHECK(slot >= 0);
+      net.sent.clear(); net.txReady = false; tick(20); lastRxAt = g_millis;
+      CHECK(peek(slot) == State::Queued && net.sent.empty() && mayapMqttTransportConnected());
+      net.txReady = true; tick(20);
+      CHECK(peek(slot) == State::Sent && !decodeSent().empty());
+      onLinkDown(); finish(slot);
+    }
+
+    // A stalled uplink with a live downlink stays up; with a silent broker too it is declared dead after TX_STALL_MS.
+    resetWorld(); connectNow(); inflightClear();
+    net.txReady = false; publishFromBridge("ack", "{\"v\":2}", 7U);
+    for (unsigned i = 0U; i < 40U; ++i) { tick(1000); lastRxAt = g_millis; }
+    CHECK(mayapMqttTransportConnected());                                                // 40 s unwritable but the broker keeps talking
+    resetWorld(); connectNow(); inflightClear();
+    net.txReady = false; publishFromBridge("ack", "{\"v\":2}", 7U);
+    for (unsigned i = 0U; i < 24U && mayapMqttTransportConnected(); ++i) tick(1000);
+    CHECK(mayapMqttTransportConnected());                                                // 24 s: not yet
+    for (unsigned i = 0U; i < 4U && mayapMqttTransportConnected(); ++i) tick(1000);
+    CHECK(!mayapMqttTransportConnected() && logged("link lost reason=tx-stall"));
+    // The reason of a plain write failure is explained too, and the socket recovers into a fresh connection quickly.
+    resetWorld(); connectNow(); net.failWrite = true; publishFromBridge("ack", "{\"v\":2}", 7U); tick(1);
+    CHECK(!mayapMqttTransportConnected() && logged("link lost reason=tx-fail"));
+    net.failWrite = false; tick(1100); tick(100);
+    CHECK(mayapMqttTransportConnected());                                                // first retry is within ~1 s
+  }
+
+  // 21. "received" acknowledgements are advisory: shed when the QoS1 window is nearly full, never the terminal ack.
+  {
+    resetWorld(); connectNow(); inflightClear(); net.sent.clear();
+    const char *received = "{\"v\":2,\"phase\":\"received\",\"requestId\":\"r1\"}";
+    const char *completed = "{\"v\":2,\"phase\":\"completed\",\"requestId\":\"r1\"}";
+    CHECK(publishFromBridge("ack", received, strlen(received)) && inflightCount == 1U && advisoryShed == 0U);   // room: sent as always
+    while (inflightCount < ACK_ADVISORY_SHED_AT) CHECK(publishFromBridge("ack", completed, strlen(completed)));
+    const size_t sentBefore = net.sent.size();
+    CHECK(publishFromBridge("ack", received, strlen(received)) && advisoryShed == 1U && net.sent.size() == sentBefore && inflightCount == ACK_ADVISORY_SHED_AT);
+    CHECK(publishFromBridge("ack", completed, strlen(completed)) && inflightCount == ACK_ADVISORY_SHED_AT + 1U);  // terminal ack still goes out
+    CHECK(bulkSlotsFree() == 0U);                                                                                  // bulk reports wait for the window
+  }
+
+  // 22. Name resolution: reused after a good handshake, forgotten after any failure, and a failed lookup (which arduino-esp32 reports
+  //     as a non-zero "error code") is a failed attempt, never a dial to 0.0.0.0.
+  {
+    resetWorld(); connectNow();
+    CHECK(dnsLookups() == 1U && net.lastIp == 0x0100000AU && !logged("(cached)"));
+    net.open = false; tick(1); tick(1100); tick(100);                                    // lost, reconnect: the address is reused
+    CHECK(mayapMqttTransportConnected() && dnsLookups() == 1U && logged("(cached)"));
+    resetWorld(); dnsOk() = false; mayapMqttTransportBegin(); tick(1); tick(STA_STABLE_MS);
+    CHECK(dnsLookups() == 1U && net.connects == 0U && backoff.failures == 1U && logged("dns failed"));
+    dnsOk() = true; for (unsigned i = 0U; i < 12U && !mayapMqttTransportConnected(); ++i) tick(100);
+    CHECK(mayapMqttTransportConnected() && dnsLookups() == 2U);
+    // A failed connect through a remembered address drops it: the next attempt resolves afresh.
+    brokerIpTrusted = true; brokerIp = 0x0200000AU; net.stop(); connected = false; net.allowConnect = false; backoff.nextAttemptAt = g_millis;
+    tick(1);
+    CHECK(!brokerIpTrusted && backoff.failures >= 1U);
+  }
+
+  // 23. The loop probe and phase timing are cheap observables: the heap low-water mark is tracked per pass.
+  resetWorld(); connectNow(); tick(1);
+  CHECK(heapLowWater != 0xFFFFFFFFUL && logged("dns=") && logged("tls=") && logged("ws=") && logged("mqtt="));
 
   printf("mqtt transport host tests PASS\n");
   return 0;

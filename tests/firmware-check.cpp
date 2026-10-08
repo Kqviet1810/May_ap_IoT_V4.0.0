@@ -23,6 +23,22 @@ int main() {
   // millis() wrap-around: 49.7 days of uptime.
   const uint32_t last = 0xFFFFFFFFUL - 5 * MIN;
   assert(!due(last + DAY - 1, last, false, FIRST, DAY, 0) && due(last + DAY, last, false, FIRST, DAY, 0));
+  // While the Web is in use the (HTTPS) check waits, because it closes the realtime link; "check now" never waits; and a tab left open
+  // for days cannot postpone it for ever.
+  static bool webInUse = true;
+  MayapFirmwareCheck::busyProbe() = [] { return webInUse; };
+  assert(!due(FIRST + 5, 0, false, FIRST, DAY, 0));                                  // due by the clock, deferred by the Web
+  assert(due(FIRST + 5, 0, true, FIRST, DAY, 0));                                    // operator pressed "check now"
+  assert(!due(FIRST + MayapFirmwareCheck::MAX_DEFER_MS - 1, 0, false, FIRST, DAY, 0));
+  assert(due(FIRST + MayapFirmwareCheck::MAX_DEFER_MS, 0, false, FIRST, DAY, 0));      // deferred long enough: runs anyway
+  webInUse = false;
+  assert(due(FIRST + 5, 0, false, FIRST, DAY, 0));                                   // Web idle: runs at once
+  assert(!due(FIRST - 1, 0, false, FIRST, DAY, 0));                                  // never before its time
+  webInUse = true;
+  const uint32_t lastOk = 12 * MIN;
+  assert(!due(lastOk + DAY + 10, lastOk, false, FIRST, DAY, 0));
+  assert(due(lastOk + DAY + MayapFirmwareCheck::MAX_DEFER_MS, lastOk, false, FIRST, DAY, 0));
+  MayapFirmwareCheck::busyProbe() = nullptr;
   std::puts("firmware check cadence host tests PASS");
   return 0;
 }

@@ -4,6 +4,8 @@ Phiên bản: firmware **1.1.3**, Web **1.1.8**, broker + Worker (triển khai *
 Trạng thái: **mô phỏng/CI/workerd đã chạy; trên mạch ESP32 thật `NOT TESTED`** (xem mục 9).
 Nguyên tắc không đổi: chỉ ESP32 + Web + Cloudflare, không broker bên thứ ba; không đổi điều khiển nhiệt/SSR/đảo/quạt/HMI/an toàn.
 
+> Cập nhật 1.1.4 (firmware) / 1.1.9 (Web): vòng đời socket, nối lại, presence ân hạn, khởi động nhanh — xem `doc/REALTIME_STABILITY_1_1_4.md`.
+
 ## 1. Kết luận ngắn
 
 Web "mất realtime rồi tự nối lại" khi có cảnh báo có **ba nguyên nhân độc lập**, tất cả đều đã tái hiện bằng test thật (không phải suy đoán):

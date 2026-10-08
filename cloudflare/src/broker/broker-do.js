@@ -42,6 +42,13 @@ const PEND_MAX = 128;
 const PEND_STALE_MS = 20 * 1000;
 const PEND_PREFIX = 'pend:';
 const RETAINED_LIMIT = 32;        // bounded retained messages per DO
+// When the DEVICE socket dies (a Wi-Fi hiccup, a 20 s TLS re-handshake, a planned yield for the firmware check) the Web must not
+// flip to "offline" and lock its controls for what is normally a 2-10 s reconnect. The will (retained offline presence) is therefore
+// deferred by PRESENCE_GRACE_MS: during it the retained presence reads {online:false, state:"reconnecting", graceUntil}; the device's
+// own presence on reconnect replaces it, and only when the grace runs out unanswered does the broker publish the final
+// {online:false, state:"offline"}. A clean DISCONNECT (the device said goodbye) is still offline at once. 0 disables the grace.
+const PRESENCE_GRACE_MS_DEFAULT = 75 * 1000;
+const GRACE_KEY = 'grace';
 
 const b64enc = (bytes) => {
   // atob/btoa in Workers handle binary strings.
@@ -63,6 +70,8 @@ export class MqttBrokerDO {
     this.state = state;
     this.env = env;
     this.storage = state.storage;
+    const graceEnv = env && env.PRESENCE_GRACE_MS !== undefined ? Number(env.PRESENCE_GRACE_MS) : NaN;
+    this.graceMs = Number.isFinite(graceEnv) && graceEnv >= 0 ? Math.min(graceEnv, 10 * 60 * 1000) : PRESENCE_GRACE_MS_DEFAULT;
     // deviceId is set on first upgrade; also persisted in storage.
     this.deviceId = null;
     this.decoders = new WeakMap(); // ws -> StreamingDecoder (RAM; rebuilt on wake)
@@ -196,6 +205,7 @@ export class MqttBrokerDO {
     this.decoders.delete(ws);
     if (att.pend > 0) await this._purgePending(att.clientId);
     if (att.state === 'open' && att.lwt && !att.disconnected) {
+      if (await this._deferDeviceWill(ws, att)) return;   // the reconnect grace owns the offline announcement
       const topic = att.lwt.topic;
       const parsed = parseTopic(this.deviceId, topic);
       const lwtPayload = att.lwt.payloadB64 ? b64dec(att.lwt.payloadB64) : new Uint8Array(0);
@@ -247,9 +257,71 @@ export class MqttBrokerDO {
         }
       }
     }
+    try { await this._expireGrace(); } catch (error) { console.error('[presence] grace expiry failed', String((error && error.message) || error)); }
     try { await this._drainUplink(); } catch (error) { console.error('[uplink] drain crashed', String((error && error.message) || error)); }
     try { await this._sweepPending(sockets); } catch { /* best effort */ }
     await this._rescheduleAlarm();
+  }
+
+  // ------------- Device presence grace ------------------------------------
+
+  _openDeviceSocket(except) {
+    const sockets = typeof this.state.getWebSockets === 'function' ? this.state.getWebSockets() : [];
+    for (const peer of sockets) {
+      if (peer === except) continue;
+      if (peer.readyState !== undefined && peer.readyState !== 1) continue;   // closing/closed sockets can still be listed
+      let att;
+      try { att = peer.deserializeAttachment() || {}; } catch { continue; }
+      if (att.state === 'open' && att.role === 'device' && !att.disconnected) return true;
+    }
+    return false;
+  }
+
+  async _retainedPresence() {
+    try {
+      const stored = await this.storage.get('retained:presence');
+      if (!stored || !stored.payloadB64) return {};
+      const parsed = JSON.parse(new TextDecoder().decode(b64dec(stored.payloadB64)));
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch { return {}; }
+  }
+
+  // Writes the retained presence and tells the live subscribers. `fields` are merged over what the device last reported (ip, rssi,
+  // firmware ... stay visible while it reconnects).
+  async _publishPresenceState(lwt, fields) {
+    const previous = await this._retainedPresence();
+    const merged = { ...previous, ...fields };
+    if (fields.state !== 'reconnecting') delete merged.graceUntil;
+    const payload = new TextEncoder().encode(JSON.stringify(merged));
+    const payloadB64 = b64enc(payload);
+    try { await this.storage.put('retained:presence', { qos: lwt.qos, payloadB64, ts: this._now() }); } catch {}
+    await this._fanoutPublish({ topic: lwt.topic, qos: lwt.qos, retain: false, payload, originWs: null });
+  }
+
+  // True when the will was deferred (or is moot because the device already has a newer socket). The device's presence topic only.
+  async _deferDeviceWill(ws, att) {
+    if (att.role !== 'device' || this.graceMs <= 0 || !att.lwt || !att.lwt.retain) return false;
+    const parsed = parseTopic(this.deviceId, att.lwt.topic);
+    if (!parsed.ok || parsed.suffix !== 'presence') return false;
+    if (this._openDeviceSocket(ws)) return true;          // it already reconnected: this close is the stale one
+    const now = this._now();
+    const until = now + this.graceMs;
+    try { await this.storage.put(GRACE_KEY, { since: now, until, lwt: att.lwt }); } catch { return false; }
+    await this._publishPresenceState(att.lwt, { online: false, state: 'reconnecting', since: now, graceUntil: until });
+    await this._rescheduleAlarm();
+    return true;
+  }
+
+  // Alarm: the grace ran out and nobody came back -> the final offline announcement (the will the device registered).
+  async _expireGrace() {
+    const grace = await this.storage.get(GRACE_KEY);
+    if (!grace) return;
+    if (this._openDeviceSocket(null)) { await this.storage.delete(GRACE_KEY); return; }   // reconnected: its own presence speaks for it
+    if (this._now() < grace.until) return;
+    let will = {};
+    try { will = JSON.parse(new TextDecoder().decode(grace.lwt.payloadB64 ? b64dec(grace.lwt.payloadB64) : new Uint8Array(0))) || {}; } catch { will = {}; }
+    await this._publishPresenceState(grace.lwt, { ...will, online: false, state: 'offline', since: grace.since });
+    await this.storage.delete(GRACE_KEY);
   }
 
   // Next wake = earliest of: a socket's keep-alive deadline, a connect timeout, the uplink queue's next retry.
@@ -269,6 +341,10 @@ export class MqttBrokerDO {
       else if (att.state === 'await-connect') take((att.createdAt || now) + CONNECT_TIMEOUT_MS + 1000);
     }
     if (this._statusDirty) take(this._statusAt + STATUS_MIN_GAP_MS + 100);
+    try {
+      const grace = await this.storage.get(GRACE_KEY);
+      if (grace && Number.isFinite(grace.until)) take(grace.until + 100);
+    } catch { /* storage unavailable: the next event reschedules */ }
     try {
       const queued = await this.uplink.nextWake();
       if (queued !== null) take(queued);

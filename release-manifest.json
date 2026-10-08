@@ -1,8 +1,8 @@
 {
-  "release": "1.1.3",
-  "firmware": "1.1.3",
+  "release": "1.1.4",
+  "firmware": "1.1.4",
   "hmi": "1.0.0",
-  "web": "1.1.8",
+  "web": "1.1.9",
   "web_storage_schema": 10,
   "attiny_protocol": 4,
   "esp32_core": "3.3.11",
@@ -22,5 +22,5 @@
       "serial_input_sim": false
     }
   },
-  "notes": "Firmware 1.1.3 / Web 1.1.8 / broker+Worker: a late or missing alarm PUBACK is an ingest problem, never a reason to close a healthy MQTT socket (transport judged from socket state, bytes received and an on-demand PINGREQ probe); alarm PUBACK = BROKER_STORED (durable queue in the broker Durable Object, forwarded to the Worker with retry/backoff, per-event verdicts, observable backlog); broker QoS1 window overflow queues instead of closing the device/Web socket (was close 1013 SLOW_CONSUMER); deadline-driven DO alarms; ACK window reserve and back-off; Web replaces its broker token make-before-break; explicit MQTT close reasons in the log. Control/safety/thermal/OTA policy unchanged."
+  "notes": "Firmware 1.1.4 / Web 1.1.9 / broker: the MQTT owner never waits inside a stalled write (arduino-esp32 closed the socket after 5 s) - frames go out only when the socket is writable, control frames queue, periodic frames drop; reconnect ladder 0.5-1 s .. 60 s with equal jitter that resets only after a stable link; supervisor re-init no longer tears down a healthy link (unsigned beat/now race) and adds no backoff step; the daily firmware check waits while the Web is in use; config/reported is resumable, debounced and capacity-aware; advisory 'received' acks are shed first; Wi-Fi disconnect reasons are logged and a driver-reported failure ends the connect wait after 4 s; STA flap guard 3 s. Broker: a dropped device socket is announced as presence {online:false,state:'reconnecting'} for PRESENCE_GRACE_MS (75 s) before the final offline; Web shows 'KẾT NỐI LẠI', keeps the last data and holds one light click until the machine is back. Control/safety/thermal/OTA policy unchanged."
 }

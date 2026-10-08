@@ -49,6 +49,32 @@ inline unsigned uxTaskPriorityGet(void *) { return 2U; }
 struct FakeEsp { uint32_t getFreeHeap() { return 90000U; } uint32_t getMaxAllocHeap() { return 40000U; } };
 static FakeEsp ESP;
 
+// Arduino IPAddress / WiFi.hostByName as used by the transport. Like arduino-esp32 3.x, a failed lookup returns a NON-ZERO error code.
+struct IPAddress {
+  uint32_t v = 0U;
+  IPAddress() {}
+  IPAddress(uint32_t a) : v(a) {}
+  operator uint32_t() const { return v; }
+};
+inline bool &dnsOk() { static bool ok = true; return ok; }
+inline unsigned &dnsLookups() { static unsigned n = 0U; return n; }
+struct FakeWiFi {
+  int hostByName(const char *host, IPAddress &ip) {
+    ++dnsLookups();
+    if (!dnsOk()) return 202;                       // EAI_FAIL: truthy, exactly the trap in the core
+#ifdef MAYAP_LIVE_SOCKET
+    in_addr a{};
+    if (inet_pton(AF_INET, host, &a) != 1) return 202;
+    ip = IPAddress(a.s_addr);
+#else
+    (void)host;
+    ip = IPAddress(0x0100000AU);
+#endif
+    return 1;
+  }
+};
+static FakeWiFi WiFi;
+
 extern std::vector<std::string> g_log;
 inline void mayapSerialPrintf(bool, const char *format, ...) {
   char text[512];
@@ -93,7 +119,7 @@ inline void mayapOnlineIoLeave(MayapRecovery::Service) {}
 inline bool mayapWifiPortalExclusiveRequested() { return g_gateClosing; }
 inline bool mayapRadioRecoveryRequested() { return false; }
 enum class ConnectivityMode { Offline, Online };
-struct NetworkStatus { ConnectivityMode requestedMode; bool connected; };
+struct NetworkStatus { ConnectivityMode requestedMode; bool connected; int8_t rssiDbm; };
 extern NetworkStatus g_networkStatus;
 inline NetworkStatus mayapGetRawNetworkStatus() { return g_networkStatus; }
 enum class MayapTlsKind { Mqtt, Cloud };
@@ -118,14 +144,15 @@ struct WiFiClientSecure {
   void setConnectionTimeout(uint32_t) {}
   void setHandshakeTimeout(uint32_t) {}
   int lastError(char *buffer, size_t size) { snprintf(buffer, size, "socket"); return -1; }
-  bool connect(const char *host, uint16_t port) {
+  bool connect(IPAddress ip, uint16_t port, const char *, const char *, const char *, const char *) {
     fd = socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons(port); inet_pton(AF_INET, host, &a.sin_addr);
+    sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons(port); a.sin_addr.s_addr = ip.v;
     if (fd < 0 || ::connect(fd, reinterpret_cast<sockaddr *>(&a), sizeof(a)) != 0) { if (fd >= 0) close(fd); fd = -1; return false; }
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
     ++connects;
     return true;
   }
+  bool hostTxReady() { if (fd < 0) return true; pollfd p{fd, POLLOUT, 0}; return poll(&p, 1, 0) != 0; }
   size_t write(const uint8_t *data, size_t length) {
     size_t done = 0U;
     while (done < length) {
@@ -142,9 +169,9 @@ struct WiFiClientSecure {
 };
 #else
 struct WiFiClientSecure {
-  bool allowConnect = true, open = false, failWrite = false;
+  bool allowConnect = true, open = false, failWrite = false, txReady = true;
   unsigned connects = 0U, stops = 0U;
-  std::string lastHost; uint16_t lastPort = 0U;
+  std::string lastHost; uint16_t lastPort = 0U; uint32_t lastIp = 0U;
   std::vector<uint8_t> in;
   std::vector<std::vector<uint8_t>> sent;
   std::function<void(const std::vector<uint8_t> &)> onWrite;
@@ -152,7 +179,11 @@ struct WiFiClientSecure {
   void setConnectionTimeout(uint32_t) {}
   void setHandshakeTimeout(uint32_t) {}
   int lastError(char *buffer, size_t size) { snprintf(buffer, size, "fake-tls-error"); return -1; }
-  bool connect(const char *host, uint16_t port) { if (!allowConnect) return false; lastHost = host; lastPort = port; open = true; ++connects; return true; }
+  bool connect(IPAddress ip, uint16_t port, const char *host, const char *, const char *, const char *) {
+    if (!allowConnect) return false;
+    lastHost = host; lastPort = port; lastIp = ip.v; open = true; ++connects; return true;
+  }
+  bool hostTxReady() { return txReady; }
   size_t write(const uint8_t *data, size_t length) {
     if (failWrite || !open) return 0U;
     sent.emplace_back(data, data + length);
@@ -178,10 +209,13 @@ extern unsigned g_realtimeUpdates;
 inline void mayapRealtimeUpdate(uint32_t) { ++g_realtimeUpdates; }
 namespace MayapRealtimeInternal {
 typedef bool (*PublishCallback)(const char *, const char *, size_t);
+typedef uint8_t (*CapacityCallback)();
 static PublishCallback publishCallback = nullptr;
+static CapacityCallback bulkCapacityCallback = nullptr;
 static char deviceId[24] = "MAP-AABBCCDDEEFF";
 static portMUX_TYPE realtimeMux = 0;
 static bool knownConfigValid = true, configDirty = false, forceSnapshotPublish = false;
+inline void resetReportProgress() {}
 static uint32_t lastSnapshotPublishAt = 77U;
 struct Delivered { std::string channel, payload; };
 extern std::vector<Delivered> g_delivered;

@@ -15,6 +15,14 @@ constexpr uint32_t WIFI_COOLDOWN_MS = 120000U;
 constexpr uint32_t WIFI_OFFLINE_MS = 300000U;
 constexpr uint32_t WIFI_ISOLATE_MS = 120000U;
 inline uint32_t age(uint32_t now, uint32_t then) { return static_cast<uint32_t>(now - then); }
+// How long a service has been silent. A service on the other core may beat BETWEEN the supervisor reading `now` and reading
+// the beat, so `beat` can be a few ms NEWER than `now`: plain unsigned subtraction would turn that into ~4.29e9 ms of silence
+// and restart a perfectly healthy service (seen on hardware: a 57 ms old MQTT link was torn down). A beat from the "future" is
+// zero silence.
+inline uint32_t silence(uint32_t now, uint32_t beat) {
+  const int32_t delta = static_cast<int32_t>(static_cast<uint32_t>(now - beat));
+  return delta > 0 ? static_cast<uint32_t>(delta) : 0U;
+}
 inline bool due(uint32_t now, uint32_t when) { return static_cast<int32_t>(now - when) >= 0; }
 
 class ServiceWatch {
@@ -24,7 +32,7 @@ class ServiceWatch {
     if (ack != lastAck_) {
       lastAck_ = ack; failing_ = false; isolated_ = false; degraded_ = false;
     }
-    const bool stale = age(now, beat) > timeout;
+    const bool stale = silence(now, beat) > timeout;
     if (!stale) {
       failing_ = false; isolated_ = false; degraded_ = false;
       return Action::None;

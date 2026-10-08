@@ -165,6 +165,42 @@
     return state.realtime?.deviceId === device?.id && isDeviceOnline(device) && controlGrantReady(device);
   }
 
+  // ---- The machine's link dropped for a moment: hold a light click instead of locking the button ----
+  // The broker keeps the machine in a "reconnecting" state for its grace and the link normally returns within seconds. The light
+  // toggle is the one user command that is harmless to send a few seconds late and is visibly acknowledged, so ONE click made in that
+  // window is held and sent as soon as the machine is back live; if it is not back within HELD_COMMAND_MS the click is dropped with
+  // a message. Nothing else is ever held (batch, autotune, alarm acknowledge ... stay disabled until the machine is online).
+  const HELD_COMMAND_MS = 8000;
+  const heldCommand = { timer: 0, deviceId: '', action: '' };
+  function canHoldCommand(device) {
+    return Boolean(device) && connectionStatus(device) === 'reconnecting' && state.realtime?.deviceId === device.id &&
+      controlGrantReady(device);
+  }
+  function clearHeldCommand(message) {
+    if (heldCommand.timer) clearTimeout(heldCommand.timer);
+    const had = Boolean(heldCommand.action);
+    heldCommand.timer = 0; heldCommand.deviceId = ''; heldCommand.action = '';
+    if (had && message) toast(message);
+  }
+  function holdCommand(device, action) {
+    if (heldCommand.action) { toast('Đang chờ máy kết nối lại để gửi lệnh trước đó'); return false; }
+    heldCommand.deviceId = device.id;
+    heldCommand.action = action;
+    heldCommand.timer = setTimeout(() => clearHeldCommand('Máy chưa kết nối lại · lệnh chưa được gửi'), HELD_COMMAND_MS);
+    toast('Máy đang kết nối lại · lệnh sẽ được gửi ngay khi máy sẵn sàng');
+    return true;
+  }
+  function releaseHeldCommand(device) {
+    if (!heldCommand.action || heldCommand.deviceId !== device.id || !isDeviceOnline(device)) return;
+    const action = heldCommand.action;
+    clearHeldCommand('');
+    sendCommand(action, { device });
+  }
+  function commandOrHold(action) {
+    const device = currentDevice();
+    return canHoldCommand(device) ? holdCommand(device, action) : sendCommand(action);
+  }
+
   function cachedRuntime(id) {
     const cached = loadJson(`${RUNTIME_CACHE}.${id}`, null);
     if (cached?.v !== 1 || !cached.snapshot?.runtime || !Number.isFinite(cached.receivedAt) ||
@@ -836,6 +872,9 @@
     if (!device) return 'none';
     if (!state.realtimeConnected) return serverConnectionView(device) || (device.snapshot ? 'cache' : 'connecting');
     // Only a presence received on this connection proves the device's LWT state.
+    // The broker keeps a device whose socket just dropped in a short "reconnecting" state before it calls it offline.
+    if (device.presenceEpoch === state.subscriptionEpoch && device.presence?.online === false &&
+        device.presence?.state === 'reconnecting') return 'reconnecting';
     if (device.presenceEpoch === state.subscriptionEpoch && device.presence?.online === false) return 'offline';
     if (!device.snapshot || !device.snapshotAt) return 'waiting';
     if (device.dataSource !== 'live' || device.liveEpoch !== state.subscriptionEpoch) return 'cache';
@@ -1063,6 +1102,7 @@
       cache: ['ĐANG ĐỒNG BỘ', 'soft', state.realtimeConnected ? 'Đã nối máy chủ · chờ máy' : 'Đang nối máy chủ…'],
       connecting: ['ĐANG KẾT NỐI', 'soft', 'Đang nối máy chủ…'],
       waiting: ['CHỜ THIẾT BỊ', 'soft', 'Đã nối máy chủ · chờ máy'],
+      reconnecting: ['KẾT NỐI LẠI', 'soft', 'Máy đang nối lại · giữ dữ liệu cuối cùng'],
       offline: ['NGOẠI TUYẾN', 'offline', 'Máy đã ngắt kết nối'],
       norealtime: ['MẤT REALTIME', 'soft', device ? serverConnectionDetail(device, 'norealtime') : ''],
       devicelost: ['MÁY MẤT KẾT NỐI', 'offline', device ? serverConnectionDetail(device, 'devicelost') : ''],
@@ -1368,7 +1408,7 @@
       ? 'Chạm để tạm tắt' : 'Chỉ khi còi đang kêu';
     // Nut Den bam duoc bat cu luc nao thiet bi online; nut Coi CHI bam duoc
     // khi coi dang thuc su keu (giong het dieu kien mo man Alarm tren HMI).
-    if ($('outputLightBtn')) $('outputLightBtn').disabled = !controlReady(device);
+    if ($('outputLightBtn')) $('outputLightBtn').disabled = !(controlReady(device) || canHoldCommand(device));
     if ($('outputSirenBtn')) {
       $('outputSirenBtn').disabled = !controlReady(device) || !bool(runtime.sirenOn);
     }
@@ -2489,11 +2529,12 @@
     device.dataSource = 'live';
     device.liveEpoch = state.subscriptionEpoch;
     // A new non-retained runtime packet supersedes an earlier LWT.
-    if (device.presence?.online === false) device.presence = { ...device.presence, online: true };
+    if (device.presence?.online === false) device.presence = { ...device.presence, online: true, state: 'online' };
     persistRuntimeCache(device);
     feedTelemetrySnapshot(device, snapshot);
     device.bootId = Number(snapshot.bootId || device.bootId || 0);
     if (Number(snapshot.revision || 0) > device.revision) device.revision = Number(snapshot.revision);
+    releaseHeldCommand(device);   // the machine is back live: a light click held during the reconnect goes out now
     if (device.id === state.selectedId) {
       renderDevice();
       if (document.body.dataset.page === 'batch' && controlReady(device)) loadTelemetryHistory();
@@ -2514,6 +2555,9 @@
     }
     persistRuntimeCache(device, true);
     if (device.id === state.selectedId) renderDevice();
+    if (presence.state === 'offline' || (presence.online === false && presence.state !== 'reconnecting')) {
+      if (heldCommand.deviceId === device.id) clearHeldCommand('Máy ngoại tuyến · lệnh chưa được gửi');
+    } else if (presence.online === true) releaseHeldCommand(device);
   }
 
   // Broker -> Web: what the broker still has to hand to the Worker (D1 + Push). It says nothing about the machine or the Web's own
@@ -3729,7 +3773,7 @@
 
     // O "Den" tren outputStrip gio la nut bam: bat/tat den tuc thi, khong
     // can xac nhan (thao tac nhe, khong anh huong an toan van hanh).
-    $('outputLightBtn')?.addEventListener('click', () => sendCommand('light_toggle'));
+    $('outputLightBtn')?.addEventListener('click', () => commandOrHold('light_toggle'));
 
     // O "Coi bao" chi bam duoc khi coi THUC SU dang keu (xem toggle disabled
     // trong applySnapshotToUi) - giong het nut ACK tren HMI, tat coi tam 5

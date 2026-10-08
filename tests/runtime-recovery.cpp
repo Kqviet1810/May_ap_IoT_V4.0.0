@@ -24,6 +24,15 @@ int main() {
   assert(rollover.update(0xFFFFF000U + 90001U, true, 0xFFFFF000U, 0, 30000) == Action::Isolate);
   assert(rollover.update(0xFFFFF000U + 330001U, true, 0xFFFFF000U, 0, 30000) == Action::Degraded);
   assert(rollover.update(0xFFFFF000U + 330002U, true, 0xFFFFF000U, 0, 30000) == Action::None);
+  // A healthy service that beats on the other core between the supervisor reading `now` and `beat` is NOT stale.
+  ServiceWatch race;
+  assert(race.update(1000000, true, 1000005, 0, 60000) == Action::None);          // beat 5 ms newer than now
+  assert(race.update(1000000, true, 1000000 + 40000, 0, 60000) == Action::None);  // even 40 s "in the future"
+  assert(silence(1000000, 1000005) == 0U && silence(1000005, 1000000) == 5U);
+  ServiceWatch wrap;                                                                // now just after the 32-bit wrap, beat just before
+  assert(wrap.update(5U, true, 0xFFFFFFF0U, 0, 60000) == Action::None);
+  assert(silence(5U, 0xFFFFFFF0U) == 21U);
+  assert(wrap.update(60022U, true, 0xFFFFFFF0U, 0, 60000) == Action::Reinit);      // genuinely silent for 60.032 s
   WifiRecovery wifi;
   for (unsigned i = 0; i < 5; ++i) wifi.failure(100);
   assert(!wifi.wanted(100));

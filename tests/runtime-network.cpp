@@ -42,6 +42,7 @@ static MayapRecovery::WifiRecovery deepPolicy;
 enum class DeepPhase : uint8_t { Idle, Quiesce, OffWait, Isolated };
 static DeepPhase deepPhase=DeepPhase::Idle;
 static uint32_t deepPhaseAt=0, connectionStartedAt=0;
+static volatile uint32_t staDisconnectAt=0U;
 static bool deepRequested=false, radioActive=true;
 static bool wifiPowerModeAppliedValid=false;
 static uint8_t requestedMode=static_cast<uint8_t>(ConnectivityMode::Online);

@@ -24,6 +24,7 @@ function webToken(username = 'web:u1', deviceId = DEV, ttlSec = 600) {
 const envFixture = () => ({
   BROKER_DEVICE_SECRET: DEV_SECRET,
   BROKER_WEB_TOKEN_SECRET: WEB_TOKEN_SECRET,
+  PRESENCE_GRACE_MS: '0',   // these suites pin the immediate will; the reconnect grace has its own tests in mqtt-broker.test.cjs
 });
 
 async function dev(broker, { willRetain = true, lwtPayload = '{"online":false}' } = {}) {

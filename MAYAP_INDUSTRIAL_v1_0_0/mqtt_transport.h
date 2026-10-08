@@ -12,6 +12,8 @@
 #include <Arduino.h>
 #include <WiFiClientSecure.h>
 #include <esp_random.h>
+#include <sys/select.h>
+#include <sys/time.h>
 #include <time.h>
 
 // MQTT 3.1.1 over WebSocket over TLS (WSS, port 443) to the Cloudflare broker Durable Object -
@@ -47,7 +49,18 @@ constexpr uint8_t QOS1_INFLIGHT_MAX = 8U;           // PUBACK round trip via Clo
 constexpr uint8_t QOS1_RESERVED_FOR_ACK = 3U;
 constexpr uint32_t QOS1_STUCK_MS = 15000UL;         // oldest in-flight packet without PUBACK for this long ...
 constexpr uint32_t STUCK_SILENCE_MS = 10000UL;      // ... AND nothing at all received for this long = dead link; otherwise the entry just expires
-constexpr uint32_t STEP_TIMEOUT_MS = 5000UL;        // WebSocket upgrade / CONNACK / SUBACK wait
+constexpr uint32_t STEP_TIMEOUT_MS = 8000UL;        // WebSocket upgrade / CONNACK / SUBACK wait (a 1.3 s round trip was measured on a bad evening)
+// A socket that cannot take bytes (TCP send window full: the path is stalled, not the broker) is NOT a dead link. The owner never
+// waits inside net.write(): arduino-esp32 retries a stalled write for its whole socket timeout and then CLOSES the socket
+// ("Closing connection on failed write"), which turned every 5 s hiccup into a 20-100 s outage. Frames are only written when
+// select() says the socket is writable; otherwise Control frames wait in a small queue, Reliable frames are refused (the bridge /
+// uplink retry on their own schedule) and Droppable frames (periodic snapshot / log) are dropped.
+constexpr uint32_t TX_STALL_MS = 25000UL;           // nothing could be written for this long -> the uplink is really dead
+constexpr uint32_t TX_STALL_SILENCE_MS = 10000UL;   // ... and the broker has been silent this long as well
+constexpr uint8_t CTRL_QUEUE = 6U;                  // PUBACK / PINGREQ / PONG waiting for a writable socket
+constexpr size_t CTRL_FRAME_MAX = 96U;              // finished (masked) WebSocket frame
+// "received" acknowledgements are advisory (the terminal ack still follows): they are shed first when the QoS1 window is nearly full.
+constexpr uint8_t ACK_ADVISORY_SHED_AT = 6U;
 constexpr size_t UPGRADE_RESPONSE_MAX = 768U;       // bounded HTTP response header (held in rxBuffer)
 constexpr uint32_t CLOCK_VALID_AFTER = 1700000000UL; // TLS certificate dates need real time
 constexpr uint8_t PUMP_PACKET_BUDGET = 8U;
@@ -83,16 +96,18 @@ enum class CloseKind : uint8_t { Radio, Memory, CloudTls, Isolated, Lost, COUNT 
 static uint32_t closeCount[static_cast<uint8_t>(CloseKind::COUNT)] = {};
 static uint8_t carry[64];                          // raw bytes that followed a handshake packet
 static size_t carryLength = 0U;
-// Realtime is best-effort and must never starve Wi-Fi or Cloud. The shared BackoffTimer starts at
-// 1 s, which for a full TLS handshake is a reconnect storm: every attempt holds the TLS admission
-// lease that Cloud HTTPS needs and churns ~40 KiB of heap. Realtime therefore retries slowly,
-// and only once Wi-Fi has been up for STA_STABLE_MS.
-constexpr uint32_t RETRY_STEPS_MS[] = {15000UL, 30000UL, 60000UL, 120000UL, 300000UL};
-constexpr uint8_t RETRY_STEP_COUNT = sizeof(RETRY_STEPS_MS) / sizeof(RETRY_STEPS_MS[0]);
-constexpr uint32_t RETRY_JITTER_MAX_MS = 2000UL;
-constexpr uint32_t STA_STABLE_MS = 10000UL;
-constexpr uint32_t YIELD_RESUME_MS = 3000UL;        // after Cloud released the lease: reconnect quickly (the Web shows offline meanwhile)
+// Reconnect ladder ("equal jitter": half..full of a doubling cap; AWS/Google guidance for MQTT/gRPC clients). The first retry is
+// 0.5-1 s after a loss (the Web shows "reconnecting", the TLS working set is free again), then 1-2, 2-4, 4-8, 7.5-15 s, and only
+// a broker that stayed unreachable for minutes climbs to 30 and 60 s. The old fixed 15 s first step plus a TLS handshake of
+// 3-10 s was the entire outage after a 5 s write stall. The ladder resets only after the link stayed up STABLE_UP_MS, so a link
+// that connects and dies at once keeps escalating instead of hammering the broker.
+constexpr uint32_t RETRY_CAP_MS[] = {1000UL, 2000UL, 4000UL, 8000UL, 15000UL, 30000UL, 60000UL};
+constexpr uint8_t RETRY_STEP_COUNT = sizeof(RETRY_CAP_MS) / sizeof(RETRY_CAP_MS[0]);
+constexpr uint32_t STABLE_UP_MS = 30000UL;
+constexpr uint32_t STA_STABLE_MS = 3000UL;          // Wi-Fi must have been up this long before a TLS handshake is tried (flap guard)
+constexpr uint32_t YIELD_RESUME_MS = 3000UL;        // after Cloud released the lease: reconnect quickly (the Web shows "reconnecting" meanwhile)
 constexpr uint32_t BUSY_RETRY_MS = 3000UL;          // TLS lease/heap busy is contention, not a broker failure: no backoff escalation
+constexpr uint32_t HOLD_OFF_MS = 5000UL;            // deliberate close (memory pressure, isolation): short hold-off, not a failure
 struct Retry {
   uint8_t step = 0U;
   uint32_t nextAttemptAt = 0U;
@@ -100,13 +115,14 @@ struct Retry {
   void reset(uint32_t now) { step = 0U; nextAttemptAt = now; }
   bool ready(uint32_t now) const { return static_cast<int32_t>(now - nextAttemptAt) >= 0; }
   void onFailure(uint32_t now) {
-    nextAttemptAt = now + RETRY_STEPS_MS[step] + esp_random() % (RETRY_JITTER_MAX_MS + 1U);
+    const uint32_t cap = RETRY_CAP_MS[step];
+    nextAttemptAt = now + cap / 2U + esp_random() % (cap / 2U + 1U);
     if (step + 1U < RETRY_STEP_COUNT) ++step;
     ++failures;
   }
-  void onSuccess() { step = 0U; }
+  void onStable() { step = 0U; }
   // A deliberate stop (Cloud needs the heap/lease) is not a failure, but the next handshake waits too.
-  void holdOff(uint32_t now, uint32_t ms = RETRY_STEPS_MS[0]) {
+  void holdOff(uint32_t now, uint32_t ms = HOLD_OFF_MS) {
     const uint32_t until = now + ms;
     if (static_cast<int32_t>(until - nextAttemptAt) > 0) nextAttemptAt = until;
   }
@@ -129,19 +145,89 @@ inline bool configured() { return brokerHost()[0] != '\0' && mayapMqttKey()[0] !
 inline bool clockValid() { return static_cast<uint32_t>(time(nullptr)) > CLOCK_VALID_AFTER; }
 inline bool gateClosing() { return mayapWifiPortalExclusiveRequested() || mayapRadioRecoveryRequested(); }
 
-// Sends one MQTT packet that was encoded at txMqtt(): the WebSocket header is built in front of it
-// and the payload is masked in place (RFC 6455: client frames are always masked).
-inline bool sendFrame(size_t length, uint8_t opcode) {
-  size_t total = 0U;
-  uint8_t *frame = MayapMqttWs::wrapClientFrame(txBuffer, TX_HEADROOM, length, opcode, esp_random(), &total);
-  if (!frame) { linkFailed = true; return false; }
-  if (net.write(frame, total) != total) { linkFailed = true; return false; }
+// What a frame is worth when the socket cannot take bytes right now (see the TX_STALL_MS comment above).
+enum class Tx : uint8_t { Control, Reliable, Droppable };
+
+static uint8_t ctrlQ[CTRL_QUEUE][CTRL_FRAME_MAX];
+static uint8_t ctrlLen[CTRL_QUEUE] = {};
+static uint8_t ctrlCount = 0U;
+static bool txBlocked = false;                      // the last Reliable/Droppable frame was refused: socket not writable
+static bool gateRefused = false;                    // the LAST sendFrame() was refused by the writability gate (not a link failure)
+static uint32_t stallSince = 0U;                    // pending data and an unwritable socket since (0 = not stalled)
+static uint32_t txRefused = 0U, txDropped = 0U, txCtrlQueued = 0U, advisoryShed = 0U;
+static uint32_t writeMaxMs = 0U, loopMaxMs = 0U, heapLowWater = 0xFFFFFFFFUL;   // per diagnostic window
+static const char *lostReason = "";
+
+// Can the socket take bytes without waiting? On the device this is select() on the TLS socket's fd (the approach arduino-esp32
+// maintainers recommend for socket timeouts, issue #5398): lwIP reports writable only when more than half of the TCP send buffer
+// is free, so a frame of up to ~2.8 KB then fits entirely and mbedtls_ssl_write() returns at once. The host test fake overrides it.
+template <typename C> inline auto txReadyProbe(C &client, int) -> decltype(client.hostTxReady()) { return client.hostTxReady(); }
+template <typename C> inline bool txReadyProbe(C &client, long) {
+  const int fd = client.fd();
+  if (fd < 0) return true;                          // no descriptor: let the write itself report the problem
+  fd_set writeSet;
+  FD_ZERO(&writeSet);
+  FD_SET(fd, &writeSet);
+  struct timeval none;
+  none.tv_sec = 0;
+  none.tv_usec = 0;
+  return select(fd + 1, nullptr, &writeSet, nullptr, &none) != 0;   // error (<0): the write reports it
+}
+inline bool txReady() { return txReadyProbe(net, 0); }
+
+inline bool writeWhole(const uint8_t *data, size_t length) {
+  const uint32_t startedAt = millis();
+  const size_t wrote = net.write(data, length);
+  const uint32_t took = MayapRecovery::age(millis(), startedAt);
+  if (took > writeMaxMs) writeMaxMs = took;
+  if (wrote != length) { linkFailed = true; lostReason = "tx-fail"; return false; }
   lastTxAt = millis();
   return true;
 }
-inline bool sendPacket(size_t length) {
+// Sends the Control frames that had to wait. Stops at the first unwritable moment; false only when a write really failed.
+inline bool flushControl() {
+  while (ctrlCount > 0U && txReady()) {
+    if (!writeWhole(ctrlQ[0], ctrlLen[0])) return false;
+    for (uint8_t i = 0U; i + 1U < ctrlCount; ++i) { memcpy(ctrlQ[i], ctrlQ[i + 1U], ctrlLen[i + 1U]); ctrlLen[i] = ctrlLen[i + 1U]; }
+    --ctrlCount;
+  }
+  return true;
+}
+
+// Sends one MQTT packet that was encoded at txMqtt(): the WebSocket header is built in front of it
+// and the payload is masked in place (RFC 6455: client frames are always masked).
+inline bool sendFrame(size_t length, uint8_t opcode, Tx cls = Tx::Reliable) {
+  size_t total = 0U;
+  uint8_t *frame = MayapMqttWs::wrapClientFrame(txBuffer, TX_HEADROOM, length, opcode, esp_random(), &total);
+  if (!frame) { linkFailed = true; lostReason = "frame"; return false; }
+  gateRefused = false;
+  if (!flushControl()) return false;
+  if (ctrlCount > 0U || !txReady()) {
+    if (cls == Tx::Control) {
+      if (stallSince == 0U) stallSince = millis() ? millis() : 1U;
+      lastTxAt = millis();                          // a queued keepalive counts as sent: one PINGREQ per keepalive window, not one per pass
+      if (total > CTRL_FRAME_MAX || ctrlCount >= CTRL_QUEUE) {
+        ++txDropped;                                // a lost PUBACK only makes the broker's own sweep drop the entry; it never breaks the link
+        return true;
+      }
+      memcpy(ctrlQ[ctrlCount], frame, total);
+      ctrlLen[ctrlCount++] = static_cast<uint8_t>(total);
+      ++txCtrlQueued;
+      return true;                                  // delivered later, in order, as soon as the socket is writable
+    }
+    gateRefused = true;
+    txBlocked = true;
+    if (stallSince == 0U) stallSince = millis() ? millis() : 1U;
+    if (cls == Tx::Droppable) ++txDropped; else ++txRefused;
+    return false;
+  }
+  if (!writeWhole(frame, total)) return false;
+  txBlocked = false;
+  return true;
+}
+inline bool sendPacket(size_t length, Tx cls = Tx::Reliable) {
   if (length == 0U) return false;
-  return sendFrame(length, MayapMqttWs::BINARY);
+  return sendFrame(length, MayapMqttWs::BINARY, cls);
 }
 
 inline void inflightClear() { inflightCount = 0U; }
@@ -170,6 +256,14 @@ inline uint16_t allocPacketId() {
   return nextPacketId;
 }
 
+inline bool containsBounded(const char *text, size_t length, const char *needle) {
+  const size_t n = strlen(needle);
+  if (n == 0U || length < n) return false;
+  for (size_t i = 0U; i + n <= length; ++i)
+    if (memcmp(text + i, needle, n) == 0) return true;
+  return false;
+}
+
 // Encodes and sends one PUBLISH. `track` puts a QoS1 packet into the in-flight window that the link watchdog
 // watches (a bridge message nobody PUBACKs means a half-open link). Uplink packets are tracked by mqtt_uplink.h
 // instead: the broker deliberately withholds their PUBACK when the Worker did not store the event.
@@ -182,6 +276,12 @@ inline bool publishChannel(const char *channel, const char *payload, size_t leng
   const uint32_t now = millis();
   if (track && policy->qos > 0U) {
     const bool terminalAck = !strcmp(channel, "ack");
+    // "received" is advisory (the terminal ack of the same request follows): when the window is nearly full it is shed, so a burst
+    // of quick commands (light toggled several times a second) keeps room for the acks the Web actually waits for.
+    if (terminalAck && inflightCount >= ACK_ADVISORY_SHED_AT && containsBounded(payload, length, "\"phase\":\"received\"")) {
+      ++advisoryShed;
+      return true;
+    }
     const uint8_t budget = terminalAck ? QOS1_INFLIGHT_MAX : static_cast<uint8_t>(QOS1_INFLIGHT_MAX - QOS1_RESERVED_FOR_ACK);
     if (inflightCount >= budget) {                      // bounded; the bridge retries with back-off, ACKs keep their reserve
       if (terminalAck) ++refusedAck; else ++refusedBulk;
@@ -194,7 +294,9 @@ inline bool publishChannel(const char *channel, const char *payload, size_t leng
   const uint16_t id = policy->qos ? allocPacketId() : 0U;
   const size_t packet = MayapMqttWire::encodePublish(txMqtt(), PACKET_BUFFER, topic,
       reinterpret_cast<const uint8_t *>(payload), length, policy->qos, policy->retain, id);
-  if (!sendPacket(packet)) return false;
+  // Snapshots and logs are periodic and QoS0: the next one replaces a lost one, so they never wait for a stalled socket.
+  const Tx cls = (policy->qos == 0U) ? Tx::Droppable : Tx::Reliable;
+  if (!sendPacket(packet, cls)) return false;
   if (track && policy->qos > 0U) inflightAdd(id, now);
   if (idOut) *idOut = id;
   return true;
@@ -223,9 +325,9 @@ inline void stopClient(bool graceful) {
     // A clean DISCONNECT suppresses the LWT, so only send it when the offline presence was
     // really written; otherwise drop the link and let the broker fire the LWT.
     if (MayapRealtimeInternal::publishPresence(false) &&
-        sendPacket(MayapMqttWire::encodeDisconnect(txMqtt(), PACKET_BUFFER))) {
+        sendPacket(MayapMqttWire::encodeDisconnect(txMqtt(), PACKET_BUFFER), Tx::Droppable)) {
       txMqtt()[0] = 0x03U; txMqtt()[1] = 0xE8U;                // WebSocket CLOSE, status 1000
-      sendFrame(2U, MayapMqttWs::CLOSE);
+      sendFrame(2U, MayapMqttWs::CLOSE, Tx::Droppable);
     }
   }
   net.stop();
@@ -234,6 +336,10 @@ inline void stopClient(bool graceful) {
   MayapUplink::onLinkDown();
   linkFailed = false;
   carryLength = 0U;
+  ctrlCount = 0U;
+  txBlocked = false;
+  gateRefused = false;
+  stallSince = 0U;
   inflightClear();
   parser.reset();
   ws.reset();
@@ -250,7 +356,7 @@ inline void handlePacket() {
       if (parser.truncated()) { ++droppedOversize; return; }  // sender retry/UNCERTAIN path handles it
       PublishView view;
       if (!parsePublish(parser.flags(), parser.body(), parser.bodyLength(), view)) { linkFailed = true; return; }
-      if (view.qos == 1U) sendPacket(encodePuback(txMqtt(), PACKET_BUFFER, view.packetId));
+      if (view.qos == 1U) sendPacket(encodePuback(txMqtt(), PACKET_BUFFER, view.packetId), Tx::Control);
       char channel[20];
       if (view.topicLength <= prefixLength || memcmp(view.topic, prefix, prefixLength) != 0 ||
           view.topicLength - prefixLength >= sizeof(channel)) { ++droppedForeign; return; }
@@ -280,7 +386,7 @@ inline bool handleControl() {
   switch (ws.controlOpcode()) {
     case PING:
       memcpy(txMqtt(), ws.control(), ws.controlLength());
-      return sendFrame(ws.controlLength(), PONG);
+      return sendFrame(ws.controlLength(), PONG, Tx::Control);
     case CLOSE: {
       const uint8_t *body = ws.control();
       const size_t length = ws.controlLength();
@@ -401,6 +507,16 @@ inline bool upgradeWebSocket() {
 
 // TLS + WebSocket + MQTT handshake. The TLS admission lease is held for its whole duration (the
 // working set is ~40 KiB); the socket then stays open. Returns false on any failure.
+//
+// Every phase is timed (dns / tcp+tls / ws / mqtt), so a slow evening reads "tls=6100ms" instead of one opaque number, and name
+// resolution is a phase of its own: lwIP DNS can block for many seconds and the address of the Cloudflare edge does not change
+// between reconnects, so the address of the last handshake that completed is reused (and forgotten after any failure, so the next
+// attempt resolves afresh). arduino-esp32 3.x treats a failed lookup as success and then dials 0.0.0.0, which surfaces as the
+// unhelpful "Generic error"; the result is therefore checked here instead of trusted.
+static uint32_t brokerIp = 0U;
+static bool brokerIpTrusted = false;
+static uint32_t connectedAt = 0U;
+static bool stableLatched = true;
 enum class Connect : uint8_t { Ok, Busy, Failed };
 inline Connect connectClient() {
   using namespace MayapMqttWire;
@@ -409,28 +525,47 @@ inline Connect connectClient() {
   mayapSetMqttTlsResident(true);   // from here until stopClient()/a failed attempt the socket counts as THE TLS context
   buildIdentity();
   if (!netConfigured) {
-    // Same transport settings as the V2 owner.
     net.setCACert(TLS_ROOT_CA);
-    net.setConnectionTimeout(5000);
-    net.setHandshakeTimeout(8);
+    // 10 s covers a TCP connect with one lost SYN (3 s retransmit) and is the safety net of any write; the TLS handshake gets
+    // 20 s because it was measured at 4-10 s on a congested evening (8 s used to fail attempts that were about to succeed).
+    net.setConnectionTimeout(10000);
+    net.setHandshakeTimeout(20);
     netConfigured = true;
   }
   const uint32_t startedAt = millis();
   const uint32_t heapBefore = ESP.getFreeHeap();
   linkFailed = false;
+  lostReason = "";
   carryLength = 0U;
   parser.reset();
   ws.reset();
-  if (!net.connect(brokerHost(), brokerPort())) {
+  IPAddress ip;
+  const bool cached = brokerIpTrusted && brokerIp != 0U;
+  if (cached) {
+    ip = IPAddress(brokerIp);
+  } else if (WiFi.hostByName(brokerHost(), ip) != 1 || static_cast<uint32_t>(ip) == 0U) {
+    mayapSerialPrintf(false, "[MQTT] dns failed host=%s after %lums\n", brokerHost(),
+                      static_cast<unsigned long>(MayapRecovery::age(millis(), startedAt)));
+    return Connect::Failed;                     // nothing was opened
+  }
+  const uint32_t dnsAt = millis();
+  mayapServiceBeat(MayapRecovery::Service::Mqtt);
+  if (!net.connect(ip, brokerPort(), brokerHost(), TLS_ROOT_CA, nullptr, nullptr)) {
     char reason[64] = "";
     net.lastError(reason, sizeof(reason));
-    mayapSerialPrintf(false, "[MQTT] tls connect failed host=%s:%u err=%s heap=%lu largest=%lu\n", brokerHost(),
-                      static_cast<unsigned>(brokerPort()), reason, static_cast<unsigned long>(ESP.getFreeHeap()),
+    mayapSerialPrintf(false, "[MQTT] tls connect failed host=%s:%u err=%s ip=%s dns=%lums tls=%lums heap=%lu largest=%lu\n", brokerHost(),
+                      static_cast<unsigned>(brokerPort()), reason, cached ? "cached" : "fresh",
+                      static_cast<unsigned long>(MayapRecovery::age(dnsAt, startedAt)),
+                      static_cast<unsigned long>(MayapRecovery::age(millis(), dnsAt)), static_cast<unsigned long>(ESP.getFreeHeap()),
                       static_cast<unsigned long>(ESP.getMaxAllocHeap()));
+    brokerIpTrusted = false;                    // resolve afresh next time
     net.stop();
     return Connect::Failed;
   }
+  const uint32_t tlsAt = millis();
+  mayapServiceBeat(MayapRecovery::Service::Mqtt);
   if (!upgradeWebSocket()) { net.stop(); return Connect::Failed; }
+  const uint32_t wsAt = millis();
   const ConnectArgs args{clientId, MayapRealtimeInternal::deviceId, mayapMqttKey(), willTopic,
                          reinterpret_cast<const uint8_t *>(WILL_MESSAGE), sizeof(WILL_MESSAGE) - 1U, KEEPALIVE_SEC};
   if (!sendPacket(encodeConnect(txMqtt(), PACKET_BUFFER, args)) || !awaitPacket(CONNACK) ||
@@ -464,22 +599,33 @@ inline Connect connectClient() {
   }
   parser.reset();
   inflightClear();
+  ctrlCount = 0U;
+  txBlocked = false;
+  stallSince = 0U;
   connected = true;
+  brokerIp = static_cast<uint32_t>(ip);
+  brokerIpTrusted = true;
   MayapUplink::onLinkUp();
   lastRxAt = lastTxAt = millis();
-  mayapSerialPrintf(false, "[MQTT] wss+mqtt up %lums heap=%lu->%lu largest=%lu task=%s core=%d prio=%u\n",
-                    static_cast<unsigned long>(millis() - startedAt), static_cast<unsigned long>(heapBefore),
+  const uint32_t doneAt = millis();
+  mayapSerialPrintf(false, "[MQTT] wss+mqtt up %lums heap=%lu->%lu largest=%lu task=%s core=%d prio=%u dns=%lums%s tls=%lums ws=%lums mqtt=%lums\n",
+                    static_cast<unsigned long>(MayapRecovery::age(doneAt, startedAt)), static_cast<unsigned long>(heapBefore),
                     static_cast<unsigned long>(ESP.getFreeHeap()), static_cast<unsigned long>(ESP.getMaxAllocHeap()),
                     pcTaskGetName(nullptr), static_cast<int>(xPortGetCoreID()),
-                    static_cast<unsigned>(uxTaskPriorityGet(nullptr)));
+                    static_cast<unsigned>(uxTaskPriorityGet(nullptr)),
+                    static_cast<unsigned long>(MayapRecovery::age(dnsAt, startedAt)), cached ? "(cached)" : "",
+                    static_cast<unsigned long>(MayapRecovery::age(tlsAt, dnsAt)), static_cast<unsigned long>(MayapRecovery::age(wsAt, tlsAt)),
+                    static_cast<unsigned long>(MayapRecovery::age(doneAt, wsAt)));
   return Connect::Ok;
 }
 
 inline void onConnected() {
   using namespace MayapRealtimeInternal;
-  backoff.onSuccess();
+  connectedAt = millis();
+  stableLatched = false;                        // the backoff ladder resets only after STABLE_UP_MS of this link
   MayapUplink::healthUp(millis());
   publishPresence(true);
+  resetReportProgress();                        // the Web of this connection has seen none of a half-sent report
   portENTER_CRITICAL(&realtimeMux);
   if (knownConfigValid) configDirty = true;
   portEXIT_CRITICAL(&realtimeMux);
@@ -488,8 +634,16 @@ inline void onConnected() {
   mayapSerialPrintf(false, "[MQTT] connected %s\n", deviceId);
 }
 
+// QoS1 window slots a bulk report (config/history) may still take right now; 0 while the socket is stalled. The bridge asks BEFORE
+// it builds a report, so a full window costs nothing instead of a rebuilt-and-discarded JSON document per retry.
+inline uint8_t bulkSlotsFree() {
+  if (!connected || txBlocked) return 0U;
+  const uint8_t budget = static_cast<uint8_t>(QOS1_INFLIGHT_MAX - QOS1_RESERVED_FOR_ACK);
+  return inflightCount >= budget ? 0U : static_cast<uint8_t>(budget - inflightCount);
+}
+
 // Publishes what the Cloud task queued (alarms, heartbeat), oldest first. A slot that cannot be sent for a
-// reason other than a dead socket is failed so it can never wedge the queue.
+// reason other than a dead socket or a stalled uplink is failed so it can never wedge the queue.
 inline void pumpUplink(uint32_t now) {
   MayapUplink::expire(now);
   for (uint8_t guard = 0U; guard < MayapUplink::SLOTS; ++guard) {
@@ -501,6 +655,7 @@ inline void pumpUplink(uint32_t now) {
       MayapUplink::markSent(slot, id, now);
     } else {
       if (linkFailed) return;   // the watchdog below drops the link; onLinkDown() fails the slots
+      if (gateRefused) return;  // the socket cannot take bytes right now: the slot stays queued and is retried next pass
       MayapUplink::markFailed(slot);
     }
   }
@@ -510,22 +665,56 @@ inline void pumpUplink(uint32_t now) {
 //   * a failed write, a protocol error or a closed socket                        -> dead
 //   * nothing received for 1.5 keepalives (PINGRESP would have arrived)         -> dead (half-open)
 //   * a QoS1 packet unacknowledged for QOS1_STUCK_MS while ALSO silent          -> dead
+//   * nothing could be WRITTEN for TX_STALL_MS while the broker is silent too   -> dead (the uplink is jammed)
 //   * a QoS1 packet unacknowledged for QOS1_STUCK_MS on a link that still delivers bytes -> alive; the entry just expires
+// The reason is kept in lostReason so every loss is explained in the log.
 inline bool linkAlive(uint32_t now) {
-  if (linkFailed || parser.fatal() || ws.fatal() || !net.connected()) return false;
+  if (linkFailed || parser.fatal() || ws.fatal() || !net.connected()) {
+    if (!lostReason[0]) lostReason = linkFailed ? "tx-fail" : (parser.fatal() || ws.fatal()) ? "protocol" : "socket-closed";
+    return false;
+  }
   const uint32_t silence = MayapRecovery::age(now, lastRxAt);
   if (inflightCount > 0U && MayapRecovery::age(now, inflightAt[0]) >= QOS1_STUCK_MS) {
-    if (silence >= STUCK_SILENCE_MS) return false;
+    if (silence >= STUCK_SILENCE_MS) { lostReason = "no-puback-silent"; return false; }
     inflightExpire(now);
   }
+  if (stallSince != 0U && MayapRecovery::age(now, stallSince) >= TX_STALL_MS && silence >= TX_STALL_SILENCE_MS) {
+    lostReason = "tx-stall";
+    return false;
+  }
   // Broker silent for 1.5 keepalives: half-open link.
-  return silence < static_cast<uint32_t>(KEEPALIVE_SEC) * 1500UL;
+  if (silence >= static_cast<uint32_t>(KEEPALIVE_SEC) * 1500UL) { lostReason = "silent"; return false; }
+  return true;
 }
+
+// While the socket was unwritable: notice the moment it recovers (flush what waited, forget the stall).
+inline void serviceTxStall() {
+  if (stallSince == 0U) return;
+  if (ctrlCount == 0U && !txBlocked) { stallSince = 0U; return; }
+  if (!txReady()) return;
+  if (!flushControl()) return;
+  txBlocked = false;
+  if (ctrlCount == 0U) stallSince = 0U;
+}
+
+// Measures how long one pass of the owner task takes and the lowest free heap it saw (diagnostic window).
+struct LoopProbe {
+  uint32_t startedAt;
+  LoopProbe() : startedAt(millis()) {
+    const uint32_t freeHeap = ESP.getFreeHeap();
+    if (freeHeap < heapLowWater) heapLowWater = freeHeap;
+  }
+  ~LoopProbe() {
+    const uint32_t took = MayapRecovery::age(millis(), startedAt);
+    if (took > loopMaxMs) loopMaxMs = took;
+  }
+};
 
 }  // namespace MayapMqttInternal
 
 inline void mayapMqttTransportBegin() {
   MayapRealtimeInternal::publishCallback = MayapMqttInternal::publishFromBridge;
+  MayapRealtimeInternal::bulkCapacityCallback = MayapMqttInternal::bulkSlotsFree;
   MayapMqttInternal::backoff.reset(millis());
   mayapSerialPrintf(false, "[MQTT] owner task=%s core=%d prio=%u native WSS (TLS+WebSocket+MQTT), no esp-mqtt\n", pcTaskGetName(nullptr),
                     static_cast<int>(xPortGetCoreID()), static_cast<unsigned>(uxTaskPriorityGet(nullptr)));
@@ -539,6 +728,7 @@ inline bool mayapMqttTransportConnected() { return MayapMqttInternal::connected;
 // pressure; the mutable controller state is never touched from here.
 inline void mayapMqttTransportUpdate(uint32_t now) {
   using namespace MayapMqttInternal;
+  const LoopProbe probe;
   const bool closing = gateClosing();
   const bool yielding = mayapCloudTlsYieldRequested(now);
   const bool pressure = mayapOnlineMemoryPressure();
@@ -554,8 +744,10 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
                         MayapUplink::probePending(h) ? "unanswered" : h.probes ? "answered" : "none",
                         static_cast<unsigned>(inflightCount), static_cast<unsigned long>(ESP.getFreeHeap()));
     }
-    stopClient(true);
-    if (!closing) backoff.holdOff(now, yielding && !pressure ? YIELD_RESUME_MS : RETRY_STEPS_MS[0]);
+    // Only a radio change (Wi-Fi portal / credentials) announces "offline" and says goodbye; a yield for the TLS slot or a memory
+    // pause just closes the socket, so the broker keeps the device in its reconnect grace and the Web shows "reconnecting".
+    stopClient(closing);
+    if (!closing) backoff.holdOff(now, yielding && !pressure ? YIELD_RESUME_MS : HOLD_OFF_MS);
     MayapUplink::healthClosed(now, backoff.nextAttemptAt);   // deliberate: a short hold-off, not a failure
     if (ioEntered) { mayapOnlineIoLeave(MayapRecovery::Service::Mqtt); ioEntered = false; }
     // An idle poll is not a drain ACK: the socket above is already closed.
@@ -599,25 +791,31 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
     onConnected();
     return;
   }
+  if (!stableLatched && MayapRecovery::age(now, connectedAt) >= STABLE_UP_MS) { backoff.onStable(); stableLatched = true; }
+  serviceTxStall();
   if (!linkAlive(now) || !pump()) {
     ++closeCount[static_cast<uint8_t>(CloseKind::Lost)];
-    mayapSerialPrintf(false, "[MQTT] link lost (tx=%u fatal=%u open=%u inflight=%u rxAge=%lums brokerClose=%u '%s')\n", static_cast<unsigned>(linkFailed),
-                      static_cast<unsigned>(parser.fatal()), static_cast<unsigned>(net.connected()),
-                      static_cast<unsigned>(inflightCount), static_cast<unsigned long>(MayapRecovery::age(now, lastRxAt)),
-                      static_cast<unsigned>(brokerCloseCode), brokerCloseReason);
+    if (!lostReason[0]) lostReason = brokerCloseCode ? "broker-close" : "read-fail";
+    mayapSerialPrintf(false, "[MQTT] link lost reason=%s (tx=%u fatal=%u open=%u inflight=%u rxAge=%lums brokerClose=%u '%s' refused=%lu dropped=%lu ctrlQ=%u stall=%lums up=%lums)\n",
+                      lostReason, static_cast<unsigned>(linkFailed), static_cast<unsigned>(parser.fatal()), static_cast<unsigned>(net.connected()),
+                      static_cast<unsigned>(inflightCount), static_cast<unsigned long>(MayapRecovery::age(millis(), lastRxAt)),
+                      static_cast<unsigned>(brokerCloseCode), brokerCloseReason, static_cast<unsigned long>(txRefused),
+                      static_cast<unsigned long>(txDropped), static_cast<unsigned>(ctrlCount),
+                      static_cast<unsigned long>(stallSince ? MayapRecovery::age(millis(), stallSince) : 0UL),
+                      static_cast<unsigned long>(MayapRecovery::age(millis(), connectedAt)));
     stopClient(false);
-    backoff.onFailure(now);
-    MayapUplink::healthLost(now, backoff.nextAttemptAt);
+    backoff.onFailure(millis());      // fresh time: `now` is from the top of the pass and the pass may have blocked
+    MayapUplink::healthLost(millis(), backoff.nextAttemptAt);
     return;
   }
   MayapUplink::healthRx(lastRxAt);
   pumpUplink(now);
   // On-demand transport probe: the Cloud task saw an acknowledgement come late and wants independent evidence. One PINGREQ;
   // ANY byte back (PINGRESP, a PUBACK, a command) proves the broker is alive. Rate limited by the uplink mailbox itself.
-  if (MayapUplink::takeProbeRequest() && sendPacket(MayapMqttWire::encodePingreq(txMqtt(), PACKET_BUFFER))) {
+  if (MayapUplink::takeProbeRequest() && sendPacket(MayapMqttWire::encodePingreq(txMqtt(), PACKET_BUFFER), Tx::Control)) {
     MayapUplink::noteProbeSent(now);
   } else if (MayapRecovery::age(now, lastTxAt) >= static_cast<uint32_t>(KEEPALIVE_SEC) * 500UL)
-    sendPacket(MayapMqttWire::encodePingreq(txMqtt(), PACKET_BUFFER));
+    sendPacket(MayapMqttWire::encodePingreq(txMqtt(), PACKET_BUFFER), Tx::Control);
   mayapRealtimeUpdate(millis());
 #if MAYAP_DIAGNOSTIC_SERIAL
   if (lastDiagAt == 0U || MayapRecovery::age(now, lastDiagAt) >= 10000UL) {
@@ -630,12 +828,23 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
                       static_cast<unsigned long>(closeCount[3]), static_cast<unsigned long>(closeCount[4]), static_cast<unsigned long>(qos1Expired),
                       static_cast<unsigned long>(refusedBulk), static_cast<unsigned long>(refusedAck), static_cast<unsigned long>(h.probes),
                       static_cast<unsigned long>(h.probesAnswered), static_cast<unsigned>(h.rttEwmaMs));
+    // Per 10 s window: how often the socket could not take a frame, the slowest write and task pass, the lowest free heap and the signal.
+    mayapSerialPrintf(false, "[MQTT-TX] refused=%lu dropped=%lu ctrlQueued=%lu shedAck=%lu writeMax=%lums loopMax=%lums heapLow=%lu rssi=%d\n",
+                      static_cast<unsigned long>(txRefused), static_cast<unsigned long>(txDropped), static_cast<unsigned long>(txCtrlQueued),
+                      static_cast<unsigned long>(advisoryShed), static_cast<unsigned long>(writeMaxMs), static_cast<unsigned long>(loopMaxMs),
+                      static_cast<unsigned long>(heapLowWater), static_cast<int>(status.rssiDbm));
+    writeMaxMs = 0U;
+    loopMaxMs = 0U;
+    heapLowWater = 0xFFFFFFFFUL;
   }
 #endif
 }
 
+// The supervisor asked for a fresh start of the MQTT owner. That is a request, not a failure: close the socket and reconnect at
+// once (the old code also pushed the retry out by a whole backoff step on top of the supervisor's own pause).
 inline void mayapMqttTransportRecover(uint32_t now) {
+  mayapSerialPrintf(false, "[MQTT] owner re-init requested by the supervisor: link closed, reconnecting at once\n");
   MayapMqttInternal::stopClient(false);
-  MayapMqttInternal::backoff.onFailure(now);
-  MayapUplink::healthLost(now, MayapMqttInternal::backoff.nextAttemptAt);
+  MayapMqttInternal::backoff.nextAttemptAt = now;
+  MayapUplink::healthClosed(now, now);
 }

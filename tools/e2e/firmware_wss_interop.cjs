@@ -96,14 +96,17 @@ async function main() {
     seen.length = 0;
     client.child.kill('SIGKILL');
     await until('LWT', () => seen.some((m) => m.topic === `${prefix}/presence` && m.payload.includes('"online":false')), 20000);
-    record('abrupt loss of the firmware connection fires the LWT (presence {online:false})', true);
+    const lwt = seen.find((m) => m.topic === `${prefix}/presence` && m.payload.includes('"online":false'));
+    record('abrupt loss of the firmware connection is announced as presence {online:false,state:"reconnecting"} (the broker\'s grace), not as offline',
+      Boolean(lwt) && lwt.payload.includes('"state":"reconnecting"') && lwt.payload.includes('"graceUntil"'), lwt ? lwt.payload : 'no presence');
 
     // 8. Reconnect: a new firmware session takes over.
     seen.length = 0;
     client = startClient();
     await until('reconnect', () => client.lines.some((l) => l.includes('wss+mqtt up')), 25000);
     await until('presence online again', () => seen.some((m) => m.topic === `${prefix}/presence` && m.payload.includes('"online":true')), 15000);
-    record('firmware reconnects and republishes presence online', true);
+    record('firmware reconnects inside the grace: presence online again and "offline" was never announced',
+      !seen.some((m) => m.topic === `${prefix}/presence` && m.payload.includes('"state":"offline"')));
 
     // 8b. Command burst (item E of the field log): 40 Web commands at once, each acknowledged by the firmware with a QoS1 ack. The
     //     firmware's in-flight window must not pin at 8, no "ACK PUB FAIL" refusal may be needed for a normal burst, and every
@@ -119,6 +122,10 @@ async function main() {
     // 8c. Alarms through the REAL uplink mailbox + transport + broker with NO Worker behind the broker (the broker is started
     //     alone here): PUBACK = BROKER_STORED comes back at once, nothing waits for D1, the link does not move.
     {
+      // One device identity = one live session. The first firmware process would otherwise reconnect (now within ~1 s) and take
+      // the session back from the alarm run, which is exactly what the broker's takeover rule exists for, not what this check measures.
+      client.child.kill('SIGKILL');
+      await new Promise((resolve) => setTimeout(resolve, 300));
       const alarmRun = spawn(exe, [DEVICE_ID, DEVICE_PASSWORD, '14'], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, UPLINK_ALARMS: '5' } });
       const lines2 = []; alarmRun.stdout.on('data', (d) => { for (const l of d.toString().split('\n')) if (l) lines2.push(l); });
       children.push(alarmRun);

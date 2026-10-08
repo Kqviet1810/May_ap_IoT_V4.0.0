@@ -91,7 +91,8 @@ async function main() {
       'dev', '--config', 'wrangler-broker.toml', '--port', String(BROKER_PORT), '--local',
       '--persist-to', fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'mayap-mvp-state-')),   // clean Durable Object storage every run
       '--var', `BROKER_DEVICE_SECRET:${DEVICE_SECRET}`,
-      '--var', `BROKER_WEB_TOKEN_SECRET:${WEB_TOKEN_SECRET}`],
+      '--var', `BROKER_WEB_TOKEN_SECRET:${WEB_TOKEN_SECRET}`,
+      '--var', 'PRESENCE_GRACE_MS:7000'],   // production default is 75 s; a short grace keeps the end-of-grace step of this run quick
     { cwd: path.join(root, 'cloudflare') }, 'broker.log');
     children.push(broker);
     const web = spawnLogged('python3', ['-m', 'http.server', String(WEB_PORT), '--bind', '127.0.0.1'],
@@ -242,13 +243,33 @@ async function main() {
     record('W7 an alarm the broker stored but the Worker has not received is PUBACKed at once and shown to the user as a backlog, link still online',
       alarmAck >= 0 && alarmAck < 1000 && (await connection()) === 'online', `PUBACK ${alarmAck} ms; text="${backlogText.trim()}"`);
 
-    // Reconnect: abrupt device loss -> retained LWT -> Web offline; new device session -> online
+    // Reconnect: abrupt device loss -> the broker's grace ("reconnecting", NOT offline); a click on the light made meanwhile is HELD
+    // and sent once the machine is back; a new device session -> online, and the Web never showed "offline" in between.
+    const phaseStates = [];
+    let phaseSampling = true;
+    const phaseSampler = (async () => { while (phaseSampling) { try { phaseStates.push(await connection()); } catch (_) {} await sleep(40); } })();
     emulator.dropConnection();
-    await until('web offline via LWT', async () => (await connection()) === 'offline', 15000);
-    record('W1b LWT: abrupt device loss publishes retained online=false and the Web shows offline', true);
+    await until('web reconnecting via the broker grace', async () => (await connection()) === 'reconnecting', 15000);
+    const pill = (await text('#onlinePill')).trim();
+    const lightEnabledWhileReconnecting = !(await page.locator('#outputLightBtn').isDisabled());
+    const batchLocked = await page.locator('#quickForm button[type="submit"]').isDisabled();
+    await page.locator('#outputLightBtn').click();                       // held: sent when the machine is back live
     emulator = startDeviceEmulator({ url: brokerUrl, deviceId: DEVICE_ID, password: DEVICE_PASSWORD, commandKeyHex });
     await until('web online again', async () => (await connection()) === 'online', 20000);
+    await until('held light click executed by the machine', async () => emulator.stats.commandsExecuted >= 1, 15000);
+    phaseSampling = false; await phaseSampler;
+    record('W1b broker grace: a dropped device shows "reconnecting" (never "offline"), keeps the light usable, locks the rest, and the held click is delivered on return',
+      pill === 'KẾT NỐI LẠI' && lightEnabledWhileReconnecting && batchLocked && !phaseStates.includes('offline') && emulator.stats.verifyFailures === 0,
+      `pill="${pill}" lightEnabled=${lightEnabledWhileReconnecting} formsLocked=${batchLocked} sawOffline=${phaseStates.includes('offline')} executed=${emulator.stats.commandsExecuted}`);
     record('W1c reconnect: a new device session (new bootId) brings the Web back online', true);
+    // Nobody comes back: when the grace runs out the Web says offline and locks the light too.
+    emulator.dropConnection();
+    await until('web reconnecting again', async () => (await connection()) === 'reconnecting', 15000);
+    await until('web offline after the grace', async () => (await connection()) === 'offline', 20000);
+    record('W1e grace expiry: nobody returned -> the Web shows offline and the light button is locked',
+      await page.locator('#outputLightBtn').isDisabled(), `pill="${(await text('#onlinePill')).trim()}"`);
+    emulator = startDeviceEmulator({ url: brokerUrl, deviceId: DEVICE_ID, password: DEVICE_PASSWORD, commandKeyHex });
+    await until('web online once more', async () => (await connection()) === 'online', 20000);
     // After a reboot the device restarts its config revision; the Web must drop its
     // pre-reboot config and accept the new device's report instead of rejecting it as old.
     await until('config resync after reboot', async () => Number(await page.locator('#quickTarget').inputValue()) === 37.5, 15000);

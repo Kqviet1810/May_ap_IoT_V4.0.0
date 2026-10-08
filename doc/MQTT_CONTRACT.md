@@ -73,6 +73,14 @@ trong cùng kết nối → đóng kết nối. Publish hợp lệ reset bộ đ
 - **LWT** của ESP32: topic `presence`, payload `{"online":false,...}`,
   QoS 1, retain `true`. Khi broker fire LWT, retained store phải được
   cập nhật *trước* fanout để subscriber kết nối sau vẫn thấy `online=false`.
+- **Ân hạn kết nối lại (firmware 1.1.4 / broker).** Khi socket của ESP32 đóng *không sạch* (không có DISCONNECT), broker
+  **không** phát offline ngay. Nó giữ `PRESENCE_GRACE_MS` (mặc định 75 s, `0` = tắt) và trong thời gian đó retained
+  `presence` là lần báo cáo cuối của máy cộng `{"online":false,"state":"reconnecting","since":<ms>,"graceUntil":<ms>}`.
+  Máy nối lại trong ân hạn → chính `presence` `{"online":true}` của nó thay thế, không ai thấy `offline`. Hết ân hạn mà không
+  ai quay lại → DO alarm phát `{"online":false,"state":"offline"}` đúng một lần. DISCONNECT sạch (máy tự báo
+  `{"online":false}` rồi DISCONNECT, ví dụ khi đổi Wi‑Fi) vẫn là offline ngay. Chỉ áp dụng cho socket vai trò `device` và
+  topic `presence`; socket Web giữ nguyên hành vi cũ. Web hiển thị `reconnecting` = "KẾT NỐI LẠI", giữ dữ liệu cuối và chỉ
+  cho phép **một** lệnh bật/tắt đèn được giữ lại gửi khi máy quay về (tối đa 8 s); mọi lệnh khác vẫn khoá cho đến khi máy online.
 - Lệnh (`command`, `config/set`, `reminders/set`, `history/request`) **cấm**
   retain. Một PUBLISH với `retain=1` lên các topic này là protocol misuse:
   broker PUBACK (nếu QoS1) rồi **DROP** — không retain, không fanout, không
