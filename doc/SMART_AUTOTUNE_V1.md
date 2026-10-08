@@ -70,12 +70,12 @@ FAIL / abort / save error → nothing was applied: old PID and profile are untou
 
 | | cases | accepted | rejected (safe) | ACCEPTED_BAD | High / Emergency during tune | post-tune High / Emergency |
 |---|---|---|---|---|---|---|
-| Mini matrix (every level of efficiency 50–200 %, mass light/medium/heavy, dead time 0–120 s, loss low/med/high, resolution 0.01/0.1, ambient 20/28) | 36 | 17 | 19 | **0** | 0 / 0 | 0 / 0 |
-| Full matrix | 540 | 251 | 289 | **4** | 0 / 0 | 0 / 0 |
+| Mini matrix (every level of efficiency 50–200 %, mass light/medium/heavy, dead time 0–120 s, loss low/med/high, resolution 0.01/0.1, ambient 20/28) | 36 | 16 | 20 | **0** | 0 / 0 | 0 / 0 |
+| Full matrix | 540 | 251 | 289 | **2** | 0 / 0 | 0 / 0 |
 | Legacy relay-only, cold start (same 36 plants) | 36 | 1 | 0 (29 timeouts, 6 safety aborts) | 0 | **6** / 0 | 0 / 0 |
 | Legacy relay-only, warm start 37 °C | 36 | 10 | 0 (19 timeouts, 7 safety aborts) | **5** | **7** / 0 | 0 / 0 |
 
-ACCEPTED_BAD = accepted by AutoTune but, in a separate 3 h cold-start run with the accepted gains and profile under Adaptive V1, a REACHABLE plant misses overshoot ≤ 0.30 / MAE ≤ 0.12 / P95 ≤ 0.18 / ripple ≤ 0.30 / settled, or any plant crosses High/Emergency. The four residual cases (full344, full381, full400, full480) are `resolution 0.1` plants: three with a fast plant (θ ≤ 11 s) stall one probe quantum below SP (post-tune MAE 0.145–0.153, i.e. 0.03 °C over the 0.12 target; Adaptive V1's startup integral freeze `|error| < 0.15` combined with the 0.1 °C quantisation, also present with the default gains at other operating points), one with a long lag (full344, lag 30 s + dead 30 s) shows a slow ripple (P95 0.39) in the 3 h run although its validation passed. None crossed a safety threshold. These are reported, not hidden; see limits.
+ACCEPTED_BAD = accepted by AutoTune but, in a separate 3 h cold-start run with the accepted gains and profile under Adaptive V1, a REACHABLE plant misses overshoot ≤ 0.30 / MAE ≤ 0.12 / P95 ≤ 0.18 / ripple ≤ 0.30 / settled, or any plant crosses High/Emergency. The two residual cases (full344, full400) are `resolution 0.1` plants: full400 (fast plant, dead 0) stalls one probe quantum below SP (post-tune MAE 0.145, 0.025 °C over the 0.12 target; Adaptive V1's startup integral freeze `|error| < 0.15` combined with the 0.1 °C quantisation, also present with the default gains at other operating points), full344 ( lag 30 s + dead 30 s) shows a slow ripple (P95 0.39) in the 3 h run although its validation passed. None crossed a safety threshold. These are reported, not hidden; see limits.
 
 Unit/abort/power-loss (`tests/thermal-smart-autotune-unit.cpp`, 438 checks): estimator recovery on synthetic ramps, SIMC numbers and bounds, baseline gates, bumpless hand-over, accept + one atomic save + profile seed + persisted profile, **84 immediate-abort cuts** (7 phases × 11 faults + operator cancel: heater OFF within one control cycle, no save, old PID/profile intact), power loss at each of the 7 phase boundaries and 5 truncated config saves (A/B slot keeps the old record), validation reject and HEAT_LIMITED rollback, warm chamber refused.
 
@@ -83,8 +83,8 @@ Unit/abort/power-loss (`tests/thermal-smart-autotune-unit.cpp`, 438 checks): est
 
 * Simulation only: no heater kW, volume or CFM is known to the firmware, but the plant is an idealised first-order model. **Physical commissioning is required** before trusting any accepted gain.
 * The first tune needs a cold, empty oven (≥ 2.5 °C headroom); a hot oven is refused, not tuned.
-* Plants that need > 30 % duty to hold, or whose coast under the High alarm (0.7 °C of room by default) leaves the relay < 5 % of authority (strong heater, small mass), are refused as POWER_LIMITED (safe rejection; 132 of 540). Slow plants (dead time ≥ 60 s with heavy mass) can end in `RELAY_FAILED / TOTAL_TIMEOUT` (115 of 540).
-* Residual ACCEPTED_BAD (4 / 251) above; root cause lives in Adaptive V1 / the startup freeze, which this task was told not to redesign. Suggested next step: let the startup controller's integral freeze use a quantisation-aware threshold (`max(0.15, 1.5·LSB)`).
+* Plants that need > 30 % duty to hold, or whose coast under the High alarm (0.7 °C of room by default) leaves the relay < 5 % of authority (strong heater, small mass), are refused as POWER_LIMITED (safe rejection; 132 of 540). Slow plants (dead time ≥ 60 s with heavy mass) can end in `RELAY_FAILED / TOTAL_TIMEOUT` (99 of 540).
+* Residual ACCEPTED_BAD (2 / 251) above; root cause lives in Adaptive V1 / the startup freeze, which this task was told not to redesign. Suggested next step: let the startup controller's integral freeze use a quantisation-aware threshold (`max(0.15, 1.5·LSB)`).
 * Persisted-profile refresh after the 30-day age and the online mismatch logic are unchanged.
 * HMI shows the existing "DANG TU CHINH + progress %"; the phase names (`BASELINE/EXCITE/COAST/…`) are in the serial diagnostics (`[TUNE] …`) and progress is mapped 1–100 across the phases.
 
@@ -96,3 +96,13 @@ Unit/abort/power-loss (`tests/thermal-smart-autotune-unit.cpp`, 438 checks): est
 4. Keep the reference thermometer next to the probe. Expect: gain/delay plausible for the oven, `hold` ≈ the duty that keeps SP, MAE/P95 in `[TUNE] RESULT`. Any `FAIL` leaves the old PID untouched (read the reason).
 5. After SUCCESS let the oven hold SP for 1–2 h before the first batch and compare the reference reading with the displayed PV; only then load eggs.
 6. Any High/Emergency, unexpected heater behaviour, or a reference reading differing from PV by more than the calibration tolerance → stop, switch HEATER OFF, report with the serial log.
+
+## Firmware size (CI, PILOT profile, ESP32-S3 `default_8MB`)
+
+| | Flash | static RAM |
+|---|---|---|
+| Adaptive V1 base (ba0272c) | 1,458,309 | 163,192 |
+| Smart AutoTune V1 (fbfbe8d) | 1,449,817 | 162,080 |
+| delta | -8,492 | -1,112 |
+
+Hard app-partition limit 3,342,336 B (43 %); dynamic memory limit 327,680 B. Soft CI budgets 1,460,000 / 164,000 are met: headroom 10,183 B Flash / 1,920 B RAM. `sizeof(SmartAutoTune)` = 852 B (RelayAutoTune 208 B); the smaller totals come from the rewritten `updateAutoTune` replacing the older relay-only supervisor path. No budget was raised.
