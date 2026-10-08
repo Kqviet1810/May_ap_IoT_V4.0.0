@@ -22,14 +22,12 @@ static void estimatorTests() {
   const Case cases[] = {{0.04, 25, 0.25, 0.01}, {0.01, 60, 0.25, 0.1}, {0.10, 10, 0.25, 0.1}, {0.02, 40, 0.35, 0.01}, {0.005, 90, 0.35, 0.01}};
   for (const Case &c : cases) {
     SmartTune::StepEstimator est;
-    est.reset(20.0f);
-    double e = 0;
+    est.reset(20.0f, 1000U, static_cast<float>(c.duty));
     for (unsigned n = 0; n < 400; ++n) {
       const double t = n * 2.0;
-      e += c.duty * 2.0;                          // ON-seconds delivered so far
-      const double eDelayed = std::max(0.0, e - c.duty * c.theta);
+      const double eDelayed = c.duty * std::max(0.0, t - c.theta);   // ideal delayed ON-seconds
       const double pv = 20.0 + c.k * eDelayed;
-      est.sample(1000U + n * 2000U, static_cast<float>(e), static_cast<float>(std::round(pv / c.res) * c.res));
+      est.sample(1000U + n * 2000U, static_cast<float>(std::round(pv / c.res) * c.res));
       if (t > 40 + 2.5 * c.theta && c.k * eDelayed > 0.6) {
         const SmartTune::StepEstimator::Fit f = est.fit();
         CHECK(f.valid);
@@ -41,9 +39,8 @@ static void estimatorTests() {
   }
   // no response: never a usable fit
   SmartTune::StepEstimator flat;
-  flat.reset(20.0f);
-  double e = 0;
-  for (unsigned n = 0; n < 300; ++n) { e += 0.5; flat.sample(1000U + n * 2000U, static_cast<float>(e), 20.0f); }
+  flat.reset(20.0f, 1000U, 0.25f);
+  for (unsigned n = 0; n < 300; ++n) flat.sample(1000U + n * 2000U, 20.0f);
   const SmartTune::StepEstimator::Fit f = flat.fit();
   CHECK(!f.valid || f.gain < 1e-5f || f.rise < 0.05f);
 }

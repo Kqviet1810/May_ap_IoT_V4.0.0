@@ -65,22 +65,22 @@ constexpr float KuMargin = 2.2f;           // Kp <= Ku / 2.2 (gain margin >= 2.2
 
 constexpr uint8_t GridN = 13;
 constexpr float Grid[GridN] = {4, 8, 14, 20, 28, 38, 50, 65, 82, 102, 126, 155, 190};
-constexpr uint8_t RingN = 104;             // 2 s samples * 104 = 208 s >= the longest delay candidate
 
-// Fixed-memory identification of  dPV/dt = Kh * E'(t - theta):  PV rise vs delayed ON-seconds, one
-// running (Welford) regression per delay candidate. No sample history beyond the lookback ring.
+// Fixed-memory identification of  dPV/dt = Kh * u(t - theta)  during a CONSTANT-power excitation: PV rise against the ideal
+// delayed ON-seconds  x_j(t) = d * max(0, t - theta_j)  (d = commanded duty), one running (Welford) regression per delay candidate.
+// No sample history at all: the actual/commanded duty ratio over the whole excitation rescales the gain afterwards (see coast()).
 class StepEstimator {
  public:
-  void reset(float pv0) {
-    pv0_ = pv0; head_ = 0; count_ = 0; rise_ = 0; used_ = 0;
+  void reset(float pv0, uint32_t startMs, float duty) {
+    pv0_ = pv0; start_ = startMs; duty_ = duty; rise_ = 0; used_ = 0;
     for (uint8_t i = 0; i < GridN; ++i) { n_[i] = 0; mx_[i] = my_[i] = cxx_[i] = cxy_[i] = cyy_[i] = 0; }
   }
-  // t: ms clock, e: ON-seconds since the excitation began, pv: filtered PV.
-  void sample(uint32_t t, float e, float pv) {
+  void sample(uint32_t now, float pv) {
+    const float t = static_cast<float>(now - start_) * 0.001f;
     const float y = pv - pv0_;
     if (y > rise_) rise_ = y;
     for (uint8_t i = 0; i < GridN; ++i) {
-      const float x = lookup(t, static_cast<uint32_t>(Grid[i] * 1000.0f), e);
+      const float x = duty_ * std::max(0.0f, t - Grid[i]);
       n_[i] += 1.0f;
       const float dx = x - mx_[i];
       mx_[i] += dx / n_[i];
@@ -90,14 +90,8 @@ class StepEstimator {
       cxy_[i] += dx * (y - my_[i]);
       cyy_[i] += dy * (y - my_[i]);
     }
-    ring_[head_].t = t; ring_[head_].e = e;
-    head_ = static_cast<uint8_t>((head_ + 1U) % RingN);
-    if (count_ < RingN) ++count_;
     ++used_;
   }
-  // ON-seconds that had been delivered at time t (interpolated; 0 before the excitation).
-  float eAt(uint32_t t) const { return lookup(t, 0U, 0.0f); }
-
   struct Fit {
     bool valid = false;
     float gain = 0, delay = 0, relSe = 1, separation = 1, rise = 0;
@@ -143,37 +137,10 @@ class StepEstimator {
     return f;
   }
  private:
-  struct Entry { uint32_t t; float e; };
-  // E at (t - lagMs); for lagMs == 0 the value at t itself (used for the stored history).
-  float lookup(uint32_t t, uint32_t lagMs, float eNow) const {
-    if (lagMs == 0U && count_ == 0U) return eNow;
-    const uint32_t target = t - lagMs;
-    if (lagMs == 0U) {   // newest stored value at or before t
-      float v = 0;
-      for (uint8_t k = 0; k < count_; ++k) {
-        const Entry &en = ring_[static_cast<uint8_t>((head_ + RingN - 1U - k) % RingN)];
-        if (static_cast<int32_t>(en.t - t) <= 0) { v = en.e; break; }
-      }
-      return v;
-    }
-    // walk back to the sample pair surrounding `target`; the live sample is the newest point
-    uint32_t tHi = t; float eHi = eNow;
-    for (uint8_t k = 0; k < count_; ++k) {
-      const Entry &en = ring_[static_cast<uint8_t>((head_ + RingN - 1U - k) % RingN)];
-      if (static_cast<int32_t>(en.t - target) <= 0) {
-        const uint32_t span = tHi - en.t;
-        if (span == 0U) return en.e;
-        const float f = static_cast<float>(target - en.t) / static_cast<float>(span);
-        return en.e + f * (eHi - en.e);
-      }
-      tHi = en.t; eHi = en.e;
-    }
-    return 0.0f;   // before the first stored sample = before the excitation
-  }
-  Entry ring_[RingN];
-  uint8_t head_ = 0, count_ = 0;
+  float duty_ = 0.25f;
+ private:
   float pv0_ = 0, rise_ = 0;
-  uint32_t used_ = 0;
+  uint32_t start_ = 0, used_ = 0;
   float n_[GridN], mx_[GridN], my_[GridN], cxx_[GridN], cxy_[GridN], cyy_[GridN];
 };
 
@@ -300,6 +267,7 @@ class SmartAutoTune {
     checkTimeout(now);
     if (!running()) return false;
     if (std::fabs(cfg.targetTemp - target_) > 0.01f) { abort(AutoTuneReason::ModeAbort); return false; }
+    maxPct_ = static_cast<float>(cfg.maxHeaterPower);
     switch (phase_) {
       case AutoTunePhase::Baseline: return baseline(now, pv);
       case AutoTunePhase::Excite: case AutoTunePhase::Excite2: return excite(now, pv, cfg);
@@ -337,7 +305,7 @@ class SmartAutoTune {
   uint32_t modelSerial() const { return modelSerial_; }
   const Cycle &lastCycle() const { return relay_.lastCycle(); }
   uint8_t cycleCount() const { return relay_.cycleCount(); }
-  const Result &result() const { return result_; }
+  const Result &result() const { return relay_.result(); }
   AutoTuneModelView model() const {
     AutoTuneModelView v;
     v.gain = model_.gain; v.delaySec = model_.delaySec; v.coast100C = model_.coast100C; v.holdPct = model_.holdPct;
@@ -371,11 +339,11 @@ class SmartAutoTune {
     h.coastPerOnMs = model_.gain * 0.001f * margin;
     h.gainPerSec = model_.gain; h.delaySec = model_.delaySec; h.holdPct = model_.holdPct;
     // A 0.1 C probe makes the 10 s IIR slope spike on every step: the 90 s end-to-end slope is the robust one.
-    if (slopeCount_ >= 10U) {
+    if (slopeCount_ >= 5U) {
       const uint8_t newest = static_cast<uint8_t>((slopeHead_ + SlopeN - 1U) % SlopeN);
-      const uint8_t older = static_cast<uint8_t>((slopeHead_ + SlopeN - 10U) % SlopeN);   // 9 steps = 90 s back
+      const uint8_t older = static_cast<uint8_t>((slopeHead_ + SlopeN - 5U) % SlopeN);   // 4 steps = 80 s back
       h.slopeValid = true;
-      h.slopePerSec = (slopePv_[newest] - slopePv_[older]) / (9.0f * SlopeStepSec);
+      h.slopePerSec = (scratch_.v.slopePv[newest] - scratch_.v.slopePv[older]) / (4.0f * SlopeStepSec);
     }
     return h;
   }
@@ -440,7 +408,9 @@ class SmartAutoTune {
   }
   void startExcite(uint32_t now, float pv, float pct, AutoTunePhase ph) {
     excitePct_ = pct; enter(ph, now);
-    onAtExcite_ = onMs_; est_.reset(ph == AutoTunePhase::Excite ? pvBase_ : pv);
+    onAtExcite_ = onMs_;
+    exDuty_ = std::min(excitePct_, maxPct_) * 0.01f;
+    scratch_.est.reset(ph == AutoTunePhase::Excite ? pvBase_ : pv, now, exDuty_);
     pvExciteStart_ = pv; progress_ = ph == AutoTunePhase::Excite ? 6 : 36;
   }
 
@@ -448,7 +418,7 @@ class SmartAutoTune {
   bool excite(uint32_t now, float pv, const MachineConfig &cfg) {
     power_ = std::min(excitePct_, static_cast<float>(cfg.maxHeaterPower));
     if (power_ < 5.0f) { abort(AutoTuneReason::PowerLimited); return false; }
-    est_.sample(now, exciteOnSec(), pv);
+    scratch_.est.sample(now, pv);
     const uint32_t el = elapsedMs(now, phaseAt_);
     progress_ = static_cast<uint8_t>(6 + std::min<uint32_t>(18U, el * 18U / SmartTune::ExciteMaxMs));
     const float rise = pv - pvExciteStart_;
@@ -457,7 +427,7 @@ class SmartAutoTune {
     if (target_ - pv < 1.0f) { abort(AutoTuneReason::NoHeadroom); return false; }
     bool stop = rise >= cap || el >= SmartTune::ExciteMaxMs;
     if (!stop && el >= SmartTune::ExciteMinMs && rise >= SmartTune::MinRiseC) {
-      const SmartTune::StepEstimator::Fit f = est_.fit();
+      const SmartTune::StepEstimator::Fit f = scratch_.est.fit();
       // The ramp is only a ramp after the lag has died out (~3 time constants after the dead time): keep exciting until the
       // data covers that, or the lag is mistaken for extra delay.
       stop = f.valid && f.relSe <= SmartTune::GoodRelSe && f.separation >= SmartTune::GoodSeparation &&
@@ -466,7 +436,8 @@ class SmartAutoTune {
     if (!stop) return false;
     // cut: the coast of this excitation is measured next
     pvOff_ = pvPeak_ = pv; peakAt_ = now;
-    exFit_ = est_.fit();
+    exFit_ = scratch_.est.fit();
+    exOnSec_ = exciteOnSec(); exDurSec_ = static_cast<float>(el) * 0.001f;
     enter(AutoTunePhase::Coast, now);
     power_ = 0; progress_ = static_cast<uint8_t>(phase_ == AutoTunePhase::Coast ? (used2_ ? 44 : 28) : 28);
     return false;
@@ -483,16 +454,17 @@ class SmartAutoTune {
     const bool plateau = el >= minMs && elapsedMs(now, peakAt_) >= SmartTune::CoastPlateauMs;
     if (!plateau && el < SmartTune::CoastMaxMs) return false;
     // ---- evaluate the identification
-    const SmartTune::StepEstimator::Fit f = exFit_;
+    // The regression used the COMMANDED duty; the gain is rescaled by the ACTUAL / commanded ratio measured over the excitation.
+    const float actualDuty = exDurSec_ > 1.0f ? exOnSec_ / exDurSec_ : 0.0f;
+    const float ratioDuty = exDuty_ > 1e-3f ? actualDuty / exDuty_ : 0.0f;
+    SmartTune::StepEstimator::Fit f = exFit_;
+    if (ratioDuty < 0.5f || ratioDuty > 1.6f) f.valid = false;      // the arbiter delivered something else than commanded
+    else f.gain = f.gain / ratioDuty;
     const bool good = f.valid && f.relSe <= SmartTune::GoodRelSe * 1.5f && f.separation >= SmartTune::GoodSeparation &&
                       f.rise >= SmartTune::MinRiseC && f.gain >= MayapThermal::Limits::GainMin && f.gain <= MayapThermal::Limits::GainMax;
     const float coastRise = std::max(0.0f, pvPeak_ - pvOff_);
     const float theta1 = f.valid ? f.delay : 0.0f;
-    const float eNow = exciteOnSec();
-    const float eBack = est_.eAt(now - el - static_cast<uint32_t>(theta1 * 1000.0f));
-    float duty = theta1 > 1.0f ? (eNow - eBack) / theta1 : 0.0f;   // ON-seconds per second just before the cut
-    if (duty < 0.02f) duty = excitePct_ * 0.01f;
-    duty = std::min(1.0f, duty);
+    const float duty = std::max(0.02f, std::min(1.0f, actualDuty));
     const float predicted = f.gain * duty * theta1;
     const float ratio = predicted > 1e-4f ? coastRise / predicted : 0.0f;
     const bool consistent = predicted > 0.05f ? (ratio >= SmartTune::CoastRatioMin && ratio <= SmartTune::CoastRatioMax) : true;
@@ -512,6 +484,7 @@ class SmartAutoTune {
     model_.coast100C = std::min(MayapThermal::Limits::CoastRiseMax, coastRise / std::max(0.05f, duty));
     model_.coastSec = std::min(MayapThermal::Limits::CoastTimeMax, elapsedMs(peakAt_, phaseAt_) * 0.001f);
     ++modelSerial_;
+    std::memset(&scratch_.v, 0, sizeof(scratch_.v));
     slopeCount_ = 0; slopeHead_ = 0; nearAt_ = 0;
     enter(AutoTunePhase::Approach, now);
     progress_ = 40;
@@ -535,11 +508,11 @@ class SmartAutoTune {
     if (nearAt_ == 0U) nearAt_ = now ? now : 1U;   // approach start: the 200 s ring only holds approach samples
     if (slopeCount_ < SlopeN || elapsedMs(now, nearAt_) < 200000UL + static_cast<uint32_t>(3.0f * model_.delaySec * 1000.0f)) return false;
     const uint8_t newest = static_cast<uint8_t>((slopeHead_ + SlopeN - 1U) % SlopeN), oldest = slopeHead_;
-    if (std::fabs(slopePv_[newest] - slopePv_[oldest]) > SmartTune::ApproachArriveC) return false;
+    if (std::fabs(scratch_.v.slopePv[newest] - scratch_.v.slopePv[oldest]) > SmartTune::ApproachArriveC) return false;
     // equilibrium: mean actual duty over the window, minus the residual drift expressed as duty
     const float winSec = (SlopeN - 1U) * SlopeStepSec;
-    const float onSec = (slopeOn_[newest] - slopeOn_[oldest]) * 0.001f;
-    float holdEq = 100.0f * onSec / winSec - 100.0f * ((slopePv_[newest] - slopePv_[oldest]) / winSec) / std::max(1e-4f, model_.gain);
+    const float onSec = (scratch_.v.slopeOn[newest] - scratch_.v.slopeOn[oldest]) * 0.001f;
+    float holdEq = 100.0f * onSec / winSec - 100.0f * ((scratch_.v.slopePv[newest] - scratch_.v.slopePv[oldest]) / winSec) / std::max(1e-4f, model_.gain);
     holdEq = std::max(0.0f, std::min(100.0f, holdEq));
     model_.holdEqPct = holdEq;
     // The hold grows with (T - ambient): scale the equilibrium duty to the setpoint, taking the cold baseline as ambient
@@ -586,7 +559,6 @@ class SmartAutoTune {
     }
     if (relay_.state() != AutoTuneState::Success) return false;
     relayRunning_ = false;
-    result_ = relay_.result();
     const RelayAutoTune::Result &r = relay_.result();
     model_.ku = r.ku; model_.periodSec = r.periodSec;
     const float cyc = r.heatSec + r.coolSec;
@@ -641,7 +613,7 @@ class SmartAutoTune {
     validationStartPending_ = true;
     enter(AutoTunePhase::Validating, now);
     eval_ = Eval(); eval_.ran = true;
-    integralPeak_ = 0; slopeCount_ = 0; slopeHead_ = 0; for (uint8_t k = 0; k < HistN; ++k) bins_[k] = 0;
+    integralPeak_ = 0; slopeCount_ = 0; slopeHead_ = 0; for (uint8_t k = 0; k < HistN; ++k) scratch_.v.bins[k] = 0;
     tailMin_ = 1e9f; tailMax_ = -1e9f; tailSat_ = 0; tailN_ = 0; tailAbs_ = 0;
     maxOver_ = -1e9f;
     progress_ = 88;
@@ -665,7 +637,7 @@ class SmartAutoTune {
       tailAbs_ += a;
       tailMin_ = std::min(tailMin_, pv); tailMax_ = std::max(tailMax_, pv);
       uint8_t b = static_cast<uint8_t>(std::min<float>(HistN - 1U, a * 100.0f));
-      ++bins_[b];
+      ++scratch_.v.bins[b];
       if (reqPct_ >= static_cast<float>(cfg.maxHeaterPower) - 0.5f) ++tailSat_;
       if (std::fabs(integral_) > integralPeak_) integralPeak_ = std::fabs(integral_);
     }
@@ -676,7 +648,7 @@ class SmartAutoTune {
     eval_.mae = tailN_ ? tailAbs_ / static_cast<float>(tailN_) : 99.0f;
     uint32_t acc = 0; float p95 = 99.0f;
     const uint32_t need = (tailN_ * 95U + 99U) / 100U;
-    for (uint8_t k = 0; k < HistN; ++k) { acc += bins_[k]; if (acc >= need) { p95 = (k + 1U) * 0.01f; break; } }
+    for (uint8_t k = 0; k < HistN; ++k) { acc += scratch_.v.bins[k]; if (acc >= need) { p95 = (k + 1U) * 0.01f; break; } }
     eval_.p95 = p95;
     eval_.ripple = tailN_ ? tailMax_ - tailMin_ : 99.0f;
     eval_.satFrac = tailN_ ? static_cast<float>(tailSat_) / static_cast<float>(tailN_) : 1.0f;
@@ -699,16 +671,21 @@ class SmartAutoTune {
     return false;
   }
 
-  static constexpr uint8_t HistN = 40;
-  static constexpr uint8_t SlopeN = 21;   // 21 entries every 10 s = a 200 s window
-  static constexpr float SlopeStepSec = 10.0f;
-  float slopePv_[SlopeN];
-  uint32_t slopeOn_[SlopeN];
+  // The identification regression (EXCITE..COAST) and the approach / validation scratch (APPROACH..VALIDATING) never live at the same
+  // time, so they share one block of RAM.
+  union Scratch {
+    Scratch() : est() {}
+    SmartTune::StepEstimator est;
+    struct V { float slopePv[11]; uint32_t slopeOn[11]; uint16_t bins[25]; } v;
+  } scratch_;
+  static constexpr uint8_t HistN = 25;   // 0.01 C bins up to 0.24 C (the P95 limit is 0.18)
+  static constexpr uint8_t SlopeN = 11;   // 11 entries every 20 s = a 200 s window
+  static constexpr float SlopeStepSec = 20.0f;
   uint8_t slopeHead_ = 0, slopeCount_ = 0;
   uint32_t slopeAt_ = 0, nearAt_ = 0;
   void pushSlope(uint32_t now, float pv) {
     if (slopeCount_ != 0U && elapsedMs(now, slopeAt_) < static_cast<uint32_t>(SlopeStepSec * 1000.0f)) return;
-    slopeAt_ = now; slopePv_[slopeHead_] = pv; slopeOn_[slopeHead_] = onMs_;
+    slopeAt_ = now; scratch_.v.slopePv[slopeHead_] = pv; scratch_.v.slopeOn[slopeHead_] = onMs_;
     slopeHead_ = static_cast<uint8_t>((slopeHead_ + 1U) % SlopeN);
     if (slopeCount_ < SlopeN) ++slopeCount_;
   }
@@ -727,16 +704,13 @@ class SmartAutoTune {
   uint32_t baseN_ = 0, baseFirstAt_ = 0;
   float baseSum_ = 0, baseSq_ = 0, basePrev_ = 0, baseFirst_ = 0, baseMaxJump_ = 0, pvBase_ = 0;
   // identification
-  SmartTune::StepEstimator est_;
   SmartTune::StepEstimator::Fit exFit_;
-  float pvExciteStart_ = 0, pvOff_ = 0, pvPeak_ = 0;
+  float pvExciteStart_ = 0, pvOff_ = 0, pvPeak_ = 0, exDuty_ = 0.25f, exOnSec_ = 0, exDurSec_ = 1, maxPct_ = 100;
   SmartTune::Model model_;
   Candidate cand_;
-  Result result_;
   RelayAutoTune relay_;
   // validation
   Eval eval_;
-  uint16_t bins_[HistN];
   float tailMin_ = 0, tailMax_ = 0, tailAbs_ = 0, maxOver_ = 0, integralPeak_ = 0, reqPct_ = 0, integral_ = 0;
   uint32_t tailN_ = 0, tailSat_ = 0, tailMs_ = SmartTune::ValidateTailMs, validateMs_ = SmartTune::ValidateMs;
 };
