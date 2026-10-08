@@ -28,6 +28,7 @@ constexpr float PI=3.14159265358979323846f;
 #include "actual-autotune-constants.inc"
 enum class AutoTuneState:uint8_t{Idle=0,Running=1,Success=2,Failed=3};
 #include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_control.h"
+#include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_smart_autotune.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/heater_burst_scheduler.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/startup_output_policy.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_adaptive_v1.h"
@@ -86,7 +87,7 @@ constexpr uint8_t HEATER_GROUP_COUNT=1;
 struct TuneHarness {
   FakeInputs inputs_;FakeRtc rtc_;FakeFaults faults_;MachineConfig config_;
   TuneStore store_;EventLog eventLog_;OutputArbiter outputs_;
-  ThermalController pid_;ThermalStartupController startupHeat_;RelayAutoTune autotune_;
+  ThermalController pid_;ThermalStartupController startupHeat_;AutoTuneEngine autotune_;
 #include "actual-burst-member.inc"
   struct{float heaterPower=0;bool adaptiveEnabled=false,adaptiveSelfHeating=false;
     uint8_t adaptiveState=0,lastAdaptiveReason=0;
@@ -109,6 +110,7 @@ struct TuneHarness {
   void updateTestModeOutputs(uint32_t now){outputs_.forceSafe(now);}
   void latchStorageFault(const char *){storageFaultLatched_=true;}
 #include "actual-tune-start.inc"
+#include "actual-tune-cancel.inc"
 #include "actual-tune-update.inc"
 #ifdef MAYAP_TEST_ADAPTIVE
   MayapAdaptive::AdaptiveThermalSupervisor adaptiveThermal_;
@@ -123,6 +125,8 @@ struct TuneHarness {
 #else
   MayapThermal::AdaptiveV1 thermalV1_;MayapThermal::VentInfo ventInfo_{};bool ventForcedRun_=false;
   void publishThermalLearning(uint32_t){}
+  uint32_t thermalSignature()const{return 0;}
+  struct{uint32_t epoch()const{return 1800000000;}}rtcEpoch_;
   void trackAdaptiveEnergy(uint32_t){}
   float updateAdaptiveBalance(uint32_t,bool,bool,bool){return config_.maxHeaterPower;}
   bool adaptiveCoolingRequested()const{return false;}

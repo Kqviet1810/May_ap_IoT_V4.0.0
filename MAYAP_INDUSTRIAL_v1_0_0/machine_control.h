@@ -3180,6 +3180,7 @@ class SHT485Industrial {
 // PID THEO Nhip MAU CAM BIEN + ANTI-WINDUP + DAO HAM TREN PV
 // ============================================================================
 #include "thermal_control.h"
+#include "thermal_smart_autotune.h"
 #include "heater_burst_scheduler.h"
 
 class ConditionTimer {
@@ -4862,6 +4863,7 @@ class MachineController {
     if (config_.targetTemp + config_.autotuneBandC >= config_.highTempAlarm) {
       message = "KHOANG NHIET KHONG DU"; return false;
     }
+    if (!autotune_.preflight(temperature_, config_, message)) return false;
     autotune_.configure(config_.targetTemp);
     autotune_.start(now, temperature_);
     pid_.reset();
@@ -4870,10 +4872,10 @@ class MachineController {
     message = "AUTO TUNE DA BAT DAU";
     eventLog_.push(now, EventType::AutoTuneStart,
                    static_cast<uint16_t>(EventCode::AutoTuneStarted));
-    mayapSerialPrintf(false, "[TUNE] PREHEAT power=%u%% PV=%.3f relay=%u%% band=%.2fC\n",
-                     std::min<uint8_t>(AUTOTUNE_PREHEAT_POWER_PERCENT, config_.maxHeaterPower),
-                     temperature_, std::min<uint8_t>(config_.autotuneRelayPowerPercent, config_.maxHeaterPower),
-                     config_.autotuneBandC);
+    mayapSerialPrintf(false, "[TUNE] START PV=%.3f SP=%.2f High=%.2f relay<=%u%% band=%.2fC (headroom to High %.2fC)\n",
+                     temperature_, config_.targetTemp, config_.highTempAlarm,
+                     std::min<uint8_t>(config_.autotuneRelayPowerPercent, config_.maxHeaterPower),
+                     config_.autotuneBandC, config_.highTempAlarm - temperature_);
     return true;
   }
 
@@ -5416,9 +5418,12 @@ class MachineController {
   void updateAutoTune(uint32_t now) {
     if (!autotune_.running()) return;
     const InputState &in = inputs_.state();
+    // ACTUAL heater state (post-arbiter) is what identification integrates, never the request.
+    autotune_.tick(now, outputs_.state().heaterSsr && outputs_.state().heatMaster);
     const AutoTunePhase previousPhase = autotune_.phase();
     const uint32_t previousCycle = autotune_.cycleSerial();
     const uint32_t previousValidation = autotune_.validationSerial();
+    const uint32_t previousModel = autotune_.modelSerial();
     AutoTuneReason abortReason = AutoTuneReason::None;
     if (!sensorUsable_ || !isfinite(temperature_) || !isfinite(rawTemperature_))
       abortReason = AutoTuneReason::SensorAbort;
@@ -5429,10 +5434,11 @@ class MachineController {
         faults_.masterDropRequired() || faults_.ssrInhibited() ||
         mayapFirmwareMaintenanceActive() || mayapSystemTripLatched() ||
         !mayapBootOperationsReady()) abortReason = AutoTuneReason::SafetyAbort;
-    else if (!in.autoMode || !in.heaterEnable || batchRunning_)
+    else if (!in.autoMode || !in.heaterEnable || batchRunning_ || testModeActive_)
       abortReason = AutoTuneReason::ModeAbort;
     if (abortReason != AutoTuneReason::None) autotune_.abort(abortReason);
     autotune_.checkTimeout(now);
+    autotune_.noteController(pidPower_, pid_.integral());
     MachineConfig tuned{};
     const bool tunedReady = autotune_.running() && newSensorSample_ &&
         autotune_.update(now, temperature_, config_, tuned);
@@ -5448,16 +5454,35 @@ class MachineController {
     if (autotune_.phase() != previousPhase && autotune_.running())
       mayapSerialPrintf(false, "[TUNE] %s power=%.1f%% PV=%.3f\n",
           autoTunePhaseName(autotune_.phase()), autotune_.power(), temperature_);
+    if (autotune_.modelSerial() != previousModel)
+      mayapSerialPrintf(false, "[TUNE] MODEL gain=%.5f delay=%.1fs coast100=%.2fC hold=%.1f%% Ku=%.2f Pu=%.0fs conf=%u cand Kp=%.2f Ki=%.4f\n",
+          autotune_.model().gain, autotune_.model().delaySec, autotune_.model().coast100C, autotune_.model().holdPct,
+          autotune_.model().ku, autotune_.model().periodSec, static_cast<unsigned>(autotune_.model().confidence),
+          autotune_.candidateKp(), autotune_.candidateKi());
+    // Candidate takes over: no relay excitation, backlog or integral is carried into the closed-loop check.
+    float holdPct = 0.0f;
+    if (autotune_.takeValidationStart(holdPct)) {
+      MachineConfig candidate = config_;
+      autotune_.applyCandidate(candidate);
+      heaterBurst_.reset();
+      startupHeat_.reset();
+      (void)candidate; (void)holdPct;
+      pid_.reset();           // zero integral: the check must include the wind-up / recovery a real approach produces
+      pidPower_ = 0.0f;
+    }
     if (!tunedReady && autotune_.state() == AutoTuneState::Failed) {
       heaterBurst_.reset();
       pid_.reset();
+      startupHeat_.reset();
+      pidPower_ = 0.0f;
       postCoolUntil_ = now + POST_COOL_MS;
       heatRestartNotBefore_ = now + HEAT_RESTART_LOCKOUT_MS;
       eventLog_.push(now, EventType::AutoTuneEnd,
                      static_cast<uint16_t>(EventCode::AutoTuneFailed),
                      static_cast<int16_t>(autotune_.reason()), 1U);
-      mayapSerialPrintf(false, "[TUNE] FAIL reason=%s quality=%s\n",
-          autoTuneReasonName(autotune_.reason()), autoTuneReasonName(autotune_.rejection()));
+      mayapSerialPrintf(false, "[TUNE] FAIL reason=%s quality=%s over=%.2f mae=%.3f p95=%.3f ripple=%.2f (old PID and profile kept)\n",
+          autoTuneReasonName(autotune_.reason()), autoTuneReasonName(autotune_.rejection()),
+          autotune_.eval().overshoot, autotune_.eval().mae, autotune_.eval().p95, autotune_.eval().ripple);
       return;
     }
     if (tunedReady) {
@@ -5468,13 +5493,26 @@ class MachineController {
         mayapRealtimeSetConfig(config_);
         mayapCloudSetConfig(config_);
         mayapSetConnectivityMode(config_.connectivityMode);
+        // Accepted: the measured plant seeds the thermal profile (a seed, not full trust: Adaptive V1 keeps refining
+        // it online and withdraws it on a long mismatch). The PID record above is the commit point; the profile
+        // record is a capped seed, so losing power between the two leaves a safe pair (new PID, old/no profile).
+        if (autotune_.hasProfile() && config_.adaptiveThermalBalanceEnabled) {
+          MayapThermal::ThermalProfile seed = autotune_.profile();
+          seed.signature = thermalSignature();
+          seed.epoch = rtc_.epoch();
+          seed.sequence = 0;
+          MayapThermal::sealProfile(seed);
+          thermalV1_.learner().seed(seed, 75, seed.holdPowerPct > 0.5f);
+          MayapThermal::profileStorage.offerForced(seed);
+        }
         eventLog_.push(now, EventType::AutoTuneEnd,
                        static_cast<uint16_t>(EventCode::AutoTuneSuccess),
                        static_cast<int16_t>(lroundf(config_.kp * 10.0f)));
-        mayapSerialPrintf(false, "[TUNE] RESULT phase=SUCCESS Ku=%.3f Pu=%.1f Kp=%.3f Ki=%.5f Kd=%.3f scale=%.3f\n",
-                         autotune_.result().ku, autotune_.result().periodSec,
-                         config_.kp, config_.ki, config_.kd, autotune_.result().gainScale);
+        mayapSerialPrintf(false, "[TUNE] RESULT phase=SUCCESS Kp=%.3f Ki=%.5f Kd=%.3f gain=%.5f delay=%.1fs mae=%.3f p95=%.3f ripple=%.3f over=%.3f\n",
+                         config_.kp, config_.ki, config_.kd, autotune_.model().gain, autotune_.model().delaySec,
+                         autotune_.eval().mae, autotune_.eval().p95, autotune_.eval().ripple, autotune_.eval().overshoot);
       } else {
+        // Save failed: nothing was applied (the candidate only ever lived in the engine), old PID/profile stay.
         autotune_.abort(AutoTuneReason::SaveFailed);
         latchStorageFault("AUTOTUNE SAVE");
         eventLog_.push(now, EventType::AutoTuneEnd,
@@ -5484,6 +5522,8 @@ class MachineController {
       }
       heaterBurst_.reset();
       pid_.reset();
+      startupHeat_.reset();
+      pidPower_ = 0.0f;
       postCoolUntil_ = now + POST_COOL_MS;
       heatRestartNotBefore_ = now + HEAT_RESTART_LOCKOUT_MS;
     }
@@ -6259,18 +6299,29 @@ class MachineController {
         autotune_.running(), ventInfo_, temperature_, config_.targetTemp, pid_.integral(),
         config_.highTempAlarm);
     publishThermalLearning(now);
+    // Smart AutoTune VALIDATING: the normal controller runs the CANDIDATE gains under the tune permit (no batch).
+    const bool tunePermit = !faults_.ssrInhibited() &&
+                            !faults_.masterDropRequired() &&
+                            !storageFaultLatched_ && !storageDegraded_ &&
+                            !abnormalResetLatched_ && autotune_.running() &&
+                            in.autoMode && in.heaterEnable &&
+                            sensorUsable_ && fanStable &&
+                            !highTemperatureActive_ && !emergencyActive_;
+    const bool tuneClosedLoop = autotune_.externalControl() && tunePermit && actuatorReady;
     float commandedPower = 0.0f;
-    if (autotune_.running()) {
+    if (autotune_.running() && !autotune_.externalControl()) {
       startupHeat_.reset();
       commandedPower = autotune_.power();
-    } else if (normalSsrPermit && actuatorReady) {
+    } else if ((normalSsrPermit && actuatorReady) || tuneClosedLoop) {
       if (newSensorSample_) {
         MachineConfig actuatorConfig = config_;
+        autotune_.applyCandidate(actuatorConfig);   // no-op unless the closed-loop check is running
+        const MayapThermal::Assist tuneAssist = autotune_.assist();
         actuatorConfig.maxHeaterPower = static_cast<uint8_t>(effectiveLimit);
         float ceiling = effectiveLimit;
         bool freezePositiveIntegral = false;
-        if (config_.controlMode == ControlMode::Pid) {
-          startupHeat_.setHint(v1plan.hint);
+        if (actuatorConfig.controlMode == ControlMode::Pid) {
+          startupHeat_.setHint(autotune_.externalControl() ? autotune_.startupHint(config_.highTempAlarm, config_.targetTemp) : v1plan.hint);
           const auto decision = startupHeat_.decide(now, config_.targetTemp,
               temperature_, effectiveLimit);
           ceiling = decision.ceiling;
@@ -6278,7 +6329,7 @@ class MachineController {
         }
         pidPower_ = pid_.updateOnNewSample(now, config_.targetTemp,
             temperature_, actuatorConfig, true, ceiling, freezePositiveIntegral,
-            &v1plan.assist);
+            autotune_.externalControl() ? &tuneAssist : &v1plan.assist);
       }
       if (config_.controlMode == ControlMode::Pid && startupHeat_.sampleStale(now)) {
         pid_.reset();
@@ -6293,13 +6344,6 @@ class MachineController {
     }
     newSensorSample_ = false;
 
-    const bool tunePermit = !faults_.ssrInhibited() &&
-                            !faults_.masterDropRequired() &&
-                            !storageFaultLatched_ && !storageDegraded_ &&
-                            !abnormalResetLatched_ && autotune_.running() &&
-                            in.autoMode && in.heaterEnable &&
-                            sensorUsable_ && fanStable &&
-                            !highTemperatureActive_ && !emergencyActive_;
     const bool masterPermit = normalMasterPermit || tunePermit;
     const bool ssrPermit = (normalSsrPermit || tunePermit) && masterPermit;
     req.heatMaster = masterPermit;
@@ -7704,7 +7748,7 @@ class MachineController {
   SHT485Industrial sensor_{};
   ThermalController pid_{};
   ThermalStartupController startupHeat_{};
-  RelayAutoTune autotune_{};
+  AutoTuneEngine autotune_{};
   OutputArbiter outputs_{};
   StatusLed led_{};
 

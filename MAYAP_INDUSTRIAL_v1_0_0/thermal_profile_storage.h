@@ -17,6 +17,12 @@ class ProfileStorage {
   void offer(const ThermalProfile &profile) {
     portENTER_CRITICAL(&mux_); pending_ = profile; hasPending_ = true; portEXIT_CRITICAL(&mux_);
   }
+  // A profile MEASURED by an accepted Smart AutoTune: persisted at the next service() regardless of the
+  // 1 h / material-change policy (that policy is for slowly drifting online estimates), and never discarded
+  // by the "not qualified yet" housekeeping of the online learner.
+  void offerForced(const ThermalProfile &profile) {
+    portENTER_CRITICAL(&mux_); forced_ = profile; hasForced_ = true; portEXIT_CRITICAL(&mux_);
+  }
   void discardPending() { portENTER_CRITICAL(&mux_); hasPending_ = false; portEXIT_CRITICAL(&mux_); }
   bool takeInvalid() {
     portENTER_CRITICAL(&mux_); const bool v = invalidRecord_; invalidRecord_ = false; portEXIT_CRITICAL(&mux_);
@@ -33,7 +39,7 @@ class ProfileStorage {
   // Host tests only: forget everything (the Preferences stub is cleared by the test).
   void resetForTest() {
     portENTER_CRITICAL(&mux_);
-    hasPending_ = seedReady_ = invalidRecord_ = false;
+    hasPending_ = hasForced_ = seedReady_ = invalidRecord_ = false;
     portEXIT_CRITICAL(&mux_);
     initialized_ = available_ = activeA_ = storedValid_ = false;
     sequence_ = lastSave_ = saves_ = 0;
@@ -65,13 +71,17 @@ class ProfileStorage {
     if (!available_) return;
     ThermalProfile profile{};
     portENTER_CRITICAL(&mux_);
-    const bool pending = hasPending_;
-    if (pending) profile = pending_;
+    const bool forced = hasForced_;
+    const bool pending = forced || hasPending_;
+    if (forced) { profile = forced_; hasForced_ = false; }
+    else if (pending) profile = pending_;
     portEXIT_CRITICAL(&mux_);
     if (!pending) return;
-    const uint32_t since = now - lastSave_;
-    if (!shouldPersistProfile(profile, stored_, storedValid_, since)) return;
-    portENTER_CRITICAL(&mux_); hasPending_ = false; portEXIT_CRITICAL(&mux_);
+    if (!forced) {
+      const uint32_t since = now - lastSave_;
+      if (!shouldPersistProfile(profile, stored_, storedValid_, since)) return;
+      portENTER_CRITICAL(&mux_); hasPending_ = false; portEXIT_CRITICAL(&mux_);
+    }
     lastSave_ = now;  // a failed write is wear/backoff bounded as well
     profile.sequence = sequence_ + 1U;
     sealProfile(profile);
@@ -88,8 +98,8 @@ class ProfileStorage {
  private:
   Preferences prefs_;
   portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
-  ThermalProfile pending_{}, stored_{};   // the boot seed is stored_ itself (no third copy)
-  bool hasPending_ = false, seedReady_ = false, invalidRecord_ = false;
+  ThermalProfile pending_{}, stored_{}, forced_{};   // the boot seed is stored_ itself (no third copy)
+  bool hasPending_ = false, hasForced_ = false, seedReady_ = false, invalidRecord_ = false;
   bool initialized_ = false, available_ = false, activeA_ = false, storedValid_ = false;
   uint32_t sequence_ = 0, lastSave_ = 0, saves_ = 0;
 };

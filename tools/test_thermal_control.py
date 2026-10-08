@@ -146,7 +146,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
     start=machine.index('enum class EventType :')
     end=body_end(machine,machine.index('class EventLog {',start))+1
     (out / 'actual-event.inc').write_text(event_types+machine[start:end])
-    for name, signature in [('start','  bool startAutoTune('),('update','  void updateAutoTune(')]:
+    for name, signature in [('start','  bool startAutoTune('),('cancel','  bool cancelAutoTune('),('update','  void updateAutoTune(')]:
         (out / ('actual-tune-'+name+'.inc')).write_text(method(signature))
     (out / 'actual-safety-thresholds.inc').write_text('\n'.join(
         'constexpr double MODEL_'+name.upper()+' = '+re.search(r'float '+name+r'\s*=\s*([\d.]+)f;',config)[1]+';'
@@ -163,7 +163,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
         shutil.copytree(out, args.emit_includes, dirs_exist_ok=True)
         print('Generated include directory: ' + str(args.emit_includes))
         raise SystemExit(0)
-    unit_tests = ['adaptive-observer','adaptive-thermal','thermal-autotune','thermal-control','thermal-startup','thermal-v2','thermal-output','thermal-heating','thermal-e115','thermal-config','thermal-filter','thermal-adaptive-unit']
+    unit_tests = ['adaptive-observer','adaptive-thermal','thermal-autotune','thermal-control','thermal-startup','thermal-v2','thermal-output','thermal-heating','thermal-e115','thermal-config','thermal-filter','thermal-adaptive-unit','thermal-smart-autotune-unit']
     if args.only: unit_tests = [t for t in args.only.split(',') if t]
     for test in unit_tests:
         variants = [1] if test in ('thermal-output','thermal-heating') else [0]

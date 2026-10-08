@@ -126,7 +126,9 @@ class ThermalLearner {
   }
   // The stored profile is a seed, never evidence: confidence is capped by the caller and
   // the accumulators start with only a small pseudo-observation weight.
-  void seed(const ThermalProfile &p, uint8_t confidenceCap) {
+  // `measuredHold`: the hold in `p` was MEASURED just now by an accepted Smart AutoTune (relay mean duty at the setpoint),
+  // so the wide forming band that would overwrite it with a biased-low off-setpoint window is skipped.
+  void seed(const ThermalProfile &p, uint8_t confidenceCap, bool measuredHold = false) {
     if (!profileRangesValid(p)) return;
     profile_ = p;
     sanitizeProfile(profile_);
@@ -145,7 +147,7 @@ class ThermalLearner {
     sxxF_[best_] = pseudo * 0.5f; sxyF_[best_] = pseudo * 0.5f * profile_.heaterGain;
     syyS_ = pseudo * profile_.heaterGain * profile_.heaterGain * 1.2f;
     seeded_ = true;
-    holdWindows_ = 0U;  // a stored hold is a seed, not a live window: no authority until re-measured
+    holdWindows_ = measuredHold ? Policy::HoldFormingWindows : 0U;  // a stored hold is a seed (no authority until re-measured); a freshly measured one is not
     // A stored vent estimate is a seed: no compensation until a live vent event has requalified it.
     profile_.ventConfidence = 0;
     ventEvents_ = 0;

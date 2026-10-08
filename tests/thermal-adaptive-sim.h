@@ -76,6 +76,11 @@ struct Scenario {
   std::ostream *debugOut = nullptr;  // per-sample controller internals (development)
   double debugFrom = 0, debugTo = 0;
   std::string label;
+  // Smart AutoTune qualification: run the post-tune closed loop with the ACCEPTED gains and profile seed.
+  bool gainsSet = false;
+  float kp = 18.0f, ki = 0.8f, kd = 45.0f;
+  bool seedSet = false;
+  MayapThermal::ThermalProfile seed{};
 };
 
 struct VentRecord { double start, end, minDev, postMax, recoverS, heaterOnS, windup; };
@@ -138,6 +143,8 @@ inline void configure(TuneHarness &h, const Scenario &sc) {
   // The real firmware holds a sensor start-up grace window; without it the first 6 samples
   // (sensor not yet usable) would force the exhaust fan on for its 120 s minimum.
   h.sensorStartupGraceUntil_ = sc.clockOffset + 1000U + 60000U;
+  if (sc.gainsSet) { h.config_.kp = sc.kp; h.config_.ki = sc.ki; h.config_.kd = sc.kd; }
+  if (sc.seedSet) h.thermalV1_.learner().seed(sc.seed, 75, sc.seed.holdPowerPct > 0.5f);
 }
 
 inline Result run(const Plant &base, const Scenario &sc) {

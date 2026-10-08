@@ -1,5 +1,6 @@
 #pragma once
 #include "thermal_assist.h"
+#include "thermal_profile.h"
 
 // Pure thermal algorithms. Including code provides MachineConfig, timing,
 // constants and sanitizeMachineConfig; the host test runs these SAME classes.
@@ -48,6 +49,20 @@ class ThermalController {
     } else {
       integral_ = 0.0f;
     }
+  }
+
+  // Take over from a source that has been delivering `outputPct` on average (relay hand-over): start the
+  // controller already holding that output, integral projected from it, so the first cycle is no step.
+  void seedBumpless(uint32_t now, float setpoint, float input, const MachineConfig &cfg, float outputPct) {
+    reset();
+    if (!isfinite(input) || !isfinite(setpoint) || cfg.controlMode != ControlMode::Pid) return;
+    const float maxOut = static_cast<float>(cfg.maxHeaterPower);
+    output_ = clampFloat(isfinite(outputPct) ? outputPct : 0.0f, 0.0f, maxOut);
+    initialized_ = true;
+    lastInput_ = input;
+    lastComputeAt_ = now;
+    const float integralLimit = maxOut + fabsf(cfg.kp * (1.0f - beta_) * setpoint);
+    integral_ = clampFloat(output_ - cfg.kp * (beta_ * setpoint - input), -integralLimit, integralLimit);
   }
 
   float updateOnNewSample(uint32_t now, float setpoint, float input,
@@ -380,11 +395,18 @@ class ThermalStartupController {
 };
 
 // These phases/reasons are service diagnostics, not changes to public state codes.
-enum class AutoTunePhase : uint8_t { Idle, Preheat, Heating, Cooling, Validating, Success, Failed };
+enum class AutoTunePhase : uint8_t {
+  Idle, Preheat, Heating, Cooling, Validating, Success, Failed,
+  // Smart AutoTune V1 (appended: the legacy numbering above is unchanged)
+  Baseline, Excite, Coast, Excite2, Approach, NearSp, Settle, Generate
+};
 enum class AutoTuneReason : uint8_t {
   None, SafetyAbort, SensorAbort, ModeAbort, PreheatTimeout, PhaseTimeout,
   TotalTimeout, NonRepeatable, AmplitudeTooSmall, PeriodTooSmall,
-  InvalidKu, InvalidGains, SaveFailed, Success
+  InvalidKu, InvalidGains, SaveFailed, Success,
+  // Smart AutoTune V1 (appended)
+  NoHeadroom, BaselineUnstable, NoResponse, ModelInvalid, PowerLimited, ApproachTimeout,
+  RelayFailed, CandidateInvalid, ValidationFailed
 };
 inline const char *autoTunePhaseName(AutoTunePhase phase) {
   switch(phase) {
@@ -392,6 +414,10 @@ inline const char *autoTunePhaseName(AutoTunePhase phase) {
     case AutoTunePhase::Heating:return "HEATING";case AutoTunePhase::Cooling:return "COOLING";
     case AutoTunePhase::Validating:return "VALIDATING";case AutoTunePhase::Success:return "SUCCESS";
     case AutoTunePhase::Failed:return "FAILED";
+    case AutoTunePhase::Baseline:return "BASELINE";case AutoTunePhase::Excite:return "EXCITE";
+    case AutoTunePhase::Coast:return "COAST";case AutoTunePhase::Excite2:return "EXCITE2";
+    case AutoTunePhase::Approach:return "APPROACH";case AutoTunePhase::NearSp:return "NEAR_SP";
+    case AutoTunePhase::Settle:return "SETTLE";case AutoTunePhase::Generate:return "GENERATE";
   }
   return "UNKNOWN";
 }
@@ -404,15 +430,45 @@ inline const char *autoTuneReasonName(AutoTuneReason reason) {
     case AutoTuneReason::AmplitudeTooSmall:return "AMPLITUDE_TOO_SMALL";case AutoTuneReason::PeriodTooSmall:return "PERIOD_TOO_SMALL";
     case AutoTuneReason::InvalidKu:return "INVALID_KU";case AutoTuneReason::InvalidGains:return "INVALID_GAINS";
     case AutoTuneReason::SaveFailed:return "SAVE_FAILED";case AutoTuneReason::Success:return "SUCCESS";
+    case AutoTuneReason::NoHeadroom:return "NO_HEADROOM";case AutoTuneReason::BaselineUnstable:return "BASELINE_UNSTABLE";
+    case AutoTuneReason::NoResponse:return "NO_RESPONSE";case AutoTuneReason::ModelInvalid:return "MODEL_INVALID";
+    case AutoTuneReason::PowerLimited:return "POWER_LIMITED";case AutoTuneReason::ApproachTimeout:return "APPROACH_TIMEOUT";
+    case AutoTuneReason::RelayFailed:return "RELAY_FAILED";case AutoTuneReason::CandidateInvalid:return "CANDIDATE_INVALID";
+    case AutoTuneReason::ValidationFailed:return "VALIDATION_FAILED";
   }
   return "UNKNOWN";
 }
-class RelayAutoTune {
+// Members the controller calls on whichever engine is compiled in. The legacy relay-only engine gets
+// harmless defaults so machine_control.h keeps a single code path.
+struct AutoTuneModelView { float gain = 0, delaySec = 0, coast100C = 0, holdPct = 0, ku = 0, periodSec = 0; uint8_t confidence = 0; };
+struct AutoTuneEvalView { float overshoot = 0, mae = 0, p95 = 0, ripple = 0; };
+struct AutoTuneEngineDefaults {
+  AutoTuneModelView model() const { return AutoTuneModelView(); }
+  AutoTuneEvalView eval() const { return AutoTuneEvalView(); }
+  float candidateKp() const { return 0; }
+  float candidateKi() const { return 0; }
+  MayapThermal::ThermalProfile profile() const { return MayapThermal::defaultProfile(); }
+  MayapThermal::StartupHint startupHint(float, float) const { return MayapThermal::StartupHint(); }
+  MayapThermal::Assist assist() const { return MayapThermal::Assist(); }
+  void tick(uint32_t, bool) {}
+  void noteController(float, float) {}
+  bool externalControl() const { return false; }
+  bool preflight(float, const MachineConfig &, const char *&) { return true; }
+  bool takeValidationStart(float &) { return false; }
+  void applyCandidate(MachineConfig &) const {}
+  uint32_t modelSerial() const { return 0; }
+  bool hasProfile() const { return false; }
+};
+class RelayAutoTune : public AutoTuneEngineDefaults {
  public:
   struct Cycle { float high=NAN,low=NAN,amplitude=0; uint32_t periodMs=0,heatMs=0,coolMs=0; };
   struct Result { float amplitude=0,periodSec=0,heatSec=0,coolSec=0,ku=0,gainScale=1; };
   explicit RelayAutoTune(uint8_t preheatPercent=AUTOTUNE_PREHEAT_POWER_PERCENT)
       : preheatPercent_(preheatPercent) {}
+  // Smart AutoTune V1 reuses the relay near the setpoint with a power derived from the identified plant.
+  void setPreheatPercent(uint8_t percent) { preheatPercent_ = percent; }
+  // Smart AutoTune runs the relay on plants far slower than the legacy limits assume (cold start is NOT part of it any more).
+  void setLimits(uint32_t totalMs, uint32_t preheatMs, uint32_t phaseMs) { totalMaxMs_ = totalMs; preheatMaxMs_ = preheatMs; phaseMaxMs_ = phaseMs; }
   void configure(float target) { target_=target; }
   void start(uint32_t now,float input) {
     state_=AutoTuneState::Running;phase_=AutoTunePhase::Preheat;reason_=AutoTuneReason::None;
@@ -436,10 +492,10 @@ class RelayAutoTune {
   // Called every control cycle; timeout enforcement cannot wait for a sensor sample.
   void checkTimeout(uint32_t now) {
     if(!running())return;
-    if(elapsedMs(now,startedAt_)>=AUTOTUNE_TOTAL_MAX_MS)abort(AutoTuneReason::TotalTimeout);
-    else if(phase_==AutoTunePhase::Preheat && elapsedMs(now,phaseStartedAt_)>=AUTOTUNE_PREHEAT_MAX_MS)
+    if(elapsedMs(now,startedAt_)>=totalMaxMs_)abort(AutoTuneReason::TotalTimeout);
+    else if(phase_==AutoTunePhase::Preheat && elapsedMs(now,phaseStartedAt_)>=preheatMaxMs_)
       abort(AutoTuneReason::PreheatTimeout);
-    else if(phase_!=AutoTunePhase::Preheat && elapsedMs(now,phaseStartedAt_)>=AUTOTUNE_PHASE_MAX_MS)
+    else if(phase_!=AutoTunePhase::Preheat && elapsedMs(now,phaseStartedAt_)>=phaseMaxMs_)
       abort(AutoTuneReason::PhaseTimeout);
   }
   bool update(uint32_t now,float input,const MachineConfig &cfg,MachineConfig &tunedOut) {
@@ -547,7 +603,8 @@ class RelayAutoTune {
   const Result &result()const{return result_;}
   bool running()const{return state_==AutoTuneState::Running;}
  private:
-  const uint8_t preheatPercent_;
+  uint8_t preheatPercent_;
+  uint32_t totalMaxMs_=AUTOTUNE_TOTAL_MAX_MS,preheatMaxMs_=AUTOTUNE_PREHEAT_MAX_MS,phaseMaxMs_=AUTOTUNE_PHASE_MAX_MS;
   AutoTuneState state_=AutoTuneState::Idle;
   AutoTunePhase phase_=AutoTunePhase::Idle;
   AutoTuneReason reason_=AutoTuneReason::None,rejection_=AutoTuneReason::None;

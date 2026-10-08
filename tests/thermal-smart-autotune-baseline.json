@@ -1,0 +1,6 @@
+{
+  "note": "Regression ceilings for tools/test_smart_autotune.py (SIMULATION ONLY). Lower acceptance or more ACCEPTED_BAD than recorded fails CI; improve the numbers, never relax them without a review note.",
+  "miniAcceptedMin": 17,
+  "fullAcceptedMin": 240,
+  "fullAcceptedBadMax": 4
+}

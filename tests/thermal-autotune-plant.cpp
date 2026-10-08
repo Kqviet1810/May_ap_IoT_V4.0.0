@@ -1,3 +1,4 @@
+#define MAYAP_AUTOTUNE_LEGACY 1
 // Same uncalibrated LIGHT/MEDIUM/HEAVY plant as OLD/NEW control-only matrix.
 // Tune loop enforces real AutoTune safety/abort and saves through real config I/O.
 // Post-validation is CONTROL-ONLY / NO PRODUCTION SAFETY INTERVENTION; crossings
