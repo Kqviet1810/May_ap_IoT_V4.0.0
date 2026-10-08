@@ -246,6 +246,12 @@ function startDeviceEmulator({ url, deviceId, password, commandKeyHex, activeInt
     // Late terminal ACK for commands that were silently held (V2 late-ACK path).
     async releaseSilenced() { state.silent = false; for (const item of silenced.splice(0)) await runCommand(item.doc, item.op, item.key); },
     get connected() { return connected; },
+    // Device -> cloud alarm over MQTT (QoS1, the PUBACK means BROKER_STORED). Resolves with the PUBACK latency in ms.
+    publishAlarm(eventId, alarmType = 'FAULT_130', state = 'active') {
+      const started = Date.now();
+      return new Promise((resolve) => client.publish(`${root}/alarm`, JSON.stringify({ event_id: eventId, alarm_type: alarmType,
+        severity: 'critical', state, message: `${alarmType} ${state}` }), { qos: 1 }, (error) => resolve(error ? -1 : Date.now() - started)));
+    },
     // Abrupt socket loss: the broker must publish the retained LWT.
     dropConnection() { clearInterval(tick); connected = false; client.stream.destroy(); },
     stop() { clearInterval(tick); connected = false; client.end(true); },

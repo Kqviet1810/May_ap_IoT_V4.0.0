@@ -1074,9 +1074,10 @@
     pill.textContent = label;
     pill.className = `pill ${css}`;
     renderServerAlarmBanner(device);
-    $('wifiConnectionText').textContent = state.realtimeSessionState === 'auth-required' && device
+    const backlog = uplinkBacklogText(device);
+    $('wifiConnectionText').textContent = (state.realtimeSessionState === 'auth-required' && device
       ? `${detail} · ghép nối lại để điều khiển` : state.realtimeSessionState === 'error' && !state.realtime
-        ? 'Chưa nối máy chủ · đang thử lại' : detail;
+        ? 'Chưa nối máy chủ · đang thử lại' : detail) + (backlog ? ` · ${backlog}` : '');
     $('sideStatus').textContent = label;
     if ($('dataFreshness')) {
       $('dataFreshness').textContent = freshnessLabel(device);
@@ -2515,6 +2516,24 @@
     if (device.id === state.selectedId) renderDevice();
   }
 
+  // Broker -> Web: what the broker still has to hand to the Worker (D1 + Push). It says nothing about the machine or the Web's own
+  // link: a backlog here means "stored by the broker, not yet at the Worker", never "the machine lost its connection".
+  function handleUplinkStatus(device, status) {
+    if (!status || typeof status !== 'object') return;
+    device.uplink = { pending: Number(status.pending) || 0, retrying: Number(status.retrying) || 0, throttled: Number(status.throttled) || 0,
+      oldestAgeMs: Number(status.oldest_age_ms) || 0, rejected: Number(status.rejected) || 0, overflow: Number(status.overflow) || 0,
+      lastError: String(status.last_error || '').slice(0, 48), at: Date.now(), epoch: state.subscriptionEpoch };
+    if (device.id === state.selectedId) renderDevice();
+  }
+
+  function uplinkBacklogText(device) {
+    const info = device?.uplink;
+    if (!info || info.epoch !== state.subscriptionEpoch || !state.realtimeConnected || info.pending <= 0) return '';
+    const waiting = info.oldestAgeMs >= 60000 ? ` (đã chờ ${durationVi(info.oldestAgeMs)})` : '';
+    const cause = info.retrying > 0 ? ' · máy chủ chưa nhận, đang thử lại' : info.throttled > 0 ? ' · chờ hết thời gian giới hạn thông báo' : '';
+    return `${info.pending} cảnh báo đã được lưu ở broker, đang chờ chuyển lên máy chủ${waiting}${cause}`;
+  }
+
   function handleBootstrap(device, hint) {
     if (!hint || hint.v !== 1 || !Number(hint.bootId) || typeof hint.machineState !== 'string') return;
     // A retained message can be arbitrarily old. Never replace a full live sample,
@@ -3115,6 +3134,7 @@
     else if (channel === 'config/reported') handleConfigReport(device, payload);
     else if (channel === 'log') handleLog(device, payload);
     else if (channel === 'history/reported') handleTemperatureHistory(device, payload);
+    else if (channel === 'uplink') handleUplinkStatus(device, payload);
     else if (channel === 'ack') {
       // The ACK must verify against the session key of the transaction it settles.
       verifyDeviceAck(device, payload).then((valid) => {

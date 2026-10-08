@@ -47,7 +47,7 @@ async function main() {
     // 2. The real broker.
     const brokerLog = fs.createWriteStream(path.join(out, 'broker.log'));
     const broker = spawn(path.join(root, 'cloudflare/node_modules/.bin/wrangler'), ['dev', '--config', 'wrangler-broker.toml', '--port', String(PORT),
-      '--local', '--var', `BROKER_DEVICE_SECRET:${DEVICE_SECRET}`, '--var', `BROKER_WEB_TOKEN_SECRET:${WEB_TOKEN_SECRET}`],
+      '--local', '--persist-to', fs.mkdtempSync(path.join(os.tmpdir(), 'mayap-interop-state-')), '--var', `BROKER_DEVICE_SECRET:${DEVICE_SECRET}`, '--var', `BROKER_WEB_TOKEN_SECRET:${WEB_TOKEN_SECRET}`],
       { cwd: path.join(root, 'cloudflare'), stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     broker.stdout.pipe(brokerLog); broker.stderr.pipe(brokerLog); children.push(broker);
     await until('broker up', async () => { try { return (await fetch(`http://127.0.0.1:${PORT}/healthz`)).status < 500; } catch (_) { return false; } }, 60000, 500);

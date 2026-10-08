@@ -89,6 +89,7 @@ async function main() {
   try {
     const broker = spawnLogged(path.join(root, 'cloudflare/node_modules/.bin/wrangler'), [
       'dev', '--config', 'wrangler-broker.toml', '--port', String(BROKER_PORT), '--local',
+      '--persist-to', fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'mayap-mvp-state-')),   // clean Durable Object storage every run
       '--var', `BROKER_DEVICE_SECRET:${DEVICE_SECRET}`,
       '--var', `BROKER_WEB_TOKEN_SECRET:${WEB_TOKEN_SECRET}`],
     { cwd: path.join(root, 'cloudflare') }, 'broker.log');
@@ -230,6 +231,16 @@ async function main() {
       `${samples.length} samples, ${notOnline.length} not online (${[...new Set(notOnline)].join(',') || '-'}), ${sessionRequests.length} session request(s)`);
     record('W6b snapshots keep flowing on the replacement socket after the swap',
       emulator.stats.snapshots - beforeSwapCheck >= 2, `${emulator.stats.snapshots - beforeSwapCheck} snapshots in 2.5 s`);
+
+    // W7 backlog visibility: this broker has no Worker behind it, so an alarm is stored (PUBACK at once) and stays queued. The Web
+    // must say so, plainly, without touching the connection state.
+    const alarmAck = await emulator.publishAlarm('e2e-alarm-0001');
+    const backlogText = await until('backlog shown', async () => {
+      const value = (await text('#wifiConnectionText')) || '';
+      return /đang chờ chuyển lên máy chủ/.test(value) ? value : '';
+    }, 12000, 200);
+    record('W7 an alarm the broker stored but the Worker has not received is PUBACKed at once and shown to the user as a backlog, link still online',
+      alarmAck >= 0 && alarmAck < 1000 && (await connection()) === 'online', `PUBACK ${alarmAck} ms; text="${backlogText.trim()}"`);
 
     // Reconnect: abrupt device loss -> retained LWT -> Web offline; new device session -> online
     emulator.dropConnection();
