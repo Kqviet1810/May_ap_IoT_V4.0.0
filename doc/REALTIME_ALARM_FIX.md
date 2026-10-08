@@ -25,6 +25,32 @@ Các lỗi phụ cùng nằm trên đường này, đã sửa:
 
 Chưa chứng minh được (nói thẳng): vì sao trong đúng đợt log đó cửa sổ `inflight=8` bị kẹt ~10 s **mà link không rớt**. Giả thuyết còn lại: độ trễ phía Cloudflare, hoặc phía thiết bị khi heap ~35 kB. Bản sửa **không phụ thuộc** vào việc xác định điều đó (ACK được dự trữ chỗ, kẹt thì hết hạn thay vì đóng socket, back-off), và bản mới in đủ dữ liệu để biết ở lần chạy sau: `brokerClose=<code>`, `rxAge`, `[MQTT-STAT] qos1 expired/refusedAck/refusedBulk`, `probes/answered`, RTT PUBACK.
 
+### Sơ đồ nguyên nhân R1 (trước khi sửa)
+
+```
+ESP32 alarm ──MQTT PUBLISH──► broker DO ──await fetch (≤5 s)──► Worker: ~8 truy vấn D1 tuần tự (2,4–2,6 s, có lúc >4 s) ──► durable ──► PUBACK
+      │ chờ PUBACK 1,5–4 s (cloud_alert_link.h awaitUplink)          ▲ cooldown 15 s → durable:false (429) → KHÔNG PUBACK
+      ▼ hết hạn
+ MayapUplink::suspect()  ─► classify()=NoAck ─► decide()=Https (critical: 0 s grace)
+      ▼
+ postJson → MayapTlsOperation(Cloud) bị từ chối (MQTT đang giữ TLS) → mayapRequestCloudTlsYield()
+      ▼
+ mqttTask: "closed on purpose (cloud-tls)" → LWT presence{online:false} → Web "NGOẠI TUYẾN"/nối lại
+```
+
+Sau khi sửa: PUBACK đến từ DO trong ~20–60 ms; PUBACK trễ chỉ yêu cầu một PINGREQ thăm dò và thử lại qua MQTT; `suspect()` không còn tồn tại; HTTPS chỉ được phép khi transport đã được xác nhận hỏng độc lập.
+
+### Mã lý do (đã phân biệt, không dùng chung một tín hiệu timeout)
+
+| Mã yêu cầu | Nơi hiện thực / log |
+|---|---|
+| `TRANSPORT_DOWN` | `Cause::Down/Flapping/HalfOpen`; `[MQTT] link lost (… brokerClose=<code> '<reason>')` |
+| `PUBACK_TIMEOUT` / `INGEST_FAILED` | `[CLOUD] no MQTT PUBACK … INGEST_TIMEOUT misses=N, link kept`; phía broker `uplink.last_error=HTTP_5xx/TIMEOUT/FETCH_ERROR/NO_INGEST` |
+| `BACKPRESSURE` | thiết bị: `refusedAck/refusedBulk` + `[CFG-TX] ACK PUB FAIL (refused N … retry in …)`; broker: `overflow` và hàng đợi QoS1 `pend:*` |
+| `CLOUD_TLS_YIELD` | `[MQTT] closed on purpose (cloud-tls) why=<alarm:link-down|alarm:link-flapping|alarm:half-open-confirmed|alarm:critical-starved|beacon:broker-unreachable|other>` |
+| `INTENTIONAL_CLOSE` | `closed on purpose (radio|memory|cloud-tls|isolated)` + bộ đếm `[MQTT-STAT] closes radio/mem/cloud-tls/iso/lost` |
+| `BROKER_STORED` / `D1_STORED` / `PUSH_*` | PUBACK alarm / phán quyết `stored|duplicate` của Worker / `push.sent|pending` ở `/status?alarms=1` |
+
 ## 2. Ranh giới trách nhiệm (bốn trạng thái độc lập)
 
 | Trạng thái | Ai biết | Bằng chứng | Hậu quả |
