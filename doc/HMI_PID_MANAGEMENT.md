@@ -69,3 +69,13 @@ Mất Wi-Fi/Cloudflare/HMI: yêu cầu Web hết hạn, điều khiển cục b�
 | Web | `tests/web-experience.test.cjs`, `tests/protocol-v2.test.cjs` | cổng ẨN/HIỆN, chỉ gửi trường đổi, ngân sách gói, không số liệu giả |
 
 Chưa kiểm trên phần cứng: tốc độ vẽ LCD 128×64 khi xoay nhanh, núm xoay thật, ghi EEPROM thật/mất điện thật, đo stack task, thời gian một lần ghi lịch sử trong vòng điều khiển.
+
+## 9. Kích thước firmware (CI PILOT, run 37887810763)
+
+| | Flash | RAM tĩnh |
+|---|---|---|
+| Baseline trước nhánh này (sau Smart AutoTune) | 1,451,089 B | 162,120 B |
+| Sau HMI/PID management | 1,474,669 B (+23,580) | 163,552 B (+1,432) |
+
+Ngân sách mềm Flash cũ 1,460,000 B bị vượt 14,669 B nên đã nâng lên **1,480,000 B** (còn dư ~5,3 KB); ngân sách RAM 164,000 B giữ nguyên và chỉ còn dư **448 B**.
+Giới hạn cứng phân vùng app là 3,342,336 B (Flash dùng ~44 %). Chưa đo dư stack các task trên phần cứng (NOT TESTED); nếu cần thêm tính năng, RAM là ràng buộc chính.
