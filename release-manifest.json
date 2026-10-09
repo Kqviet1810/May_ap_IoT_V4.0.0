@@ -2,7 +2,7 @@
   "release": "1.1.2",
   "firmware": "1.1.2",
   "hmi": "1.0.0",
-  "web": "1.1.6",
+  "web": "1.1.7",
   "web_storage_schema": 10,
   "attiny_protocol": 4,
   "esp32_core": "3.3.11",
@@ -22,5 +22,5 @@
       "serial_input_sim": false
     }
   },
-  "notes": "Web 1.1.6 hardens Android installed-PWA reopen: canonical scope-root start/id, required runtime shell install, navigation-specific cached fallback and non-ERR_FAILED offline response. Firmware/HMI/control/safety are unchanged."
+  "notes": "Web 1.1.7: read-only PID Monitor (live numbers + charts), Smart AutoTune stage/result/failure reason, and a Kỹ thuật PID section that exists only while the HMI grants it and needs the 4-digit technical PIN; the Web never saves PID itself (it sends a request that the machine shows as old/new and waits for CÓ/KHÔNG, 60 s). Firmware/HMI release numbers are unchanged."
 }
