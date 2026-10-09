@@ -77,14 +77,17 @@ test('FRAME packet worst cases stay within budgets', () => {
     autotuneRelayPowerPercent: 80, autotuneBandC: 1,
   };
   const webSource = readFileSync(require.resolve('../app.js'), 'utf8');
-  const advancedSource = webSource.split("} else if (group === 'advanced') {")[1]
-    ?.split('    return config;')[0];
-  assert.ok(advancedSource, 'advanced form source not found');
-  const advancedFields = [...advancedSource.matchAll(/config\.([A-Za-z0-9]+)\s*=/g)]
-    .map((match) => match[1]);
-  // The reserved field still fits the legacy packet but is no longer editable.
-  assert.deepEqual([...new Set(advancedFields)].sort(), Object.keys(advanced).filter(key => key !== 'pidCycleSec').sort());
+  // Technical fields no longer travel in config/set: the Web sends ONE tech_request command with the changed fields.
+  const techSource = webSource.split('const TECH_FIELDS = Object.freeze([')[1]?.split(']);')[0];
+  assert.ok(techSource, 'technical field table not found');
+  const techKeys = [...techSource.matchAll(/\['([A-Za-z0-9]+)',\s*'[A-Za-z0-9]+'\]/g)].map((match) => match[1]);
+  assert.deepEqual([...techKeys, 'adaptiveThermalBalanceEnabled'].sort(),
+    Object.keys(advanced).filter((key) => key !== 'pidCycleSec').concat(['tempOffset', 'humidityOffset']).sort());
   assert.ok(webSource.includes("'pidCycleSec'"), 'legacy full-config readback remains supported');
+  const fields = Object.fromEntries([...techKeys, 'adaptiveThermalBalanceEnabled'].map((key) => [key, 3600.1234]));
+  const techRequest = { ...base, bootId: 4294967295, expiresAt: 1780000000, action: 'tech_request', kind: 'config', fields };
+  assert.ok(wireBytes('command', techRequest) < PacketPolicy.CHUNK_TARGET, `tech_request ${wireBytes('command', techRequest)} B`);
+  assert.ok(wireBytes('command', { ...base, bootId: 4294967295, expiresAt: 1780000000, action: 'tech_unlock', pin: '0427' }) < PacketPolicy.SMALL_TARGET);
   const config = { ...base, requestId: `cfg-${'a'.repeat(20)}`,
     revision: 4294967295, bootId: 4294967295, config: advanced };
   assert.ok(wireBytes('config/set', config) < PacketPolicy.CHUNK_TARGET);
@@ -118,10 +121,10 @@ test('FRAME packet worst cases stay within budgets', () => {
   assert.ok(Buffer.byteLength(JSON.stringify(response)) + Buffer.byteLength(JSON.stringify({v:1,channel:'ack',payload:null})) - 4 < PacketPolicy.SMALL_TARGET);
 });
 
-test('all eight config forms use patches within the shared packet policy', () => {
+test('all six config forms use patches within the shared packet policy', () => {
   const source = readFileSync(require.resolve('../app.js'), 'utf8');
   const build = source.split('  function buildConfig(group) {')[1].split('  function nextRevision')[0];
-  const groups = ['quick', 'batch', 'temperature', 'turning', 'sensor', 'lightAlarm', 'humidifier', 'advanced'];
+  const groups = ['quick', 'batch', 'temperature', 'turning', 'lightAlarm', 'humidifier'];
   for (const group of groups) {
     const section = build.split(new RegExp(`(?:if|else if) \\(group === '${group}'\\) \\{`))[1]
       ?.split(/\n    \} else if|\n    \}\n    return config/)[0];

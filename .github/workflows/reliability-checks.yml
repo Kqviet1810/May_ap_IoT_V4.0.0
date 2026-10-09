@@ -116,11 +116,23 @@ jobs:
       - name: Actual PID and autotune host tests
         run: python3 tools/test_thermal_control.py --sanitize --report-dir /tmp/mayap-thermal-report
 
+      - name: Adaptive Thermal V1 simulation gates (simulation only, physical validation required)
+        run: python3 tools/test_thermal_adaptive.py --report-dir /tmp/mayap-thermal-adaptive-report
+
+      - name: Smart AutoTune V1 simulation gates (simulation only, physical commissioning required)
+        run: python3 tools/test_smart_autotune.py --report-dir /tmp/mayap-smart-autotune-report
+
+      - name: Technical PIN, Web permission, HMI-approved requests and old records (host tests of the real controller code)
+        run: python3 tools/test_tech_access.py --sanitize
+
       - name: Thermal control-only metrics and safety threshold qualification (physical performance unverified)
         uses: actions/upload-artifact@v4
         with:
           name: thermal-old-new-metrics
-          path: /tmp/mayap-thermal-report
+          path: |
+            /tmp/mayap-thermal-report
+            /tmp/mayap-thermal-adaptive-report/summary.md
+            /tmp/mayap-smart-autotune-report/summary.md
 
       - name: Adaptive staged boot policy host tests
         run: |

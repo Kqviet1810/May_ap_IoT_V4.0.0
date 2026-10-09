@@ -1,4 +1,7 @@
 #pragma once
+#ifndef MAYAP_ADAPTIVE_OBSERVER_ONLY
+#define MAYAP_ADAPTIVE_OBSERVER_ONLY 0
+#endif
 // Real config load/save, EventLog, AutoTune update and heating/output bodies.
 // Host replaces only clocks, GPIO, EEPROM I/O and UI notification sinks.
 #include <algorithm>
@@ -25,8 +28,11 @@ constexpr float PI=3.14159265358979323846f;
 #include "actual-autotune-constants.inc"
 enum class AutoTuneState:uint8_t{Idle=0,Running=1,Success=2,Failed=3};
 #include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_control.h"
+#include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_smart_autotune.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/heater_burst_scheduler.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/startup_output_policy.h"
+#include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_adaptive_v1.h"
+#include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_profile_storage.h"
 constexpr int LOW=0,HIGH=1,OUTPUT=2;
 static int levels[64]{};
 static bool bootReady=true,trip=false,maintenance=false,serialEnabled=false;
@@ -81,13 +87,16 @@ constexpr uint8_t HEATER_GROUP_COUNT=1;
 struct TuneHarness {
   FakeInputs inputs_;FakeRtc rtc_;FakeFaults faults_;MachineConfig config_;
   TuneStore store_;EventLog eventLog_;OutputArbiter outputs_;
-  ThermalController pid_;ThermalStartupController startupHeat_;RelayAutoTune autotune_;
+  ThermalController pid_;ThermalStartupController startupHeat_;AutoTuneEngine autotune_;
+  void recordAdvancedHistory(const MachineConfig &){}   // the HMI keeps the replaced advanced values; the tune harness has no history ring
 #include "actual-burst-member.inc"
   struct{float heaterPower=0;bool adaptiveEnabled=false,adaptiveSelfHeating=false;
     uint8_t adaptiveState=0,lastAdaptiveReason=0;
     float adaptiveConfidence=0,adaptiveLoadIndex=0,adaptiveCoastRiseC=0,adaptiveCoastTimeSec=0;
     float adaptiveHoldPowerPct=0,effectiveMaxPowerPct=0,adaptiveApproachBandC=0,adaptiveCoolingDemand=0;
-    uint32_t observerValidWindows=0;}runtime_;
+    uint32_t observerValidWindows=0;
+    uint8_t thermalLearnState=0,thermalConfidence=0,thermalVentPhase=0;
+    float thermalGain=0,thermalDelaySec=0,thermalCoastC=0,thermalHoldPct=0,thermalVentGain=0,thermalPredictionError=0;}runtime_;
   bool testModeActive_=false,lightWebOverrideActive_=false,lightWebOverrideRefInput_=false,lightWebOverrideValue_=false;
   bool resumeConfirmationRequired_=false,resumePending_=false,batchRunning_=false,prevBatchRunningForOutputs_=false;
   bool sensorUsable_=true,humidityLowActive_=false,previousFanCommand_=false;
@@ -97,19 +106,28 @@ struct TuneHarness {
   uint32_t circFanStaggerUntil_=0,postCoolUntil_=0,sensorStartupGraceUntil_=0,fanOnSince_=0,heatRestartNotBefore_=0,sirenMutedUntil_=0;
   float temperature_=25,rawTemperature_=25,humidity_=60,pidPower_=0;
   TurnPhase turnPhase_=TurnPhase::Idle;
-  uint32_t elapsedBatchSec(uint32_t)const{return 0;}
+  uint32_t batchElapsedSec_=0;
+  uint32_t elapsedBatchSec(uint32_t)const{return batchElapsedSec_;}
   void updateTestModeOutputs(uint32_t now){outputs_.forceSafe(now);}
   void latchStorageFault(const char *){storageFaultLatched_=true;}
 #include "actual-tune-start.inc"
+#include "actual-tune-cancel.inc"
 #include "actual-tune-update.inc"
 #ifdef MAYAP_TEST_ADAPTIVE
   MayapAdaptive::AdaptiveThermalSupervisor adaptiveThermal_;
+  MayapThermal::AdaptiveV1 thermalV1_;MayapThermal::VentInfo ventInfo_{};bool ventForcedRun_=false;
+  uint32_t thermalDiagnosticAt_=0;
+  MayapThermal::LearnState thermalLoggedState_=MayapThermal::LearnState::Unlearned;bool thermalMismatchLogged_=false;
   uint32_t adaptiveDiagnosticAt_=0,adaptiveSignature_=0;
   bool adaptiveSignatureSeen_=false;
   MayapAdaptive::State adaptiveLoggedState_=MayapAdaptive::State::Disabled;
   struct {uint8_t sensorProfile()const{return 1;}} sensor_;
 #include "actual-adaptive.inc"
 #else
+  MayapThermal::AdaptiveV1 thermalV1_;MayapThermal::VentInfo ventInfo_{};bool ventForcedRun_=false;
+  void publishThermalLearning(uint32_t){}
+  uint32_t thermalSignature()const{return 0;}
+  struct{uint32_t epoch()const{return 1800000000;}}rtcEpoch_;
   void trackAdaptiveEnergy(uint32_t){}
   float updateAdaptiveBalance(uint32_t,bool,bool,bool){return config_.maxHeaterPower;}
   bool adaptiveCoolingRequested()const{return false;}

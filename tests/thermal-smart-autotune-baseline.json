@@ -1,0 +1,6 @@
+{
+  "note": "Regression ceilings for tools/test_smart_autotune.py (SIMULATION ONLY). Lower acceptance or any ACCEPTED_BAD fails CI. 2026-10-09 final hardening: fullAcceptedBadMax 2 -> 0 and fullAcceptedMin 240 -> 225 on purpose (the verification now rejects what it cannot prove: horizon from the identified loop, worst-case probe-resolution margin, steady-regime evidence; 20 of the 251 old accepts - 2 bad, 18 good - became safe rejects). Improve the numbers, never relax them without a review note.",
+  "miniAcceptedMin": 16,
+  "fullAcceptedMin": 225,
+  "fullAcceptedBadMax": 0
+}

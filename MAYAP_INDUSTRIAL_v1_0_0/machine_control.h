@@ -3,6 +3,8 @@
 #include "config.h"
 #include "adaptive_thermal_balance.h"
 #include "adaptive_persistence.h"
+#include "thermal_adaptive_v1.h"
+#include "thermal_profile_storage.h"
 #include "turn_schedule_policy.h"
 #include "firmware_update_guard.h"
 #include "boot_diagnostic.h"
@@ -12,6 +14,10 @@
 #include <HardwareSerial.h>
 #include <Wire.h>
 #include <Preferences.h>
+#include <esp_random.h>
+#include "tech_access.h"
+#include "advanced_history.h"
+#include "tech_request.h"
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 #include <esp32-hal-rgb-led.h>
@@ -195,7 +201,8 @@ enum class EventCode : uint16_t {
   InputBase = 100,
   OutputBase = 200,
   FaultBase = 1000,
-  AdaptiveChanged = 450, AdaptiveModelInvalidated, AdaptiveEnabled, AdaptiveDisabled
+  AdaptiveChanged = 450, AdaptiveModelInvalidated, AdaptiveEnabled, AdaptiveDisabled,
+  ThermalLearnChanged, ThermalModelMismatch
 };
 
 struct EventEntry {
@@ -2110,6 +2117,17 @@ static_assert(sizeof(BatchRecordV1) <= EEPROM_BATCH_SLOT_BYTES,
 static_assert(sizeof(BatchRecordLegacyV2) <= EEPROM_BATCH_SLOT_BYTES,
               "Legacy batch record khong vua slot AT24C32");
 
+// Technical records live in spare AT24C512 space after the 7-day history (0x2F80); config/batch/history addresses are unchanged.
+constexpr uint16_t EEPROM_ADDR_TECH_AUTH_A = 0x3000U;
+constexpr uint16_t EEPROM_ADDR_TECH_AUTH_B = 0x3080U;
+constexpr uint16_t EEPROM_ADDR_ADV_HISTORY = 0x3100U;      // three CRC slots, one record each
+constexpr uint16_t EEPROM_ADV_HISTORY_SLOT_BYTES = 0x0040U;
+static_assert(EEPROM_ADDR_TECH_AUTH_A >= EEPROM_ADDR_TEMP_HISTORY + TEMP_HISTORY_STORAGE_BYTES, "tech records overlap the temperature history");
+static_assert(EEPROM_ADDR_TECH_AUTH_A + sizeof(TechAccess::AuthRecord) <= EEPROM_ADDR_TECH_AUTH_B, "auth A overlaps auth B");
+static_assert(EEPROM_ADDR_TECH_AUTH_B + sizeof(TechAccess::AuthRecord) <= EEPROM_ADDR_ADV_HISTORY, "auth B overlaps the advanced history");
+static_assert(sizeof(AdvancedHistory::Record) <= EEPROM_ADV_HISTORY_SLOT_BYTES, "advanced history record does not fit its slot");
+static_assert(EEPROM_ADDR_ADV_HISTORY + AdvancedHistory::Slots * EEPROM_ADV_HISTORY_SLOT_BYTES <= EEPROM_CAPACITY_BYTES, "advanced history beyond the chip");
+
 class PersistentStore {
  public:
   bool begin() {
@@ -2202,6 +2220,38 @@ class PersistentStore {
     if (!ready_ || !refreshBatchCache()) return false;
     out = batchPayload_;
     return true;
+  }
+
+  // ---- technical access record (PIN hash, Web permission, strike counters): two alternating slots with sequence + CRC ----------
+  // Error = the chip could not be read (never reported as "blank": the PIN gate stays closed). Blank = both slots read fine, none valid.
+  TechAccess::LoadStatus loadTechAuth(TechAccess::AuthRecord &best) {
+    if (!ready_) return TechAccess::LoadStatus::Error;
+    TechAccess::AuthRecord a{}, b{};
+    const bool readA = readRecord(EEPROM_ADDR_TECH_AUTH_A, a), readB = readRecord(EEPROM_ADDR_TECH_AUTH_B, b);
+    const bool va = readA && TechAccess::recordValid(a), vb = readB && TechAccess::recordValid(b);
+    if (va || vb) { best = (!vb || (va && newer(a.sequence, b.sequence))) ? a : b; return TechAccess::LoadStatus::Ok; }
+    return (readA && readB) ? TechAccess::LoadStatus::Blank : TechAccess::LoadStatus::Error;
+  }
+  bool saveTechAuth(TechAccess::AuthRecord &rec) {
+    if (!ready_) return false;
+    TechAccess::AuthRecord a{}, b{};
+    const bool va = readRecord(EEPROM_ADDR_TECH_AUTH_A, a) && TechAccess::recordValid(a);
+    const bool vb = readRecord(EEPROM_ADDR_TECH_AUTH_B, b) && TechAccess::recordValid(b);
+    // write the slot that does NOT hold the newest valid record
+    const bool targetA = !va ? true : (!vb ? false : newer(b.sequence, a.sequence));
+    const uint16_t target = targetA ? EEPROM_ADDR_TECH_AUTH_A : EEPROM_ADDR_TECH_AUTH_B;
+    if (!writeRecord(target, rec)) return false;
+    TechAccess::AuthRecord verify{};
+    return readRecord(target, verify) && TechAccess::recordValid(verify) && memcmp(&verify, &rec, sizeof(rec)) == 0;
+  }
+  // ---- advanced-config history slots ------------------------------------------------------------------------------------
+  bool readAdvHistory(uint8_t slot, AdvancedHistory::Record &out) const {
+    if (!ready_ || slot >= AdvancedHistory::Slots) return false;
+    return readRecord(static_cast<uint16_t>(EEPROM_ADDR_ADV_HISTORY + slot * EEPROM_ADV_HISTORY_SLOT_BYTES), out);
+  }
+  bool writeAdvHistory(uint8_t slot, const AdvancedHistory::Record &record) const {
+    if (!ready_ || slot >= AdvancedHistory::Slots) return false;
+    return writeRecord(static_cast<uint16_t>(EEPROM_ADDR_ADV_HISTORY + slot * EEPROM_ADV_HISTORY_SLOT_BYTES), record);
   }
 
   bool saveBatch(const PackedBatchV1 &payload) {
@@ -3206,6 +3256,7 @@ class SHT485Industrial {
 // PID THEO Nhip MAU CAM BIEN + ANTI-WINDUP + DAO HAM TREN PV
 // ============================================================================
 #include "thermal_control.h"
+#include "thermal_smart_autotune.h"
 #include "heater_burst_scheduler.h"
 
 class ConditionTimer {
@@ -3633,6 +3684,19 @@ enum class TurnPhase : uint8_t {
 // ============================================================================
 // BO DIEU KHIEN TONG
 // ============================================================================
+// Storage adapters for the pure technical-access gate and the 3-slot advanced history (contracts: tech_access.h, advanced_history.h).
+struct TechAuthStorage {
+  PersistentStore &store;
+  TechAccess::LoadStatus load(TechAccess::AuthRecord &record) { return store.loadTechAuth(record); }
+  bool save(TechAccess::AuthRecord &record) { return store.saveTechAuth(record); }
+  uint32_t random32() { return esp_random(); }
+};
+struct AdvHistoryStorage {
+  PersistentStore &store;
+  bool read(uint8_t slot, AdvancedHistory::Record &record) { return store.readAdvHistory(slot, record); }
+  bool write(uint8_t slot, const AdvancedHistory::Record &record) { return store.writeAdvHistory(slot, record); }
+};
+
 class MachineController {
  public:
   // Bounded local initialization before sensor/batch recovery. No network I/O.
@@ -3697,6 +3761,9 @@ class MachineController {
     }
     storageFaultLatched_ = EXTERNAL_EEPROM_REQUIRED && (!storeReady || !configLoaded_);
     faults_.set(FaultCode::StorageUnavailable, storageFaultLatched_, bootAt_);
+    techGate_.begin(bootAt_);      // PIN record (a read error keeps the gate closed), strike counters, Web permission (default HIDDEN)
+    history_.begin();
+    refreshHistoryCache();
     mayapSetConnectivityMode(config_.connectivityMode);
     lastNetworkStatus_ = mayapGetNetworkStatus();
     networkStatusInitialized_ = true;
@@ -4404,6 +4471,11 @@ class MachineController {
           ? !thermalEnvelopeFollowsTarget
           : directSafetyThresholdChange;
       const bool pidAuthorityValid = mayapPidHasAuthority(requested);
+      // Technical fields (PID, protection, calibration, tune relay) change only inside an unlocked HMI "Nang cao" session, or through a
+      // Web request the HMI approved (that path saves directly, not through here). A Web config patch can never reach this far.
+      const AdvancedHistory::Snapshot beforeAdvanced = AdvancedHistory::fromConfig(config_);
+      const bool advancedChange = !AdvancedHistory::same(beforeAdvanced, AdvancedHistory::fromConfig(requested));
+      const bool techLocked = advancedChange && !techGate_.hmiUnlocked(now);
       const bool protectedBatchChange = (batchRunning_ || resumePending_) && (
           requested.autoResumeOnPowerLoss != config_.autoResumeOnPowerLoss ||
           requested.totalIncubationDays != config_.totalIncubationDays ||
@@ -4433,45 +4505,21 @@ class MachineController {
       const MachineConfig previousConfig = config_;
       MachineConfig readback{};
       const bool safetySaveBlocked = batchClearPending_ || safetyJournalFaultLatched_;
-      const bool saveAllowed = !safetySaveBlocked &&
+      const bool saveAllowed = !safetySaveBlocked && !techLocked &&
           !protectedBatchChange && pidAuthorityValid;
+      // The previous advanced values are kept as a history record BEFORE the new ones are written, so a restore can always undo this
+      // save. A failed backup does not stop the save itself (the chip is probably failing anyway: the save below reports that).
+      if (saveAllowed && advancedChange) (void)pushHistory(beforeAdvanced);
       const bool ok = saveAllowed && store_.saveConfig(requested, readback);
       if (ok) {
-        config_ = readback;
-        hmiSetConfig(config_);
-        mayapRealtimeSetConfig(config_);
-        mayapCloudSetConfig(config_);
-        mayapSetConnectivityMode(config_.connectivityMode);
-        eventLog_.push(now, EventType::ConfigSaved,
-                       static_cast<uint16_t>(EventCode::ConfigSaved));
-
-        // Chi re-project I khi hinh dang PID/actuator thuc su doi. SV la lenh
-        // dieu khien: khong duoc back-calculate I de huy P-response cua buoc SV.
-        // Cac thay doi khong lien quan (dao, am, thong gio...) cung khong duoc
-        // reset derivative/timestamp cua PID. Neu gain/cap va SV cung doi, giu
-        // bumpless tai SV cu; sample cam bien ke tiep se ap dung buoc SV moi.
-        if (thermalPidRuntimeConfigChanged(previousConfig, config_)) {
-          pid_.applyConfigBumpless(now, previousConfig.targetTemp,
-                                   temperature_, config_);
-          pidPower_ = pid_.output();
-        }
-
-        // Lich dao la moc tuyet doi tinh tu LAN DAO THAT gan nhat. Doi chu ky
-        // hoac BAT/TAT dao trong luc me dang chay chi chieu lai deadline tu
-        // lastTurnEpoch_/lastTurnAt_, tuyet doi khong lay thoi diem bam LUU
-        // lam moc moi (neu khong moi lan sua chu ky se bi dem lai tu dau).
-        if (batchRunning_ &&
-            (previousConfig.turningEnabled != config_.turningEnabled ||
-             previousConfig.turnIntervalMin != config_.turnIntervalMin)) {
-          scheduleNextTurnFromAnchor(now);
-        }
-
+        commitSavedConfig(now, previousConfig, readback);
       } else if (saveAllowed) {
         latchStorageFault("CONFIG SAVE");
       }
       if (ok) clearStorageDegraded(now);
       hmiConfirmConfigSave(transactionId, ok, ok ? &readback : nullptr);
       const char *configFailureReason = !pidAuthorityValid ? "INVALID_PID_GAINS"
+          : techLocked ? "CONFIG_TECH_LOCKED"
           : protectedBatchChange ? "CONFIG_BATCH_LOCKED"
           : safetySaveBlocked ? "CONFIG_SAFETY_BLOCK"
           : "CONFIG_EEPROM_ERROR";
@@ -4479,6 +4527,7 @@ class MachineController {
                                 configFailureReason);
       const char *configFailureTag = ok ? ""
           : !pidAuthorityValid ? "(INVALID_PID)"
+          : techLocked ? "(TECH_LOCK)"
           : protectedBatchChange ? "(BATCH_LOCK)"
           : safetySaveBlocked ? "(SAFETY_BLOCK)" : "(EEPROM)";
       mayapSerialPrintf(false, "[CFG] save=%s%s SV=%.1f HIGH=%.1f EMG=%.1f turn=%umin\n",
@@ -4649,9 +4698,19 @@ class MachineController {
           break;
         }
         case HmiCommandType::AutoTuneStart:
+          // A remote (Web) start is never executed here: it is only a request that the HMI must approve (see handleTechCommand).
+          if (command.source == HmiCommandSource::Remote) { message = "TECH_VIA_HMI_APPROVAL"; break; }
           ok = startAutoTune(now, message); break;
         case HmiCommandType::AutoTuneCancel:
           ok = cancelAutoTune(now, message); break;
+        case HmiCommandType::TechPinVerify:
+        case HmiCommandType::TechPinSet:
+        case HmiCommandType::TechLock:
+        case HmiCommandType::TechWebSet:
+        case HmiCommandType::TechDecision:
+        case HmiCommandType::TechRequestSubmit:
+        case HmiCommandType::AdvancedRestore:
+          ok = handleTechCommand(now, command, message); break;
         case HmiCommandType::ResumeYes:
           if (resumePending_ && resumeConfirmationRequired_) {
             resumeConfirmationRequired_ = false;
@@ -4707,6 +4766,278 @@ class MachineController {
       hmiConfirmCommand(command.id, ok, message);
       mayapRealtimeConfirmCommand(command.id, ok, message);
     }
+  }
+
+  // After a config record was written and read back: publish it and re-project what depends on it.
+  void commitSavedConfig(uint32_t now, const MachineConfig &previousConfig, const MachineConfig &readback) {
+    config_ = readback;
+    hmiSetConfig(config_);
+    mayapRealtimeSetConfig(config_);
+    mayapCloudSetConfig(config_);
+    mayapSetConnectivityMode(config_.connectivityMode);
+    eventLog_.push(now, EventType::ConfigSaved,
+                   static_cast<uint16_t>(EventCode::ConfigSaved));
+
+    // Chi re-project I khi hinh dang PID/actuator thuc su doi. SV la lenh
+    // dieu khien: khong duoc back-calculate I de huy P-response cua buoc SV.
+    // Cac thay doi khong lien quan (dao, am, thong gio...) cung khong duoc
+    // reset derivative/timestamp cua PID. Neu gain/cap va SV cung doi, giu
+    // bumpless tai SV cu; sample cam bien ke tiep se ap dung buoc SV moi.
+    if (thermalPidRuntimeConfigChanged(previousConfig, config_)) {
+      pid_.applyConfigBumpless(now, previousConfig.targetTemp,
+                               temperature_, config_);
+      pidPower_ = pid_.output();
+    }
+
+    // Lich dao la moc tuyet doi tinh tu LAN DAO THAT gan nhat. Doi chu ky
+    // hoac BAT/TAT dao trong luc me dang chay chi chieu lai deadline tu
+    // lastTurnEpoch_/lastTurnAt_, tuyet doi khong lay thoi diem bam LUU
+    // lam moc moi (neu khong moi lan sua chu ky se bi dem lai tu dau).
+    if (batchRunning_ &&
+        (previousConfig.turningEnabled != config_.turningEnabled ||
+         previousConfig.turnIntervalMin != config_.turnIntervalMin)) {
+      scheduleNextTurnFromAnchor(now);
+    }
+  }
+
+  // Keep the advanced values that are about to be replaced (used by the AutoTune commit; the HMI/Web paths push inline).
+  void recordAdvancedHistory(const MachineConfig &before) {
+    (void)pushHistory(AdvancedHistory::fromConfig(before));
+  }
+  // The HMI list reads cached copies: the EEPROM is touched only when a record is written, never per control cycle.
+  void refreshHistoryCache() {
+    historyCount_ = 0;
+    for (uint8_t rank = 0; rank < AdvancedHistory::Slots; ++rank) {
+      if (history_.get(rank, historyCache_[rank])) historyCount_ = static_cast<uint8_t>(rank + 1U);
+      else break;
+    }
+  }
+  bool pushHistory(const AdvancedHistory::Snapshot &snapshot) {
+    const bool ok = history_.push(snapshot);
+    refreshHistoryCache();
+    return ok;
+  }
+
+  // ----------------------------- Technical access (PIN, Web permission, HMI-approved Web requests) ---------------------------
+  // Every decision is taken HERE, on the ESP32. The Web can only ask: a request is parked (60 s) until the HMI answers Yes/No, and the
+  // same safety conditions as a local change (no batch / resume, no storage or safety-journal fault, PID authority) are checked again at
+  // the moment of execution. The PIN travels as a number in HmiCommand::alarmMask and is never stored or logged in clear.
+  bool techEditBlocked(const char *&message) const {
+    if (batchRunning_ || resumePending_) { message = "DANG AP - KHONG DOI PID"; return true; }
+    if (autotune_.running()) { message = "AUTO TUNE DANG CHAY"; return true; }
+    if (batchClearPending_ || safetyJournalFaultLatched_ || storageFaultLatched_ || storageDegraded_) { message = "LOI AN TOAN/BO NHO"; return true; }
+    return false;
+  }
+  void finishTechPending(uint32_t now, TechResult result) {
+    (void)now;
+    if (techPending_.kind != MayapTech::Kind::None) {
+      techResult_ = result;
+      snprintf(techResultId_, sizeof(techResultId_), "%s", techPending_.requestId);
+    }
+    techPending_ = TechPending{};
+  }
+  bool techResultText(TechAccess::Result r, uint32_t now, bool remote, const char *&message) {
+    switch (r) {
+      case TechAccess::Result::Ok: message = remote ? "OK" : "MA DUNG"; return true;
+      case TechAccess::Result::Wrong:
+        snprintf(techMessage_, sizeof(techMessage_), remote ? "WRONG_PIN %u/%u" : "SAI MA %u/%u",
+                 static_cast<unsigned>(techGate_.failCount()), static_cast<unsigned>(TechAccess::MaxAttempts));
+        message = techMessage_; return false;
+      case TechAccess::Result::Locked:
+        snprintf(techMessage_, sizeof(techMessage_), remote ? "LOCKED %lus" : "BI KHOA %lus",
+                 static_cast<unsigned long>((techGate_.lockRemainingMs(now) + 999UL) / 1000UL));
+        message = techMessage_; return false;
+      case TechAccess::Result::NotSet: message = remote ? "PIN_NOT_SET" : "CHUA CO MA"; return false;
+      case TechAccess::Result::WebHidden: message = "WEB_HIDDEN"; return false;
+      case TechAccess::Result::NotUnlocked: message = remote ? "NOT_UNLOCKED" : "CAN NHAP MA KY THUAT"; return false;
+      case TechAccess::Result::StorageError: message = remote ? "STORAGE_ERROR" : "LOI BO NHO MA"; return false;
+      default: message = remote ? "INVALID_PIN" : "MA KHONG HOP LE"; return false;
+    }
+  }
+  bool handleTechCommand(uint32_t now, const HmiCommand &command, const char *&message) {
+    const bool remote = command.source == HmiCommandSource::Remote;
+    const uint32_t digits = command.alarmMask;
+    char pin[TechAccess::PinDigits + 1U] = "";
+    const bool pinOk = digits <= 9999UL;
+    if (pinOk) snprintf(pin, sizeof(pin), "%04lu", static_cast<unsigned long>(digits));
+    bool ok = false;
+    switch (command.type) {
+      case HmiCommandType::TechPinVerify: {
+        if (!pinOk) { message = remote ? "INVALID_PIN" : "MA KHONG HOP LE"; break; }
+        const TechAccess::Result r = remote ? techGate_.unlockWeb(now, pin) : techGate_.unlockHmi(now, pin);
+        ok = techResultText(r, now, remote, message);
+        break;
+      }
+      case HmiCommandType::TechPinSet: {
+        if (remote) { message = "CHI HMI DUOC DOI MA"; break; }
+        if (!pinOk) { message = "MA KHONG HOP LE"; break; }
+        const TechAccess::Result r = techGate_.setPin(now, pin);
+        ok = techResultText(r, now, false, message);
+        if (ok) message = "DA LUU MA KY THUAT";
+        break;
+      }
+      case HmiCommandType::TechLock:
+        if (remote) { techGate_.revokeWeb(); ok = true; message = "OK"; break; }
+        if (command.alarmMask == 1UL) techGate_.touchHmi(now);   // keep-alive while the technician is working
+        else techGate_.lockHmi();
+        ok = true; message = "OK";
+        break;
+      case HmiCommandType::TechWebSet: {
+        if (remote) { message = "CHI HMI DUOC DOI QUYEN"; break; }
+        const bool allow = command.alarmMask != 0UL;
+        const TechAccess::Result r = techGate_.setWebAllowed(now, allow);
+        ok = techResultText(r, now, false, message);
+        if (ok) {
+          if (!allow) { finishTechPending(now, TechResult::Revoked); MayapTech::discard(); }
+          message = allow ? "WEB: HIEN" : "WEB: AN";
+        }
+        break;
+      }
+      case HmiCommandType::TechDecision: {
+        if (remote) { message = "CHI HMI DUOC XAC NHAN"; break; }
+        if (techPending_.kind == MayapTech::Kind::None) { message = "KHONG CO YEU CAU"; break; }
+        if (command.alarmMask == 0UL) { finishTechPending(now, TechResult::Declined); ok = true; message = "DA TU CHOI"; break; }
+        ok = executeTechPending(now, message);
+        break;
+      }
+      case HmiCommandType::TechRequestSubmit:
+        if (!remote) { message = "CHI WEB DUOC GUI"; break; }
+        ok = submitTechRequest(now, message);
+        break;
+      case HmiCommandType::AdvancedRestore: {
+        if (remote) { message = "CHI HMI DUOC KHOI PHUC"; break; }
+        ok = restoreAdvanced(now, static_cast<uint8_t>(command.alarmMask > 255UL ? 255U : command.alarmMask), message);
+        break;
+      }
+      default: break;
+    }
+    TechAccess::secureZero(pin, sizeof(pin));
+    return ok;
+  }
+  bool submitTechRequest(uint32_t now, const char *&message) {
+    if (!techGate_.webAllowed()) { MayapTech::discard(); message = "WEB_HIDDEN"; return false; }
+    if (!techGate_.webSessionActive(now)) { MayapTech::discard(); message = "WEB_LOCKED"; return false; }
+    MayapTech::Staged staged;
+    if (!MayapTech::take(staged)) { message = "NO_REQUEST"; return false; }
+    if (techPending_.kind != MayapTech::Kind::None) { message = "BUSY_PENDING"; return false; }
+    if (!runtime_.networkConnected) { message = "NO_NETWORK"; return false; }
+    if (batchRunning_ || resumePending_) { message = "BATCH_LOCKED"; return false; }
+    TechPending next;
+    next.kind = staged.kind;
+    snprintf(next.requestId, sizeof(next.requestId), "%s", staged.requestId);
+    if (staged.kind == MayapTech::Kind::Config) {
+      const AdvancedHistory::Snapshot current = AdvancedHistory::fromConfig(config_);
+      AdvancedHistory::Snapshot wanted = current;
+      AdvancedHistory::copyFields(wanted, staged.values, staged.mask);
+      next.mask = AdvancedHistory::differingMask(current, wanted);     // only what really differs is shown to the HMI
+      next.values = wanted;
+      if (next.mask == 0U) { message = "NO_CHANGE"; return false; }
+    } else if (staged.kind != MayapTech::Kind::AutoTune) {
+      message = "UNSUPPORTED"; return false;
+    }
+    next.deadline = now + MayapTech::RequestTtlMs;
+    techPending_ = next;
+    techResult_ = TechResult::Pending;
+    snprintf(techResultId_, sizeof(techResultId_), "%s", next.requestId);
+    message = "PENDING_HMI";
+    return true;
+  }
+  // The HMI said Yes. Every safety condition is checked again NOW; nothing is applied on a stale yes.
+  bool executeTechPending(uint32_t now, const char *&message) {
+    const TechPending request = techPending_;
+    if (timeReached(now, request.deadline)) { finishTechPending(now, TechResult::Expired); message = "HET HAN"; return false; }
+    if (!techGate_.webAllowed() || !techGate_.webSessionActive(now)) { finishTechPending(now, TechResult::Revoked); message = "QUYEN WEB DA THU HOI"; return false; }
+    bool ok = false;
+    if (request.kind == MayapTech::Kind::AutoTune) {
+      ok = startAutoTune(now, message);
+    } else {
+      ok = applyAdvancedSnapshot(now, request.values, message);
+    }
+    finishTechPending(now, ok ? TechResult::Applied : TechResult::Failed);
+    return ok;
+  }
+  // Apply the technical fields of `target` to the live configuration: undo record first, one atomic A/B config save, then publish.
+  bool applyAdvancedSnapshot(uint32_t now, const AdvancedHistory::Snapshot &target, const char *&message) {
+    if (techEditBlocked(message)) return false;
+    const AdvancedHistory::Snapshot current = AdvancedHistory::fromConfig(config_);
+    if (AdvancedHistory::same(current, target)) { message = "KHONG DOI"; return true; }
+    MachineConfig candidate = config_;
+    AdvancedHistory::applyTo(candidate, target);
+    sanitizeMachineConfig(candidate);
+    if (!mayapPidHasAuthority(candidate)) { message = "PID KHONG HOP LE"; return false; }
+    if (!pushHistory(current)) { message = "LOI LUU BAN GHI CU"; return false; }
+    const MachineConfig previousConfig = config_;
+    MachineConfig readback{};
+    if (!store_.saveConfig(candidate, readback)) {
+      latchStorageFault("CONFIG SAVE");
+      message = "LOI LUU CAU HINH";
+      return false;
+    }
+    commitSavedConfig(now, previousConfig, readback);
+    clearStorageDegraded(now);
+    message = "DA AP DUNG";
+    return true;
+  }
+  bool restoreAdvanced(uint32_t now, uint8_t rank, const char *&message) {
+    if (!techGate_.hmiUnlocked(now)) { message = "CAN NHAP MA KY THUAT"; return false; }
+    AdvancedHistory::Snapshot target;
+    if (!history_.get(rank, target)) { message = "KHONG CO BAN GHI"; return false; }
+    if (!applyAdvancedSnapshot(now, target, message)) return false;
+    if (!strcmp(message, "DA AP DUNG")) message = "DA KHOI PHUC";
+    return true;
+  }
+  // Once per control cycle: expiry/revocation of the pending request and the read-only mirror for the HMI and the Web.
+  void serviceTech(uint32_t now) {
+    if (techGate_.storageError() && timeReached(now, techRetryAt_)) {
+      techRetryAt_ = now + 3000UL;
+      techGate_.retryLoad(now);
+      history_.begin();
+      refreshHistoryCache();
+    }
+    if (techPending_.kind != MayapTech::Kind::None) {
+      if (!techGate_.webAllowed() || !techGate_.webSessionActive(now)) finishTechPending(now, TechResult::Revoked);
+      else if (!runtime_.networkConnected || timeReached(now, techPending_.deadline)) finishTechPending(now, TechResult::Expired);
+    }
+    // Wi-Fi / Cloudflare lost: the Web session ends with it (local thermal control never depended on any of this).
+    if (!runtime_.networkConnected && techGate_.webSessionActive(now)) techGate_.revokeWeb();
+    TechStatus &t = runtime_.tech;
+    t.pinSet = techGate_.pinConfigured();
+    t.storageError = techGate_.storageError();
+    t.hmiUnlocked = techGate_.hmiUnlocked(now);
+    t.webAllowed = techGate_.webAllowed();
+    t.webSession = techGate_.webSessionActive(now);
+    t.lockRemainingS = static_cast<uint16_t>(std::min<uint32_t>(65535UL, (techGate_.lockRemainingMs(now) + 999UL) / 1000UL));
+    t.webSessionRemainingS = static_cast<uint16_t>(std::min<uint32_t>(65535UL, techGate_.webRemainingMs(now) / 1000UL));
+    t.historyCount = historyCount_;
+    t.pendingKind = static_cast<uint8_t>(techPending_.kind);
+    t.pendingMask = techPending_.mask;
+    t.pendingRemainingS = techPending_.kind == MayapTech::Kind::None ? 0U : static_cast<uint8_t>(std::min<uint32_t>(
+        255UL, (timeReached(now, techPending_.deadline) ? 0UL : static_cast<uint32_t>(techPending_.deadline - now)) / 1000UL));
+    t.resultState = techResult_;
+    // Heavy parts go to the single shared copy (HMI list / requested values / request id), not into every runtime mailbox.
+    MayapTech::Detail detail;
+    detail.historyCount = historyCount_;
+    for (uint8_t i = 0; i < AdvancedHistory::Slots; ++i) detail.history[i] = historyCache_[i];
+    detail.pending = techPending_.values;
+    snprintf(detail.resultId, sizeof(detail.resultId), "%s", techResultId_);
+    MayapTech::publishDetail(detail);
+  }
+  // Read-only PID monitor. Numbers come from the controller that is running; the 60 s mean is of the arbiter's REAL SSR state.
+  void publishPidMonitor(uint32_t now) {
+    const uint32_t dtMs = std::min<uint32_t>(elapsedMs(now, pidMonAt_), 1000UL);
+    pidMonAt_ = now;
+    const bool on = outputs_.state().heaterSsr && outputs_.state().heatMaster;
+    pidMonActual_ += ((on ? 100.0f : 0.0f) - pidMonActual_) * std::min(1.0f, static_cast<float>(dtMs) / 60000.0f);
+    PidMonitorData &m = runtime_.pidMon;
+    m.valid = sensorUsable_ && isfinite(temperature_);
+    m.error = m.valid ? config_.targetTemp - temperature_ : 0.0f;
+    m.pidCorrection = pid_.lastCorrection();
+    m.holdFf = pid_.lastHoldFf();
+    m.ventFf = pid_.lastVentFf();
+    m.limitLo = pid_.lastLimitLo();
+    m.limitHi = pid_.lastLimitHi();
+    m.requestPct = runtime_.heaterPower;
+    m.actualAvgPct = pidMonActual_;
   }
 
   bool startBatch(uint32_t now, const char *&message) {
@@ -4888,6 +5219,7 @@ class MachineController {
     if (config_.targetTemp + config_.autotuneBandC >= config_.highTempAlarm) {
       message = "KHOANG NHIET KHONG DU"; return false;
     }
+    if (!autotune_.preflight(temperature_, config_, message)) return false;
     autotune_.configure(config_.targetTemp);
     autotune_.start(now, temperature_);
     pid_.reset();
@@ -4896,10 +5228,10 @@ class MachineController {
     message = "AUTO TUNE DA BAT DAU";
     eventLog_.push(now, EventType::AutoTuneStart,
                    static_cast<uint16_t>(EventCode::AutoTuneStarted));
-    mayapSerialPrintf(false, "[TUNE] PREHEAT power=%u%% PV=%.3f relay=%u%% band=%.2fC\n",
-                     std::min<uint8_t>(AUTOTUNE_PREHEAT_POWER_PERCENT, config_.maxHeaterPower),
-                     temperature_, std::min<uint8_t>(config_.autotuneRelayPowerPercent, config_.maxHeaterPower),
-                     config_.autotuneBandC);
+    mayapSerialPrintf(false, "[TUNE] START PV=%.3f SP=%.2f High=%.2f relay<=%u%% band=%.2fC (headroom to High %.2fC)\n",
+                     temperature_, config_.targetTemp, config_.highTempAlarm,
+                     std::min<uint8_t>(config_.autotuneRelayPowerPercent, config_.maxHeaterPower),
+                     config_.autotuneBandC, config_.highTempAlarm - temperature_);
     return true;
   }
 
@@ -5442,9 +5774,12 @@ class MachineController {
   void updateAutoTune(uint32_t now) {
     if (!autotune_.running()) return;
     const InputState &in = inputs_.state();
+    // ACTUAL heater state (post-arbiter) is what identification integrates, never the request.
+    autotune_.tick(now, outputs_.state().heaterSsr && outputs_.state().heatMaster);
     const AutoTunePhase previousPhase = autotune_.phase();
     const uint32_t previousCycle = autotune_.cycleSerial();
     const uint32_t previousValidation = autotune_.validationSerial();
+    const uint32_t previousModel = autotune_.modelSerial();
     AutoTuneReason abortReason = AutoTuneReason::None;
     if (!sensorUsable_ || !isfinite(temperature_) || !isfinite(rawTemperature_))
       abortReason = AutoTuneReason::SensorAbort;
@@ -5455,10 +5790,14 @@ class MachineController {
         faults_.masterDropRequired() || faults_.ssrInhibited() ||
         mayapFirmwareMaintenanceActive() || mayapSystemTripLatched() ||
         !mayapBootOperationsReady()) abortReason = AutoTuneReason::SafetyAbort;
-    else if (!in.autoMode || !in.heaterEnable || batchRunning_)
+    else if (!in.autoMode || !in.heaterEnable || batchRunning_ || testModeActive_)
       abortReason = AutoTuneReason::ModeAbort;
     if (abortReason != AutoTuneReason::None) autotune_.abort(abortReason);
     autotune_.checkTimeout(now);
+    autotune_.noteController(pidPower_, pid_.integral());
+    // RAW probe reading + steady-HOLD regime: the verification reads the probe's real step size and only trusts a window in which the
+    // integral was active. Observation only; nothing here changes what the controller does.
+    autotune_.noteSensor(rawTemperature_, newSensorSample_, startupHeat_.phase() == ThermalStartupController::Phase::Hold);
     MachineConfig tuned{};
     const bool tunedReady = autotune_.running() && newSensorSample_ &&
         autotune_.update(now, temperature_, config_, tuned);
@@ -5471,36 +5810,82 @@ class MachineController {
     if (autotune_.validationSerial() != previousValidation)
       mayapSerialPrintf(false, "[TUNE] VALIDATING cycles=%u quality=%s\n",
           autotune_.cycleCount(), autoTuneReasonName(autotune_.rejection()));
+    // One summary line per verification (never per control cycle).
+#ifndef MAYAP_AUTOTUNE_LEGACY
+    if (!autotune_.running() && autotune_.evalFull().ran) {   // (this call ended the tune: updateAutoTune returns early when none is running)
+      const auto &ev = autotune_.evalFull();
+      const auto &md = autotune_.fullModel();
+      mayapSerialPrintf(false, "[TUNE-VALIDATE] res=%.3f delay=%.1f coast=%.1f period=%.0f horizon=%lu tail=%lu samples=%lu hold=%.2f@%lus over=%.3f MAE=%.3f P95=%.3f ripple=%.3f why=%s RESULT=%s\n",
+          static_cast<double>(ev.resolution), static_cast<double>(md.delaySec), static_cast<double>(md.coastSec), static_cast<double>(md.periodSec),
+          static_cast<unsigned long>(ev.horizonMs / 1000UL), static_cast<unsigned long>(ev.tailMs / 1000UL), static_cast<unsigned long>(ev.samples),
+          static_cast<double>(ev.holdFrac), static_cast<unsigned long>(ev.holdAfterMs == 0xFFFFFFFFUL ? 0UL : ev.holdAfterMs / 1000UL),
+          static_cast<double>(ev.overshoot), static_cast<double>(ev.mae), static_cast<double>(ev.p95), static_cast<double>(ev.ripple),
+          ev.why[0] ? ev.why : (autotune_.state() == AutoTuneState::Success ? "ok" : "abort"), autotune_.state() == AutoTuneState::Success ? "PASS" : "FAIL");
+    }
+#endif
     if (autotune_.phase() != previousPhase && autotune_.running())
       mayapSerialPrintf(false, "[TUNE] %s power=%.1f%% PV=%.3f\n",
           autoTunePhaseName(autotune_.phase()), autotune_.power(), temperature_);
+    if (autotune_.modelSerial() != previousModel)
+      mayapSerialPrintf(false, "[TUNE] MODEL gain=%.5f delay=%.1fs coast100=%.2fC hold=%.1f%% Ku=%.2f Pu=%.0fs conf=%u cand Kp=%.2f Ki=%.4f\n",
+          autotune_.model().gain, autotune_.model().delaySec, autotune_.model().coast100C, autotune_.model().holdPct,
+          autotune_.model().ku, autotune_.model().periodSec, static_cast<unsigned>(autotune_.model().confidence),
+          autotune_.candidateKp(), autotune_.candidateKi());
+    // Candidate takes over: no relay excitation, backlog or integral is carried into the closed-loop check.
+    float holdPct = 0.0f;
+    if (autotune_.takeValidationStart(holdPct)) {
+      MachineConfig candidate = config_;
+      autotune_.applyCandidate(candidate);
+      heaterBurst_.reset();
+      startupHeat_.reset();
+      (void)candidate; (void)holdPct;
+      pid_.reset();           // zero integral: the check must include the wind-up / recovery a real approach produces
+      pidPower_ = 0.0f;
+    }
     if (!tunedReady && autotune_.state() == AutoTuneState::Failed) {
       heaterBurst_.reset();
       pid_.reset();
+      startupHeat_.reset();
+      pidPower_ = 0.0f;
       postCoolUntil_ = now + POST_COOL_MS;
       heatRestartNotBefore_ = now + HEAT_RESTART_LOCKOUT_MS;
       eventLog_.push(now, EventType::AutoTuneEnd,
                      static_cast<uint16_t>(EventCode::AutoTuneFailed),
                      static_cast<int16_t>(autotune_.reason()), 1U);
-      mayapSerialPrintf(false, "[TUNE] FAIL reason=%s quality=%s\n",
-          autoTuneReasonName(autotune_.reason()), autoTuneReasonName(autotune_.rejection()));
+      mayapSerialPrintf(false, "[TUNE] FAIL reason=%s quality=%s over=%.2f mae=%.3f p95=%.3f ripple=%.2f (old PID and profile kept)\n",
+          autoTuneReasonName(autotune_.reason()), autoTuneReasonName(autotune_.rejection()),
+          autotune_.eval().overshoot, autotune_.eval().mae, autotune_.eval().p95, autotune_.eval().ripple);
       return;
     }
     if (tunedReady) {
       MachineConfig readback{};
+      recordAdvancedHistory(config_);   // the pre-tune PID stays available on the HMI ("BAN GHI CU")
       if (store_.saveConfig(tuned, readback)) {
         config_ = readback;
         hmiSetConfig(config_);
         mayapRealtimeSetConfig(config_);
         mayapCloudSetConfig(config_);
         mayapSetConnectivityMode(config_.connectivityMode);
+        // Accepted: the measured plant seeds the thermal profile (a seed, not full trust: Adaptive V1 keeps refining
+        // it online and withdraws it on a long mismatch). The PID record above is the commit point; the profile
+        // record is a capped seed, so losing power between the two leaves a safe pair (new PID, old/no profile).
+        if (autotune_.hasProfile() && config_.adaptiveThermalBalanceEnabled) {
+          MayapThermal::ThermalProfile seed = autotune_.profile();
+          seed.signature = thermalSignature();
+          seed.epoch = rtc_.epoch();
+          seed.sequence = 0;
+          MayapThermal::sealProfile(seed);
+          thermalV1_.learner().seed(seed, 75, seed.holdPowerPct > 0.5f);
+          MayapThermal::profileStorage.offerForced(seed);
+        }
         eventLog_.push(now, EventType::AutoTuneEnd,
                        static_cast<uint16_t>(EventCode::AutoTuneSuccess),
                        static_cast<int16_t>(lroundf(config_.kp * 10.0f)));
-        mayapSerialPrintf(false, "[TUNE] RESULT phase=SUCCESS Ku=%.3f Pu=%.1f Kp=%.3f Ki=%.5f Kd=%.3f scale=%.3f\n",
-                         autotune_.result().ku, autotune_.result().periodSec,
-                         config_.kp, config_.ki, config_.kd, autotune_.result().gainScale);
+        mayapSerialPrintf(false, "[TUNE] RESULT phase=SUCCESS Kp=%.3f Ki=%.5f Kd=%.3f gain=%.5f delay=%.1fs mae=%.3f p95=%.3f ripple=%.3f over=%.3f\n",
+                         config_.kp, config_.ki, config_.kd, autotune_.model().gain, autotune_.model().delaySec,
+                         autotune_.eval().mae, autotune_.eval().p95, autotune_.eval().ripple, autotune_.eval().overshoot);
       } else {
+        // Save failed: nothing was applied (the candidate only ever lived in the engine), old PID/profile stay.
         autotune_.abort(AutoTuneReason::SaveFailed);
         latchStorageFault("AUTOTUNE SAVE");
         eventLog_.push(now, EventType::AutoTuneEnd,
@@ -5510,6 +5895,8 @@ class MachineController {
       }
       heaterBurst_.reset();
       pid_.reset();
+      startupHeat_.reset();
+      pidPower_ = 0.0f;
       postCoolUntil_ = now + POST_COOL_MS;
       heatRestartNotBefore_ = now + HEAT_RESTART_LOCKOUT_MS;
     }
@@ -5926,8 +6313,17 @@ class MachineController {
       MayapAdaptive::Policy::BankWatts,static_cast<float>(HEATER_BURST_QUANTUM_MS),static_cast<float>(PIN_OUT_HEATER_SSR),1.0f};
     return mcCrc32(reinterpret_cast<const uint8_t *>(signature),sizeof(signature));
   }
+  // Hardware identity for the stored thermal profile. tempOffset/SP/PID are deliberately NOT part
+  // of it: the SHT30 calibration offset and tuning do not change the plant's dynamics.
+  uint32_t thermalSignature() const {
+    const float signature[]={MayapAdaptive::Policy::BankWatts,static_cast<float>(HEATER_BURST_QUANTUM_MS),
+      static_cast<float>(PIN_OUT_HEATER_SSR),static_cast<float>(sensor_.sensorProfile()),
+      static_cast<float>(MAYAP_SENSOR_PROFILE),1.0f};
+    return mcCrc32(reinterpret_cast<const uint8_t *>(signature),sizeof(signature));
+  }
   void trackAdaptiveEnergy(uint32_t now) {
     adaptiveThermal_.tick(now, outputs_.state().heaterSsr);
+    thermalV1_.tick(now, outputs_.state().heaterSsr);
     if(testModeActive_ || resumeConfirmationRequired_){
       MayapAdaptive::modelStorage.discardPending();
       MayapAdaptive::Observation o; o.test=testModeActive_;o.recovery=resumeConfirmationRequired_;
@@ -6004,7 +6400,73 @@ class MachineController {
       mayapSerialPrintf(false,"[THERMAL-ADAPT] state=%s conf=%.0f load=%.3f coast=%.3f hold=%.1f max=%.1f approach=%.3f selfheat=%u cool=%u\n",
         MayapAdaptive::stateName(d.state),adaptiveThermal_.effectiveConfidence(),e.load,e.coast,e.hold,d.effective,d.approach,d.selfHeating,d.cooling);
     }
+    // ---- Adaptive Thermal V1: learn the effective thermal profile (consumed below by the PID) ----
+    thermalV1_.setEnabled(config_.adaptiveThermalBalanceEnabled);
+    if(config_.adaptiveThermalBalanceEnabled && newSensorSample_){
+      MayapThermal::LearnInput li;
+      li.pv=temperature_;li.raw=rawTemperature_;li.sp=config_.targetTemp;li.high=config_.highTempAlarm;
+      li.sensor=sensorUsable_;li.fanStable=o.fanStable;li.ventActive=outputs_.state().ventFan;
+      li.safety=o.safety;li.tune=o.tune;li.test=o.test;li.maintenance=o.maintenance;
+      li.recovery=!mayapBootOperationsReady()||abnormalResetLatched_||resumeConfirmationRequired_||
+        !timeReached(now,sensorStartupGraceUntil_);
+      li.heaterBlocked=!permit;
+      MayapThermal::Hints hints;hints.valid=true;hints.coast=e.coast;hints.coastSec=e.coastSec;
+      hints.coastWindows=e.coastWindows;hints.holdWindows=e.holdWindows;hints.hold=e.hold;
+      thermalV1_.learner().sample(now,li,hints);
+      const uint32_t tsig=thermalSignature();
+      if(sensorUsable_ && rtc_.valid()){
+        if(MayapThermal::profileStorage.takeInvalid())
+          eventLog_.push(now,EventType::Adaptive,static_cast<uint16_t>(EventCode::AdaptiveModelInvalidated),static_cast<int16_t>(MayapAdaptive::Reason::SeedInvalid));
+        MayapThermal::ThermalProfile seedProfile{};
+        if(MayapThermal::profileStorage.takeSeed(seedProfile)){
+          if(MayapThermal::profileCompatible(seedProfile,tsig,abnormalResetLatched_))
+            thermalV1_.learner().seed(seedProfile,MayapThermal::seedConfidenceCap(seedProfile,rtc_.epoch()));
+          else
+            eventLog_.push(now,EventType::Adaptive,static_cast<uint16_t>(EventCode::AdaptiveModelInvalidated),static_cast<int16_t>(MayapAdaptive::Reason::SeedInvalid));
+        }
+        const auto &lp=thermalV1_.learner().profile();
+        const auto ls=thermalV1_.learner().state();
+        if((ls==MayapThermal::LearnState::Qualified||ls==MayapThermal::LearnState::Adapting)&&
+           thermalV1_.learner().gate()==MayapThermal::GateReason::Open){
+          MayapThermal::ThermalProfile out=lp;
+          out.signature=tsig;out.epoch=rtc_.epoch();out.sequence=0;MayapThermal::sealProfile(out);
+          MayapThermal::profileStorage.offer(out);
+        } else MayapThermal::profileStorage.discardPending();
+      } else MayapThermal::profileStorage.discardPending();
+    } else if(!config_.adaptiveThermalBalanceEnabled) MayapThermal::profileStorage.discardPending();
     return d.effective;
+  }
+
+  // Runtime telemetry + rate-limited diagnostics for Adaptive Thermal V1. Read-only.
+  void publishThermalLearning(uint32_t now) {
+    if(!config_.adaptiveThermalBalanceEnabled){
+      runtime_.thermalLearnState=0;runtime_.thermalConfidence=0;runtime_.thermalVentPhase=0;
+      return;
+    }
+    const auto &lrn=thermalV1_.learner();const auto &pr=lrn.profile();
+    runtime_.thermalLearnState=pr.state;runtime_.thermalConfidence=pr.confidence;
+    runtime_.thermalGain=pr.heaterGain;runtime_.thermalDelaySec=pr.heaterDelaySec;
+    runtime_.thermalCoastC=pr.coastRiseC;runtime_.thermalHoldPct=pr.holdPowerPct;
+    runtime_.thermalVentGain=pr.ventCoolingGain;runtime_.thermalPredictionError=lrn.predictionError();
+    runtime_.thermalVentPhase=static_cast<uint8_t>(thermalV1_.plan().ventPhase);
+    const auto st=lrn.state();
+    if(st!=thermalLoggedState_){
+      eventLog_.push(now,EventType::Adaptive,static_cast<uint16_t>(EventCode::ThermalLearnChanged),static_cast<int16_t>(st));
+      thermalLoggedState_=st;
+    }
+    if(lrn.mismatch()!=thermalMismatchLogged_){
+      thermalMismatchLogged_=lrn.mismatch();
+      if(thermalMismatchLogged_)
+        eventLog_.push(now,EventType::Adaptive,static_cast<uint16_t>(EventCode::ThermalModelMismatch),static_cast<int16_t>(pr.confidence));
+    }
+    if(elapsedMs(now,thermalDiagnosticAt_)>=30000UL){
+      thermalDiagnosticAt_=now;
+      mayapSerialPrintf(false,"[THERMAL-LEARN] state=%s conf=%u gain=%.4f delay=%.0f coast=%.2f hold=%.1f ventGain=%.4f ventConf=%u predErr=%.2f gate=%s vent=%s ff=%.1f\n",
+        MayapThermal::learnStateName(st),static_cast<unsigned>(pr.confidence),pr.heaterGain,pr.heaterDelaySec,
+        pr.coastRiseC,pr.holdPowerPct,pr.ventCoolingGain,static_cast<unsigned>(pr.ventConfidence),
+        lrn.predictionError(),MayapThermal::gateReasonName(lrn.gate()),
+        MayapThermal::ventPhaseName(thermalV1_.plan().ventPhase),thermalV1_.plan().assist.feedForward);
+    }
   }
 
   // ----------------------------- Heating/Output -------------------------------
@@ -6075,6 +6537,9 @@ class MachineController {
     const bool sensorFaultNeedsFan = !sensorUsable_ && !sensorStartupGraceActive &&
         (batchRunning_ || outputs_.state().heaterSsr || postCooling);
     bool scheduledVentActive = false;
+    // Ventilation owns WHEN and HOW LONG; thermal is only told, so the heater can be
+    // coordinated (Adaptive Thermal V1). Negative == not known.
+    float ventStartsInSec = -1.0f, ventRemainingSec = -1.0f;
     if (!config_.ventAutoEnabled && config_.ventScheduleEnabled &&
         batchRunning_ && rtc_.valid()) {
       const uint8_t hours[VENT_SCHEDULE_MAX_RUNS] = {
@@ -6087,14 +6552,33 @@ class MachineController {
       const uint32_t secondOfDay = rtc_.epoch() % 86400UL;
       const uint32_t durationSec =
           static_cast<uint32_t>(config_.ventScheduleDurationMin) * 60UL;
+      uint32_t nextStartWaitSec = 0xFFFFFFFFUL;
       for (uint8_t i = 0U; i < count; ++i) {
         const uint32_t start = static_cast<uint32_t>(hours[i]) * 3600UL;
         const uint32_t end = start + durationSec;
         const bool inWindow = end <= 86400UL
             ? (secondOfDay >= start && secondOfDay < end)
             : (secondOfDay >= start || secondOfDay < (end - 86400UL));
-        if (inWindow) { scheduledVentActive = true; break; }
+        if (inWindow) {
+          scheduledVentActive = true;
+          uint32_t remaining = ((end - secondOfDay) + 86400UL) % 86400UL;
+          if (remaining == 0U) remaining = durationSec;
+          // Contiguous or overlapping runs keep the fan on: report the end of the whole interval.
+          for (uint8_t pass = 0U; pass < count; ++pass) {
+            for (uint8_t j = 0U; j < count; ++j) {
+              const uint32_t startsIn = (static_cast<uint32_t>(hours[j]) * 3600UL + 86400UL - secondOfDay) % 86400UL;
+              if (startsIn > 0U && startsIn <= remaining && startsIn + durationSec > remaining)
+                remaining = startsIn + durationSec;
+            }
+          }
+          ventRemainingSec = static_cast<float>(remaining);
+          break;
+        }
+        const uint32_t wait = (start + 86400UL - secondOfDay) % 86400UL;
+        if (wait < nextStartWaitSec) nextStartWaitSec = wait;
       }
+      if (!scheduledVentActive && nextStartWaitSec != 0xFFFFFFFFUL)
+        ventStartsInSec = static_cast<float>(nextStartWaitSec);
     }
 
     bool profileVentActive = false;
@@ -6106,6 +6590,11 @@ class MachineController {
       const uint32_t cycleSec = static_cast<uint32_t>(config_.ventCycleMinutes) * 60UL;
       const uint32_t onSec = cycleSec * duty / 100UL;
       profileVentActive = (elapsedSec % cycleSec) < onSec;
+      if (onSec > 0UL) {
+        const uint32_t phaseSec = elapsedSec % cycleSec;
+        if (phaseSec < onSec) ventRemainingSec = static_cast<float>(onSec - phaseSec);
+        else ventStartsInSec = static_cast<float>(cycleSec - phaseSec);
+      }
     }
 
     const bool safetyForcesCirculation = faults_.circulationForced() ||
@@ -6163,24 +6652,57 @@ class MachineController {
 
     const float effectiveLimit = updateAdaptiveBalance(now, normalSsrPermit && actuatorReady, fanStable, req.ventFan);
     req.ventFan = req.ventFan || adaptiveCoolingRequested();
+    // Adaptive Thermal V1 plan: feed-forward + integral policy + startup hint. It can only
+    // propose; the result still passes the startup ceiling, effectiveLimit, scheduler and arbiter.
+    ventInfo_.active = outputs_.state().ventFan;
+    // The origin of a protective run is latched until the fan is actually off: relay run-on after the
+    // request clears must not be compensated as an ordinary vent.
+    if (!ventInfo_.active) ventForcedRun_ = false;
+    else if (req.ventFanForceOn || adaptiveCoolingRequested()) ventForcedRun_ = true;
+    ventInfo_.forced = req.ventFanForceOn || adaptiveCoolingRequested() || ventForcedRun_;
+    ventInfo_.startsInSec = ventStartsInSec;
+    // A schedule shorter than the vent relay's minimum-on time ends while the fan keeps running:
+    // report "ends now" (not "unknown") so the compensation fades instead of snapping back.
+    if (ventInfo_.active && ventRemainingSec < 0.0f && !ventInfo_.forced && !profileVentActive &&
+        !scheduledVentActive && config_.ventScheduleEnabled && !config_.ventAutoEnabled)
+      ventRemainingSec = 0.0f;
+    ventInfo_.remainingSec = ventRemainingSec;
+    const MayapThermal::Plan &v1plan = thermalV1_.update(now, normalSsrPermit && actuatorReady && config_.controlMode == ControlMode::Pid &&
+        MAYAP_ADAPTIVE_OBSERVER_ONLY == 0,
+        autotune_.running(), ventInfo_, temperature_, config_.targetTemp, pid_.integral(),
+        config_.highTempAlarm);
+    publishThermalLearning(now);
+    // Smart AutoTune VALIDATING: the normal controller runs the CANDIDATE gains under the tune permit (no batch).
+    const bool tunePermit = !faults_.ssrInhibited() &&
+                            !faults_.masterDropRequired() &&
+                            !storageFaultLatched_ && !storageDegraded_ &&
+                            !abnormalResetLatched_ && autotune_.running() &&
+                            in.autoMode && in.heaterEnable &&
+                            sensorUsable_ && fanStable &&
+                            !highTemperatureActive_ && !emergencyActive_;
+    const bool tuneClosedLoop = autotune_.externalControl() && tunePermit && actuatorReady;
     float commandedPower = 0.0f;
-    if (autotune_.running()) {
+    if (autotune_.running() && !autotune_.externalControl()) {
       startupHeat_.reset();
       commandedPower = autotune_.power();
-    } else if (normalSsrPermit && actuatorReady) {
+    } else if ((normalSsrPermit && actuatorReady) || tuneClosedLoop) {
       if (newSensorSample_) {
         MachineConfig actuatorConfig = config_;
+        autotune_.applyCandidate(actuatorConfig);   // no-op unless the closed-loop check is running
+        const MayapThermal::Assist tuneAssist = autotune_.assist();
         actuatorConfig.maxHeaterPower = static_cast<uint8_t>(effectiveLimit);
         float ceiling = effectiveLimit;
         bool freezePositiveIntegral = false;
-        if (config_.controlMode == ControlMode::Pid) {
+        if (actuatorConfig.controlMode == ControlMode::Pid) {
+          startupHeat_.setHint(autotune_.externalControl() ? autotune_.startupHint(config_.highTempAlarm, config_.targetTemp) : v1plan.hint);
           const auto decision = startupHeat_.decide(now, config_.targetTemp,
               temperature_, effectiveLimit);
           ceiling = decision.ceiling;
           freezePositiveIntegral = decision.freezePositiveIntegral;
         }
         pidPower_ = pid_.updateOnNewSample(now, config_.targetTemp,
-            temperature_, actuatorConfig, true, ceiling, freezePositiveIntegral);
+            temperature_, actuatorConfig, true, ceiling, freezePositiveIntegral,
+            autotune_.externalControl() ? &tuneAssist : &v1plan.assist);
       }
       if (config_.controlMode == ControlMode::Pid && startupHeat_.sampleStale(now)) {
         pid_.reset();
@@ -6195,13 +6717,6 @@ class MachineController {
     }
     newSensorSample_ = false;
 
-    const bool tunePermit = !faults_.ssrInhibited() &&
-                            !faults_.masterDropRequired() &&
-                            !storageFaultLatched_ && !storageDegraded_ &&
-                            !abnormalResetLatched_ && autotune_.running() &&
-                            in.autoMode && in.heaterEnable &&
-                            sensorUsable_ && fanStable &&
-                            !highTemperatureActive_ && !emergencyActive_;
     const bool masterPermit = normalMasterPermit || tunePermit;
     const bool ssrPermit = (normalSsrPermit || tunePermit) && masterPermit;
     req.heatMaster = masterPermit;
@@ -7100,6 +7615,9 @@ class MachineController {
     runtime_.sirenOn = outputs_.state().siren;
     runtime_.autoTuneState = autotune_.state();
     runtime_.autoTuneProgress = autotune_.progress();
+    runtime_.autoTunePhase = static_cast<uint8_t>(autotune_.phase());
+    runtime_.autoTuneReason = static_cast<uint8_t>(autotune_.reason());
+    runtime_.autoTuneRejection = static_cast<uint8_t>(autotune_.rejection());
     runtime_.primaryFaultCode = static_cast<uint16_t>(faults_.primary());
     runtime_.activeFaultCount = faults_.activeCount();
     runtime_.activeFaultDisplayCount = faults_.copyActiveForHmi(
@@ -7196,6 +7714,8 @@ class MachineController {
     }
     runtime_.stateCode = stateCode;
     snprintf(runtime_.machineState, sizeof(runtime_.machineState), "%s", state);
+    serviceTech(now);
+    publishPidMonitor(now);
     hmiSetRuntime(runtime_);
     mayapRealtimeSetRuntime(runtime_);
     mayapCloudSetRuntime(runtime_);
@@ -7604,11 +8124,31 @@ class MachineController {
   PowerManager power_{};
   RtcDs3231 rtc_{};
   PersistentStore store_{};
+  TechAuthStorage techAuthStorage_{store_};
+  TechAccess::Gate<TechAuthStorage> techGate_{techAuthStorage_};
+  AdvHistoryStorage advHistoryStorage_{store_};
+  AdvancedHistory::Ring<AdvHistoryStorage> history_{advHistoryStorage_};
+  // A Web technical request waits here for the HMI's Yes/No; RAM only (a reboot cancels it), at most one at a time.
+  struct TechPending {
+    MayapTech::Kind kind = MayapTech::Kind::None;
+    uint32_t deadline = 0;
+    uint16_t mask = 0;
+    AdvancedHistory::Snapshot values;
+    char requestId[MayapTech::RequestIdCapacity] = "";
+  } techPending_;
+  TechResult techResult_ = TechResult::None;
+  char techResultId_[MayapTech::RequestIdCapacity] = "";
+  char techMessage_[40] = "";
+  AdvancedHistory::Snapshot historyCache_[AdvancedHistory::Slots];
+  uint8_t historyCount_ = 0;
+  uint32_t techRetryAt_ = 0;
+  uint32_t pidMonAt_ = 0;
+  float pidMonActual_ = 0.0f;
   InputManager inputs_{};
   SHT485Industrial sensor_{};
   ThermalController pid_{};
   ThermalStartupController startupHeat_{};
-  RelayAutoTune autotune_{};
+  AutoTuneEngine autotune_{};
   OutputArbiter outputs_{};
   StatusLed led_{};
 
@@ -7820,6 +8360,12 @@ class MachineController {
 
   float pidPower_ = 0.0f;
   MayapAdaptive::AdaptiveThermalSupervisor adaptiveThermal_;
+  MayapThermal::AdaptiveV1 thermalV1_;
+  MayapThermal::VentInfo ventInfo_{};
+  bool ventForcedRun_ = false;
+  uint32_t thermalDiagnosticAt_=0;
+  MayapThermal::LearnState thermalLoggedState_=MayapThermal::LearnState::Unlearned;
+  bool thermalMismatchLogged_=false;
   uint32_t adaptiveDiagnosticAt_=0, adaptiveSignature_=0;
   bool adaptiveSignatureSeen_=false;
   MayapAdaptive::State adaptiveLoggedState_=MayapAdaptive::State::Disabled;

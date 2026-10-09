@@ -78,8 +78,10 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
     start = realtime.index('struct PendingCommand {')
     stop = realtime.index('// -------------------------- Hop thu nhat ky', start)
     (out / 'actual-transaction-state.inc').write_text(realtime[start:stop], encoding='utf-8')
+    config_h = (root / 'MAYAP_INDUSTRIAL_v1_0_0/config.h').read_text(encoding='utf-8')
+    (out / 'actual-hmi-command-type.inc').write_text(re.search(r'enum class HmiCommandType : uint8_t \{.*?\n\};', config_h, re.S)[0], encoding='utf-8')
     (out / 'actual-transaction-dispatch.inc').write_text('\n'.join(function(realtime, sig) for sig in
-        ('inline void handleCommandMessage(',
+        ('inline HmiCommandType mapCommandAction(', 'inline void handleCommandMessage(',
          'inline void flushCompletedTransactions(', 'inline void expirePendingCommands(',
          'inline void serviceHistoryResponse(')), encoding='utf-8')
     start = realtime.index('struct TerminalResult {')
@@ -128,6 +130,8 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
         if test in ('runtime-transactions','runtime-cloud-alert','runtime-alarm-fallback'): command[1] = '-std=c++17'
         if test in ('runtime-transactions', 'runtime-online-isolation','runtime-cloud-alert','runtime-alarm-fallback'):
             command += ['-I', str(json_include)]
+        if test == 'runtime-transactions':
+            command += ['-I', str(root / 'MAYAP_INDUSTRIAL_v1_0_0')]   # real tech_access.h / advanced_history.h / tech_request.h
         if args.sanitize:
             command += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
         subprocess.run(command, check=True)
@@ -187,7 +191,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
             target.write_text(original.replace(*replacement), encoding='utf-8')
             executable = out / 'runtime-transactions-regression'
             subprocess.run([args.cxx, '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', str(out),
-                            '-I', str(json_include), str(root / 'tests/runtime-transactions.cpp'), '-o', str(executable)], check=True)
+                            '-I', str(json_include), '-I', str(root / 'MAYAP_INDUSTRIAL_v1_0_0'), str(root / 'tests/runtime-transactions.cpp'), '-o', str(executable)], check=True)
             result = subprocess.run([str(executable)], capture_output=True, text=True)
             target.write_text(original, encoding='utf-8')
             assert result.returncode != 0, 'Mutation not detected: ' + label

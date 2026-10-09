@@ -768,8 +768,10 @@ void loop() {
   // Before hmiTask creation this loop is the sole LCD owner.
   if (!hmiTaskHandle) hmiBootDisplayUpdate(millis());
   stagedStartupUpdate(millis());
-  if(mayapBootStage() >= MayapBoot::Stage::LocalSettle && !mayapFirmwareMaintenanceActive())
+  if(mayapBootStage() >= MayapBoot::Stage::LocalSettle && !mayapFirmwareMaintenanceActive()) {
     MayapAdaptive::modelStorage.service(millis());
+    MayapThermal::profileStorage.service(millis());
+  }
   if(mayapBootStage() >= MayapBoot::Stage::LocalSettle && !mayapFirmwareMaintenanceActive())
   if (mayapBootStage() >= MayapBoot::Stage::LocalSettle) mayapI2cSupervisorUpdate(millis());
   vTaskDelay(pdMS_TO_TICKS(10));

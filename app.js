@@ -1134,7 +1134,7 @@
     // Defaults must not become an accidental patch while lazy config is loading.
     // Readonly quick fields still accept focus, which initiates their lazy read.
     for (const formId of ['quickForm', 'temperatureForm', 'ventForm', 'turningForm',
-      'sensorForm', 'lightAlarmForm', 'humidifierForm', 'advancedForm']) {
+      'lightAlarmForm', 'humidifierForm', 'advancedForm']) {
       $(formId)?.querySelectorAll('input,select').forEach(input => {
         const unsupportedAdaptive = input.id === 'adaptiveThermalBalanceEnabled' &&
           typeof device?.config?.adaptiveThermalBalanceEnabled !== 'boolean';
@@ -1484,29 +1484,39 @@
     const autoTuneState = Number(runtime.autoTuneState || 0);
     const autoTuneProgress = Math.max(0, Math.min(100, Number(runtime.autoTuneProgress || 0)));
     $('tuneBar').style.width = `${autoTuneProgress}%`;
+    const phaseName = AUTOTUNE_PHASES[Number(runtime.autoTunePhase)] || '';
+    const reasonName = AUTOTUNE_REASONS[Number(runtime.autoTuneReason)] || '';
+    const gate = techGateInfo(runtime);
     if (autoTuneState === 1) {
       $('tuneText').textContent = `Đang chạy · ${autoTuneProgress}%`;
-      $('pidSummary').textContent = `Đang tự dò · ${autoTuneProgress}%`;
+      $('tuneDetail').textContent = phaseName ? `Giai đoạn: ${phaseName}` : '';
+      $('pidSummary').textContent = `Đang tự dò · ${autoTuneProgress}%${phaseName ? ` · ${phaseName}` : ''}`;
       $('startTune').disabled = false;
       $('startTune').textContent = 'Hủy tự dò PID';
       $('startTune').classList.remove('primary');
       $('startTune').classList.add('dangerButton');
     } else {
-      $('startTune').disabled = false;
-      $('startTune').textContent = 'Bắt đầu tự dò PID';
+      $('startTune').disabled = !gate.session;
+      $('startTune').textContent = 'Gửi yêu cầu tự dò';
       $('startTune').classList.remove('dangerButton');
       $('startTune').classList.add('primary');
       if (autoTuneState === 2) {
-        $('tuneText').textContent = 'Hoàn tất · thông số đã được máy lưu';
+        $('tuneText').textContent = 'Hoàn tất · thông số đã được máy kiểm chứng và lưu';
+        $('tuneDetail').textContent = '';
         $('pidSummary').textContent = 'Đã hoàn tất và tự lưu';
       } else if (autoTuneState === 3) {
-        $('tuneText').textContent = 'Tự dò không hoàn tất';
-        $('pidSummary').textContent = 'Tự dò thất bại';
+        $('tuneText').textContent = 'Tự dò không hoàn tất · PID cũ được giữ nguyên';
+        $('tuneDetail').textContent = reasonName ? `Lý do: ${reasonName}` : '';
+        $('pidSummary').textContent = reasonName ? `Thất bại · ${reasonName}` : 'Tự dò thất bại';
       } else {
         $('tuneText').textContent = 'Sẵn sàng';
+        $('tuneDetail').textContent = '';
         $('pidSummary').textContent = 'Máy tự tìm và lưu thông số';
       }
     }
+    $('tuneGate').textContent = gate.text;
+    renderTech(device, runtime);
+    renderPidMonitor(device, runtime);
 
     if (autoTuneState === 1) {
       setCurrentActivity('Đang tự dò PID', `Tiến độ ${autoTuneProgress}%`, 'warning');
@@ -1571,7 +1581,6 @@
     $('turningSummary').textContent = $('turningEnabled').checked
       ? `Tự động · mỗi ${$('turnInterval').value || '—'} phút`
       : 'Đang tắt đảo tự động';
-    $('sensorSummary').textContent = `Bù ${numberVi($('tempOffset').value)}°C · ngắt nhiệt khi mất cảm biến`;
     $('humidifierSummary').textContent = `Bật ≤${$('humidifierOnHumidity').value || '—'}% · tắt ≥${$('humidifierOffHumidity').value || '—'}%RH`;
   }
 
@@ -1756,8 +1765,8 @@
     assign('turningForm', 'limitAlarmTime', config.turnMaxRunSec);
     assign('turningForm', 'nextDirection', Number(config.nextDirection) === 1 ? 'right' : 'left');
 
-    assign('sensorForm', 'tempOffset', config.tempOffset);
-    assign('sensorForm', 'humidityOffset', config.humidityOffset);
+    assign('advancedForm', 'tempOffset', config.tempOffset);
+    assign('advancedForm', 'humidityOffset', config.humidityOffset);
 
     check('lightAlarmForm', 'lightAfterBatchAlarmEnabled', config.lightAfterBatchAlarmEnabled);
     check('lightAlarmForm', 'sirenSelfTestEnabled', config.sirenSelfTestEnabled);
@@ -1781,7 +1790,7 @@
     assign('advancedForm', 'advAutotuneRelayPowerPercent', config.autotuneRelayPowerPercent);
     assign('advancedForm', 'advAutotuneBandC', config.autotuneBandC);
 
-    ['quickForm', 'batchForm', 'temperatureForm', 'ventForm', 'turningForm', 'sensorForm', 'lightAlarmForm', 'humidifierForm', 'advancedForm'].forEach((formId) => {
+    ['quickForm', 'batchForm', 'temperatureForm', 'ventForm', 'turningForm', 'lightAlarmForm', 'humidifierForm', 'advancedForm'].forEach((formId) => {
       if (force || !hasDirtyForm(formId)) setFormState(formId, 'saved', 'Đã nhận cài đặt từ máy');
     });
     updateSettingSummaries();
@@ -1870,9 +1879,6 @@
       config.turnIntervalMin = Number($('turnInterval').value);
       config.turnMaxRunSec = Number($('limitAlarmTime').value);
       config.nextDirection = $('nextDirection').value === 'right' ? 1 : 0;
-    } else if (group === 'sensor') {
-      config.tempOffset = Number($('tempOffset').value);
-      config.humidityOffset = Number($('humidityOffset').value);
     } else if (group === 'lightAlarm') {
       config.lightAfterBatchAlarmEnabled = $('lightAfterBatchAlarmEnabled').checked;
       config.sirenSelfTestEnabled = $('sirenSelfTestEnabled').checked;
@@ -1883,21 +1889,6 @@
       config.targetHumidity = off;
       config.humidifierHysteresisRh = off - on;
       config.humidifierEnabled = $('humidifierEnabled').checked;
-    } else if (group === 'advanced') {
-      config.kp = Number($('advKp').value);
-      config.ki = Number($('advKi').value);
-      config.kd = Number($('advKd').value);
-      config.maxHeaterPower = Number($('advMaxHeaterPower').value);
-      if (typeof device.config.adaptiveThermalBalanceEnabled === 'boolean')
-        config.adaptiveThermalBalanceEnabled = $('adaptiveThermalBalanceEnabled').checked;
-      config.tempRateLimitC = Number($('advTempRateLimitC').value);
-      config.tempRateWindowSec = Number($('advTempRateWindowSec').value);
-      config.tempOscillationCrossLimit = Number($('advTempOscillationCrossLimit').value);
-      config.tempOscillationWindowSec = Number($('advTempOscillationWindowSec').value);
-      config.heaterStuckMinRiseC = Number($('advHeaterStuckMinRiseC').value);
-      config.heaterStuckDurationSec = Number($('advHeaterStuckDurationSec').value);
-      config.autotuneRelayPowerPercent = Number($('advAutotuneRelayPowerPercent').value);
-      config.autotuneBandC = Number($('advAutotuneBandC').value);
     }
     return config;
   }
@@ -2124,6 +2115,7 @@
     device.commandSequence = Math.max(device.commandSequence + 1, Math.floor(Date.now() / 1000));
     saveDeviceRuntime(device);
     const id = requestId('cmd');
+    options.onRequestId?.(id);
     const payload = {
       v: PROTOCOL_VERSION,
       sequence: device.commandSequence,
@@ -2138,6 +2130,8 @@
       arg1: options.arg1 ?? 0,
       value: options.value ?? 0
     };
+    // Technical access fields (PIN digits, request kind, changed fields). They are part of the SIGNED body; never logged.
+    if (options.extra) Object.assign(payload, options.extra);
     if (Number(device.presence?.proto || 0) >= 2) {
       payload.v = 2;
       delete payload.sequence;
@@ -2302,6 +2296,7 @@
         addBatchLog(device, message);
       } else if (device.id === state.selectedId) setFormError('batchForm', '');
     }
+    if (pending.action && pending.action.startsWith('tech_')) { techOnAck(pending.action, ok, message); return; }
     toast(ok ? message : `Máy từ chối: ${message}`, 5000);
   }
 
@@ -2331,6 +2326,22 @@
   // co that trong firmware sang tieng Viet co dau - phai cap nhat neu firmware
   // them message moi.
   const RAW_ACK_MESSAGES = {
+    'WEB_HIDDEN': 'Máy đang ẩn mục Kỹ thuật PID với Web (bật Quyền Web PID trên máy)',
+    'WEB_LOCKED': 'Chưa nhập mã kỹ thuật hoặc phiên đã hết hạn',
+    'PIN_NOT_SET': 'Máy chưa có mã kỹ thuật (đặt trên màn hình máy)',
+    'INVALID_PIN': 'Mã kỹ thuật phải gồm đúng 4 chữ số',
+    'STORAGE_ERROR': 'Máy không đọc được bộ nhớ mã kỹ thuật',
+    'NOT_UNLOCKED': 'Chưa mở khóa kỹ thuật',
+    'PENDING_HMI': 'Đã gửi · chờ xác nhận CÓ/KHÔNG trên màn hình máy (60 giây)',
+    'BUSY_PENDING': 'Đang có một yêu cầu kỹ thuật chờ xác nhận trên máy',
+    'TECH_BUSY': 'Đang có một yêu cầu kỹ thuật chờ xác nhận trên máy',
+    'NO_NETWORK': 'Máy đang mất kết nối mạng',
+    'BATCH_LOCKED': 'Đang có mẻ ấp (hoặc đang chờ phục hồi mẻ) nên không đổi được thông số kỹ thuật',
+    'NO_CHANGE': 'Không có giá trị nào khác so với trên máy',
+    'UNSUPPORTED': 'Firmware chưa hỗ trợ yêu cầu này',
+    'INVALID_TECH_FIELD': 'Một thông số kỹ thuật nằm ngoài giới hạn cho phép',
+    'TECH_VIA_HMI_APPROVAL': 'Thông số kỹ thuật chỉ đổi qua yêu cầu có xác nhận trên máy',
+    'OK': 'Đã thực hiện',
     'LENH KHONG HOP LE': 'Lệnh không hợp lệ',
     'DA THOAT TEST': 'Đã thoát chế độ kiểm tra',
     'DA TAT THIET BI': 'Đã tắt thiết bị đang kiểm tra',
@@ -2426,6 +2437,10 @@
       unsupported: 'Phần mềm máy chưa hỗ trợ thao tác này',
       unauthorized: 'Yêu cầu điều khiển chưa được máy chủ xác thực'
     };
+    const wrongPin = /^WRONG_PIN (\d+)\/(\d+)$/.exec(raw);
+    if (wrongPin) return `Sai mã kỹ thuật (lần ${wrongPin[1]}/${wrongPin[2]})`;
+    const locked = /^LOCKED (\d+)s$/.exec(raw);
+    if (locked) return `Nhập sai quá nhiều lần · bị khóa thêm ${locked[1]} giây`;
     if (raw) return RAW_ACK_MESSAGES[raw] || raw;
     return map[result] || `Phản hồi: ${result || 'không xác định'}`;
   }
@@ -3027,11 +3042,255 @@
   let realtimeToken = 0;
   let connectingDeviceId = '';
 
+
+  // ---- Smart AutoTune stage names / technical PID (gated by the HMI) / PID Monitor ----------------------------------------
+  const AUTOTUNE_PHASES = ['Sẵn sàng', 'Làm nóng', 'Gia nhiệt', 'Làm nguội', 'Kiểm chứng', 'Hoàn thành', 'Thất bại',
+    'Đo nền', 'Kích thích', 'Trượt nhiệt', 'Kích thích lần 2', 'Tiến sát SV', 'Gần SV', 'Ổn định', 'Tính PID'];
+  const AUTOTUNE_REASONS = ['', 'Bảo vệ nhiệt kích hoạt', 'Lỗi cảm biến', 'Đổi chế độ máy', 'Quá giờ làm nóng', 'Quá giờ giai đoạn',
+    'Quá giờ tổng', 'Kết quả không lặp lại', 'Biên độ quá nhỏ', 'Chu kỳ quá ngắn', 'Ku không hợp lệ', 'Hệ số không hợp lệ',
+    'Lỗi lưu cấu hình', 'Thành công', 'Không đủ công suất dự trữ', 'Nhiệt nền không ổn định', 'Buồng không đáp ứng',
+    'Mô hình không hợp lệ', 'Bị giới hạn công suất', 'Quá giờ tiến sát SV', 'Relay thất bại', 'Ứng viên PID không hợp lệ',
+    'Kiểm chứng không đạt'];
+  const TECH_RESULTS = { 2: 'Máy đã xác nhận và áp dụng', 3: 'Người vận hành đã từ chối trên máy',
+    4: 'Hết 60 giây không ai xác nhận · yêu cầu đã hủy', 5: 'Máy không thực hiện được (kiểm tra an toàn hoặc lưu thất bại)',
+    6: 'Quyền Web đã bị thu hồi trên máy' };
+  const TECH_FIELDS = Object.freeze([
+    ['kp', 'advKp'], ['ki', 'advKi'], ['kd', 'advKd'], ['maxHeaterPower', 'advMaxHeaterPower'],
+    ['heaterStuckMinRiseC', 'advHeaterStuckMinRiseC'], ['heaterStuckDurationSec', 'advHeaterStuckDurationSec'],
+    ['tempRateLimitC', 'advTempRateLimitC'], ['tempRateWindowSec', 'advTempRateWindowSec'],
+    ['tempOscillationCrossLimit', 'advTempOscillationCrossLimit'], ['tempOscillationWindowSec', 'advTempOscillationWindowSec'],
+    ['autotuneRelayPowerPercent', 'advAutotuneRelayPowerPercent'], ['autotuneBandC', 'advAutotuneBandC'],
+    ['tempOffset', 'tempOffset'], ['humidityOffset', 'humidityOffset']]);
+  const techUi = { requestId: '' };
+
+  // What the device allows the Web to do. Unknown / old firmware => nothing technical is offered.
+  function techGateInfo(runtime) {
+    const tech = runtime?.tech;
+    if (!tech || typeof tech.allowed !== 'boolean') return { allowed: false, session: false, text: '' };
+    if (!tech.allowed) return { allowed: false, session: false,
+      text: 'Yêu cầu từ Web đang bị tắt. Bật “Quyền Web PID” trong Nâng cao trên máy, hoặc chạy tự dò trực tiếp trên máy.' };
+    if (!tech.session) return { allowed: true, session: false, text: 'Mở khóa mục “Kỹ thuật PID” bằng mã kỹ thuật để gửi yêu cầu.' };
+    return { allowed: true, session: true, text: '' };
+  }
+  function techSession(runtime) { return techGateInfo(runtime).session; }
+
+  // Fields that really differ from the device configuration (the device re-checks everything and shows old/new on its screen).
+  function buildTechFields(device) {
+    const config = device?.config || {};
+    const fields = {};
+    for (const [key, id] of TECH_FIELDS) {
+      const value = Number($(id)?.value);
+      if (!Number.isFinite(value) || typeof config[key] !== 'number') continue;
+      if (Math.abs(value - config[key]) > 1e-6) fields[key] = value;
+    }
+    if (typeof config.adaptiveThermalBalanceEnabled === 'boolean') {
+      const on = Boolean($('adaptiveThermalBalanceEnabled')?.checked);
+      if (on !== config.adaptiveThermalBalanceEnabled) fields.adaptiveThermalBalanceEnabled = on ? 1 : 0;
+    }
+    return fields;
+  }
+
+  function requestTech(body) {
+    return sendCommand('tech_request', { extra: body, onRequestId: (id) => { techUi.requestId = id; } });
+  }
+
+  async function submitTechRequest() {
+    const device = currentDevice();
+    const runtime = device?.snapshot?.runtime;
+    if (!techSession(runtime)) return toast('Cần mở khóa bằng mã kỹ thuật trước');
+    if (runtime?.tech?.pending) return toast('Đang có yêu cầu chờ xác nhận trên máy');
+    if (runtime?.batchRunning) return toast('Đang có mẻ chạy · không đổi được thông số kỹ thuật');
+    if (!validateAdvancedForm()) return;
+    const fields = buildTechFields(device);
+    if (!Object.keys(fields).length) { $('techRequestStatus').textContent = 'Không có giá trị nào khác so với trên máy.'; return; }
+    const ok = await confirmAction({
+      title: 'Gửi yêu cầu đổi thông số?',
+      message: `${Object.keys(fields).length} thông số sẽ được gửi. Máy hiện giá trị cũ/mới và chờ bạn bấm CÓ hoặc KHÔNG trong 60 giây.`,
+      accept: 'Gửi yêu cầu'
+    });
+    if (!ok) return;
+    await requestTech({ kind: 'config', fields });
+  }
+
+  async function submitTechUnlock() {
+    const pin = String($('techPin').value || '');
+    $('techUnlockError').textContent = '';
+    if (!/^[0-9]{4}$/.test(pin)) { $('techUnlockError').textContent = 'Mã kỹ thuật gồm đúng 4 chữ số.'; return; }
+    $('techUnlockBtn').disabled = true;
+    try { await sendCommand('tech_unlock', { extra: { pin } }); }
+    finally { $('techPin').value = ''; $('techUnlockBtn').disabled = false; }
+  }
+
+  function techOnAck(action, ok, message) {
+    if (action === 'tech_unlock') {
+      $('techUnlockError').textContent = ok ? '' : message;
+      toast(ok ? 'Đã mở khóa Kỹ thuật PID' : message, 4500);
+    } else if (action === 'tech_request') {
+      $('techRequestStatus').textContent = ok ? message : `Máy từ chối: ${message}`;
+      toast(ok ? message : `Máy từ chối: ${message}`, 5000);
+    } else toast(ok ? message : `Máy từ chối: ${message}`, 4000);
+  }
+
+  function renderTech(device, runtime) {
+    const card = $('techCard');
+    if (!card) return;
+    const gate = techGateInfo(runtime);
+    const tech = runtime?.tech || {};
+    card.hidden = !gate.allowed;
+    if (!gate.allowed) { $('techPin').value = ''; return; }
+    $('techLocked').hidden = gate.session;
+    $('advancedForm').hidden = !gate.session;
+    const mmss = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+    $('techSummary').textContent = gate.session ? `Đã mở khóa · còn ${mmss(Number(tech.sessionS || 0))}`
+      : Number(tech.lockS) > 0 ? `Bị khóa ${tech.lockS} giây`
+      : tech.pinSet === false ? 'Máy chưa đặt mã kỹ thuật' : 'Cần mã kỹ thuật 4 số';
+    $('techUnlockBtn').disabled = !controlReady(device) || Number(tech.lockS) > 0 || tech.pinSet === false;
+    if (!gate.session) return;
+    $('techSessionNote').textContent = `Phiên Kỹ thuật còn ${mmss(Number(tech.sessionS || 0))}.`;
+    const pending = Number(tech.pending || 0);
+    const mine = !techUi.requestId || tech.resultId === techUi.requestId;
+    if (pending) $('techRequestStatus').textContent = `Đang chờ bạn bấm CÓ/KHÔNG trên màn hình máy · còn ${tech.pendingS || 0} giây`;
+    else if (mine && TECH_RESULTS[Number(tech.result)] && techUi.requestId) $('techRequestStatus').textContent = TECH_RESULTS[Number(tech.result)];
+    $('techSendBtn').disabled = Boolean(pending) || !controlReady(device) || Boolean(runtime?.batchRunning);
+  }
+
+  // PID Monitor: read-only. Only measured numbers; a missing value stays "—".
+  const PM_ITEMS = Object.freeze([
+    ['pv', 'PV nhiệt độ', '°C', 2], ['sp', 'SP đặt', '°C', 2], ['err', 'Sai số (SP−PV)', '°C', 2], ['corr', 'PID P+I+D', '%', 1],
+    ['hold', 'Hold FF', '%', 1], ['vent', 'Vent FF', '%', 1], ['limit', 'Giới hạn Adaptive', '%', 0], ['req', 'Yêu cầu cuối', '%', 1],
+    ['act', 'SSR thực tế TB 60 s', '%', 1], ['kp', 'Kp', '', 2], ['ki', 'Ki', '', 3], ['kd', 'Kd', '', 1],
+    ['conf', 'Profile Confidence', '%', 0], ['gain', 'Heater Gain', '', 3], ['delay', 'Heater Delay', 's', 0],
+    ['coast', 'Coast', '°C', 2], ['holdPct', 'Hold Power', '%', 1], ['ventGain', 'Vent Gain', '', 3]]);
+  const PM_MAX_POINTS = 900;
+  const PM_SAMPLE_MS = 2000;
+  const pidMon = { open: false, deviceId: '', bootId: 0, series: [], lastAt: 0, cells: null, raf: 0 };
+
+  function pmEnsureGrid() {
+    const grid = $('pmGrid');
+    if (!grid || pidMon.cells) return;
+    pidMon.cells = {};
+    for (const [key, label, unit] of PM_ITEMS) {
+      const cell = document.createElement('div');
+      cell.className = 'pmCell';
+      const name = document.createElement('span'); name.textContent = label;
+      const value = document.createElement('b'); value.textContent = '—';
+      const u = document.createElement('i'); u.textContent = unit;
+      cell.append(name, value, u);
+      grid.append(cell);
+      pidMon.cells[key] = value;
+    }
+  }
+
+  function pmValues(device, runtime) {
+    const m = runtime?.pidMon;
+    const config = device?.config || {};
+    const ok = Boolean(m && m.valid);
+    const v = {};
+    v.pv = ok ? Number(runtime.temperature) : NaN;
+    v.sp = ok ? Number(m.sp) : NaN;
+    v.err = ok ? Number(m.err) : NaN;
+    v.corr = ok ? Number(m.corr) : NaN;
+    v.hold = ok ? Number(m.hold) : NaN;
+    v.vent = ok ? Number(m.vent) : NaN;
+    v.limit = ok ? `${Number(m.lo).toFixed(0)}–${Number(m.hi).toFixed(0)}` : '';
+    v.req = ok ? Number(m.req) : NaN;
+    v.act = ok ? Number(m.act) : NaN;
+    v.kp = Number(config.kp); v.ki = Number(config.ki); v.kd = Number(config.kd);
+    const learning = Boolean(runtime?.adaptiveThermal?.enabled) && m;
+    v.conf = learning ? Number(m.conf) : NaN; v.gain = learning ? Number(m.gain) : NaN;
+    v.delay = learning ? Number(m.delay) : NaN; v.coast = learning ? Number(m.coast) : NaN;
+    v.holdPct = learning ? Number(m.holdPct) : NaN; v.ventGain = learning ? Number(m.ventGain) : NaN;
+    return v;
+  }
+
+  function renderPidMonitor(device, runtime = device?.snapshot?.runtime) {
+    if (!$('pmGrid')) return;
+    pmEnsureGrid();
+    if (!pidMon.open || !device) return;
+    if (pidMon.deviceId !== device.id || pidMon.bootId !== Number(device.bootId || 0)) {
+      pidMon.deviceId = device.id; pidMon.bootId = Number(device.bootId || 0); pidMon.series = []; pidMon.lastAt = 0;
+    }
+    const values = pmValues(device, runtime);
+    for (const [key, , , digits] of PM_ITEMS) {
+      const raw = values[key];
+      const cell = pidMon.cells[key];
+      cell.textContent = typeof raw === 'string' ? (raw || '—') : Number.isFinite(raw) ? numberVi(raw, digits) : '—';
+    }
+    $('pmSummary').textContent = runtime?.pidMon?.valid
+      ? `PV ${numberVi(values.pv, 2)}°C · SP ${numberVi(values.sp, 2)}°C · yêu cầu ${numberVi(values.req, 0)}%`
+      : 'Chưa có số liệu (cảm biến chưa sẵn sàng hoặc firmware cũ)';
+    const now = Date.now();
+    if (runtime?.pidMon?.valid && now - pidMon.lastAt >= PM_SAMPLE_MS) {
+      pidMon.lastAt = now;
+      pidMon.series.push({ t: now, pv: values.pv, sp: values.sp, req: values.req, act: values.act, vent: runtime.ventFanOn ? 1 : 0 });
+      if (pidMon.series.length > PM_MAX_POINTS) pidMon.series.shift();
+    }
+    if (!pidMon.raf && typeof requestAnimationFrame === 'function') {
+      pidMon.raf = requestAnimationFrame(() => { pidMon.raf = 0; drawPidMonitorCharts(); });
+    }
+  }
+
+  function drawPmChart(canvas, series, layers, range) {
+    if (!canvas) return;
+    const wrap = canvas.parentElement;
+    const w = Math.max(1, Math.floor(wrap?.clientWidth || 300)), h = 150;
+    const dpr = Math.max(1, Math.min(2, Number(window.devicePixelRatio) || 1));
+    if (canvas.width !== Math.floor(w * dpr) || canvas.height !== Math.floor(h * dpr)) { canvas.width = Math.floor(w * dpr); canvas.height = Math.floor(h * dpr); }
+    canvas.style.width = `${w}px`; canvas.style.height = `${h}px`;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const left = 34, right = 6, top = 6, bottom = 16;
+    const color = getComputedStyle(canvas).color || '#888';
+    ctx.font = '10px system-ui, sans-serif'; ctx.fillStyle = color; ctx.strokeStyle = color; ctx.globalAlpha = 1;
+    if (series.length < 2) { ctx.fillText('Đang thu thập số liệu từ máy…', left, h / 2); return; }
+    const t0 = series[0].t, t1 = series[series.length - 1].t;
+    const x = (t) => left + (w - left - right) * ((t - t0) / Math.max(1, t1 - t0));
+    let lo = range.lo, hi = range.hi;
+    if (range.auto) {
+      const vals = layers.flatMap((l) => series.map((p) => p[l.key])).filter(Number.isFinite);
+      lo = Math.min(...vals) - 0.1; hi = Math.max(...vals) + 0.1;
+      if (hi - lo < 0.6) { const mid = (hi + lo) / 2; lo = mid - 0.3; hi = mid + 0.3; }
+    }
+    const y = (v) => top + (h - top - bottom) * (1 - (v - lo) / Math.max(1e-6, hi - lo));
+    ctx.globalAlpha = 0.25; ctx.beginPath();
+    for (let i = 0; i <= 3; i += 1) { const gy = top + (h - top - bottom) * i / 3; ctx.moveTo(left, gy); ctx.lineTo(w - right, gy); }
+    ctx.stroke(); ctx.globalAlpha = 1;
+    for (let i = 0; i <= 3; i += 1) ctx.fillText((hi - (hi - lo) * i / 3).toFixed(range.auto ? 1 : 0), 2, top + (h - top - bottom) * i / 3 + 3);
+    if (range.vent) {
+      ctx.fillStyle = 'rgba(128,128,128,0.28)';
+      let start = null;
+      for (const p of series) {
+        if (p.vent && start === null) start = p.t;
+        if ((!p.vent || p === series[series.length - 1]) && start !== null) { ctx.fillRect(x(start), top, Math.max(1, x(p.t) - x(start)), h - top - bottom); start = null; }
+      }
+    }
+    for (const layer of layers) {
+      ctx.strokeStyle = layer.color; ctx.lineWidth = 1.6; ctx.setLineDash(layer.dash || []); ctx.beginPath();
+      let moved = false;
+      for (const p of series) { const v = p[layer.key]; if (!Number.isFinite(v)) { moved = false; continue; }
+        if (moved) ctx.lineTo(x(p.t), y(v)); else { ctx.moveTo(x(p.t), y(v)); moved = true; } }
+      ctx.stroke();
+    }
+    ctx.setLineDash([]); ctx.fillStyle = color;
+    const minutes = Math.max(1, Math.round((t1 - t0) / 60000));
+    ctx.fillText(`${minutes} phút gần nhất`, left, h - 3);
+  }
+
+  function drawPidMonitorCharts() {
+    if (!pidMon.open) return;
+    drawPmChart($('pmTempChart'), pidMon.series, [{ key: 'pv', color: '#d9534f' }, { key: 'sp', color: '#2f80ed' }], { auto: true });
+    drawPmChart($('pmPowerChart'), pidMon.series, [{ key: 'req', color: '#f2994a' }, { key: 'act', color: '#9b51e0', dash: [4, 3] }],
+      { lo: 0, hi: 100, vent: true });
+  }
+
   function sendSession(deviceId, active = true, sync = false) {
     if (!state.realtime?.connected || state.realtime.deviceId !== deviceId) return;
     try {
+      const mon = Boolean(active && pidMon.open && document.body.dataset.page === 'settings' && !document.hidden);
       publish(routes(deviceId).session, { clientId: controlClientId, active,
-        ttlMs: active ? WEB.sessionTtlMs : 1000, sync }, { qos: 0 }).catch(() => {});
+        ttlMs: active ? WEB.sessionTtlMs : 1000, sync, ...(mon ? { mon: true } : {}) }, { qos: 0 }).catch(() => {});
     } catch (_) {}
   }
 
@@ -3437,16 +3696,16 @@
   }
 
   function validateSensorForm() {
-    clearInvalid('sensorForm');
     const temperature = Number($('tempOffset').value);
     const humidity = Number($('humidityOffset').value);
-    if (!(temperature >= -5 && temperature <= 5)) return invalidate('sensorForm', 'tempOffset', 'Bù nhiệt độ phải từ −5,0 đến 5,0°C.');
-    if (!(humidity >= -20 && humidity <= 20)) return invalidate('sensorForm', 'humidityOffset', 'Bù độ ẩm phải từ −20 đến 20%RH.');
+    if (!(temperature >= -5 && temperature <= 5)) return invalidate('advancedForm', 'tempOffset', 'Bù nhiệt độ phải từ −5,0 đến 5,0°C.');
+    if (!(humidity >= -20 && humidity <= 20)) return invalidate('advancedForm', 'humidityOffset', 'Bù độ ẩm phải từ −20 đến 20%RH.');
     return true;
   }
 
   function validateAdvancedForm() {
     clearInvalid('advancedForm');
+    if (!validateSensorForm()) return false;
     const kp = Number($('advKp').value);
     const ki = Number($('advKi').value);
     const kd = Number($('advKd').value);
@@ -3830,13 +4089,6 @@
       await sendConfig('turningForm', 'turning');
     });
 
-    $('sensorForm').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      if (!validateSensorForm()) return;
-      updateSettingSummaries();
-      await sendConfig('sensorForm', 'sensor');
-    });
-
     $('lightAlarmForm').addEventListener('submit', async (event) => {
       event.preventDefault();
       await sendConfig('lightAlarmForm', 'lightAlarm');
@@ -3849,30 +4101,34 @@
       await sendConfig('humidifierForm', 'humidifier');
     });
 
-    $('advancedForm').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      if (!validateAdvancedForm()) return;
-      await sendConfig('advancedForm', 'advanced');
+    $('advancedForm').addEventListener('submit', (event) => { event.preventDefault(); submitTechRequest(); });
+    $('techUnlockForm').addEventListener('submit', (event) => { event.preventDefault(); submitTechUnlock(); });
+    $('techLockBtn').addEventListener('click', () => { sendCommand('tech_lock'); });
+    $('pidMonitorCard').addEventListener('toggle', () => {
+      pidMon.open = $('pidMonitorCard').open;
+      if (state.selectedId) sendSession(state.selectedId, true, pidMon.open);
+      if (pidMon.open) renderPidMonitor(currentDevice());
     });
 
     $('startTune').addEventListener('click', async () => {
       const runtime = currentDevice()?.snapshot?.runtime;
       if (Number(runtime?.autoTuneState || 0) === 1) {
         const ok = await confirmAction({
-          title: 'Hủy tự dò PID?',
+          title: 'Hủy Smart AutoTune?',
           message: 'Dừng ngay quá trình tự dò hiện tại. Các thông số PID cũ vẫn được giữ nguyên.',
           accept: 'Hủy tự dò'
         });
         if (ok) await sendCommand('autotune_cancel');
         return;
       }
+      if (!techSession(runtime)) return toast('Cần bật Quyền Web PID trên máy và nhập mã kỹ thuật ở mục Kỹ thuật PID', 5000);
       if (runtime?.batchRunning) return toast('Không thể tự dò khi mẻ đang chạy');
       const ok = await confirmAction({
-        title: 'Bắt đầu tự dò PID?',
-        message: 'Chỉ thực hiện khi khoang ấp trống. Máy sẽ tự điều khiển và lưu kết quả.',
-        accept: 'Bắt đầu tự dò'
+        title: 'Gửi yêu cầu Smart AutoTune?',
+        message: 'Máy sẽ hiện yêu cầu trên màn hình và chờ bạn bấm CÓ trong 60 giây. Chỉ chạy khi khoang ấp trống.',
+        accept: 'Gửi yêu cầu'
       });
-      if (ok) await sendCommand('autotune_start');
+      if (ok) await requestTech({ kind: 'autotune' });
     });
 
     $('themeToggle').querySelectorAll('button').forEach((button) => {
@@ -3891,7 +4147,7 @@
       if (ok) window.location.href = 'http://192.168.4.1/';
     });
 
-    ['quickForm', 'batchForm', 'temperatureForm', 'ventForm', 'turningForm', 'sensorForm', 'lightAlarmForm', 'humidifierForm', 'advancedForm'].forEach(registerDirty);
+    ['quickForm', 'batchForm', 'temperatureForm', 'ventForm', 'turningForm', 'lightAlarmForm', 'humidifierForm', 'advancedForm'].forEach(registerDirty);
   }
 
   function startTimers() {

@@ -1,0 +1,6 @@
+{
+  "reference": "origin/main f59f0138021ed0f4f8a94ab2a1f28f6442038dfc (before Adaptive Thermal V1)",
+  "note": "High crossings of the 'ADAPTIVE' rows of tests/adaptive-plant.cpp on main, measured 2026-10-07 with MAYAP_ADAPTIVE_FAST_PATH=0 (current) and =1 (fast path). These are ceilings: a change may lower them, never raise them. 8 of the 10 are the self_heating scenario (internal heat, no cooling), unavoidable for every configuration.",
+  "currentHigh": 10,
+  "fastHigh": 9
+}

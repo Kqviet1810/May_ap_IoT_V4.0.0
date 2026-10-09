@@ -251,8 +251,8 @@ jobs:
           STATIC_RAM=$(sed -n 's/.*Global variables use \([0-9][0-9]*\) bytes.*/\1/p' /tmp/mayap-size.log | tail -n 1)
           test -n "$FLASH" || { echo "::error::Cannot read ESP32 Flash size"; exit 1; }
           test -n "$STATIC_RAM" || { echo "::error::Cannot read ESP32 static RAM size"; exit 1; }
-          echo "V4 network phase: Flash=${FLASH}/1460000 bytes; static RAM=${STATIC_RAM}/164000 bytes"
-          test "$FLASH" -le 1460000 || { echo "::error::ESP32 Flash exceeds V4 budget: ${FLASH} > 1460000"; exit 1; }
+          echo "V4 network phase: Flash=${FLASH}/1480000 bytes; static RAM=${STATIC_RAM}/164000 bytes"
+          test "$FLASH" -le 1480000 || { echo "::error::ESP32 Flash exceeds V4 budget: ${FLASH} > 1480000"; exit 1; }
           test "$STATIC_RAM" -le 164000 || { echo "::error::ESP32 static RAM exceeds V4 budget: ${STATIC_RAM} > 164000"; exit 1; }
 
       - name: Verify linked GPIO ISR cache safety

@@ -226,31 +226,43 @@
 <button class="primary full" type="submit">Lưu nhiệt độ và bảo vệ</button>
 </form>
 </details>
-<details class="settingCard">
-<summary><span class="settingIcon"><svg fill="none" height="22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="22"><path d="M12 2.7s6 6.5 6 11a6 6 0 1 1-12 0c0-4.5 6-11 6-11Z"/></svg></span><span class="settingSummary"><strong>Cảm biến</strong><small id="sensorSummary">Bù 0,0°C · ngắt nhiệt khi mất cảm biến</small></span><span aria-hidden="true" class="disclosure"></span></summary>
-<form class="settingBody" id="sensorForm">
-<label class="field"><span>Bù nhiệt độ</span><div class="unit"><input id="tempOffset" max="5" min="-5" step="0.1" type="number" value="0"/><b>°C</b></div></label>
-<label class="field"><span>Bù độ ẩm</span><div class="unit"><input id="humidityOffset" max="20" min="-20" step="0.1" type="number" value="0"/><b>%RH</b></div></label>
-<p class="settingFootnote">Mất dữ liệu cảm biến sẽ cắt nhiệt theo chính sách fail-safe cố định. Bù âm không được phép hạ ngưỡng bảo vệ quá nhiệt.</p>
-<button class="primary full" type="submit">Lưu hiệu chỉnh cảm biến</button>
-</form>
-</details>
 </section>
 <section class="settingGroup" aria-labelledby="settings-advanced"><h2 class="settingGroupLabel" id="settings-advanced">Nâng cao</h2>
-<details class="settingCard">
-<summary><span class="settingIcon"><svg fill="none" height="22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="22"><line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="1" x2="7" y1="14" y2="14"/><line x1="9" x2="15" y1="8" y2="8"/><line x1="17" x2="23" y1="16" y2="16"/></svg></span><span class="settingSummary"><strong>Tự dò PID</strong><small id="pidSummary">máy tự tìm và lưu thông số</small></span><span aria-hidden="true" class="disclosure"></span></summary>
+<details class="settingCard" id="pidMonitorCard">
+<summary><span class="settingIcon"><svg fill="none" height="22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="22"><polyline points="3 17 9 11 13 15 21 6"/><polyline points="15 6 21 6 21 12"/></svg></span><span class="settingSummary"><strong>PID Monitor</strong><small id="pmSummary">Chỉ xem · số liệu thật từ bộ điều khiển</small></span><span aria-hidden="true" class="disclosure"></span></summary>
 <div class="settingBody">
-<p class="settingFootnote">Không cần nhập Kp, Ki, Kd. Chỉ chạy khi máy không có mẻ đang hoạt động.</p>
-<div class="tuneState"><span id="tuneText">Sẵn sàng</span><div><i id="tuneBar"></i></div></div>
-<button class="primary full" id="startTune" type="button">Bắt đầu tự dò PID</button>
+<p class="settingFootnote">Chỉ đọc. Không thể chỉnh PID tại đây. Số liệu được máy gửi khi mục này đang mở, không giả lập.</p>
+<div class="pmGrid" id="pmGrid"></div>
+<div class="pmChartWrap"><canvas aria-label="Nhiệt độ và giá trị đặt" height="150" id="pmTempChart"></canvas></div>
+<div class="pmChartWrap"><canvas aria-label="Công suất gia nhiệt và sự kiện quạt hút" height="150" id="pmPowerChart"></canvas></div>
+<p class="settingFootnote" id="pmLegend">Đỏ: nhiệt độ · xanh: giá trị đặt · cam: công suất yêu cầu · tím nét đứt: SSR thực tế (TB 60 s) · dải xám: quạt hút chạy</p>
 </div>
 </details>
 <details class="settingCard">
-<summary><span class="settingIcon"><svg fill="none" height="22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="22"><path d="M12 20v-6M12 10V4M5 20v-9M5 7V4M19 20v-4M19 12V4"/><circle cx="12" cy="12" r="2"/><circle cx="5" cy="9" r="2"/><circle cx="19" cy="14" r="2"/></svg></span><span class="settingSummary"><strong>Thông số nâng cao</strong><small id="advancedSummary">PID thủ công · chẩn đoán</small></span><span aria-hidden="true" class="disclosure"></span></summary>
-<form class="settingBody" id="advancedForm">
+<summary><span class="settingIcon"><svg fill="none" height="22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="22"><line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="1" x2="7" y1="14" y2="14"/><line x1="9" x2="15" y1="8" y2="8"/><line x1="17" x2="23" y1="16" y2="16"/></svg></span><span class="settingSummary"><strong>Smart AutoTune</strong><small id="pidSummary">Máy tự tìm và lưu thông số</small></span><span aria-hidden="true" class="disclosure"></span></summary>
+<div class="settingBody">
+<p class="settingFootnote">Máy tự đo đáp ứng nhiệt rồi tính và kiểm chứng PID. Chỉ chạy khi không có mẻ. Yêu cầu bắt đầu phải được xác nhận bằng nút CÓ trên màn hình máy.</p>
+<div class="tuneState"><span id="tuneText">Sẵn sàng</span><div><i id="tuneBar"></i></div></div>
+<p class="settingFootnote" id="tuneDetail" role="status"></p>
+<p class="settingFootnote" id="tuneGate"></p>
+<button class="primary full" id="startTune" type="button">Gửi yêu cầu tự dò</button>
+</div>
+</details>
+<details class="settingCard" id="techCard" hidden>
+<summary><span class="settingIcon"><svg fill="none" height="22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="22"><rect height="11" rx="2" width="16" x="4" y="11"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><span class="settingSummary"><strong>Kỹ thuật PID</strong><small id="techSummary">Cần mã kỹ thuật 4 số</small></span><span aria-hidden="true" class="disclosure"></span></summary>
+<div class="settingBody">
+<div id="techLocked">
+<p class="settingFootnote">Mục này do máy cho phép (Nâng cao → Quyền Web PID). Nhập mã kỹ thuật 4 số đã đặt trên màn hình máy. Mã không được lưu trên trình duyệt.</p>
+<form class="stackForm" id="techUnlockForm" autocomplete="off">
+<label class="field"><span>Mã kỹ thuật</span><input autocomplete="off" id="techPin" inputmode="numeric" maxlength="4" minlength="4" pattern="[0-9]{4}" placeholder="4 chữ số" required="" type="password"/></label>
+<p class="formError" id="techUnlockError" role="alert"></p>
+<button class="primary full" id="techUnlockBtn" type="submit">Mở khóa</button>
+</form>
+</div>
+<form id="advancedForm" hidden>
+<div class="techSession" id="techSessionNote" role="status"></div>
 <div class="notificationLine"><div><strong>Tự cân bằng nhiệt</strong><small>Máy tự điều chỉnh mức gia nhiệt và làm mát theo phản ứng nhiệt thực tế của buồng.</small></div><label class="toggle"><input id="adaptiveThermalBalanceEnabled" type="checkbox" disabled/><i></i></label></div>
 <p class="settingFootnote" id="adaptiveThermalStatus" role="status">Kết nối firmware hỗ trợ để bật tính năng.</p>
-<p class="settingFootnote">Chỉ chỉnh khi đã hiểu rõ tác động. Sai giá trị có thể gây báo giả hoặc vọt lố nhiệt độ.</p>
 <p class="settingFootnote"><strong>PID thủ công</strong></p>
 <div class="tempGrid">
 <label class="compactTile"><span>Hệ số Kp</span><input id="advKp" max="100" min="0" step="0.1" type="number"/></label>
@@ -259,7 +271,7 @@
 <label class="compactTile"><span>Trần công suất nhiệt</span><div class="unit"><input id="advMaxHeaterPower" max="100" min="10" step="1" type="number"/><b>%</b></div></label>
 </div>
 <hr class="settingDivider"/>
-<p class="settingFootnote"><strong>Ngưỡng cảnh báo chẩn đoán</strong></p>
+<p class="settingFootnote"><strong>Bảo vệ nhiệt (ngưỡng chẩn đoán)</strong></p>
 <div class="tempGrid">
 <label class="compactTile"><span>Tốc độ tăng/giảm bất thường</span><div class="unit"><input id="advTempRateLimitC" max="10" min="0.1" step="0.1" type="number"/><b>°C</b></div></label>
 <label class="compactTile"><span>Khung đánh giá tốc độ</span><div class="unit"><input id="advTempRateWindowSec" max="1800" min="30" step="1" type="number"/><b>Giây</b></div></label>
@@ -269,14 +281,26 @@
 <label class="compactTile"><span>Thời gian xác nhận không tăng nhiệt</span><div class="unit"><input id="advHeaterStuckDurationSec" max="3600" min="60" step="1" type="number"/><b>Giây</b></div></label>
 </div>
 <hr class="settingDivider"/>
-<p class="settingFootnote"><strong>Tự dò PID nâng cao</strong></p>
+<p class="settingFootnote"><strong>Hiệu chuẩn cảm biến</strong></p>
+<div class="tempGrid">
+<label class="compactTile"><span>Bù nhiệt độ</span><div class="unit"><input id="tempOffset" max="5" min="-5" step="0.1" type="number" value="0"/><b>°C</b></div></label>
+<label class="compactTile"><span>Bù độ ẩm</span><div class="unit"><input id="humidityOffset" max="20" min="-20" step="0.1" type="number" value="0"/><b>%RH</b></div></label>
+</div>
+<details class="settingHintNote">
+<summary>Relay cũ · không dùng cho Smart AutoTune</summary>
+<p class="settingFootnote">Chỉ còn để tương thích bản ghi cũ. Smart AutoTune V1 tự chọn công suất kích thích an toàn.</p>
 <div class="tempGrid">
 <label class="compactTile"><span>Công suất relay</span><div class="unit"><input id="advAutotuneRelayPowerPercent" max="80" min="10" step="1" type="number"/><b>%</b></div></label>
 <label class="compactTile"><span>Dải xác nhận</span><div class="unit"><input id="advAutotuneBandC" max="1" min="0.05" step="0.05" type="number"/><b>°C</b></div></label>
 </div>
+</details>
+<p class="settingFootnote">Web không tự lưu. Nút bên dưới chỉ gửi yêu cầu; máy hiện giá trị cũ/mới trên màn hình và chờ bạn bấm CÓ hoặc KHÔNG trong 60 giây. Không có mẻ đang chạy mới áp dụng được.</p>
 <p class="formError" id="advancedFormError" role="alert"></p>
-<button class="primary full" type="submit">Lưu cài đặt nâng cao</button>
+<p class="settingFootnote" id="techRequestStatus" role="status"></p>
+<button class="primary full" id="techSendBtn" type="submit">Gửi yêu cầu (chờ xác nhận tại máy)</button>
+<button class="ghost full" id="techLockBtn" type="button">Khóa lại</button>
 </form>
+</div>
 </details>
 </section>
 <section class="settingGroup" aria-labelledby="settings-support"><h2 class="settingGroupLabel" id="settings-support">Thiết bị &amp; hỗ trợ</h2>
@@ -373,5 +397,5 @@
 </dialog>
 <div aria-live="polite" class="toast" id="toast" role="status"></div>
 
-<script defer src="./config.js?v=1.1.9"></script><script defer src="./account.js?v=1.1.9"></script><script defer src="./vendor/jsQR.min.js"></script><script defer src="./vendor/mqtt.min.js"></script><script defer src="./push.js?v=1.1.9"></script><script defer src="./protocol_v2.js?v=1.1.9"></script><script defer src="./notes.js?v=1.1.9"></script><script defer src="./mqtt_transport.js?v=1.1.9"></script><script defer src="./app.js?v=1.1.9"></script></body>
+<script defer src="./config.js?v=1.1.10"></script><script defer src="./account.js?v=1.1.10"></script><script defer src="./vendor/jsQR.min.js"></script><script defer src="./vendor/mqtt.min.js"></script><script defer src="./push.js?v=1.1.10"></script><script defer src="./protocol_v2.js?v=1.1.10"></script><script defer src="./notes.js?v=1.1.10"></script><script defer src="./mqtt_transport.js?v=1.1.10"></script><script defer src="./app.js?v=1.1.10"></script></body>
 </html>

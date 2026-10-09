@@ -1,3 +1,4 @@
+#define MAYAP_AUTOTUNE_LEGACY 1
 #include "thermal-autotune-harness.h"
 static void assertOld(const TuneHarness &h){assert(h.config_.kp==18 && h.config_.ki==0.8f && h.config_.kd==45);}
 static void begin(TuneHarness &h,float pv=37.4f){

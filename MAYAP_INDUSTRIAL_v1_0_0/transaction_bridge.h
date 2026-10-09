@@ -7,6 +7,7 @@
 #include <WiFi.h>
 
 #include "protocol_limits.h"
+#include "tech_request.h"
 #include "realtime_publish_policy.h"
 #include "wifi_power_policy.h"
 #include <ArduinoJson.h>
@@ -414,6 +415,7 @@ inline bool publishConfigReport(const MachineConfig &cfg, uint32_t revision) {
 }
 
 
+inline bool monitorWanted(uint32_t now);   // defined with the session leases below
 inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
   JsonDocument doc;
   doc["bootId"] = bootId;
@@ -453,6 +455,45 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
     JsonObject f = faults.add<JsonObject>();
     f["code"] = rt.activeFaults[i].code;
     f["severity"] = rt.activeFaults[i].severity;
+  }
+  // Technical access state for the Web (compact; the HMI owns every decision). Never contains the PIN, a hash or HMI-only data.
+  JsonObject tech = r["tech"].to<JsonObject>();
+  tech["allowed"] = rt.tech.webAllowed;           // false = the Web must not show the PID engineering section at all
+  tech["session"] = rt.tech.webSession;
+  tech["sessionS"] = rt.tech.webSessionRemainingS;
+  tech["lockS"] = rt.tech.lockRemainingS;
+  tech["pinSet"] = rt.tech.pinSet;
+  tech["pending"] = rt.tech.pendingKind;          // 0 none, 1 config, 2 Smart AutoTune: waiting for the HMI
+  tech["pendingS"] = rt.tech.pendingRemainingS;
+  tech["result"] = static_cast<uint8_t>(rt.tech.resultState);
+  {
+    MayapTech::Detail detail;
+    MayapTech::readDetail(detail);
+    tech["resultId"] = detail.resultId;
+  }
+  // Smart AutoTune progress for the Web: stage, result and the reason a candidate was refused (names are resolved by the Web).
+  r["autoTunePhase"] = rt.autoTunePhase;
+  r["autoTuneReason"] = rt.autoTuneReason;
+  r["autoTuneRejection"] = rt.autoTuneRejection;
+  // PID monitor numbers only while a Web client asked for them (lease flag "mon"): one extra ~200 B object at the lease cadence.
+  if (monitorWanted(millis())) {
+    JsonObject m = r["pidMon"].to<JsonObject>();
+    m["sp"] = rt.temperature + rt.pidMon.error;      // error = SP - PV
+    m["err"] = rt.pidMon.error;
+    m["corr"] = rt.pidMon.pidCorrection;
+    m["hold"] = rt.pidMon.holdFf;
+    m["vent"] = rt.pidMon.ventFf;
+    m["lo"] = rt.pidMon.limitLo;
+    m["hi"] = rt.pidMon.limitHi;
+    m["req"] = rt.pidMon.requestPct;
+    m["act"] = rt.pidMon.actualAvgPct;
+    m["conf"] = rt.thermalConfidence;
+    m["gain"] = rt.thermalGain;
+    m["delay"] = rt.thermalDelaySec;
+    m["coast"] = rt.thermalCoastC;
+    m["holdPct"] = rt.thermalHoldPct;
+    m["ventGain"] = rt.thermalVentGain;
+    m["valid"] = rt.pidMon.valid;
   }
   return publishJson("snapshot", doc, false);
 }
@@ -675,6 +716,10 @@ inline HmiCommandType mapCommandAction(const char *action) {
   if (!strcmp(action, "resume_no")) return HmiCommandType::ResumeNo;
   if (!strcmp(action, "autotune_start")) return HmiCommandType::AutoTuneStart;
   if (!strcmp(action, "autotune_cancel")) return HmiCommandType::AutoTuneCancel;
+  // Technical access: the PIN is verified on the ESP32 (shared with the HMI); a request only PARKS values until the HMI answers Yes/No.
+  if (!strcmp(action, "tech_unlock")) return HmiCommandType::TechPinVerify;
+  if (!strcmp(action, "tech_lock")) return HmiCommandType::TechLock;
+  if (!strcmp(action, "tech_request")) return HmiCommandType::TechRequestSubmit;
   // Nut "Cap nhat" tren web CHI yeu cau may kiem tra ngay (bo qua nhip 6h),
   // KHONG tu tai ve/nap - van phai xac nhan vat ly tren HMI (xem ota_web_
   // update.h + hmi.h::openFirmwareWebConfirm()).
@@ -852,10 +897,67 @@ inline void handleCommandMessage(const JsonDocument &doc) {
     return;
   }
 
-  const HmiCommandType type = mapCommandAction(action);
+  HmiCommandType type = mapCommandAction(action);
   if (type == HmiCommandType::None) {
     publishAck(requestId, "unsupported", "");
     return;
+  }
+
+  // ---- technical access (PIN / PID engineering) -------------------------------------------------------------------------
+  // The Web never applies anything here. tech_unlock sends the PIN digits to the ESP32 (verified there, shared with the HMI, one
+  // lock-out counter); tech_request / autotune_start only PARK the values until the HMI answers Yes/No (60 s). The ESP32 re-checks
+  // permission, session and every safety condition again when the request is parked and when the HMI says Yes.
+  uint32_t techParam = 0U;
+  if (type == HmiCommandType::TechPinVerify) {
+    const char *pin = doc["pin"] | "";
+    if (!TechAccess::pinFormatValid(pin)) { publishAck(requestId, "invalid", "INVALID_PIN"); return; }
+    techParam = static_cast<uint32_t>((pin[0] - '0') * 1000 + (pin[1] - '0') * 100 + (pin[2] - '0') * 10 + (pin[3] - '0'));
+  } else if (type == HmiCommandType::AutoTuneStart || type == HmiCommandType::TechRequestSubmit) {
+    // Early, cheap refusal from the mirrored state (the control task decides again): hidden / not unlocked Web never parks anything.
+    bool allowed = false, session = false, haveRuntime = false;
+    AdvancedHistory::Snapshot known;
+    bool haveConfig = false;
+    portENTER_CRITICAL(&realtimeMux);
+    haveRuntime = knownRuntimeValid;
+    allowed = knownRuntime.tech.webAllowed;
+    session = knownRuntime.tech.webSession;
+    if (knownConfigValid) { known = AdvancedHistory::fromConfig(knownConfig); haveConfig = true; }
+    portEXIT_CRITICAL(&realtimeMux);
+    if (!haveRuntime || !allowed) { publishAck(requestId, "rejected", "WEB_HIDDEN"); return; }
+    if (!session) { publishAck(requestId, "rejected", "WEB_LOCKED"); return; }
+    MayapTech::Kind kind = MayapTech::Kind::AutoTune;
+    uint16_t mask = 0U;
+    AdvancedHistory::Snapshot values = known;
+    if (type == HmiCommandType::TechRequestSubmit) {
+      const char *kindText = doc["kind"] | "";
+      if (!strcmp(kindText, "autotune")) {
+        kind = MayapTech::Kind::AutoTune;
+      } else if (!strcmp(kindText, "config")) {
+        kind = MayapTech::Kind::Config;
+        if (!haveConfig) { publishAck(requestId, "invalid", "CHUA CO CAU HINH GOC"); return; }
+        JsonVariantConst fieldsVar = doc["fields"];
+        if (!fieldsVar.is<JsonObjectConst>()) { publishAck(requestId, "invalid", "THIEU FIELDS"); return; }
+        JsonObjectConst fields = fieldsVar.as<JsonObjectConst>();
+        if (fields.size() == 0U || fields.size() > AdvancedHistory::F_COUNT) { publishAck(requestId, "invalid", "FIELDS"); return; }
+        for (JsonPairConst field : fields) {
+          int index = -1;
+          for (uint8_t f = 0; f < AdvancedHistory::F_COUNT; ++f)
+            if (!strcmp(field.key().c_str(), AdvancedHistory::FieldKeys[f])) { index = f; break; }
+          const JsonVariantConst value = field.value();
+          if (index < 0 || !(value.is<bool>() || value.is<int>() || value.is<float>() || value.is<double>()) ||
+              !AdvancedHistory::setField(values, static_cast<uint8_t>(index), value.as<double>())) {
+            publishAck(requestId, "invalid", "INVALID_TECH_FIELD");
+            return;
+          }
+          mask = static_cast<uint16_t>(mask | (1U << index));
+        }
+      } else {
+        publishAck(requestId, "invalid", "KIND");
+        return;
+      }
+    }
+    if (!MayapTech::stage(kind, mask, values, requestId)) { publishAck(requestId, "busy", "TECH_BUSY"); return; }
+    type = HmiCommandType::TechRequestSubmit;     // a legacy autotune_start is now just a request too
   }
 
   // Rollback thay doi firmware dang boot. Kenh realtime hien dung credential
@@ -871,6 +973,7 @@ inline void handleCommandMessage(const JsonDocument &doc) {
   // DANG active, khong phai AlarmNone, neu khong AlarmAck se khong xoa/tat
   // duoc gi ca (xem case HmiCommandType::AlarmAck trong machine_control.h).
   uint32_t alarmMaskParam = AlarmNone;
+  if (type == HmiCommandType::TechPinVerify) alarmMaskParam = techParam;
   if (type == HmiCommandType::AlarmAck) {
     portENTER_CRITICAL(&realtimeMux);
     alarmMaskParam = knownRuntimeValid
@@ -901,7 +1004,7 @@ inline void handleCommandMessage(const JsonDocument &doc) {
     break;
   }
   portEXIT_CRITICAL(&realtimeMux);
-  if (!reserved) { publishAck(requestId, "busy", "TRACKING_FULL"); return; }
+  if (!reserved) { if (type == HmiCommandType::TechRequestSubmit) MayapTech::discard(); publishAck(requestId, "busy", "TRACKING_FULL"); return; }
   const bool queued = queueCommand(type, validForMs, 0U, alarmMaskParam, &commandId,
       HmiCommandSource::Remote, [](uint32_t id, void *context) {
         // Lock order is HMI -> Web; callers never hold Web while entering HMI.
@@ -913,6 +1016,7 @@ inline void handleCommandMessage(const JsonDocument &doc) {
     portENTER_CRITICAL(&realtimeMux);
     reserved->used = false;
     portEXIT_CRITICAL(&realtimeMux);
+    if (type == HmiCommandType::TechRequestSubmit) MayapTech::discard();   // never leave a parked request nobody will take
     publishAck(requestId, "busy", "");
     return;
   }
@@ -1072,6 +1176,18 @@ inline void handleConfigSetMessage(const JsonDocument &doc) {
   candidate.autotuneBandC = configObj["autotuneBandC"] | candidate.autotuneBandC;
 
   sanitizeConfig(candidate);
+  // Technical fields (PID, protection, calibration, tune relay) are NOT changeable through config/set at all: the Web asks with
+  // tech_request and the HMI approves. A patch that leaves them as they are (e.g. a whole-form echo) is still fine.
+  {
+    MachineConfig known{};
+    portENTER_CRITICAL(&realtimeMux);
+    known = knownConfig;
+    portEXIT_CRITICAL(&realtimeMux);
+    if (AdvancedHistory::differingMask(AdvancedHistory::fromConfig(known), AdvancedHistory::fromConfig(candidate)) != 0U) {
+      publishAck(requestId, "rejected", "TECH_VIA_HMI_APPROVAL");
+      return;
+    }
+  }
   if (!mayapPidHasAuthority(candidate)) {
     publishAck(requestId, "invalid", "INVALID_PID_GAINS");
     return;
@@ -1120,8 +1236,14 @@ inline void handleConfigSetMessage(const JsonDocument &doc) {
 // setpoint or actuator, so (as in V2) it is unsigned. Owner task only.
 constexpr uint32_t REALTIME_SESSION_MAX_TTL_MS = 60000UL;
 static bool webSessionActive = false;
-struct SessionLease { char id[40] = ""; uint32_t expiresAt = 0U; };
+struct SessionLease { char id[40] = ""; uint32_t expiresAt = 0U; bool mon = false; };
 static SessionLease sessionLeases[8];
+
+inline bool monitorWanted(uint32_t now) {
+  for (const auto &lease : sessionLeases)
+    if (lease.id[0] && lease.mon && !timeReached(now, lease.expiresAt)) return true;
+  return false;
+}
 
 inline void handleSessionMessage(const JsonDocument &doc) {
   const char *client = doc["clientId"] | "";
@@ -1139,9 +1261,11 @@ inline void handleSessionMessage(const JsonDocument &doc) {
     if (ttlMs == 0U || ttlMs > REALTIME_SESSION_MAX_TTL_MS) ttlMs = REALTIME_SESSION_MAX_TTL_MS;
     snprintf(slot->id, sizeof(slot->id), "%s", client);
     slot->expiresAt = now + ttlMs;
+    slot->mon = doc["mon"] | false;     // the PID monitor view is open on this tab
   } else {
     slot->id[0] = '\0';
     slot->expiresAt = now;
+    slot->mon = false;
   }
   webSessionActive = false;
   for (const auto &lease : sessionLeases)
