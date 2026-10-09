@@ -151,7 +151,7 @@ test('Wi-Fi has one decision-maker; MQTT, Cloud and OTA can never touch the radi
   assert.match(deep, /wifiFsm\.state\(\) != MayapNetwork::WifiState::Recovery\) return false/);
   assert.match(deep, /explicitStop/);
   // no MQTT / Cloud / OTA source can call the Wi-Fi driver or the recovery machinery
-  for (const file of ['mqtt_transport.h', 'mqtt_uplink.h', 'mqtt_ws.h', 'mqtt_wire.h', 'transaction_bridge.h', 'cloud_alert_link.h', 'ota_web_update.h']) {
+  for (const file of ['mqtt_transport.h', 'mqtt_uplink.h', 'mqtt_tx_arbiter.h', 'mqtt_ws.h', 'mqtt_wire.h', 'transaction_bridge.h', 'cloud_alert_link.h', 'ota_web_update.h']) {
     const source = read(dir + file).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
     assert.doesNotMatch(source, /\bWiFi\.(begin|reconnect|disconnect|mode|setSleep|setAutoReconnect)\b|esp_wifi_(stop|start|connect|disconnect|restore|deinit|set_ps)|wifiFsm|mayapRadioQuiesceBegin\(/, file);
   }

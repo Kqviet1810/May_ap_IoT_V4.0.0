@@ -46,11 +46,11 @@ static bool configDirty=false;
 static uint32_t realtimeConfigRevision=0,lastVerifiedConfigRevision=0;
 static char lastVerifiedConfigRequestId[40]="";
 #include "actual-transaction-state.inc"
-static std::vector<std::string>acks;
+static std::vector<std::string>acks;static bool bulkRoom=true;bool bulkHasRoom(){return bulkRoom;}
 bool publishAck(const char *,const char *,const char *,const char * = "",uint32_t=0,uint32_t=0,const uint8_t * = nullptr);
 bool publishJson(const char *,const JsonDocument &,bool);
 static char deviceId[]="MAP-1234567890AB";
-static uint32_t lastSnapshotPublishAt=0,lastDeviceCompletedAt=0;static bool forceSnapshotPublish=false;
+static uint32_t lastDeviceCompletedAt=0;static bool forceSnapshotPublish=false;
 const char *ackCode(const char *r,const char*){return r;}
 const char *ackFriendlyMessage(const char*,const char *m){return m;}
 // Crypto is an injected HAL here; production HMAC vectors are covered in Node.
@@ -147,7 +147,16 @@ int main(){
  reset();historyCursor=historySampleCount=0;historyCandidateCount=18;historyResponsePending=true;failSend=true;serviceHistoryResponse();assert(historyCursor==0&&historySampleCount==0&&historyResponsePending&&acks.empty());
  failSend=false;serviceHistoryResponse();assert(historyCursor==12&&historySampleCount==12&&historyResponsePending);failSend=true;serviceHistoryResponse();assert(historyCursor==12&&historySampleCount==12&&historyResponsePending&&acks.empty());failSend=false;serviceHistoryResponse();assert(historyCursor==18&&historySampleCount==18&&!historyResponsePending&&acks.back()=="applied");assert(cursors.size()==2&&cursors[0]==0&&cursors[1]==12);
  historyCandidateCount=0;historyResponsePending=true;failSend=true;acks.clear();serviceHistoryResponse();assert(historyResponsePending&&acks.empty());failSend=false;serviceHistoryResponse();assert(!historyResponsePending&&acks.back()=="applied");
+ // History is a bulk lane: with no room on the wire/window nothing is read from the EEPROM and nothing is published, the request just waits.
+ reset();historyCursor=historySampleCount=0;historyCandidateCount=18;historyResponsePending=true;failSend=false;bulkRoom=false;acks.clear();serviceHistoryResponse();assert(historyCursor==0&&historySampleCount==0&&historyResponsePending&&acks.empty());
+ bulkRoom=true;serviceHistoryResponse();assert(historyCursor==12&&historyResponsePending);serviceHistoryResponse();assert(historyCursor==18&&!historyResponsePending);
  reset();failSend=false;publishAck("cache","expired","");assert(terminalCursor==0);publishAck("cache","accepted","");assert(terminalCursor==0);publishAck("cache","applied","APPLIED","light.toggle");assert(terminalCursor==1);
+ // A retry of the same terminal result (the ack outbox publishes again until the wire accepts it) is not news: it must not ask for another
+ // forced snapshot (the old code reset the snapshot clock on every retry, so a snapshot was due on every pass and kept beating the ack).
+ forceSnapshotPublish=false;publishAck("cache","applied","APPLIED","light.toggle");publishAck("cache","applied","APPLIED","light.toggle");assert(!forceSnapshotPublish&&terminalCursor==1);
+ publishAck("fresh","applied","APPLIED","light.toggle");assert(forceSnapshotPublish&&terminalCursor==2);   // a NEW result still asks for one
+ forceSnapshotPublish=false;publishAck("fresh","rejected","BUSY","light.toggle");assert(forceSnapshotPublish);                 // same request, different verdict: news
+ terminalCursor=1;
  for(int i=0;i<100;i++) { assert(replayTerminal("cache")); }
  assert(terminalCursor==1&&!strcmp(terminalCache[0].requestId,"cache")&&!strcmp(terminalCache[0].result,"applied"));
  techTests();

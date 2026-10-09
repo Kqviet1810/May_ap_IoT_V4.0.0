@@ -10,6 +10,7 @@
 #include "tech_request.h"
 #include "realtime_publish_policy.h"
 #include "wifi_power_policy.h"
+#include "mqtt_tx_arbiter.h"
 #include <ArduinoJson.h>
 #include <mbedtls/md.h>
 #include <time.h>
@@ -62,7 +63,18 @@ using PublishCallback = bool (*)(const char *, const char *, size_t);
 using CapacityCallback = uint8_t (*)();
 static PublishCallback publishCallback = nullptr;
 static CapacityCallback bulkCapacityCallback = nullptr;
-inline bool bulkHasRoom() { return bulkCapacityCallback == nullptr || bulkCapacityCallback() > 0U; }
+// May a frame of this lane go out RIGHT NOW? The transport answers from its socket (one select(), nothing built, nothing signed), so
+// the bridge asks BEFORE it builds a snapshot, signs an acknowledgement or serialises a report: a closed wire used to cost the whole
+// document per retry, and the snapshot that was retried on every pass won the first writable moment against the terminal ack that
+// waited in a back-off timer. nullptr = always open (host tests, other transports). Lane rules: mqtt_tx_arbiter.h.
+using TxGateCallback = bool (*)(uint8_t);
+static TxGateCallback txGateCallback = nullptr;
+inline bool txGateOpen(MayapTx::Lane lane) { return txGateCallback == nullptr || txGateCallback(static_cast<uint8_t>(lane)); }
+static MayapTx::SnapshotPacer snapshotPacer;
+static MayapTx::BridgeStats arbiterStats;
+inline bool bulkHasRoom() {
+  return (bulkCapacityCallback == nullptr || bulkCapacityCallback() > 0U) && txGateOpen(MayapTx::Lane::Bulk);
+}
 // A multi-part config report is resumable: the parts already published for this revision are not rebuilt or resent when the window
 // was full, the report just continues where it stopped (the Web assembles parts in order per boot+revision). A new connection starts over.
 static uint32_t reportRevision = 0U;
@@ -223,6 +235,7 @@ inline void handleHistoryRequestMessage(const JsonDocument &doc) {
 
 inline void serviceHistoryResponse() {
   if (!historyResponsePending || !publishCallback) return;
+  if (!bulkHasRoom()) return;   // a bulk lane like the config report: no EEPROM reads and no JSON while the wire or the QoS1 window is closed
 
   JsonDocument doc;
   doc["v"] = 1;
@@ -652,10 +665,15 @@ inline bool publishAck(const char *requestId, const char *result,
     snprintf(slot.message, sizeof(slot.message), "%s", message ? message : "");
     slot.signedAck = key != nullptr;
     if (key) memcpy(slot.ackKey, key, sizeof(slot.ackKey));
+    // A retry of the same result (the ack outbox calls this again until the wire accepts it) is not news: only the first publication of
+    // a result asks for a fresh snapshot, and the snapshot pacer coalesces several of them (the old code reset the snapshot clock on
+    // every retry, so a snapshot was due on every pass and kept winning the wire against the ack being retried).
+    const bool news = !existing || strcmp(existing->result, result) != 0;
     (existing ? *existing : terminalCache[terminalCursor++ % 16U]) = slot;
-    lastSnapshotPublishAt = 0U;
-    forceSnapshotPublish = true;
-    lastDeviceCompletedAt = millis();
+    if (news) {
+      forceSnapshotPublish = true;
+      lastDeviceCompletedAt = millis();
+    }
   }
   JsonDocument doc;
   doc["v"] = 2;
@@ -698,6 +716,7 @@ inline bool publishAck(const char *requestId, const char *result,
 }
 
 inline bool publishLogEntry(const HmiEventItem &item) {
+  if (!txGateOpen(MayapTx::Lane::Telemetry)) return false;   // closed wire: nothing is built (the entry stays queued)
   JsonDocument doc;
   doc["sequence"] = item.sequence;
   doc["epoch"] = item.epoch;
@@ -1429,45 +1448,65 @@ inline void expirePendingCommands(uint32_t now) {
 
 }
 
-// Terminal ACKs wait here until the transport accepted them. A refusal (in-flight window full, link closing) is retried with a
-// short exponential back-off (50 ms .. 1 s) instead of every loop pass, and logged at most once per 2 s with the count, so a
-// busy moment neither spins the CPU nor floods the serial buffer. An ACK that was accepted by the socket but whose PUBACK never
-// comes is covered one level up: the Web re-sends the command and replayTerminal() answers it WITHOUT executing it again.
-static uint8_t ackRefusals = 0U;
-static uint32_t ackRetryAt = 0U, ackLogAt = 0U, ackRefusedTotal = 0U, ackRefusedLogged = 0U;
+// Terminal ACKs wait here until the transport accepted them. They are the highest lane the bridge has: every pass asks the wire
+// (txGateOpen, one select()) and publishes the moment it is open - no timer back-off, because a back-off is exactly what let the
+// periodic snapshot take the writable moment and left the Web waiting seconds for a 300-byte ack. While an ack waits, the lower
+// lanes (snapshot, config/history reports, log) stand aside, bounded by ACK_PRIORITY_MAX_MS. A publish that fails although the wire
+// was open (encode/sign error, link closing under us) pauses 100 ms and is logged at most once per 2 s with the count. An ACK that was
+// accepted by the socket but whose PUBACK never comes is covered one level up: the Web re-sends the command and replayTerminal()
+// answers it WITHOUT executing it again.
+static uint32_t ackWaitSince = 0U, ackRetryAt = 0U, ackLogAt = 0U, ackRefusedTotal = 0U, ackRefusedLogged = 0U;
+constexpr uint32_t ACK_FAILED_PAUSE_MS = 100UL;
+inline bool ackIsWaiting(uint32_t now) { return MayapTx::ackHolds(ackWaitSince, now); }
 inline void drainAckOutbox() {
   const uint32_t startedAt = millis();
-  if (ackRefusals > 0U && static_cast<int32_t>(startedAt - ackRetryAt) < 0) return;
+  if (ackRetryAt != 0U && static_cast<int32_t>(startedAt - ackRetryAt) < 0) return;
+  bool left = false;
   for (uint8_t i = 0U; i < COMMAND_QUEUE_SIZE + 2U; ++i) {
     AckOutboxItem item;
     portENTER_CRITICAL(&realtimeMux);
     item = ackOutbox[i];
     portEXIT_CRITICAL(&realtimeMux);
     if (!item.used) continue;
+    if (!txGateOpen(MayapTx::Lane::Ack)) {      // the wire is closed: nothing is built or signed; the next pass asks again
+      ++arbiterStats.ackWireWaits;
+      left = true;
+      if (ackWaitSince != 0U && static_cast<uint32_t>(startedAt - ackWaitSince) >= 1000UL &&
+          (ackLogAt == 0U || static_cast<uint32_t>(startedAt - ackLogAt) >= 2000UL)) {
+        mayapSerialPrintf(false, "[CFG-TX] ACK waits for the wire id=%s waited=%lums (sent %lu, wire waits %lu)\n", item.requestId,
+                          static_cast<unsigned long>(startedAt - ackWaitSince), static_cast<unsigned long>(arbiterStats.ackSent),
+                          static_cast<unsigned long>(arbiterStats.ackWireWaits));
+        ackLogAt = startedAt ? startedAt : 1U;
+      }
+      break;
+    }
     const bool sent = publishAck(item.requestId, item.result, item.message,
                                  item.operation, item.receivedAt, item.completedAt,
                                  item.signedAck ? item.ackKey : nullptr);
     if (!sent) {
       const uint32_t now = millis();
-      if (ackRefusals < 255U) ++ackRefusals;
       ++ackRefusedTotal;
-      const uint8_t shift = ackRefusals < 5U ? ackRefusals : 5U;
-      ackRetryAt = now + (50UL << shift > 1000UL ? 1000UL : (50UL << shift));
+      ++arbiterStats.ackPublishFailed;
+      ackRetryAt = now + ACK_FAILED_PAUSE_MS;
+      left = true;
       if (ackLogAt == 0U || static_cast<uint32_t>(now - ackLogAt) >= 2000UL) {
-        mayapSerialPrintf(false, "[CFG-TX] ACK PUB FAIL id=%s (refused %lu since last log, retry in %lums)\n", item.requestId,
+        mayapSerialPrintf(false, "[CFG-TX] ACK PUB FAIL id=%s (failed %lu since last log, retry in %lums)\n", item.requestId,
                           static_cast<unsigned long>(ackRefusedTotal - ackRefusedLogged), static_cast<unsigned long>(ackRetryAt - now));
         ackLogAt = now ? now : 1U;
         ackRefusedLogged = ackRefusedTotal;
       }
-      break; // Keep the ACK and retry after the back-off.
+      break; // Keep the ACK and retry.
     }
-    ackRefusals = 0U;
+    ackRetryAt = 0U;
+    ++arbiterStats.ackSent;
     portENTER_CRITICAL(&realtimeMux);
     if (ackOutbox[i].used && ackOutbox[i].completedAt == item.completedAt &&
         !strcmp(ackOutbox[i].requestId, item.requestId))
       ackOutbox[i].used = false;
     portEXIT_CRITICAL(&realtimeMux);
   }
+  if (!left) ackWaitSince = 0U;
+  else if (ackWaitSince == 0U) ackWaitSince = startedAt ? startedAt : 1U;
 }
 
 // A burst of saves (the setpoint stepped with +/- ten times in a few seconds) is ONE report of the final state: the report waits until
@@ -1503,20 +1542,42 @@ inline void serviceSessionTimeout(uint32_t now) {
   webSessionActive = active;
 }
 
-// Full live `snapshot` (V2 contract): fast while a Web tab holds a session lease,
-// slow heartbeat otherwise. A completed command forces an immediate sample.
+// Full live `snapshot` (V2 contract): fast while a Web tab holds a session lease, slow heartbeat otherwise. A completed command forces
+// a fresh sample, but the snapshot is the LOWEST lane: it is only built when its interval (plus the congestion allowance of the pacer)
+// has passed, no terminal ack is waiting for the wire, and the wire is open - asked before a single field is serialised. A closed
+// wire stretches the interval one step (once per episode); clean sends shrink it again. Latest wins: a snapshot that could not go
+// out is never queued, the next one simply carries the newest state.
+static uint32_t snapshotRetryAt = 0U;
+// The lower lanes stand aside for this pass because a terminal ack waits for the wire (counted, so the log shows how often).
+inline void holdLowerLanes(uint32_t now) {
+  ++arbiterStats.laneAckSkips;
+  const uint32_t interval = webSessionActive ? REALTIME_SNAPSHOT_ACTIVE_INTERVAL_MS : REALTIME_SNAPSHOT_IDLE_INTERVAL_MS;
+  if (snapshotPacer.due(now, lastSnapshotPublishAt, interval, forceSnapshotPublish)) ++arbiterStats.snapshotAckSkips;
+}
 inline void serviceLiveSnapshot(uint32_t now) {
   const uint32_t interval = webSessionActive ? REALTIME_SNAPSHOT_ACTIVE_INTERVAL_MS
                                              : REALTIME_SNAPSHOT_IDLE_INTERVAL_MS;
-  if (!forceSnapshotPublish && !timeReached(now, lastSnapshotPublishAt + interval)) return;
+  if (!snapshotPacer.due(now, lastSnapshotPublishAt, interval, forceSnapshotPublish)) return;
+  if (snapshotRetryAt != 0U && !timeReached(now, snapshotRetryAt)) return;
+  if (!txGateOpen(MayapTx::Lane::Telemetry)) {
+    snapshotPacer.onCongested(interval);
+    ++arbiterStats.snapshotGateSkips;
+    return;
+  }
   portENTER_CRITICAL(&realtimeMux);
   const bool valid = knownRuntimeValid;
   const MachineRuntime rt = knownRuntime;
   const uint32_t revision = realtimeConfigRevision;
   portEXIT_CRITICAL(&realtimeMux);
-  if (valid && publishSnapshot(rt, revision)) {
+  if (!valid) return;
+  if (publishSnapshot(rt, revision)) {
     forceSnapshotPublish = false;
     lastSnapshotPublishAt = millis();
+    snapshotRetryAt = 0U;
+    snapshotPacer.onSent();
+    ++arbiterStats.snapshotsSent;
+  } else {
+    snapshotRetryAt = now + MayapTx::SNAPSHOT_FAILED_RETRY_MS;   // the wire was open but the frame was refused: no rebuild on every pass
   }
 }
 
@@ -1583,6 +1644,12 @@ inline void mayapRealtimeUpdate(uint32_t now) {
   // operation holds its transient working set.
   MayapNetworkBatchOperation batch;
   if (!batch) return;
+  // A terminal ack that is still waiting for the wire outranks every lane below (bounded by ACK_PRIORITY_MAX_MS): those lanes stand
+  // aside for this pass, so the first writable moment is the ack's.
+  if (ackIsWaiting(millis())) {
+    holdLowerLanes(now);
+    return;
+  }
   serviceLiveSnapshot(now);
   serviceConfigPublish();
   serviceEventLogPublish();

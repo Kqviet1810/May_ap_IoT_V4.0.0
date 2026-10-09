@@ -157,8 +157,12 @@ trong cùng kết nối → đóng kết nối. Publish hợp lệ reset bộ đ
 - **Backpressure** cho QoS1: cửa sổ in-flight 16 gói/kết nối. Một loạt vượt cửa sổ (40 lệnh Web, một cụm ACK,
   config chia chunk) là **bình thường**: phần dư nằm trong hàng đợi **bền, có giới hạn 128, đúng thứ tự** (`pend:<clientId>:<n>`)
   và được thả khi PUBACK giải phóng cửa sổ; không drop, không đóng ai. Chỉ một consumer thật sự kẹt (cửa sổ đầy và gói cũ nhất
-  chưa được PUBACK > 20 s, hoặc hàng đợi 128 đầy) mới bị đóng bằng close code 1013 "SLOW_CONSUMER". *(Trước đây gói thứ 17
-  trong một đợt gửi liền đã đóng socket của thiết bị — nguyên nhân `link lost … inflight=8` trên mạch.)*
+  chưa được PUBACK > 20 s **và kết nối im lặng suốt thời gian đó**, hoặc hàng đợi 128 đầy) mới bị đóng bằng close code 1013
+  "SLOW_CONSUMER". Một kết nối **vẫn đang gửi gói** là còn sống: các gói in-flight quá 20 s chưa PUBACK được gỡ sổ (đã gửi rồi, MQTT
+  3.1.1 chỉ gửi lại khi nối lại; đếm trong `att.ackLost`), cửa sổ mở lại và hàng đợi tiếp tục chảy — kể cả khi chỉ có DO alarm thức
+  dậy. *(Trước đây gói thứ 17 trong một đợt gửi liền đã đóng socket của thiết bị — nguyên nhân `link lost … inflight=8` trên mạch;
+  rồi một thiết bị còn sống nhưng làm rơi PUBACK cũng bị đóng. Phía thiết bị: PUBACK nợ broker nằm trong hàng đợi riêng không bao giờ
+  bị bỏ — xem `doc/REALTIME_TX_ARBITER.md`.)*
 - DO alarm **theo hạn chót, không poll cố định**: thức ở thời điểm sớm nhất trong {hạn keepalive của socket
   (lastRx + 1,5× keepalive), hạn kết nối chờ CONNECT, lần thử lại kế tiếp của hàng đợi uplink, hạn token Web + 2 phút}.
   Hạn gần không bị dời bởi sự kiện socket khác. Socket Web sống lâu hơn token quá 2 phút bị đóng (`TOKEN_EXPIRED`); Web thay token

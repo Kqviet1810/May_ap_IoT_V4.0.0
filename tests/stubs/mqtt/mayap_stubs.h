@@ -11,6 +11,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include "mqtt_tx_arbiter.h"
 
 #ifdef MAYAP_LIVE_SOCKET   // tests/host-wss-client.cpp: real TCP to a local broker (TLS itself is not part of the test)
 #include <arpa/inet.h>
@@ -210,8 +211,12 @@ inline void mayapRealtimeUpdate(uint32_t) { ++g_realtimeUpdates; }
 namespace MayapRealtimeInternal {
 typedef bool (*PublishCallback)(const char *, const char *, size_t);
 typedef uint8_t (*CapacityCallback)();
+typedef bool (*TxGateCallback)(uint8_t);
 static PublishCallback publishCallback = nullptr;
 static CapacityCallback bulkCapacityCallback = nullptr;
+static TxGateCallback txGateCallback = nullptr;
+static MayapTx::SnapshotPacer snapshotPacer;
+static MayapTx::BridgeStats arbiterStats;
 static char deviceId[24] = "MAP-AABBCCDDEEFF";
 static portMUX_TYPE realtimeMux = 0;
 static bool knownConfigValid = true, configDirty = false, forceSnapshotPublish = false;

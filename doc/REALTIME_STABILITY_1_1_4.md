@@ -74,6 +74,7 @@ Cũng từ log: `minEver` heap rơi 130 → 25 KB trong 111 s thao tác (ngưỡ
 | `[MQTT] wss+mqtt up <ms> … dns= tls= ws= mqtt=` | Thời gian từng pha → trả lời "DNS, TLS, WS hay MQTT chậm" |
 | `[MQTT] dns failed host=… after …ms` / `[MQTT] tls connect failed … err= ip= dns= tls= heap= largest=` | Lỗi bắt tay có đủ ngữ cảnh |
 | `[MQTT-TX] refused= dropped= ctrlQueued= shedAck= writeMax= loopMax= heapLow= rssi=` | Sức khỏe đường lên mỗi chu kỳ thống kê; `writeMax`/`loopMax` bắt cú đứng, `rssi` thay cho phỏng đoán Wi-Fi |
+| `[MQTT-ARB] wire pubackQ= ovf= edges= \| wait ack=NxMms …` và `[MQTT-ARB] lanes ack … \| snap … gap+ congested= \| held=` | Trọng tài đường lên (ưu tiên ack, nhịp snapshot, PUBACK nợ broker): **M = thời gian ack phải chờ socket (lâu nhất trong 10 s)**; `ovf` phải 0. Cách đọc và tiêu chí nạp máy thật: `doc/REALTIME_TX_ARBITER.md`. |
 | `[MQTT-STAT] closes radio= mem= cloud-tls= iso= lost= \| qos1 expired= refusedBulk= refusedAck= \| probes= answered= rttEwma=` | Tổng hợp đóng/mất; `cloud-tls` phải **không tăng** khi Web đang dùng |
 | `[SERVICE-RECOVERY] <svc> <action> silent=…ms now=… beat=…` | Chốt giả thuyết REINIT giả |
 | `[WIFI] sta disconnected reason=<n> rssi=<dBm>` | Lý do Wi-Fi ngắt (mã theo `wifi_err_reason_t`) |

@@ -91,6 +91,18 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
         function(realtime, 'inline bool replayTerminal('), encoding='utf-8')
     (out / 'actual-transaction-confirm.inc').write_text('\n'.join(function(realtime, sig) for sig in
         ('inline void mayapRealtimeConfirmCommand(', 'inline void mayapRealtimeConfirmConfigSave(',)), encoding='utf-8')
+    # TX arbiter of the bridge: the REAL ack-outbox drain, live-snapshot service and lane order of mayapRealtimeUpdate (no model copy).
+    (out / 'mqtt_tx_arbiter.h').write_text((root / 'MAYAP_INDUSTRIAL_v1_0_0/mqtt_tx_arbiter.h').read_text(encoding='utf-8'), encoding='utf-8')
+    start = realtime.index('struct AckOutboxItem {')
+    stop = realtime.index('inline bool enqueueAckLocked(', start)
+    (out / 'actual-arbiter-outbox.inc').write_text(realtime[start:stop], encoding='utf-8')
+    start = realtime.index('static uint32_t ackWaitSince = 0U')
+    stop = realtime.index('// A burst of saves (the setpoint stepped', start)
+    (out / 'actual-arbiter-ack.inc').write_text(realtime[start:stop], encoding='utf-8')
+    start = realtime.index('static uint32_t snapshotRetryAt = 0U;')
+    stop = realtime.index('inline void serviceSnapshotPublish(uint32_t now) {', start)
+    (out / 'actual-arbiter-snapshot.inc').write_text(realtime[start:stop], encoding='utf-8')
+    (out / 'actual-arbiter-update.inc').write_text(function(realtime, 'inline void mayapRealtimeUpdate('), encoding='utf-8')
     json_candidates = [Path(os.environ.get('MAYAP_ARDUINOJSON', 'missing')),
                        Path.home() / 'Arduino/libraries/ArduinoJson/src',
                        Path.home() / 'Documents/Arduino/libraries/ArduinoJson/src']
@@ -123,7 +135,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
                  'mayapBootAcknowledgeHomeFrame'):
         mailbox += re.search(r'inline (?:bool|void) ' + name + r'\(\) \{[^}]*\}', boot)[0] + '\n'
     (out / 'actual-boot-mailbox.inc').write_text(mailbox, encoding='utf-8')
-    for test in ('runtime-buses', 'runtime-network', 'wifi-fsm', 'runtime-attiny', 'runtime-attiny-state', 'runtime-stability', 'runtime-cloud-alert', 'runtime-alarm-fallback', 'runtime-web-connect', 'runtime-transactions', 'runtime-online-isolation'):
+    for test in ('runtime-buses', 'runtime-network', 'wifi-fsm', 'runtime-attiny', 'runtime-attiny-state', 'runtime-stability', 'runtime-cloud-alert', 'runtime-alarm-fallback', 'runtime-web-connect', 'runtime-transactions', 'runtime-online-isolation', 'realtime-arbiter'):
         executable = out / (test + ('.exe' if __import__('os').name == 'nt' else ''))
         command = [args.cxx, '-std=c++11', '-Wall', '-Wextra', '-Werror', '-I', str(out),
                    str(root / ('tests/' + test + '.cpp')), '-o', str(executable)]
@@ -192,6 +204,24 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
             executable = out / 'runtime-transactions-regression'
             subprocess.run([args.cxx, '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', str(out),
                             '-I', str(json_include), '-I', str(root / 'MAYAP_INDUSTRIAL_v1_0_0'), str(root / 'tests/runtime-transactions.cpp'), '-o', str(executable)], check=True)
+            result = subprocess.run([str(executable)], capture_output=True, text=True)
+            target.write_text(original, encoding='utf-8')
+            assert result.returncode != 0, 'Mutation not detected: ' + label
+            print('Regression proof: rejected ' + label)
+        # The TX arbiter: each rule below must be load-bearing - removing it has to fail tests/realtime-arbiter.cpp.
+        for name, replacement, label in (
+            ('actual-arbiter-update.inc', ('if (ackIsWaiting(millis())) {', 'if (false) {'), 'lower lanes ignore a terminal ack that waits for the wire'),
+            ('actual-arbiter-snapshot.inc', ('if (!txGateOpen(MayapTx::Lane::Telemetry)) {', 'if (false) {'), 'snapshot built before the wire is asked'),
+            ('actual-arbiter-ack.inc', ('if (!txGateOpen(MayapTx::Lane::Ack)) {', 'if (false) {'), 'terminal ack built and signed for a closed wire'),
+            ('actual-arbiter-ack.inc', ('  if (ackRetryAt != 0U && static_cast<int32_t>(startedAt - ackRetryAt) < 0) return;',
+                                       '  ackRetryAt = startedAt + 1000UL; if (ackRetryAt != 0U && static_cast<int32_t>(startedAt - ackRetryAt) < 0) return;'), 'timer back-off on the ack retry')):
+            target = out / name
+            original = target.read_text(encoding='utf-8')
+            assert replacement[0] in original, label
+            target.write_text(original.replace(*replacement), encoding='utf-8')
+            executable = out / 'realtime-arbiter-regression'
+            subprocess.run([args.cxx, '-std=c++11', '-Wall', '-Wextra', '-Werror', '-I', str(out),
+                            str(root / 'tests/realtime-arbiter.cpp'), '-o', str(executable)], check=True)
             result = subprocess.run([str(executable)], capture_output=True, text=True)
             target.write_text(original, encoding='utf-8')
             assert result.returncode != 0, 'Mutation not detected: ' + label

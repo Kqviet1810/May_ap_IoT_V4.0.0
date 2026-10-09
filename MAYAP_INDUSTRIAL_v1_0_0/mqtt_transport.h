@@ -9,6 +9,7 @@
 #include "mqtt_ws.h"
 #include "transaction_bridge.h"
 #include "mqtt_uplink.h"
+#include "mqtt_tx_arbiter.h"
 #include <Arduino.h>
 #include <WiFiClientSecure.h>
 #include <esp_random.h>
@@ -55,9 +56,13 @@ constexpr uint32_t STEP_TIMEOUT_MS = 8000UL;        // WebSocket upgrade / CONNA
 // ("Closing connection on failed write"), which turned every 5 s hiccup into a 20-100 s outage. Frames are only written when
 // select() says the socket is writable; otherwise Control frames wait in a small queue, Reliable frames are refused (the bridge /
 // uplink retry on their own schedule) and Droppable frames (periodic snapshot / log) are dropped.
+//
+// One arbiter decides who gets the wire (mqtt_tx_arbiter.h has the rules): PUBACKs owed to the broker are a queue of packet ids that
+// is never dropped (overflow restarts the link, visibly), the bridge asks laneGate() BEFORE it builds a frame, and the lanes are
+// served in priority order - so a 2 KB snapshot can no longer take the writable moment a 300-byte terminal ack was waiting for.
 constexpr uint32_t TX_STALL_MS = 25000UL;           // nothing could be written for this long -> the uplink is really dead
 constexpr uint32_t TX_STALL_SILENCE_MS = 10000UL;   // ... and the broker has been silent this long as well
-constexpr uint8_t CTRL_QUEUE = 6U;                  // PUBACK / PINGREQ / PONG waiting for a writable socket
+constexpr uint8_t CTRL_QUEUE = 6U;                  // PINGREQ / PONG waiting for a writable socket (PUBACKs have their own queue)
 constexpr size_t CTRL_FRAME_MAX = 96U;              // finished (masked) WebSocket frame
 // "received" acknowledgements are advisory (the terminal ack still follows): they are shed first when the QoS1 window is nearly full.
 constexpr uint8_t ACK_ADVISORY_SHED_AT = 6U;
@@ -155,6 +160,10 @@ static bool txBlocked = false;                      // the last Reliable/Droppab
 static bool gateRefused = false;                    // the LAST sendFrame() was refused by the writability gate (not a link failure)
 static uint32_t stallSince = 0U;                    // pending data and an unwritable socket since (0 = not stalled)
 static uint32_t txRefused = 0U, txDropped = 0U, txCtrlQueued = 0U, advisoryShed = 0U;
+static MayapTx::PubackQueue pubackQ;                // PUBACKs owed to the broker, in order; never dropped
+static MayapTx::LaneWatch laneWatch;
+static uint32_t pubackOverflow = 0U, ctrlDropped = 0U, writableEdges = 0U;
+static bool wireWasWritable = true;
 static uint32_t writeMaxMs = 0U, loopMaxMs = 0U, heapLowWater = 0xFFFFFFFFUL;   // per diagnostic window
 static const char *lostReason = "";
 
@@ -173,7 +182,12 @@ template <typename C> inline bool txReadyProbe(C &client, long) {
   none.tv_usec = 0;
   return select(fd + 1, nullptr, &writeSet, nullptr, &none) != 0;   // error (<0): the write reports it
 }
-inline bool txReady() { return txReadyProbe(net, 0); }
+inline bool txReady() {
+  const bool writable = txReadyProbe(net, 0);
+  if (writable && !wireWasWritable) ++writableEdges;   // closed -> open: the moment every waiting lane is retried
+  wireWasWritable = writable;
+  return writable;
+}
 
 inline bool writeWhole(const uint8_t *data, size_t length) {
   const uint32_t startedAt = millis();
@@ -184,9 +198,26 @@ inline bool writeWhole(const uint8_t *data, size_t length) {
   lastTxAt = millis();
   return true;
 }
-// Sends the Control frames that had to wait. Stops at the first unwritable moment; false only when a write really failed.
+// A PUBACK is a four-byte packet and a ten-byte frame: it is built here, on the stack, at the moment it is written (the shared txBuffer
+// may hold the frame a caller is just encoding), so the queue stores only the packet id.
+inline bool writePuback(uint16_t id) {
+  uint8_t scratch[TX_HEADROOM + 4U];
+  if (MayapMqttWire::encodePuback(scratch + TX_HEADROOM, 4U, id) != 4U) { linkFailed = true; lostReason = "frame"; return false; }
+  size_t total = 0U;
+  uint8_t *frame = MayapMqttWs::wrapClientFrame(scratch, TX_HEADROOM, 4U, MayapMqttWs::BINARY, esp_random(), &total);
+  if (!frame) { linkFailed = true; lostReason = "frame"; return false; }
+  return writeWhole(frame, total);
+}
+inline bool controlBacklog() { return ctrlCount > 0U || !pubackQ.empty(); }
+// Sends what had to wait: PUBACKs first (the broker's window depends on them), then PINGREQ / PONG. Stops at the first unwritable
+// moment; false only when a write really failed.
 inline bool flushControl() {
-  while (ctrlCount > 0U && txReady()) {
+  while (controlBacklog() && txReady()) {
+    if (!pubackQ.empty()) {
+      if (!writePuback(pubackQ.front())) return false;
+      pubackQ.pop();
+      continue;
+    }
     if (!writeWhole(ctrlQ[0], ctrlLen[0])) return false;
     for (uint8_t i = 0U; i + 1U < ctrlCount; ++i) { memcpy(ctrlQ[i], ctrlQ[i + 1U], ctrlLen[i + 1U]); ctrlLen[i] = ctrlLen[i + 1U]; }
     --ctrlCount;
@@ -202,12 +233,12 @@ inline bool sendFrame(size_t length, uint8_t opcode, Tx cls = Tx::Reliable) {
   if (!frame) { linkFailed = true; lostReason = "frame"; return false; }
   gateRefused = false;
   if (!flushControl()) return false;
-  if (ctrlCount > 0U || !txReady()) {
+  if (controlBacklog() || !txReady()) {
     if (cls == Tx::Control) {
       if (stallSince == 0U) stallSince = millis() ? millis() : 1U;
       lastTxAt = millis();                          // a queued keepalive counts as sent: one PINGREQ per keepalive window, not one per pass
       if (total > CTRL_FRAME_MAX || ctrlCount >= CTRL_QUEUE) {
-        ++txDropped;                                // a lost PUBACK only makes the broker's own sweep drop the entry; it never breaks the link
+        ++ctrlDropped;                              // only PINGREQ / PONG can get here (PUBACKs have their own queue): the next keepalive replaces it
         return true;
       }
       memcpy(ctrlQ[ctrlCount], frame, total);
@@ -228,6 +259,23 @@ inline bool sendFrame(size_t length, uint8_t opcode, Tx cls = Tx::Reliable) {
 inline bool sendPacket(size_t length, Tx cls = Tx::Reliable) {
   if (length == 0U) return false;
   return sendFrame(length, MayapMqttWs::BINARY, cls);
+}
+
+// The broker waits for this PUBACK before it releases the next message of its window, so it is owed, not optional: it goes out at
+// once when the socket can take it, otherwise it waits in the queue (in order, bounded). A full queue cannot be hidden - the link is
+// restarted instead (visible as reason=puback-overflow) - because a silent loss is what used to end in the broker closing us.
+inline void sendPuback(uint16_t id) {
+  if (!pubackQ.push(id)) {
+    ++pubackOverflow;
+    linkFailed = true;
+    lostReason = "puback-overflow";
+    return;
+  }
+  if (!flushControl()) return;
+  if (!pubackQ.empty()) {
+    if (stallSince == 0U) stallSince = millis() ? millis() : 1U;
+    ++txCtrlQueued;
+  }
 }
 
 inline void inflightClear() { inflightCount = 0U; }
@@ -337,6 +385,8 @@ inline void stopClient(bool graceful) {
   linkFailed = false;
   carryLength = 0U;
   ctrlCount = 0U;
+  pubackQ.clear();                              // a new connection is a new session: the broker keeps no debts for the old one
+  laneWatch.clearWaiting();
   txBlocked = false;
   gateRefused = false;
   stallSince = 0U;
@@ -356,7 +406,7 @@ inline void handlePacket() {
       if (parser.truncated()) { ++droppedOversize; return; }  // sender retry/UNCERTAIN path handles it
       PublishView view;
       if (!parsePublish(parser.flags(), parser.body(), parser.bodyLength(), view)) { linkFailed = true; return; }
-      if (view.qos == 1U) sendPacket(encodePuback(txMqtt(), PACKET_BUFFER, view.packetId), Tx::Control);
+      if (view.qos == 1U) sendPuback(view.packetId);
       char channel[20];
       if (view.topicLength <= prefixLength || memcmp(view.topic, prefix, prefixLength) != 0 ||
           view.topicLength - prefixLength >= sizeof(channel)) { ++droppedForeign; return; }
@@ -600,6 +650,9 @@ inline Connect connectClient() {
   parser.reset();
   inflightClear();
   ctrlCount = 0U;
+  pubackQ.clear();
+  laneWatch.clearWaiting();
+  wireWasWritable = true;
   txBlocked = false;
   stallSince = 0U;
   connected = true;
@@ -640,6 +693,31 @@ inline uint8_t bulkSlotsFree() {
   if (!connected || txBlocked) return 0U;
   const uint8_t budget = static_cast<uint8_t>(QOS1_INFLIGHT_MAX - QOS1_RESERVED_FOR_ACK);
   return inflightCount >= budget ? 0U : static_cast<uint8_t>(budget - inflightCount);
+}
+
+// The arbiter's question, asked by the bridge BEFORE it builds a frame: may a frame of this lane go out right now? One select() and
+// two integer compares - no JSON, no HMAC, no allocation - so asking on every pass costs nothing. "No" because
+//   * the socket cannot take bytes (TCP send window full) or PUBACK / keepalive frames are still waiting for it  -> a stall is noted
+//     (the link watchdog uses it), the asker stays queued and is retried on the first pass the socket is writable again;
+//   * the QoS1 window has no room for this lane (an ack may use all of it, bulk keeps the ack reserve)           -> not a stall.
+// The answer also feeds laneWatch, so the log shows how long each lane really had to wait for the wire.
+inline bool laneGate(uint8_t laneIndex) {
+  const MayapTx::Lane lane = laneIndex < MayapTx::LANE_COUNT ? static_cast<MayapTx::Lane>(laneIndex) : MayapTx::Lane::Telemetry;
+  if (!connected || linkFailed) return false;
+  const uint32_t now = millis();
+  bool open = false;
+  if (flushControl() && !controlBacklog() && txReady()) {
+    txBlocked = false;
+    stallSince = 0U;
+    open = lane == MayapTx::Lane::Ack ? inflightCount < QOS1_INFLIGHT_MAX
+         : lane == MayapTx::Lane::Bulk ? bulkSlotsFree() > 0U
+         : true;
+  } else if (!linkFailed) {
+    txBlocked = true;
+    if (stallSince == 0U) stallSince = now ? now : 1U;
+  }
+  laneWatch.note(lane, open, now);
+  return open;
 }
 
 // Publishes what the Cloud task queued (alarms, heartbeat), oldest first. A slot that cannot be sent for a
@@ -690,11 +768,11 @@ inline bool linkAlive(uint32_t now) {
 // While the socket was unwritable: notice the moment it recovers (flush what waited, forget the stall).
 inline void serviceTxStall() {
   if (stallSince == 0U) return;
-  if (ctrlCount == 0U && !txBlocked) { stallSince = 0U; return; }
+  if (!controlBacklog() && !txBlocked) { stallSince = 0U; return; }
   if (!txReady()) return;
   if (!flushControl()) return;
   txBlocked = false;
-  if (ctrlCount == 0U) stallSince = 0U;
+  if (!controlBacklog()) stallSince = 0U;
 }
 
 // Measures how long one pass of the owner task takes and the lowest free heap it saw (diagnostic window).
@@ -715,6 +793,7 @@ struct LoopProbe {
 inline void mayapMqttTransportBegin() {
   MayapRealtimeInternal::publishCallback = MayapMqttInternal::publishFromBridge;
   MayapRealtimeInternal::bulkCapacityCallback = MayapMqttInternal::bulkSlotsFree;
+  MayapRealtimeInternal::txGateCallback = MayapMqttInternal::laneGate;
   MayapMqttInternal::backoff.reset(millis());
   mayapSerialPrintf(false, "[MQTT] owner task=%s core=%d prio=%u native WSS (TLS+WebSocket+MQTT), no esp-mqtt\n", pcTaskGetName(nullptr),
                     static_cast<int>(xPortGetCoreID()), static_cast<unsigned>(uxTaskPriorityGet(nullptr)));
@@ -796,11 +875,11 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
   if (!linkAlive(now) || !pump()) {
     ++closeCount[static_cast<uint8_t>(CloseKind::Lost)];
     if (!lostReason[0]) lostReason = brokerCloseCode ? "broker-close" : "read-fail";
-    mayapSerialPrintf(false, "[MQTT] link lost reason=%s (tx=%u fatal=%u open=%u inflight=%u rxAge=%lums brokerClose=%u '%s' refused=%lu dropped=%lu ctrlQ=%u stall=%lums up=%lums)\n",
+    mayapSerialPrintf(false, "[MQTT] link lost reason=%s (tx=%u fatal=%u open=%u inflight=%u rxAge=%lums brokerClose=%u '%s' refused=%lu dropped=%lu ctrlQ=%u pubackQ=%u stall=%lums up=%lums)\n",
                       lostReason, static_cast<unsigned>(linkFailed), static_cast<unsigned>(parser.fatal()), static_cast<unsigned>(net.connected()),
                       static_cast<unsigned>(inflightCount), static_cast<unsigned long>(MayapRecovery::age(millis(), lastRxAt)),
                       static_cast<unsigned>(brokerCloseCode), brokerCloseReason, static_cast<unsigned long>(txRefused),
-                      static_cast<unsigned long>(txDropped), static_cast<unsigned>(ctrlCount),
+                      static_cast<unsigned long>(txDropped), static_cast<unsigned>(ctrlCount), static_cast<unsigned>(pubackQ.size()),
                       static_cast<unsigned long>(stallSince ? MayapRecovery::age(millis(), stallSince) : 0UL),
                       static_cast<unsigned long>(MayapRecovery::age(millis(), connectedAt)));
     stopClient(false);
@@ -833,6 +912,26 @@ inline void mayapMqttTransportUpdate(uint32_t now) {
                       static_cast<unsigned long>(txRefused), static_cast<unsigned long>(txDropped), static_cast<unsigned long>(txCtrlQueued),
                       static_cast<unsigned long>(advisoryShed), static_cast<unsigned long>(writeMaxMs), static_cast<unsigned long>(loopMaxMs),
                       static_cast<unsigned long>(heapLowWater), static_cast<int>(status.rssiDbm));
+    // The arbiter: who had to wait for the wire and for how long (this window), how the snapshot is paced, and whether a PUBACK was ever
+    // at risk. `pubackQ` is current/high-water of the queue of PUBACKs owed to the broker; ovf must stay 0 (anything else restarts the link).
+    {
+      using MayapTx::Lane;
+      const MayapTx::BridgeStats &b = MayapRealtimeInternal::arbiterStats;
+      // Two lines: one serial entry holds 224 bytes including the "[t=...] " prefix, a longer line would lose its tail.
+      mayapSerialPrintf(false, "[MQTT-ARB] wire pubackQ=%u/%u ovf=%lu ctrlDrop=%lu edges=%lu | wait ack=%lux/%lums bulk=%lux/%lums tele=%lux/%lums\n",
+                        static_cast<unsigned>(pubackQ.size()), static_cast<unsigned>(pubackQ.high()), static_cast<unsigned long>(pubackOverflow),
+                        static_cast<unsigned long>(ctrlDropped), static_cast<unsigned long>(writableEdges),
+                        static_cast<unsigned long>(laneWatch.episodes(Lane::Ack)), static_cast<unsigned long>(laneWatch.maxWaitMs(Lane::Ack)),
+                        static_cast<unsigned long>(laneWatch.episodes(Lane::Bulk)), static_cast<unsigned long>(laneWatch.maxWaitMs(Lane::Bulk)),
+                        static_cast<unsigned long>(laneWatch.episodes(Lane::Telemetry)), static_cast<unsigned long>(laneWatch.maxWaitMs(Lane::Telemetry)));
+      mayapSerialPrintf(false, "[MQTT-ARB] lanes ack sent=%lu wireWaits=%lu failed=%lu | snap sent=%lu gateSkip=%lu ackSkip=%lu gap+%lums congested=%lu | held=%lu\n",
+                        static_cast<unsigned long>(b.ackSent), static_cast<unsigned long>(b.ackWireWaits), static_cast<unsigned long>(b.ackPublishFailed),
+                        static_cast<unsigned long>(b.snapshotsSent), static_cast<unsigned long>(b.snapshotGateSkips), static_cast<unsigned long>(b.snapshotAckSkips),
+                        static_cast<unsigned long>(MayapRealtimeInternal::snapshotPacer.extraMs()),
+                        static_cast<unsigned long>(MayapRealtimeInternal::snapshotPacer.congestionEvents()), static_cast<unsigned long>(b.laneAckSkips));
+      laneWatch.resetWindow();
+      pubackQ.resetHigh();
+    }
     writeMaxMs = 0U;
     loopMaxMs = 0U;
     heapLowWater = 0xFFFFFFFFUL;

@@ -37,7 +37,10 @@ const INFLIGHT_LIMIT = 16;        // bounded QoS1 server→client window (in fli
 // A burst larger than the window (40 commands from the Web, a config report in chunks, a run of terminal ACKs) is NORMAL: the
 // consumer needs one round trip to catch up. The excess waits in a bounded, durable per-connection queue and is released as
 // PUBACKs free the window - in order, nothing dropped, nobody disconnected. Only a consumer that is genuinely stuck (window
-// full with its oldest packet unacknowledged for PEND_STALE_MS, or the queue itself full) is closed (1013 SLOW_CONSUMER).
+// full with its oldest packet unacknowledged for PEND_STALE_MS WHILE THE CONNECTION IS SILENT, or the queue itself full) is closed
+// (1013 SLOW_CONSUMER). A connection that is still talking to us (any packet within PEND_STALE_MS) is alive: a PUBACK that never came
+// does not make it a dead consumer, so the stale in-flight entries are retired instead (counted in att.ackLost) and its queue keeps
+// flowing - closing a talking device only costs the Web its realtime and the device a 5-25 s reconnect.
 const PEND_MAX = 128;
 const PEND_STALE_MS = 20 * 1000;
 const PEND_PREFIX = 'pend:';
@@ -257,6 +260,13 @@ export class MqttBrokerDO {
         }
       }
     }
+    for (const ws of sockets) {
+      try {
+        const att = ws.deserializeAttachment() || {};
+        if (att.state !== 'open' || !(att.pend > 0) || !att.inflight || !att.inflight.length) continue;
+        if (this._evictStaleInflight(att) > 0) { ws.serializeAttachment(att); await this._drainPending(ws, att); }
+      } catch { /* best effort: the next publish or PUBACK drains it */ }
+    }
     try { await this._expireGrace(); } catch (error) { console.error('[presence] grace expiry failed', String((error && error.message) || error)); }
     try { await this._drainUplink(); } catch (error) { console.error('[uplink] drain crashed', String((error && error.message) || error)); }
     try { await this._sweepPending(sockets); } catch { /* best effort */ }
@@ -339,6 +349,9 @@ export class MqttBrokerDO {
         if (att.role === 'web' && att.tokenExp) take(att.tokenExp + WEB_TOKEN_GRACE_MS + 1000);
       }
       else if (att.state === 'await-connect') take((att.createdAt || now) + CONNECT_TIMEOUT_MS + 1000);
+      // Messages queued behind a window of unacknowledged packets: look again when the oldest of those turns stale.
+      if (att.state === 'open' && att.pend > 0 && att.inflight && att.inflight.length && att.inflight[0].deliveredAt)
+        take(att.inflight[0].deliveredAt + PEND_STALE_MS + 100);
     }
     if (this._statusDirty) take(this._statusAt + STATUS_MIN_GAP_MS + 100);
     try {
@@ -707,6 +720,10 @@ export class MqttBrokerDO {
         att.inflight = att.inflight || [];
         // Window full, or older messages are already waiting (order!): queue behind them. Close only a consumer that is stuck.
         if (att.inflight.length >= INFLIGHT_LIMIT || (att.pend || 0) > 0) {
+          // A consumer that is still talking but lost some PUBACKs is not stuck: retire the stale entries and let the queue flow.
+          if (this._evictStaleInflight(att) > 0 && (att.pend || 0) > 0) await this._drainPending(peer, att);
+        }
+        if (att.inflight.length >= INFLIGHT_LIMIT || (att.pend || 0) > 0) {
           const oldest = att.inflight.length ? att.inflight[0].deliveredAt : 0;
           const stuck = att.inflight.length >= INFLIGHT_LIMIT && oldest && this._now() - oldest > PEND_STALE_MS;
           const queued = !stuck && await this._enqueuePending(peer, att, { topic, qos: outQos, retain, payloadB64: b64enc(payload) });
@@ -726,6 +743,22 @@ export class MqttBrokerDO {
       } catch { /* peer closed; ignore */ }
     }
     return closed;
+  }
+
+  // ---- a talking consumer that lost PUBACKs is alive, not stuck ----------------------------------------------------------
+  _peerAlive(att) { return !!att.lastRxMs && this._now() - att.lastRxMs <= PEND_STALE_MS; }
+
+  // Retires in-flight entries that waited longer than PEND_STALE_MS for a PUBACK on a connection that is demonstrably alive. The packets
+  // were sent (MQTT 3.1.1 resends only on reconnect, never on a live connection), so only the bookkeeping is released - the window
+  // reopens, the id may be reused, a late PUBACK for a retired id is a harmless no-op. Returns how many entries were retired.
+  _evictStaleInflight(att) {
+    if (!att.inflight || att.inflight.length === 0 || !this._peerAlive(att)) return 0;
+    const now = this._now();
+    const before = att.inflight.length;
+    att.inflight = att.inflight.filter((e) => !(e.deliveredAt && now - e.deliveredAt > PEND_STALE_MS));
+    const evicted = before - att.inflight.length;
+    if (evicted > 0) att.ackLost = (att.ackLost || 0) + evicted;
+    return evicted;
   }
 
   // ---- bounded durable per-connection queue behind the QoS1 window --------------------------------------------------------
@@ -824,6 +857,9 @@ export class MqttBrokerDO {
       let packetId = 0;
       if (outQos > 0) {
         att.inflight = att.inflight || [];
+        if (att.inflight.length >= INFLIGHT_LIMIT || (att.pend || 0) > 0) {
+          if (this._evictStaleInflight(att) > 0 && (att.pend || 0) > 0) await this._drainPending(ws, att);
+        }
         if (att.inflight.length >= INFLIGHT_LIMIT || (att.pend || 0) > 0) {
           if (!await this._enqueuePending(ws, att, { topic, qos: outQos, retain: true, payloadB64: stored.payloadB64 })) {
             try { ws.serializeAttachment(att); } catch {}

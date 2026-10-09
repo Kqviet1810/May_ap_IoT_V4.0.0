@@ -31,7 +31,7 @@ int main(int argc, char **argv) {
   // report offer -> PUBACK time per alarm. UPLINK_WAIT_MS bounds how long each is awaited (the firmware's adaptive wait: 1.5-4 s).
   const int alarmsToSend = getenv("UPLINK_ALARMS") ? atoi(getenv("UPLINK_ALARMS")) : 0;
   const uint32_t waitMs = getenv("UPLINK_WAIT_MS") ? static_cast<uint32_t>(atoi(getenv("UPLINK_WAIT_MS"))) : 4000U;
-  std::vector<std::string> pendingAcks; uint32_t ackRetryAt = 0U; unsigned long ackRefusals = 0U;
+  std::vector<std::string> pendingAcks; unsigned long ackRefusals = 0U;
   int offeredCount = 0; int8_t slot = -1; uint32_t offeredAt = 0U, nextOfferAt = 0U;
   while (millis() - start < runMs) {
     mayapMqttTransportUpdate(millis());
@@ -63,9 +63,10 @@ int main(int argc, char **argv) {
         pendingAcks.push_back("{\"phase\":\"completed\",\"echo\":" + std::to_string(d.payload.size()) + "}");
     }
     while (!pendingAcks.empty()) {
-      if (static_cast<int32_t>(millis() - ackRetryAt) < 0) break;
+      // Same order of events as drainAckOutbox(): ask the wire first, publish on the first open pass, no timer back-off.
+      if (!MayapMqttInternal::laneGate(static_cast<uint8_t>(MayapTx::Lane::Ack))) { ++ackRefusals; break; }
       if (!MayapMqttInternal::publishFromBridge("ack", pendingAcks.front().c_str(), pendingAcks.front().size())) {
-        ++ackRefusals; ackRetryAt = millis() + 50U; break;      // same back-off idea as drainAckOutbox()
+        ++ackRefusals; break;
       }
       printf("ACKED 1\n");
       pendingAcks.erase(pendingAcks.begin());

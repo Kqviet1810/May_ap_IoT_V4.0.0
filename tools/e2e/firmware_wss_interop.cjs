@@ -38,7 +38,7 @@ async function main() {
     // 1. Build the client from the production headers (copied next to the stubs, as the unit test does).
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'mayap-fw-wss-'));
     for (const f of fs.readdirSync(path.join(root, 'tests/stubs/mqtt'))) fs.copyFileSync(path.join(root, 'tests/stubs/mqtt', f), path.join(work, f));
-    for (const f of ['mqtt_transport.h', 'mqtt_wire.h', 'mqtt_ws.h', 'mqtt_uplink.h']) fs.copyFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', f), path.join(work, f));
+    for (const f of ['mqtt_transport.h', 'mqtt_wire.h', 'mqtt_ws.h', 'mqtt_uplink.h', 'mqtt_tx_arbiter.h']) fs.copyFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', f), path.join(work, f));
     const exe = path.join(work, 'client');
     const build = spawnSync('g++', ['-std=c++11', '-Wall', '-Wextra', '-Werror', '-I', work, `-DMAYAP_BROKER_HOST="127.0.0.1"`,
       `-DMAYAP_BROKER_PORT=${PORT}`, path.join(root, 'tests/host-wss-client.cpp'), '-o', exe], { encoding: 'utf8' });

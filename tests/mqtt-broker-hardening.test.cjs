@@ -149,6 +149,64 @@ test('§2 burst beyond the window is queued in order and released as PUBACKs arr
   assert.equal([...b.state.storage.map.keys()].filter((k) => k.startsWith('pend:')).length, 0, 'queue storage is empty');
 });
 
+test('§2 a consumer that keeps talking but lost its PUBACKs is alive: stale in-flight entries are retired, the queue flows, nobody is disconnected (the field 1013)', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const base = Date.now(); let clock = base; b.broker._now = () => clock;
+  const d = await dev(b.broker);
+  await harness.feed(b.broker, d.server, wire.subscribe({ packetId: 1, filters: [{ filter: `mayap/v1/${DEV}/command`, qos: 1 }] }));
+  await harness.clientReceive(d.client);
+  const w = await web(b.broker);
+  const send = (i) => harness.feed(b.broker, w.server, wire.publish({ topic: `mayap/v1/${DEV}/command`, qos: 1, packetId: 2000 + i, payload: `cmd-${i}` }));
+  const received = [];
+  const collect = async () => { for (const f of await harness.clientReceive(d.client)) received.push(wire.parsePublish(f).payload.toString()); };
+  for (let i = 0; i < 17; i++) await send(i);             // 16 in flight + 1 queued; the device receives all it can but its PUBACKs are lost
+  await collect();
+  assert.equal(received.length, 16);
+  clock = base + 21000;                                    // the oldest in-flight packet has now been unacknowledged for > 20 s ...
+  d.server.serializeAttachment({ ...d.server.deserializeAttachment(), lastRxMs: clock });   // ... but the device just spoke (PINGREQ / a snapshot): alive
+  await send(17);
+  assert.equal(d.server.closed, false, 'a talking device is not a slow consumer');
+  assert.equal(w.server.closed, false);
+  await collect();
+  assert.deepEqual(received, Array.from({ length: 18 }, (_, i) => `cmd-${i}`), 'every command, once, in order');
+  const att = d.server.deserializeAttachment();
+  assert.equal(att.ackLost, 16, 'the retired entries are counted');
+  assert.equal(att.pend || 0, 0);
+  assert.ok(att.inflight.length <= 2, `window reopened (inflight=${att.inflight.length})`);
+  // A late PUBACK for a retired id is harmless.
+  await harness.feed(b.broker, d.server, wire.puback({ packetId: 1 }));
+  assert.equal(d.server.closed, false);
+  // The same device that goes SILENT is still closed as a stuck consumer (the old guarantee).
+  const silent = await dev(b.broker);
+  await harness.feed(b.broker, silent.server, wire.subscribe({ packetId: 1, filters: [{ filter: `mayap/v1/${DEV}/command`, qos: 1 }] }));
+  await harness.clientReceive(silent.client);
+  for (let i = 0; i < 17; i++) await send(100 + i);
+  clock += 21000;                                          // nothing from the silent device for 21 s
+  await send(200);
+  assert.equal(silent.server.closed, true);
+  assert.equal(silent.server.closeCode, 1013);
+});
+
+test('§2 queued commands behind a window of lost PUBACKs are released by the broker alarm even when no new publish arrives', async () => {
+  const b = await harness.makeBroker({ env: envFixture() });
+  const base = Date.now(); let clock = base; b.broker._now = () => clock;
+  const d = await dev(b.broker);
+  await harness.feed(b.broker, d.server, wire.subscribe({ packetId: 1, filters: [{ filter: `mayap/v1/${DEV}/command`, qos: 1 }] }));
+  await harness.clientReceive(d.client);
+  const w = await web(b.broker);
+  for (let i = 0; i < 21; i++) await harness.feed(b.broker, w.server, wire.publish({ topic: `mayap/v1/${DEV}/command`, qos: 1, packetId: 3000 + i, payload: `q-${i}` }));
+  assert.equal((await harness.clientReceive(d.client)).length, 16);
+  assert.equal(d.server.deserializeAttachment().pend, 5);
+  clock = base + 21000;
+  d.server.serializeAttachment({ ...d.server.deserializeAttachment(), lastRxMs: clock });
+  w.server.serializeAttachment({ ...w.server.deserializeAttachment(), lastRxMs: clock });
+  await b.broker.alarm();                                  // nothing else happens: the alarm retires the stale window and drains the queue
+  const frames = await harness.clientReceive(d.client);
+  assert.deepEqual(frames.map((f) => wire.parsePublish(f).payload.toString()), ['q-16', 'q-17', 'q-18', 'q-19', 'q-20']);
+  assert.equal(d.server.closed, false);
+  assert.equal(d.server.deserializeAttachment().pend, 0);
+});
+
 test('§2 a consumer that is genuinely stuck is still closed: window full and unacknowledged for 20 s, or the queue itself full', async () => {
   const b = await harness.makeBroker({ env: envFixture() });
   const base = Date.now(); let clock = base; b.broker._now = () => clock;

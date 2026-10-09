@@ -127,6 +127,8 @@ static void resetWorld() {
   parser.reset(); ws.reset(); connected = false; linkFailed = false; staUpSince = 0U; carryLength = 0U; inflightCount = 0U; nextPacketId = 1U;
   droppedOversize = droppedForeign = 0U; qos1Expired = refusedBulk = refusedAck = 0U; backoff = Retry();
   ctrlCount = 0U; txBlocked = false; gateRefused = false; stallSince = 0U; txRefused = txDropped = txCtrlQueued = advisoryShed = 0U;
+  pubackQ = MayapTx::PubackQueue(); laneWatch = MayapTx::LaneWatch(); pubackOverflow = ctrlDropped = writableEdges = 0U; wireWasWritable = true;
+  MayapRealtimeInternal::snapshotPacer = MayapTx::SnapshotPacer(); MayapRealtimeInternal::arbiterStats = MayapTx::BridgeStats();
   writeMaxMs = loopMaxMs = 0U; heapLowWater = 0xFFFFFFFFUL; lostReason = ""; brokerIp = 0U; brokerIpTrusted = false; connectedAt = 0U; stableLatched = true;
   dnsOk() = true; dnsLookups() = 0U;
   g_log.clear(); MayapRealtimeInternal::g_delivered.clear(); g_realtimeUpdates = 0U;
@@ -588,11 +590,11 @@ int main() {
     CHECK(bulkSlotsFree() == 0U);                                                       // the bridge is told to wait
     injectPublish(std::string("mayap/v1/") + MayapRealtimeInternal::deviceId + "/command", "{\"x\":1}", 1, 77);
     tick(5); lastRxAt = g_millis;
-    CHECK(ctrlCount == 1U && net.sent.empty() && mayapMqttTransportConnected());         // the PUBACK for the command waits in the control queue
+    CHECK(pubackQ.size() == 1U && ctrlCount == 0U && net.sent.empty() && mayapMqttTransportConnected());   // the PUBACK for the command waits in the PUBACK queue
     net.txReady = true; tick(5);
     {
       const std::vector<Packet> out = decodeSent();
-      CHECK(ctrlCount == 0U && stallSince == 0U && !txBlocked && out.size() >= 1U && out[0].type == 4 && out[0].body.size() == 2U &&
+      CHECK(pubackQ.empty() && ctrlCount == 0U && stallSince == 0U && !txBlocked && out.size() >= 1U && out[0].type == 4 && out[0].body.size() == 2U &&
             ((out[0].body[0] << 8) | out[0].body[1]) == 77);                             // flushed in order once the socket recovered
     }
     CHECK(bulkSlotsFree() == QOS1_INFLIGHT_MAX - QOS1_RESERVED_FOR_ACK);
@@ -663,6 +665,105 @@ int main() {
   // 23. The loop probe and phase timing are cheap observables: the heap low-water mark is tracked per pass.
   resetWorld(); connectNow(); tick(1);
   CHECK(heapLowWater != 0xFFFFFFFFUL && logged("dns=") && logged("tls=") && logged("ws=") && logged("mqtt="));
+
+  // 24. The TX arbiter. (a) A PUBACK is owed to the broker and is NEVER dropped: while the socket cannot take bytes they wait in order
+  //     in their own queue (the old six-slot queue shared with PING/PONG overflowed silently, the broker then waited for PUBACKs that
+  //     never came and closed the device with 1013); a queue that is really full restarts the link, visibly.
+  {
+    resetWorld(); connectNow(); net.sent.clear(); inflightClear();
+    const std::string commandTopic = std::string("mayap/v1/") + MayapRealtimeInternal::deviceId + "/command";
+    net.txReady = false;
+    for (uint16_t id = 100U; id < 100U + 20U; ++id) injectPublish(commandTopic, "{\"x\":1}", 1, id);
+    for (int i = 0; i < 4; ++i) { lastRxAt = g_millis; tick(5); }
+    CHECK(pubackQ.size() == 20U && txDropped == 0U && ctrlDropped == 0U && pubackOverflow == 0U);       // all 20 are owed, none lost
+    CHECK(net.sent.empty() && mayapMqttTransportConnected() && stallSince != 0U);
+    CHECK(MayapRealtimeInternal::g_delivered.size() == 20U);                                         // and every command was still executed
+    net.txReady = true; tick(5);
+    {
+      std::vector<uint16_t> ids;
+      for (const Packet &p : decodeSent()) if (p.type == 4 && p.body.size() == 2U) ids.push_back(static_cast<uint16_t>((p.body[0] << 8) | p.body[1]));
+      CHECK(ids.size() == 20U);
+      for (size_t i = 0; i < ids.size(); ++i) CHECK(ids[i] == 100U + i);                              // in the order they were owed
+      CHECK(pubackQ.empty() && stallSince == 0U && !txBlocked && !g_clientFrameBad && pubackQ.high() == 20U);
+    }
+    // Overflow: the 33rd outstanding PUBACK cannot be kept. Not hidden: the link restarts with the reason in the log, counted once.
+    resetWorld(); connectNow(); net.sent.clear(); inflightClear();
+    net.txReady = false;
+    for (uint16_t id = 1U; id <= MayapTx::PUBACK_QUEUE + 1U; ++id) injectPublish(commandTopic, "{}", 1, id);
+    for (int i = 0; i < 6 && mayapMqttTransportConnected(); ++i) { lastRxAt = g_millis; tick(5); }
+    CHECK(!mayapMqttTransportConnected() && pubackOverflow == 1U && logged("link lost reason=puback-overflow"));
+    CHECK(!net.open && pubackQ.empty());                                                              // a fresh session owes the old one nothing
+    net.txReady = true; tick(1100); tick(100);
+    CHECK(mayapMqttTransportConnected());
+  }
+
+  // (b) laneGate(): the bridge asks BEFORE it builds. Nothing is built or written by asking; a closed socket counts as a stall (the link
+  //     watchdog needs it) but a full QoS1 window does not; the answers feed the per-lane wait statistics.
+  {
+    using MayapTx::Lane;
+    resetWorld(); connectNow(); net.sent.clear(); inflightClear();
+    const size_t sentBefore = net.sent.size();
+    CHECK(laneGate(static_cast<uint8_t>(Lane::Ack)) && laneGate(static_cast<uint8_t>(Lane::Bulk)) && laneGate(static_cast<uint8_t>(Lane::Telemetry)));
+    CHECK(net.sent.size() == sentBefore && stallSince == 0U && laneWatch.episodes(Lane::Ack) == 0U);   // asking costs nothing
+    // QoS1 window: an ack may use all of it, bulk keeps the ack reserve, telemetry (QoS0) is not limited by it - and none of it is a stall.
+    inflightCount = QOS1_INFLIGHT_MAX - QOS1_RESERVED_FOR_ACK;
+    CHECK(laneGate(static_cast<uint8_t>(Lane::Ack)) && !laneGate(static_cast<uint8_t>(Lane::Bulk)) && laneGate(static_cast<uint8_t>(Lane::Telemetry)));
+    inflightCount = QOS1_INFLIGHT_MAX;
+    CHECK(!laneGate(static_cast<uint8_t>(Lane::Ack)) && stallSince == 0U && !txBlocked);
+    inflightClear();
+    // Closed socket: everybody waits, one stall is recorded, one wait episode per lane however often it asks.
+    net.txReady = false;
+    g_millis += 10U;
+    for (int i = 0; i < 5; ++i) CHECK(!laneGate(static_cast<uint8_t>(Lane::Ack)));
+    CHECK(!laneGate(static_cast<uint8_t>(Lane::Telemetry)) && !laneGate(static_cast<uint8_t>(Lane::Bulk)));
+    CHECK(stallSince != 0U && txBlocked && laneWatch.episodes(Lane::Ack) == 1U && laneWatch.episodes(Lane::Telemetry) == 1U && txDropped == 0U);
+    CHECK(net.sent.size() == sentBefore && laneWatch.waiting(Lane::Ack));
+    g_millis += 340U;                                                                                 // the wire stays closed for 340 ms
+    net.txReady = true;
+    CHECK(laneGate(static_cast<uint8_t>(Lane::Ack)) && !txBlocked && stallSince == 0U);
+    CHECK(!laneWatch.waiting(Lane::Ack) && laneWatch.maxWaitMs(Lane::Ack) == 350U && writableEdges == 1U);   // one closed->open edge; the wait (window-full 10 ms + closed 340 ms) is one episode
+    // A PUBACK that is still owed goes first, and the gate only opens once the backlog is gone.
+    net.txReady = false;
+    injectPublish(std::string("mayap/v1/") + MayapRealtimeInternal::deviceId + "/command", "{}", 1, 55); lastRxAt = g_millis; tick(5);
+    CHECK(pubackQ.size() == 1U && !laneGate(static_cast<uint8_t>(Lane::Ack)));
+    net.sent.clear(); net.txReady = true;
+    CHECK(laneGate(static_cast<uint8_t>(Lane::Ack)) && pubackQ.empty());                              // the gate itself flushes it, then opens
+    { const std::vector<Packet> out = decodeSent(); CHECK(out.size() == 1U && out[0].type == 4); }
+    // Not connected / link failed: always closed, nothing recorded.
+    resetWorld(); CHECK(!laneGate(0U));
+    connectNow(); linkFailed = true; CHECK(!laneGate(0U)); linkFailed = false;
+    // Registered with the bridge by Begin(): the callback the bridge uses is this very function.
+    CHECK(MayapRealtimeInternal::txGateCallback == laneGate && MayapRealtimeInternal::bulkCapacityCallback == bulkSlotsFree);
+  }
+
+  // (c) The stall watchdog still works when producers are stopped by the gate before they reach sendFrame(): a closed socket noticed by
+  //     laneGate() is the stall that, with a silent broker, ends the link after TX_STALL_MS.
+  {
+    resetWorld(); connectNow(); inflightClear();
+    net.txReady = false;
+    for (unsigned i = 0U; i < 24U && mayapMqttTransportConnected(); ++i) { laneGate(static_cast<uint8_t>(MayapTx::Lane::Ack)); tick(1000); }
+    CHECK(mayapMqttTransportConnected());                                                              // 24 s: not yet
+    for (unsigned i = 0U; i < 4U && mayapMqttTransportConnected(); ++i) { laneGate(static_cast<uint8_t>(MayapTx::Lane::Ack)); tick(1000); }
+    CHECK(!mayapMqttTransportConnected() && logged("link lost reason=tx-stall"));
+  }
+
+  // (d) The arbiter diagnostics are printed with the 10 s line, and the old "dropped" counter no longer mixes in lost PUBACKs.
+  resetWorld(); connectNow(); tick(10000); tick(1);
+  CHECK(logged("[MQTT-ARB] wire pubackQ=0/0 ovf=0") && logged("wait ack=") && logged("[MQTT-ARB] lanes ack sent=") && logged("snap sent="));
+  // One serial entry is 224 bytes including the "[t=<millis>] " prefix: even with every counter at its maximum the arbiter lines must fit.
+  {
+    using MayapTx::Lane;
+    resetWorld(); connectNow();
+    pubackOverflow = ctrlDropped = writableEdges = 0xFFFFFFFFUL;
+    for (uint32_t i = 0U; i < 40U; ++i) { laneWatch.note(Lane::Ack, false, g_millis + i); laneWatch.note(Lane::Ack, true, g_millis + i + 1U); }
+    MayapRealtimeInternal::arbiterStats.ackSent = MayapRealtimeInternal::arbiterStats.ackWireWaits = MayapRealtimeInternal::arbiterStats.ackPublishFailed = 0xFFFFFFFFUL;
+    MayapRealtimeInternal::arbiterStats.snapshotsSent = MayapRealtimeInternal::arbiterStats.snapshotGateSkips = 0xFFFFFFFFUL;
+    MayapRealtimeInternal::arbiterStats.snapshotAckSkips = MayapRealtimeInternal::arbiterStats.laneAckSkips = 0xFFFFFFFFUL;
+    g_log.clear(); lastDiagAt = 0U; lastRxAt = g_millis; tick(1);
+    size_t longest = 0U; unsigned arb = 0U;
+    for (const std::string &l : g_log) { if (l.find("[MQTT-ARB]") != std::string::npos) { ++arb; if (l.size() > longest) longest = l.size(); } }
+    CHECK(arb == 2U && longest <= 224U - 15U - 1U);   // the worst prefix "[t=4294967295] " is 15 bytes, plus the terminating NUL
+  }
 
   printf("mqtt transport host tests PASS\n");
   return 0;
