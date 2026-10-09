@@ -128,6 +128,8 @@ jobs:
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/boot-policy.cpp -o /tmp/mayap-boot-test
           /tmp/mayap-boot-test
+          g++ -std=c++11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/boot-safety.cpp -o /tmp/mayap-boot-safety
+          /tmp/mayap-boot-safety
 
       - name: Runtime recovery fault injection
         run: |

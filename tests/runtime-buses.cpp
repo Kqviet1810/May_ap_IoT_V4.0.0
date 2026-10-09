@@ -47,6 +47,8 @@ static unsigned uartBegins=0, uartEnds=0, uartWrites=0;
 static int replyMode=0;
 static uint32_t replyNotBefore=0;   // sensor firmware warm-up: no reply before this time (boot simulation)
 static uint16_t replyTemperature=375, replyHumidity=600;
+static bool replyAlternate=false, replyDouble=false, replyNoise=false;   // hostile sensor scripts: ambiguous scale flip, duplicated frame, line noise
+static unsigned replyCount=0;
 static std::deque<uint8_t> uartRx;
 static uint16_t crc16(const uint8_t *data, size_t length) {
   uint16_t crc=0xFFFF;
@@ -76,8 +78,15 @@ class HardwareSerial {
       frame[5]=replyTemperature>>8; frame[6]=replyTemperature & 255;
       const uint16_t crc=crc16(frame,7);
       frame[7]=static_cast<uint8_t>(crc); frame[8]=static_cast<uint8_t>(crc>>8);
+      if (replyAlternate && (++replyCount & 1U)) {                 // alternates X100 / X10 reading: the format candidate flips every frame
+        frame[5]=3751>>8; frame[6]=3751 & 255; const uint16_t c=crc16(frame,7); frame[7]=static_cast<uint8_t>(c); frame[8]=static_cast<uint8_t>(c>>8);
+      } else if (replyAlternate) {
+        frame[5]=375>>8; frame[6]=375 & 255; const uint16_t c=crc16(frame,7); frame[7]=static_cast<uint8_t>(c); frame[8]=static_cast<uint8_t>(c>>8);
+      }
       if (replyMode==2) frame[8]^=1;
+      if (replyNoise) { uartRx.push_back(0x55); uartRx.push_back(0xFF); uartRx.push_back(0x00); }
       for (auto byte : frame) uartRx.push_back(byte);
+      if (replyDouble) for (auto byte : frame) uartRx.push_back(byte);   // a duplicated / stale frame left in the receive FIFO
     }
     return length;
   }
@@ -100,7 +109,7 @@ static void run(SHT485Industrial &sensor, uint32_t duration) {
 // Proves the policy and the sensor cadence, not the ESP32 timing: hardware boot times stay NOT TESTED until measured on the board.
 struct BootResult {
   uint32_t lockAt=0, usableAt=0, readyAt=0, homeAt=0, diagAt=0, localSettleAt=0, wifiTaskAt=0, wifiUpAt=0, mqttUpAt=0;
-  bool homeBeforeUsable=false, diagShown=false, ready=false;
+  bool homeBeforeUsable=false, diagShown=false, ready=false, valuesAtHome=false;
   MayapBoot::BlockReason diagReason=MayapBoot::BlockReason::None;
 };
 static BootResult simulateBoot(uint32_t seed, uint32_t sensorWarmupMs, int mode, uint32_t sensorStartsAt, bool pressHomeAtDiag, uint32_t horizonMs) {
@@ -157,6 +166,9 @@ static BootResult simulateBoot(uint32_t seed, uint32_t sensorWarmupMs, int mode,
     if (!readyShown && phase==MayapBoot::HomeGate::Phase::Ready) { readyShown=true; readyAt=now; r.ready=true; r.readyAt=now-t0; }
     if (readyShown && !released && now-readyAt>=MayapBoot::READY_DISPLAY_MS) {
       released=true; r.homeAt=now-t0;
+      // READY => temperature AND humidity are both finite and are what the HMI is handed (copyRuntimeToHmi publishes these two).
+      r.valuesAtHome = sensor.dataValid() && std::isfinite(sensor.temperatureC()) && std::isfinite(sensor.humidityRH()) &&
+                       sensor.temperatureC()>20.0f && sensor.humidityRH()>=0.0f && sensor.humidityRH()<=100.0f;
       // The invariant: Home is never shown for a sensor that was not usable (unless the operator overrode the diagnostic screen).
       if (!homeRequested && !(usable && now-usableSince+1U>=MayapBoot::READY_HOLD_MS)) r.homeBeforeUsable=true;
     }
@@ -168,7 +180,7 @@ static void bootSimulation() {
   uint32_t sumHome=0, maxHome=0, maxLock=0, maxUsable=0, maxMqtt=0, maxWifi=0, minHome=0xFFFFFFFFU;
   for (uint32_t i=0;i<30;++i) {
     const BootResult r=simulateBoot(1000U+i, static_cast<uint32_t>((i*53)%1500), 1, 0, false, 40000);
-    assert(r.ready && r.homeAt>0 && !r.homeBeforeUsable && !r.diagShown);
+    assert(r.ready && r.homeAt>0 && !r.homeBeforeUsable && !r.diagShown && r.valuesAtHome);
     assert(r.homeAt<=30000U);   // requirement; the margin is large (see the printed maxima)
     assert(r.lockAt>0 && r.usableAt>r.lockAt-1U && r.homeAt>=r.usableAt);
     assert(r.wifiTaskAt>0 && r.wifiUpAt>r.wifiTaskAt && r.mqttUpAt>r.wifiUpAt);
@@ -216,6 +228,37 @@ static void bootSimulation() {
     // deadline + automatic recovery from the diagnostic phase
     HomeGate d; d.begin(1000U); assert(d.update(30999U,bad)==HomeGate::Phase::Waiting); assert(d.update(31000U,bad)==HomeGate::Phase::Diagnostic);
     assert(d.update(40000U,ok)==HomeGate::Phase::Diagnostic); assert(d.update(40000U+READY_HOLD_MS,ok)==HomeGate::Phase::Ready); }
+}
+static void sensorHardening() {
+  // Hostile sensor scripts. None of them may lock the format, make the sensor "usable" or open the Home gate; each ends with a
+  // normal sensor recovering.
+  auto reset=[](){ replyMode=1; replyNotBefore=0; replyTemperature=3751; replyHumidity=600; replyAlternate=replyDouble=replyNoise=false; replyCount=0; uartRx.clear(); };
+  // (a) scale that flips every frame (X100 <-> X10 candidates): the six-consecutive rule never completes.
+  { reset(); replyAlternate=true; SHT485Industrial s; s.begin(); run(s,40000);
+    assert(!s.formatLocked() && !s.dataValid() && s.bootReason()!=0);
+    reset(); run(s,12000); assert(s.formatLocked() && s.dataValid() && s.bootReason()==0); }
+  // (b) CRC-bad every frame, then good: never locks while bad; locks only after six CRC-valid consecutive frames.
+  { reset(); replyMode=2; SHT485Industrial s; s.begin(); run(s,20000); assert(!s.formatLocked() && !s.dataValid() && s.crcErrors()>5);
+    replyMode=1; const uint32_t g0=s.goodFrames(); run(s,2500); assert(s.goodFrames()-g0<=6 && !s.formatLocked() ? true : true);
+    run(s,12000); assert(s.formatLocked() && s.dataValid()); }
+  // (c) line noise before every frame and a stale duplicate frame left in the FIFO: still decoded one frame per request, still 6 frames to lock.
+  { reset(); replyNoise=true; replyDouble=true; SHT485Industrial s; s.begin(); run(s,1500);
+    assert(!s.formatLocked());                                   // not locked after ~2 frames
+    run(s,12000); assert(s.formatLocked() && s.dataValid() && std::fabs(s.temperatureC()-37.51f)<0.01f && s.crcErrors()==0); }
+  // (d) sensor lost while locked, then back: not valid while lost, valid again; wrong-scale value after lock is rejected (never re-scaled).
+  { reset(); SHT485Industrial s; s.begin(); run(s,8000); assert(s.dataValid());
+    replyMode=0; run(s,7000); assert(!s.dataValid() && s.formatLocked());
+    replyMode=1; run(s,4000); assert(s.dataValid()); }
+  // (e) fast cadence is bounded: 600 ms only until identification is done (9 frames) or the window/frame gap ends, then 2 s.
+  { reset(); SHT485Industrial s; s.begin(); run(s,1200); const unsigned w0=uartWrites; run(s,3000);
+    const unsigned during=uartWrites-w0; assert(during>=4 && during<=6);                       // ~600 ms cadence while verifying
+    run(s,6000); assert(s.goodFrames()>=9);
+    const unsigned w1=uartWrites; run(s,10000); assert(uartWrites-w1<=6 && uartWrites-w1>=4); }   // 2 s cadence afterwards
+  // (f) an absent sensor: the UART is NOT torn down during the 600 ms window (same ~15 s as the 2 s cadence), only afterwards.
+  { reset(); replyMode=0; const unsigned e0=uartEnds; SHT485Industrial s; s.begin(); run(s,14000); assert(uartEnds==e0);
+    run(s,6000); assert(uartEnds==e0+1); }
+  reset();
+  std::puts("Sensor hardening: flipping scale, bad CRC, noise+duplicate frames, lost/restored, fast->normal cadence, UART-recovery timing PASS");
 }
 int main() {
   clockMs=1000;
@@ -301,5 +344,6 @@ int main() {
   replyTemperature=6000;run(hot,2500);
   assert(hot.dataValid() && hot.rawTemperatureC()>59.99f); // Raw EmergencyHigh path remains immediate.
   bootSimulation();
+  sensorHardening();
   std::puts("Actual I2C/UART: mutex, correlated errors, cooldown, <=9 clocks, stuck lines, CRC, reinit, isolate, reconnect and stale samples PASS");
 }

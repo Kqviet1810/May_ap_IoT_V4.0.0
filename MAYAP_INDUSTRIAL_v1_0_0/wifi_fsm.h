@@ -3,11 +3,15 @@
 //
 //   CONNECTING --associated--> CONNECTED
 //   CONNECTING --attempt failed (driver gave up / 12 s)--> BACKOFF
-//   CONNECTED  --link lost--> BACKOFF (first retry at once, no penalty)
+//   CONNECTED  --link lost after >= 30 s stable--> BACKOFF (first retry at once, no penalty)
+//   CONNECTED  --link lost before 30 s stable (flapping)--> BACKOFF (counts as a failed attempt: the ladder keeps climbing)
 //   BACKOFF    --ladder elapsed--> CONNECTING            (light attempt: plain reconnect, no owner drain, no driver re-init)
 //   BACKOFF    --ladder elapsed AND recovery due--> RECOVERY (heavy: owners drain first, then one in-place reconnect)
 //   RECOVERY   --done--> CONNECTING
 //
+// The failure history (ladder step, failure count, outage clock) is forgotten ONLY after the link has stayed up continuously for
+// stableConnectedMs. A join that drops again after 1-5 s therefore never resets the backoff: a flapping AP climbs 1/2/4/.../60 s
+// instead of being re-attempted every second.
 // Inputs are Wi-Fi facts only (associated, the driver's own "attempt over" report, time). MQTT / Cloud / OTA outcomes are NOT inputs:
 // a broker or HTTPS failure can never cause a Wi-Fi action. There is one owner (networkTask) and one escalation path; the old
 // per-attempt deep-recovery request, the supervisor "network silent" request and the separate 3-cycle isolation are gone.
@@ -17,6 +21,9 @@ namespace MayapNetwork {
 
 enum class WifiState : uint8_t { Connecting, Connected, Backoff, Recovery };
 enum class WifiAction : uint8_t { None, Begin, Recover };
+// What the last loss was (diagnostics only; the action is the same): the radio left the AP, or the station kept the AP but lost its IP.
+// A broker / HTTPS loss is not a Wi-Fi loss and never appears here.
+enum class LinkLoss : uint8_t { None, Physical, Ip };
 
 struct WifiFsmConfig {
   uint32_t connectTimeoutMs = 12000U;       // one association attempt
@@ -24,6 +31,7 @@ struct WifiFsmConfig {
   uint8_t recoveryAfterFailures = 6U;       // consecutive failed attempts before the heavy path is allowed
   uint32_t recoveryAfterOutageMs = 300000U; // or one continuous outage this long
   uint32_t recoveryCooldownMs = 120000U;    // never more often than this
+  uint32_t stableConnectedMs = 30000U;      // continuous CONNECTED time before the failure history is forgotten
 };
 
 class WifiFsm {
@@ -34,7 +42,11 @@ class WifiFsm {
   // Boot, "back online", portal closed: try at once, forget the old failure history.
   void reset(uint32_t now) {
     state_ = WifiState::Backoff; backoffUntil_ = now; failures_ = 0U; step_ = 0U; outageActive_ = false; outageSince_ = now;
+    stable_ = false; connectedSince_ = now;
   }
+  bool stable() const { return stable_; }
+  LinkLoss lastLoss() const { return lastLoss_; }
+  uint32_t lossCount() const { return lossCount_; }
   WifiState state() const { return state_; }
   uint8_t failures() const { return failures_; }
   uint32_t recoveries() const { return recoveries_; }
@@ -56,16 +68,30 @@ class WifiFsm {
   }
 
   // `associated`: the driver says the station is joined and has an IP. `gaveUpAt`: millis() of the driver's last "attempt over"
-  // report (0 = none). `jitterMs`: 0..BACKOFF_JITTER_MAX_MS from the caller's random source (0 in tests).
-  WifiAction update(uint32_t now, bool associated, uint32_t gaveUpAt, uint32_t jitterMs) {
+  // (STA_DISCONNECTED) report (0 = none). `jitterMs`: 0..BACKOFF_JITTER_MAX_MS from the caller's random source (0 in tests).
+  // `lostIpAt`: millis() of the last STA_LOST_IP report (0 = none), used only to name the kind of loss.
+  WifiAction update(uint32_t now, bool associated, uint32_t gaveUpAt, uint32_t jitterMs, uint32_t lostIpAt = 0U) {
     if (associated) {
-      if (state_ != WifiState::Connected) { state_ = WifiState::Connected; }
-      failures_ = 0U; step_ = 0U; outageActive_ = false;
+      if (state_ != WifiState::Connected) { state_ = WifiState::Connected; connectedSince_ = now; stable_ = false; }
+      if (!stable_ && static_cast<uint32_t>(now - connectedSince_) >= cfg_.stableConnectedMs) {
+        stable_ = true; failures_ = 0U; step_ = 0U; outageActive_ = false;      // only now is the old failure history forgotten
+      }
       return WifiAction::None;
     }
     if (state_ == WifiState::Connected) {
-      // Real loss. Retry at once; the ladder only starts if that retry fails.
-      state_ = WifiState::Backoff; backoffUntil_ = now; outageActive_ = true; outageSince_ = now;
+      const bool physical = gaveUpAt != 0U && static_cast<int32_t>(gaveUpAt - connectedSince_) >= 0;
+      const bool ipOnly = !physical && lostIpAt != 0U && static_cast<int32_t>(lostIpAt - connectedSince_) >= 0;
+      lastLoss_ = ipOnly ? LinkLoss::Ip : LinkLoss::Physical;
+      ++lossCount_;
+      if (!outageActive_) { outageActive_ = true; outageSince_ = now; }
+      if (stable_) {
+        // Real loss of a link that had been good: retry at once; the ladder only starts if that retry fails.
+        state_ = WifiState::Backoff; backoffUntil_ = now;
+      } else {
+        // Joined but dropped again before the stable window (1-5 s flapping): a failed attempt, the ladder climbs.
+        attemptFailed(now, jitterMs);
+      }
+      stable_ = false;
     }
     if (!outageActive_) { outageActive_ = true; outageSince_ = now; }
     switch (state_) {
@@ -97,7 +123,9 @@ class WifiFsm {
   WifiState state_ = WifiState::Backoff;
   uint32_t backoffUntil_ = 0U, attemptAt_ = 0U, outageSince_ = 0U, lastRecoveryAt_ = 0U, recoveries_ = 0U;
   uint8_t failures_ = 0U, step_ = 0U;
-  bool outageActive_ = false, recovered_ = false;
+  bool outageActive_ = false, recovered_ = false, stable_ = false;
+  uint32_t connectedSince_ = 0U, lossCount_ = 0U;
+  LinkLoss lastLoss_ = LinkLoss::None;
 };
 
 }  // namespace MayapNetwork

@@ -67,6 +67,8 @@ static uint32_t connectionStartedAt = 0U;
 // that separates "weak/blocked Wi-Fi" from everything else, which the firmware never logged before.
 static volatile uint32_t staDisconnectAt = 0U;
 static volatile uint8_t staDisconnectReason = 0U;
+static volatile uint32_t staLostIpAt = 0U;      // STA_LOST_IP: still associated to the AP but the lease is gone (named in the log only)
+static uint32_t lossCountLogged = 0U;
 static bool staEventRegistered = false;
 inline void onStaDisconnected(arduino_event_id_t, arduino_event_info_t info) {
   const uint32_t at = millis();
@@ -74,6 +76,11 @@ inline void onStaDisconnected(arduino_event_id_t, arduino_event_info_t info) {
   staDisconnectAt = at ? at : 1U;
   mayapSerialPrintf(false, "[WIFI] sta disconnected reason=%u rssi=%d\n",
       static_cast<unsigned>(info.wifi_sta_disconnected.reason), static_cast<int>(info.wifi_sta_disconnected.rssi));
+}
+inline void onStaLostIp(arduino_event_id_t, arduino_event_info_t) {
+  const uint32_t at = millis();
+  staLostIpAt = at ? at : 1U;
+  mayapSerialPrintf(false, "[WIFI] sta lost IP (still associated)\n");
 }
 // Mains-powered controller: only networkTask applies fixed awake STA policy.
 static bool wifiPowerModeAppliedValid = false;
@@ -212,6 +219,7 @@ inline bool startStation(uint32_t now) {
   (void)WiFi.setAutoReconnect(false);
   if (!staEventRegistered) {
     WiFi.onEvent(onStaDisconnected, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+    WiFi.onEvent(onStaLostIp, ARDUINO_EVENT_WIFI_STA_LOST_IP);
     staEventRegistered = true;
   }
   staDisconnectAt = 0U;
@@ -1082,7 +1090,14 @@ inline void mayapNetworkUpdate(uint32_t now) {
 
   // ---- station link: one decision-maker (wifi_fsm.h). Wi-Fi facts in, at most one action out. ----
   const bool associated = radioActive && WiFi.isConnected();
-  const MayapNetwork::WifiAction action = wifiFsm.update(now, associated, staDisconnectAt, wifiJitterMs());
+  const MayapNetwork::WifiAction action = wifiFsm.update(now, associated, staDisconnectAt, wifiJitterMs(), staLostIpAt);
+  if (wifiFsm.lossCount() != lossCountLogged && !associated) {
+    lossCountLogged = wifiFsm.lossCount();
+    mayapSerialPrintf(false, "[WIFI] link lost kind=%s losses=%lu failures=%u next-retry-in=%lums (MQTT/Cloud are not inputs)\n",
+                      wifiFsm.lastLoss() == MayapNetwork::LinkLoss::Ip ? "IP" : "PHYSICAL",
+                      static_cast<unsigned long>(wifiFsm.lossCount()), static_cast<unsigned>(wifiFsm.failures()),
+                      static_cast<unsigned long>(static_cast<uint32_t>(wifiFsm.backoffUntil() - now)));
+  }
 
   if (associated) {
     int32_t rssi = WiFi.RSSI();

@@ -9,7 +9,7 @@
   "entries": [
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/boot_policy.h",
-      "sha256": "83cca18945f4fb65adfdb5b9d8f58dfbe7b5e5a8f40cda9f8112bfbcda0915e3"
+      "sha256": "39488727d6106e8ddb7b8493b16e13c80e6adffbfd489947a074dbc8f5677218"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/boot_diagnostic.h",
@@ -61,7 +61,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "ce8683d691e509be1761ff9b636bebac75027f2b237308034eb0e3a61f7705eb",
+      "sha256": "be326b22a7b0ba59007d4fbfdb7c77b7d47431fe58a92d208d95468bebb24518",
       "filter": "config"
     },
     {
@@ -102,7 +102,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/hmi.h",
-      "sha256": "0c62d257b6d6cdb13d0e351ff32dc895d0c7b690b440bae16af7219d31d25372",
+      "sha256": "f2c38b7f75a1d55fb637693466f77d5ccb983e78e16d342bd6931c30adf258c1",
       "signature": "void drawSplash()"
     },
     {
@@ -117,7 +117,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/hmi.h",
-      "sha256": "96c773e2ea20cac861968ffadf176a8161197cb8f4011da880afec2356e16138",
+      "sha256": "2198a30e95691db37d64e23f97baf9d848c42d984abf111cb2ac92064e571120",
       "signature": "void hmiBegin()"
     },
     {
@@ -462,5 +462,6 @@
   "alarmDeliveryReview": "2026-10-05: bounded Cloud-only fault edge mailbox, event-aware TLS lease and alarm priority. FaultManager safety fingerprint is preserved by removing only the three conditional notification hooks; all PID, output, controller, storage and safety bodies remain protected. Config changes only Cloud queue 8->16 and fault tracking 16->48. TLS memory thresholds are unchanged. D1 durable receipts and per-recipient bounded Push retries replace HTTP-status-only delivery acknowledgment.",
   "turningRtcReviewNote": "2026-10-05: only reject zero/unavailable automatic deadline while awaiting RTC anchor; homing/manual persistence from main retained. No thermal, motor safety or EEPROM schema changes.",
   "wifiStateReviewNote": "2026-10-05: reviewed config declaration and OTA admission accessor changes only: raw Wi-Fi for network I/O, stable presentation for controller/HMI faults. OTA interlocks, schemas, PID, Adaptive, heater safety and signed transactions unchanged.",
-  "fastBootWifiFsmReviewNote": "2026-10-09: startup/Wi-Fi simplification. No thermal, SSR, fan, turning, alarm or batch-recovery logic changed. boot_policy.h: LOCAL_SETTLE 3000->1500 ms, service gaps/waits 1000->250 ms (level 0 only; crash-loop levels keep 8/10/45 s), plus the pure HomeGate (Home needs valid stable sensor + local safety, 30 s deadline -> diagnostic). boot_diagnostic.h: diagnostic mailbox atomics. .ino setup()/updateBootStability(): the Home release now comes from HomeGate instead of 'tasks stable 4.5 s'; the control task publishes three atomics (sensor usable/reason, storage blocked); the network task no longer turns a supervisor request into a Wi-Fi recovery. hmi.h drawSplash(): shows the boot diagnostic instead of the logo. config.h: SPLASH_MAX_MS 6000->35000 (failsafe only), two runtime diagnosis fields. machine_control.h: SHT485Industrial cold-start cadence 600 ms (bounded by 9 frames and a 15 s window / 3 s frame gap) with the SAME six-frame lock + three-good-sample verification, bootReason() accessor, decodeFrame() records the frame time; MachineController only publishes the two diagnosis fields. network_service.h/wifi_fsm.h: one Wi-Fi FSM (CONNECTING/CONNECTED/BACKOFF/RECOVERY), per-attempt deep-recovery request, supervisor->Wi-Fi coupling, 3-cycle isolation and WifiRecovery removed; MQTT/Cloud/OTA are not inputs; power mode untouched (PERFORMANCE, ECO off). Host evidence: tests/wifi-fsm.cpp, tests/runtime-network.cpp (real owner-drain transaction), tests/runtime-buses.cpp (real SHT485Industrial + 30 cold-boot simulation), tests/staged-boot.test.cjs."
+  "fastBootWifiFsmReviewNote": "2026-10-09: startup/Wi-Fi simplification. No thermal, SSR, fan, turning, alarm or batch-recovery logic changed. boot_policy.h: LOCAL_SETTLE 3000->1500 ms, service gaps/waits 1000->250 ms (level 0 only; crash-loop levels keep 8/10/45 s), plus the pure HomeGate (Home needs valid stable sensor + local safety, 30 s deadline -> diagnostic). boot_diagnostic.h: diagnostic mailbox atomics. .ino setup()/updateBootStability(): the Home release now comes from HomeGate instead of 'tasks stable 4.5 s'; the control task publishes three atomics (sensor usable/reason, storage blocked); the network task no longer turns a supervisor request into a Wi-Fi recovery. hmi.h drawSplash(): shows the boot diagnostic instead of the logo. config.h: SPLASH_MAX_MS 6000->35000 (failsafe only), two runtime diagnosis fields. machine_control.h: SHT485Industrial cold-start cadence 600 ms (bounded by 9 frames and a 15 s window / 3 s frame gap) with the SAME six-frame lock + three-good-sample verification, bootReason() accessor, decodeFrame() records the frame time; MachineController only publishes the two diagnosis fields. network_service.h/wifi_fsm.h: one Wi-Fi FSM (CONNECTING/CONNECTED/BACKOFF/RECOVERY), per-attempt deep-recovery request, supervisor->Wi-Fi coupling, 3-cycle isolation and WifiRecovery removed; MQTT/Cloud/OTA are not inputs; power mode untouched (PERFORMANCE, ECO off). Host evidence: tests/wifi-fsm.cpp, tests/runtime-network.cpp (real owner-drain transaction), tests/runtime-buses.cpp (real SHT485Industrial + 30 cold-boot simulation), tests/staged-boot.test.cjs.",
+  "bootHardeningV2ReviewNote": "2026-10-09 (follow-up to 30f9dff): no thermal, SSR, fan, turning, alarm, batch-recovery or Web transaction logic changed. hmi.h render(): the 35 s SPLASH_MAX_MS failsafe is deleted (config.h constant removed); the splash ends only through MayapBoot::splashView() (coordinator release, or the operator pressing the button on a diagnostic screen); a stalled coordinator makes the HMI draw its own E993 diagnostic. boot_policy.h: BlockReason::Coordinator + splashView(). wifi_fsm.h: failure history (ladder step, failure count, outage clock) is cleared only after 30 s of continuous CONNECTED; a join that drops earlier counts as a failed attempt; loss kind (physical / IP) is recorded for diagnostics. network_service.h: STA_LOST_IP event + loss log, otherwise unchanged. machine_control.h SHT485Industrial: fastCadence() helper only; the UART re-init after 6 failed cycles is not taken during the 600 ms cold-start cadence (keeps the previous ~15 s timing); identification still needs six CRC-valid unique-match frames plus three good samples. Evidence: tests/boot-safety.cpp, tests/boot-policy.cpp, tests/wifi-fsm.cpp, tests/runtime-buses.cpp (sensorHardening), tests/staged-boot.test.cjs."
 }

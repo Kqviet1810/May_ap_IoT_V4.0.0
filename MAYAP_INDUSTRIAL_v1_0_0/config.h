@@ -461,7 +461,6 @@ constexpr uint32_t HOME_REFRESH_MS = 5000UL;
 constexpr uint32_t SPLASH_MIN_MS = 1500UL;
 // Chan tren: du chua nhan duoc du lieu (cam bien/EEPROM loi) cung khong ket o
 // man khoi dong mai - sau moc nay luon vao man chinh de con thao tac duoc.
-constexpr uint32_t SPLASH_MAX_MS = 35000UL;   // failsafe only (boot gate deadline 30 s + 5 s); see render()
 constexpr uint32_t ALARM_REFRESH_MS = 5000UL;
 // Man hinh "Dang cap nhat firmware..." can lam moi nhanh hon nhieu de thanh
 // % chay muot, khac han HOME_REFRESH_MS (5s qua cham cho viec nay).

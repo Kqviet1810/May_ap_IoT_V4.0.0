@@ -23,16 +23,53 @@ int main() {
     drive(f, now, 3000, true); assert(f.state() == WifiState::Connected);
     const unsigned b = begins; drive(f, now, 3600000U, true);
     assert(begins == b && recovers == 0 && f.state() == WifiState::Connected); }
-  // 2) real loss: the first retry is immediate (no penalty), a success clears the history.
+  // 2) real loss of a link that had been good for >= 30 s: the first retry is immediate (no penalty); the history is forgotten only
+  //    after the NEW join has itself been stable for 30 s.
   { WifiFsm f = make(); uint32_t now = 1000; begins = recovers = 0; f.reset(now);
-    drive(f, now, 250, false); drive(f, now, 2000, true);
-    drive(f, now, 250, false); assert(begins == 2 && f.state() == WifiState::Connecting);
-    drive(f, now, 2000, true); assert(f.state() == WifiState::Connected && f.failures() == 0 && recovers == 0); }
-  // 3) weak Wi-Fi flapping 200 times: exactly one light attempt per loss, never a heavy recovery.
-  { WifiFsm f = make(); uint32_t now = 1000; begins = recovers = 0; f.reset(now); drive(f, now, 250, false); drive(f, now, 1000, true);
-    const unsigned b0 = begins;
-    for (int i = 0; i < 200; ++i) { drive(f, now, 250, false); drive(f, now, 5000, true); }
-    assert(begins - b0 == 200 && recovers == 0); }
+    drive(f, now, 250, false); drive(f, now, 31000, true); assert(f.stable() && f.failures() == 0);
+    drive(f, now, 250, false); assert(begins == 2 && f.state() == WifiState::Connecting && f.failures() == 0);
+    drive(f, now, 31000, true); assert(f.state() == WifiState::Connected && f.failures() == 0 && recovers == 0 && f.stable()); }
+  // 3) flapping AP: joined for ~3 s, dropped, over and over. The ladder must CLIMB (1,2,4,8,16,30,60 s) - never one reconnect per second.
+  { WifiFsm f = make(); uint32_t now = 1000; begins = recovers = 0; f.reset(now);
+    uint32_t lastBegin = 0, minGap[10] = {0}; unsigned n = 0;
+    for (uint32_t t = 0; t < 40UL * 60UL * 1000UL && n < 10; t += 250U) {
+      now += 250U;
+      // the link comes up 500 ms after each Begin and stays up 3 s
+      static uint32_t joinAt = 0; bool assoc = false;
+      if (lastBegin && now - lastBegin >= 500U && now - lastBegin < 3500U) assoc = true;
+      const WifiAction a = f.update(now, assoc, 0, 0);
+      if (a == WifiAction::Begin) { if (lastBegin) minGap[n++] = now - lastBegin; lastBegin = now; ++begins; f.attemptStarted(now); }
+      else if (a == WifiAction::Recover) { ++recovers; lastBegin = now; f.recoveryDone(now); }
+      (void)joinAt;
+    }
+    assert(n >= 8);
+    // gap = 0.5 s join + 3 s up + ladder step: strictly growing until the 60 s cap, first retry never sooner than 1 s after the drop
+    for (unsigned i = 1; i < 7; ++i) assert(minGap[i] > minGap[i - 1] || recovers > 0);
+    assert(minGap[0] >= 3500U + 1000U - 250U);
+    std::printf("flap: n=%u recovers=%u failures=%u gaps:", n, recovers, f.failures()); for (unsigned i=0;i<n;++i) std::printf(" %u", minGap[i]); std::puts("");
+    assert(f.failures() >= 5U || recovers > 0); }
+  // 3b) a join that dropped after 1, 2, 3, 5 s never clears the history; a join held for exactly 30 s does.
+  { const uint32_t holds[] = {1000, 2000, 3000, 5000, 29750};
+    for (uint32_t hold : holds) {
+      WifiFsm f = make(); uint32_t now = 1000; begins = recovers = 0; f.reset(now);
+      drive(f, now, 250, false);                                   // Begin #1, attemptStarted
+      drive(f, now, hold, true); assert(f.state() == WifiState::Connected && !f.stable());
+      drive(f, now, 250, false);                                   // dropped
+      assert(f.failures() == 1U && f.state() == WifiState::Backoff && f.lossCount() == 1U); }
+    WifiFsm f = make(); uint32_t now = 1000; f.reset(now); drive(f, now, 250, false);
+    drive(f, now, 30250, true); assert(f.stable() && f.failures() == 0); }
+  // 3c) history survives the flapping: 3 quick drops then a good 31 s link; the NEXT drop retries at once (history forgotten only now).
+  { WifiFsm f = make(); uint32_t now = 1000; begins = recovers = 0; f.reset(now);
+    for (int i = 0; i < 3; ++i) { drive(f, now, 250, false); drive(f, now, 2000, true); drive(f, now, 250, false); now = f.backoffUntil(); }
+    assert(f.failures() == 3U);
+    drive(f, now, 250, false); drive(f, now, 31000, true); assert(f.failures() == 0U && f.stable());
+    const unsigned b = begins; drive(f, now, 250, false); assert(begins == b + 1U && f.state() == WifiState::Connecting); }
+  // 3d) kinds of loss: station left the AP (physical) vs kept the AP but lost the lease (IP). Both retry the same way.
+  { WifiFsm f = make(); uint32_t now = 1000; f.reset(now); drive(f, now, 250, false); drive(f, now, 31000, true);
+    f.update(now + 250U, false, now + 200U, 0, 0U); assert(f.lastLoss() == LinkLoss::Physical);
+    WifiFsm g = make(); now = 1000; g.reset(now); drive(g, now, 250, false); drive(g, now, 31000, true);
+    g.update(now + 250U, false, 0U, 0, now + 200U); assert(g.lastLoss() == LinkLoss::Ip);
+    assert(g.update(now + 250U, false, 0U, 0, now + 200U) == WifiAction::Begin || g.state() == WifiState::Backoff); }
   // 4) the driver reports THIS attempt over: the wait ends 4 s later (not 12 s); a stale report from an earlier attempt is ignored.
   { WifiFsm f = make(); uint32_t now = 1000; f.reset(now);
     assert(f.update(now, false, 0, 0) == WifiAction::Begin); f.attemptStarted(now);

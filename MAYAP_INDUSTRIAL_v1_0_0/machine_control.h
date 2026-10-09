@@ -3118,13 +3118,16 @@ class SHT485Industrial {
     nextPollMs_ = now + pollPeriodMs(now);
     state_ = State::Idle;
   }
-  uint32_t pollPeriodMs(uint32_t now) const {
-    // Fast while identification is still incomplete AND either the cold-start window is open or frames are actually arriving (a sensor
-    // that wakes up late keeps the fast cadence until it is verified; an absent or silent one never holds the bus above 2 s for long).
+  // Fast while identification is still incomplete AND either the cold-start window is open or frames are actually arriving (a sensor
+  // that wakes up late keeps the fast cadence until it is verified; an absent or silent one never holds the bus above 2 s for long).
+  bool fastCadence(uint32_t now) const {
     const bool identifying = goodFrames_ < SHT485Config::STARTUP_FAST_FRAMES;
     const bool windowOpen = elapsedMs(now, bootMs_) < SHT485Config::STARTUP_FAST_WINDOW_MS ||
                             (goodFrames_ > 0U && elapsedMs(now, lastFrameMs_) < SHT485Config::STARTUP_FRAME_GAP_MS);
-    return (identifying && windowOpen) ? SHT485Config::STARTUP_POLL_PERIOD_MS : SHT485Config::POLL_PERIOD_MS;
+    return identifying && windowOpen;
+  }
+  uint32_t pollPeriodMs(uint32_t now) const {
+    return fastCadence(now) ? SHT485Config::STARTUP_POLL_PERIOD_MS : SHT485Config::POLL_PERIOD_MS;
   }
   void recoverUart(uint32_t now) {
     // Owner-only, after a fully failed cycle. Preserve counters/filter and
@@ -3161,7 +3164,9 @@ class SHT485Industrial {
     if (online_ && failedCycles_ >= SHT485Config::OFFLINE_AFTER_FAILED_CYCLES) {
       online_ = false; setEvent(EventLost);
     }
-    if (failedCycles_ >= 6U && (!uartRecoveredBefore_ || elapsedMs(now, uartRecoveryAt_) >= 30000U)) {
+    // The 6-failed-cycles rule was written for the 2 s cadence (~15 s of silence). During the 600 ms cold-start cadence six failed
+    // cycles take only ~6.6 s, so the UART is not torn down while a slow sensor is still waking up: the same ~15 s as before applies.
+    if (failedCycles_ >= 6U && !fastCadence(now) && (!uartRecoveredBefore_ || elapsedMs(now, uartRecoveryAt_) >= 30000U)) {
       recoverUart(now);
       return;
     }

@@ -46,3 +46,15 @@ Wi-Fi (`tests/wifi-fsm.cpp`, `tests/runtime-network.cpp`): khởi động nguộ
 * Chưa đo trên ESP32 thật: thời gian từng giai đoạn thật, chu kỳ hỏi 600 ms có hợp mô-đun SHT485 thật không (nếu mô-đun cập nhật chậm hơn, nhận diện vẫn đúng nhưng dài hơn), `WiFi.reconnect()` tại chỗ khi AP vừa rớt, RAM/stack (Flash/RAM xem báo cáo CI).
 * Thời gian Wi-Fi/MQTT lên trong bảng là **mô hình**; thực tế phụ thuộc AP, DNS, NTP, TLS (đo 42 s trước đây ở điều kiện mạng xấu — xem `REALTIME_STABILITY_1_1_4.md`).
 * Không đổi: logic nhiệt, SSR, quạt, đảo trứng, cảnh báo, phục hồi mẻ, điều khiển cục bộ độc lập Internet.
+
+## 5. Vòng hoàn thiện (sau commit `30f9dff`)
+
+| # | Tồn tại ở `30f9dff` | Xử lý |
+|---|---|---|
+| H1 | `hmi.h` vẫn tự thoát splash sau `SPLASH_MAX_MS` = 35 s nếu *không có chẩn đoán đang hiển thị* ⇒ coordinator đứng/chậm thì HMI vào Home khi cảm biến chưa READY | Xóa hẳn `SPLASH_MAX_MS`. Splash chỉ kết thúc qua `MayapBoot::splashView()`: (a) coordinator nhả Home (cảm biến hợp lệ + ổn định + an toàn cục bộ), hoặc (b) người vận hành bấm nút trên màn chẩn đoán. Sau `30 s + 2 s` mà coordinator chưa công bố Ready/chẩn đoán ⇒ HMI **tự vẽ E993 "BOOT COORDINATOR"**, không bao giờ tự vào Home hay báo READY |
+| H2 | Vào Home từ màn chẩn đoán có thể bị hiểu là bỏ khóa heater | Không đổi gì ở đường điều khiển: `normalMasterPermit` / `heaterPidConditions` vẫn đòi `sensorUsable_`, không lỗi cắt tổng, `storageAllowsHeat`, `batchAllowsHeat`; `startup_output_policy` giữ mọi đầu ra an toàn đến khi HMI vẽ khung không-splash đầu tiên. Có test văn bản (`staged-boot.test.cjs`) và mô hình thứ tự (`boot-safety.cpp`) |
+| W1 | `WifiFsm::update()` xóa lịch sử lỗi ngay khi `associated` ⇒ AP chập chờn (nối 1–5 s rồi rớt) bị thử lại mỗi ~1 s | Lịch sử (bậc thang, số lần lỗi, đồng hồ mất mạng) chỉ xóa sau **30 s CONNECTED liên tục** (`stableConnectedMs`). Nối rồi rớt trước 30 s = một lần thử thất bại: bậc thang 1/2/4/8/16/30/60 s tiếp tục tăng. Mất mạng sau ≥30 s ổn định: thử lại ngay như cũ |
+| W2 | Không phân biệt mất sóng vật lý / mất IP | `LinkLoss::{Physical, Ip}` (từ `STA_DISCONNECTED` / `STA_LOST_IP`), ghi log `[WIFI] link lost kind=…`. Chỉ phục vụ chẩn đoán, hành động vẫn là cùng một thang. MQTT/Cloudflare không phải đầu vào FSM (kiểm bằng test văn bản trên `mayapNetworkUpdate`) |
+| S1 | Nhịp 600 ms làm "6 chu kỳ lỗi → khởi động lại UART" đến sau ~6,6 s thay vì ~15 s | `fastCadence()`: không reinit UART trong cửa sổ nhịp nhanh; mốc ~15 s như cũ. Số khung xác minh (6 CRC-hợp-lệ-duy-nhất + 3 mẫu tốt) không đổi |
+
+Mô phỏng host (không phải ESP32): `tests/boot-policy.cpp` (splashView), `tests/boot-safety.cpp`, `tests/wifi-fsm.cpp` (flapping 1–5 s, 30 s ổn định, loại mất mạng), `tests/runtime-buses.cpp::sensorHardening()` (đảo thang đo, CRC xấu, nhiễu + khung trùng, mất/khôi phục, chuyển nhịp nhanh → 2 s). **Thời gian khởi động thật trên ESP32 vẫn NOT TESTED.**

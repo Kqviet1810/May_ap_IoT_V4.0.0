@@ -118,5 +118,19 @@ int main() {
     assert(g.update(31000U, ok) == HomeGate::Phase::Diagnostic);                     // must hold READY_HOLD_MS first
     assert(g.update(31000U + READY_HOLD_MS, ok) == HomeGate::Phase::Ready);
     assert(g.update(99999U, bad) == HomeGate::Phase::Ready); }                       // a later sensor loss is an alarm, not a boot problem
+  // Splash view: NO timeout of its own. Coordinator stalled, sensor not READY at second 35 -> HMI-local E993 diagnostic, never Home/ready.
+  { assert(blockCode(BlockReason::Coordinator) == 993U);
+    for (uint32_t t = 0; t < 120000U; t += 250U) {                                   // coordinator dead: released=false, ready=false, no diagnostic
+      const SplashView v = splashView(t, false, false, false, false);
+      if (t < BOOT_DEADLINE_MS + COORDINATOR_STALL_GRACE_MS) assert(v == SplashView::Logo);
+      else assert(v == SplashView::StalledDiagnostic);                                // t=35 s and beyond: always the diagnostic
+    }
+    assert(splashView(35000U, false, false, false, false) == SplashView::StalledDiagnostic);
+    assert(splashView(35000U, false, false, true, false) == SplashView::Diagnostic);  // coordinator alive: its own diagnosis
+    assert(splashView(35000U, true, false, false, false) == SplashView::Home);        // only a coordinator release (sensor + safety) opens Home
+    assert(splashView(35000U, false, true, false, false) == SplashView::Logo);        // Ready reached: no flicker to a diagnostic during release
+    assert(splashView(35000U, false, false, false, true) == SplashView::Home);        // operator override from the E993 screen, never before it
+    assert(splashView(10000U, false, false, false, true) == SplashView::Logo);        // a stray press before the deadline cannot skip the gate
+    assert(splashView(31999U, false, false, false, true) == SplashView::Logo); }
   puts("boot policy: reset classification, L0-L3, offline admission, stability and rollover PASS");
 }

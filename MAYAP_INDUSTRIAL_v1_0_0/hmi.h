@@ -1017,7 +1017,10 @@ bool eventLogInboxPending = false;
 // Man hinh khoi dong: thoat khi DA nhan du ca runtime lan config that (de man
 // chinh hien ra la da day du so lieu, khong con o trong) va da qua
 // SPLASH_MIN_MS; hoac het SPLASH_MAX_MS thi thoat du chua nhan duoc gi.
+// (v1.1.5: KHONG con SPLASH_MAX_MS. Man khoi dong chi thoat khi boot coordinator nha Home; coordinator dung -> HMI tu hien E993.)
 bool splashActive = true;
+MayapBoot::SplashView splashShown = MayapBoot::SplashView::Logo;
+bool splashOperatorHome = false;
 uint32_t splashStartedAt = 0;
 bool splashHadRuntime = false;
 bool splashHadConfig = false;
@@ -1909,8 +1912,7 @@ uint32_t alarmRepeatMs(uint32_t bit) {
 
 void buzzerUpdate(uint32_t now) {
   // Giai dieu khoi dong duoc uu tien tuyet doi trong luc con hieu luc, NHUNG
-  // luon dung ngay khi roi man khoi dong (vao View::Home / SPLASH_MAX_MS ep
-  // thoat som) - khong bao gio de no lan sang canh bao that hoac coi thao
+  // luon dung ngay khi roi man khoi dong (vao View::Home) - khong bao gio de no lan sang canh bao that hoac coi thao
   // tac binh thuong.
   if (buzzer.startupActive) {
     if (!splashActive) {
@@ -2470,7 +2472,10 @@ void handleInput() {
   // mot trang nao do ma khong biet.
   if (splashActive) {
     // Only the diagnostic screen takes input: a press means "go to Home anyway" (alarms there still show the real fault).
-    if (mayapBootDiagnosticActive() && rotary.button == ButtonEvent::ShortPress) mayapBootRequestHome();
+    if (rotary.button == ButtonEvent::ShortPress) {
+      if (splashShown == MayapBoot::SplashView::Diagnostic) mayapBootRequestHome();
+      else if (splashShown == MayapBoot::SplashView::StalledDiagnostic) splashOperatorHome = true;
+    }
     resetRotaryPending();
     return;
   }
@@ -3092,8 +3097,7 @@ void drawCenteredText(int16_t y, const char *text) {
 
 // Minimal splash requested by the operator: centered logo and three dots.
 // Boot diagnostic (replaces the logo when the Home gate is still closed after 30 s): the concrete code and cause, never "ready".
-void drawBootDiagnostic() {
-  const MayapBoot::BlockReason why = mayapBootDiagnosticReason();
+void drawBootDiagnostic(MayapBoot::BlockReason why, uint16_t codeNumber, uint32_t ageMs) {
   const char *line1 = "KIEM TRA THIET BI";
   const char *line2 = "";
   switch (why) {
@@ -3103,14 +3107,16 @@ void drawBootDiagnostic() {
     case MayapBoot::BlockReason::Storage: line1 = "BO NHO EEPROM LOI"; line2 = "KIEM TRA CHIP EEPROM"; break;
     case MayapBoot::BlockReason::Tasks: line1 = "LOI TIEN TRINH HE THONG"; line2 = "TAT/BAT NGUON LAI"; break;
     case MayapBoot::BlockReason::SafetyTrip: line1 = "NGAT AN TOAN HE THONG"; line2 = "TAT/BAT NGUON LAI"; break;
+    case MayapBoot::BlockReason::Display: line1 = "LOI MAN HINH LCD"; line2 = "KIEM TRA DAY I2C"; break;
+    case MayapBoot::BlockReason::Coordinator: line1 = "KHOI DONG KHONG PHAN HOI"; line2 = "TAT/BAT NGUON LAI"; break;
     default: break;
   }
   char code[28];
-  snprintf(code, sizeof(code), "E%u %s", static_cast<unsigned>(mayapBootDiagnosticCode()), MayapBoot::blockText(why));
+  snprintf(code, sizeof(code), "E%u %s", static_cast<unsigned>(codeNumber), MayapBoot::blockText(why));
   lcd.setDrawColor(1);
   lcd.setFont(u8g2_font_5x8_tf);
   char head[28];
-  snprintf(head, sizeof(head), "CHAN DOAN KHOI DONG %lus", static_cast<unsigned long>(mayapBootDiagnosticAgeMs() / 1000UL));
+  snprintf(head, sizeof(head), "CHAN DOAN KHOI DONG %lus", static_cast<unsigned long>(ageMs / 1000UL));
   lcd.drawStr(0, 8, head);
   lcd.drawHLine(0, 10, 128);
   drawCenteredFit(24, code, u8g2_font_helvB10_tf, u8g2_font_6x12_tf, u8g2_font_5x8_tf);
@@ -3121,7 +3127,14 @@ void drawBootDiagnostic() {
 }
 
 void drawSplash() {
-  if (mayapBootDiagnosticActive()) { drawBootDiagnostic(); return; }
+  if (splashShown == MayapBoot::SplashView::StalledDiagnostic) {
+    drawBootDiagnostic(MayapBoot::BlockReason::Coordinator, MayapBoot::blockCode(MayapBoot::BlockReason::Coordinator), millis());
+    return;
+  }
+  if (splashShown == MayapBoot::SplashView::Diagnostic) {
+    drawBootDiagnostic(mayapBootDiagnosticReason(), mayapBootDiagnosticCode(), mayapBootDiagnosticAgeMs());
+    return;
+  }
   lcd.setDrawColor(1);
   lcd.drawXBMP((128 - BOOT_LOGO_WIDTH) / 2, BOOT_LOGO_TOP,
                BOOT_LOGO_WIDTH, BOOT_LOGO_HEIGHT, bootLogoBits);
@@ -4232,13 +4245,14 @@ void render(uint32_t now) {
   // (ke ca man canh bao/xac nhan) chen vao giua luc dang khoi dong.
   if (splashActive) {
     if (splashStartedAt == 0U) splashStartedAt = now;
-    const uint32_t elapsed = now - splashStartedAt;
-    // Home is a local startup decision; neither Internet nor sensor faults
-    // may hide local alarms/controls indefinitely. Max remains a failsafe.
-    // Home only when the boot coordinator says the machine is really ready (valid stable sensor + local safety). Past 30 s the
-    // diagnostic screen replaces the logo. The long failsafe only guards against a stopped coordinator; it never applies while a
-    // diagnosis is being shown, so the display can never claim readiness the machine does not have.
-    if (mayapBootHomeReleased() || (!mayapBootDiagnosticActive() && elapsed >= SPLASH_MAX_MS)) {
+    // The splash has NO timeout of its own. Home only when the boot coordinator releases it (valid stable sensor + every local safety
+    // condition, or the operator pressed the button on a diagnostic screen). If the coordinator is stalled the HMI draws its own
+    // E993 diagnostic; it never leaves the splash, and never shows "ready", on its own initiative.
+    splashShown = MayapBoot::splashView(now, mayapBootHomeReleased(), mayapBootStatus() == MayapBoot::Status::Ready,
+                                        mayapBootDiagnosticActive(), splashOperatorHome);
+    if (splashShown == MayapBoot::SplashView::Home) {
+      if (!mayapBootHomeReleased())
+        mayapSerialPrintf(false, "[BOOT-HOME] operator override from E993 screen (coordinator stalled); heater stays gated by sensor/faults\n");
       splashActive = false;
       dirty = true;
     }
@@ -4449,7 +4463,7 @@ void hmiBegin() {
   lastLcdHealthCheckAt = now;
   // Moc thoi gian man khoi dong tinh tu luc BAT MAY, khong phai tu frame ve
   // dau tien: neu LCD chua nhan duoc luc khoi dong (dang tu do tim lai), den
-  // khi no phuc hoi thi SPLASH_MAX_MS da qua tu lau va may vao thang man
+  // khi no phuc hoi thi coordinator da nha Home (splash khong con han) va may vao thang man
   // chinh - khong bat nguoi dung xem lai man khoi dong giua chung.
   splashStartedAt = now;
   dirty = true;

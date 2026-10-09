@@ -184,7 +184,8 @@ constexpr uint32_t BOOT_DEADLINE_MS = 30000U;
 constexpr uint32_t READY_HOLD_MS = 1500U;      // every condition continuously true this long ("stable")
 
 enum class BlockReason : uint8_t {
-  None, SafetyTrip, Tasks, Storage, Display, SensorNoResponse, SensorFormat, SensorUnstable
+  None, SafetyTrip, Tasks, Storage, Display, SensorNoResponse, SensorFormat, SensorUnstable,
+  Coordinator   // HMI-local only: the boot coordinator published neither Ready nor a diagnosis in time
 };
 struct LocalInputs {
   bool tasksHealthy = false;       // control + HMI + supervisor heartbeats fresh, no cycle trip
@@ -214,6 +215,7 @@ inline uint16_t blockCode(BlockReason r) {
     case BlockReason::Tasks: return 991U;
     case BlockReason::Storage: return 301U;
     case BlockReason::Display: return 992U;
+    case BlockReason::Coordinator: return 993U;
     case BlockReason::SensorNoResponse: return 101U;
     case BlockReason::SensorFormat: return 102U;
     case BlockReason::SensorUnstable: return 103U;
@@ -226,11 +228,26 @@ inline const char *blockText(BlockReason r) {
     case BlockReason::Tasks: return "TASK HEARTBEAT";
     case BlockReason::Storage: return "EEPROM";
     case BlockReason::Display: return "LCD";
+    case BlockReason::Coordinator: return "BOOT COORDINATOR";
     case BlockReason::SensorNoResponse: return "SENSOR NO REPLY";
     case BlockReason::SensorFormat: return "SENSOR FORMAT";
     case BlockReason::SensorUnstable: return "SENSOR UNSTABLE";
     default: return "OK";
   }
+}
+// What the HMI shows while the splash is up. The splash has NO timeout of its own: it ends only when the coordinator releases Home
+// (valid stable sensor + local safety, or the operator pressing the button on a diagnostic screen). If the coordinator itself stalls
+// (neither Ready nor a diagnosis published BOOT_DEADLINE_MS + COORDINATOR_STALL_GRACE_MS after power-up) the HMI draws its own
+// diagnostic (E993) - it never shows Home or "ready" on its own initiative.
+constexpr uint32_t COORDINATOR_STALL_GRACE_MS = 2000U;
+enum class SplashView : uint8_t { Logo, Diagnostic, StalledDiagnostic, Home };
+inline SplashView splashView(uint32_t sinceBootMs, bool homeReleased, bool readyShown, bool diagnosticPublished, bool operatorHome) {
+  if (homeReleased) return SplashView::Home;
+  if (readyShown) return SplashView::Logo;                       // Ready reached: the coordinator releases Home within READY_DISPLAY_MS
+  if (diagnosticPublished) return SplashView::Diagnostic;        // the coordinator owns the Home-request path
+  if (sinceBootMs >= BOOT_DEADLINE_MS + COORDINATOR_STALL_GRACE_MS)
+    return operatorHome ? SplashView::Home : SplashView::StalledDiagnostic;
+  return SplashView::Logo;
 }
 class HomeGate {
  public:

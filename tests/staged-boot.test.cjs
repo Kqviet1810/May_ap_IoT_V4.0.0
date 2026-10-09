@@ -53,7 +53,21 @@ test('Home and boot success depend on local stability, never server connectivity
   assert.match(stability, /sensorHealthy/);
   assert.match(stability, /displayHealthy/);
   assert.match(body(ino, 'static bool localTasksHealthy('), /supervisorHeartbeatMs/);
-  assert.match(hmi, /mayapBootHomeReleased\(\) \|\| \(!mayapBootDiagnosticActive\(\) && elapsed >= SPLASH_MAX_MS\)/);
+  // The splash has no timeout of its own: Home only through the coordinator (or an operator press on a diagnostic screen).
+  assert.doesNotMatch(hmi, /SPLASH_MAX_MS\s*[;)=<>]/);
+  assert.doesNotMatch(read(dir + 'config.h'), /SPLASH_MAX_MS/);
+  assert.match(hmi, /MayapBoot::splashView\(now, mayapBootHomeReleased\(\)/);
+  assert.match(hmi, /SplashView::StalledDiagnostic[\s\S]*BlockReason::Coordinator/);
+});
+
+test('Heater permits never depend on the boot screen: operator Home cannot bypass sensor/fault interlocks', () => {
+  const mc = read(dir + 'machine_control.h');
+  assert.match(mc, /normalMasterPermit =\s*in\.heaterEnable && sensorUsable_ && !faults_\.masterDropRequired\(\)/);
+  assert.match(mc, /heaterPidConditions =\s*!faults_\.masterDropRequired\(\) &&\s*storageAllowsHeat && !abnormalResetLatched_ &&\s*batchAllowsHeat && sensorUsable_/);
+  assert.match(mc, /actuatorReady = outputs_\.heaterReady\(now\) && mayapBootOperationsReady\(\) &&\s*!mayapSystemTripLatched\(\)/);
+  // the operator override only changes what the HMI shows; it never calls anything that touches outputs or faults
+  const input = body(hmi, 'void handleInput(');
+  assert.doesNotMatch(input.slice(0, input.indexOf('splashActive') + 600), /Machine|heater|outputs_|clearFault/i);
 });
 
 test('Supervisor admission gates retain fatal thresholds and persist reason before TWDT fallback', () => {
@@ -107,14 +121,29 @@ test('Home is released only by the local gate: valid stable sensor + every local
   const control = body(ino, 'void controlTask(');
   for (const v of ['bootSensorUsable', 'bootSensorReason', 'bootStorageBlocked']) assert.ok(control.includes(v), v);
   // HMI: input on the diagnostic screen is only "continue"; nothing else is accepted during the splash
-  assert.match(body(hmi, 'void handleInput()'), /mayapBootDiagnosticActive\(\) && rotary\.button == ButtonEvent::ShortPress\) mayapBootRequestHome\(\)/);
+  assert.match(body(hmi, 'void handleInput()'), /splashShown == MayapBoot::SplashView::Diagnostic\) mayapBootRequestHome\(\)/);
   assert.match(read(dir + 'config.h'), /SENSOR_RECOVERY_GOOD_SAMPLES = 3UL/);   // the simulation's "usable" rule mirrors this constant
+});
+
+test('Wi-Fi history is forgotten only after 30 s of continuous CONNECTED; no other layer resets it', () => {
+  const fsm = read(dir + 'wifi_fsm.h');
+  assert.match(fsm, /stableConnectedMs = 30000U/);
+  // the only place the failure history is cleared on a successful join is the stable branch
+  assert.match(fsm, /now - connectedSince_\) >= cfg_\.stableConnectedMs\) \{\s*stable_ = true; failures_ = 0U; step_ = 0U;/);
+  assert.doesNotMatch(fsm.replace(/void reset\([\s\S]*?\n  \}/, ''), /failures_ = 0U;[^\n]*\n[^\n]*Connected;/);
+  const net = read(dir + 'network_service.h');
+  const upd = body(net, 'inline void mayapNetworkUpdate(');
+  // reset() is reserved for: user went Offline, no credentials, portal open - never for "just connected" or for MQTT/Cloud outcomes
+  const resets = upd.match(/wifiFsm\.reset\(/g) || [];
+  assert.strictEqual(resets.length, 3);
+  assert.doesNotMatch(upd.replace(/\/\/[^\n]*/g, '').replace(/"[^"\n]*"/g, ''), /mayapRealtime|mayapCloud|mayapOta|mqtt|Mqtt|transaction/);
+  assert.match(net, /ARDUINO_EVENT_WIFI_STA_LOST_IP/);
 });
 
 test('Wi-Fi has one decision-maker; MQTT, Cloud and OTA can never touch the radio; power mode stays PERFORMANCE', () => {
   const net = read(dir + 'network_service.h');
   assert.match(net, /#include "wifi_fsm\.h"/);
-  assert.match(body(net, 'inline void mayapNetworkUpdate('), /wifiFsm\.update\(now, associated, staDisconnectAt, wifiJitterMs\(\)\)/);
+  assert.match(body(net, 'inline void mayapNetworkUpdate('), /wifiFsm\.update\(now, associated, staDisconnectAt, wifiJitterMs\(\), staLostIpAt\)/);
   assert.doesNotMatch(net, /staBackoff|deepPolicy|mayapRequestWifiDeepRecovery|DeepPhase::Isolated/);
   assert.doesNotMatch(ino, /mayapRequestWifiDeepRecovery/);
   // the heavy owner-drain transaction starts for exactly two reasons
