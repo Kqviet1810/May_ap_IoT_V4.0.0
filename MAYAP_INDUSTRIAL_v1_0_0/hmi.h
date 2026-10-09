@@ -577,44 +577,49 @@ const SettingItem SETTINGS[] = {
   ITEM_U8("Ngay 12-15", ventDutyDay12To15, 5, 90, 1, "%"),                   // 48
   ITEM_U8("Ngay 16-18", ventDutyDay16To18, 5, 90, 1, "%"),                   // 49
   ITEM_U8("Ngay 19-21", ventDutyDay19To21, 5, 90, 1, "%"),                    // 50
-  ITEM_BOOL("Tu can bang nhiet", adaptiveThermalBalanceEnabled)               // 51
+  ITEM_BOOL("Tu can bang nhiet", adaptiveThermalBalanceEnabled),              // 51
+  // Hieu chuan do am (nhom NANG CAO > HIEU CHUAN, di cung "Bu nhiet do").
+  ITEM_FLOAT("Bu do am", humidityOffset, -20.0f, 20.0f, 0.5f, 1, "%")          // 52
 };
 
 constexpr uint8_t SETTING_COUNT = sizeof(SETTINGS) / sizeof(SETTINGS[0]);
-static_assert(SETTING_COUNT == 52, "Bang SETTINGS phai co 52 thong so");
+static_assert(SETTING_COUNT == 53, "Bang SETTINGS phai co 53 thong so");
 
 const uint8_t GROUP_SETTING_INDEXES[] = {
   0,1,2,3,                             // Cai dat me
-  4,5,6,7,8,                           // Nhiet do
+  4,5,6,8,                             // Nhiet do (nguong van hanh; Bu nhiet do da chuyen sang HIEU CHUAN)
   11,12,13,28,                         // Dao trung
   14,29,32,                            // He thong
-  15,16,17,19,51,                      // PID / SSR
-  20,21,22,23,24,25,26,27,             // Bao ve nhiet
+  15,16,17,19,51,                      // PID / GIA NHIET   (NANG CAO)
+  20,21,22,23,24,25,26,27,             // Bao ve nhiet      (NANG CAO)
   9,10,                                // Quat hut; Thong gio la menu con
-  30,31                                // Tao am
+  30,31,                               // Tao am
+  7,52                                 // Hieu chuan        (NANG CAO)
 };
 
 struct SettingGroup { const char *label; uint8_t first; uint8_t count; };
 // Chi so 0 = Cai dat me (goc tu MainMenu); con lai la thu muc con cua
 // "CAI DAT CHUNG" (goc tu ChungMenu). Dung chung mot co che SettingList.
-// Nhom TAO AM phai o cuoi; groupExtraSlot() tham chieu co dinh nhom 1/2/3.
+// Nhom 4, 5, 8 la nhom NANG CAO (can ma ky thuat, xem advGroup()); cac nhom con
+// lai nam trong CAI DAT CHUNG. groupExtraSlot() tham chieu co dinh nhom 2/3/6.
 const SettingGroup GROUPS[] = {
   {"CAI DAT ME", 0, 4},
   // Nguong quat hut da duoc tach sang nhom QUAT HUT.
-  {"NHIET DO", 4, 5},
-  {"DAO TRUNG", 9, 4},
+  {"NHIET DO", 4, 4},
+  {"DAO TRUNG", 8, 4},
   // Doi ten tu "KET NOI" thanh "HE THONG": nhom nay tu lau da khong chi con
   // la cai dat mang - gom ca ma QR, dat lai PIN, cap nhat firmware... nen
   // "He thong" mo ta dung hon la cai dat chung cua may.
-  {"HE THONG", 13, 3},
-  {"PID / SSR", 16, 5},
-  {"BAO VE NHIET", 21, 8},
-  {"QUAT HUT", 29, 2},
-  {"TAO AM", 31, 2}
+  {"HE THONG", 12, 3},
+  {"PID/GIA NHIET", 15, 5},
+  {"BAO VE NHIET", 20, 8},
+  {"QUAT HUT", 28, 2},
+  {"TAO AM", 30, 2},
+  {"HIEU CHUAN", 32, 2}
 };
 constexpr uint8_t GROUP_COUNT = sizeof(GROUPS) / sizeof(GROUPS[0]);
-static_assert(GROUP_COUNT == 8, "Bang GROUPS phai co 8 nhom");
-static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) == 33U,
+static_assert(GROUP_COUNT == 9, "Bang GROUPS phai co 9 nhom");
+static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) == 34U,
               "Sai so luong setting hien trong menu chinh");
 
 // Dong phu (khong phai setting gia tri) duoc gan them vao cuoi mot so nhom.
@@ -625,10 +630,7 @@ static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) =
 // groupVisibleExtraCount dat o DUOI, sau khai bao currentConfig - xem do.)
 enum class GroupExtra : uint8_t { None, TurnStats, WifiChange, ConnectionInfo, QrCode, CloudPinReset, FirmwareWebUpdate, AutoTuneEntry, VentilationEntry };
 GroupExtra groupExtraSlot(uint8_t group, uint8_t slot) {
-  // NHIET DO -> "Tu chinh PID" (chuyen tu 1 muc rieng trong Cai dat chung
-  // vao day - Auto Tune tu do thong so nhiet nen hop ly hon khi gan voi
-  // nhom Nhiet do, giong cach "So lan dao" gan voi Dao trung).
-  if (group == 1 && slot == 0) return GroupExtra::AutoTuneEntry;
+  // "Tu chinh PID" (Smart AutoTune) nay nam trong NANG CAO, khong con la dong phu cua NHIET DO.
   if (group == 2 && slot == 0) return GroupExtra::TurnStats;      // DAO TRUNG -> "So lan dao"
   // Thu tu da quy hoach lai (nhom HE THONG): 2 muc ve MANG di lien nhau
   // truoc (thong tin + doi wifi), roi den DINH DANH/BAO MAT (QR + PIN), cuoi
@@ -799,10 +801,12 @@ void formatSettingValue(const SettingItem &item, float value, char *out, size_t 
 enum class View : uint8_t {
   Home, MainMenu, ChungMenu, SettingList, EditSetting, TurnStats, AutoTune,
   EventLog, Alarm, TestMode, TestSummary, WifiChange, ConnectionInfo, QrCode,
-  FirmwareProgress, TurnStatus, VentilationMenu, VentilationAdvanced, FirmwareMenu
+  FirmwareProgress, TurnStatus, VentilationMenu, VentilationAdvanced, FirmwareMenu,
+  // NANG CAO (can ma ky thuat): nhap ma, menu, PID Monitor, ho so nhiet, ban ghi cu, quyen Web, yeu cau tu Web.
+  AdvPin, AdvMenu, PidMonitor, ThermalProfile, AdvHistory, AdvHistoryView, WebAccess, TechRequest
 };
 
-enum class ConfirmAction : uint8_t { None, BatchToggle, AutoTuneStart, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AutoTuneCancel };
+enum class ConfirmAction : uint8_t { None, BatchToggle, AutoTuneStart, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AutoTuneCancel, AdvRestore };
 
 // Prototype thu cong: Arduino IDE tu sinh prototype cho ham trong .ino.
 // Neu ham dung enum/struct tuy chinh, prototype tu dong co the bi chen
@@ -979,6 +983,51 @@ uint8_t onlineServiceDegradedMaskSeen = 0U;
 uint32_t lastCommandPollAt = 0;
 uint32_t inputGuardUntil = 0;
 
+// ---------------- NANG CAO (ma ky thuat) ----------------
+// Phien nang cao chi song trong RAM cua HMI. Quyen that su (ma, khoa nhap sai, giu phien, yeu cau tu Web)
+// nam o firmware tong (tech_access.h) - HMI chi hien thi va gui lenh, khong bao gio tu quyet dinh.
+enum class PinPurpose : uint8_t { Enter, SetNew, SetConfirm };
+constexpr uint8_t ADV_PIN_DIGITS = 4U;
+constexpr uint32_t ADV_KEEPALIVE_MS = 30000UL;
+constexpr uint32_t ADV_UNLOCK_GRACE_MS = 1500UL;
+constexpr uint32_t ADV_REFRESH_MS = 500UL;
+bool advActive = false;          // dang trong phien nang cao (da qua ma)
+bool advSaving = false;          // dang cho firmware xac nhan luu khi thoat
+bool pinBusy = false;            // da gui ma, cho ACK
+PinPurpose pinPurpose = PinPurpose::Enter;
+uint8_t pinDigits[ADV_PIN_DIGITS] = {};
+uint8_t pinFirst[ADV_PIN_DIGITS] = {};
+uint8_t pinPos = 0, pinCur = 0;
+View pinReturnView = View::ChungMenu;
+uint8_t advIndex = 0, advTop = 0;
+uint8_t monPage = 0, profilePage = 0;
+uint8_t histIndex = 0, histPage = 0;
+bool webChoice = false;
+bool techReqShown = false, techDecisionSent = false;
+uint8_t techReqIndex = 0U;
+View techReturnView = View::Home;
+bool advLockWanted = false;
+uint32_t pinBusyAt = 0U, lastAdvDrawAt = 0U;
+uint32_t advKeepAliveAt = 0U, advGraceUntil = 0U;
+// Ban nhap: chi cac thong so NANG CAO da bi nguoi dung sua (bit = chi so SETTINGS). Luu mot lan khi thoat.
+uint64_t advEditedMask = 0U;
+MachineConfig advDraft;
+
+bool advGroup(uint8_t group) { return group == 4U || group == 5U || group == 8U; }
+// Man hinh/nhap dang sua: ban nhap trong phien nang cao, nguoc lai la cau hinh that.
+const MachineConfig &editConfigView() { return (advActive && advGroup(selectedGroup)) ? advDraft : currentConfig; }
+bool viewInAdvanced(View v) {
+  switch (v) {
+    case View::AdvPin: case View::AdvMenu: case View::PidMonitor: case View::ThermalProfile:
+    case View::AdvHistory: case View::AdvHistoryView: case View::WebAccess: case View::TechRequest:
+    case View::AutoTune: return true;
+    case View::SettingList: case View::EditSetting: return advGroup(selectedGroup);
+    case View::Alarm: return advActive && alarmReturnView != View::Alarm && viewInAdvanced(alarmReturnView);
+    case View::TurnStatus: return advActive && turnStatusReturnView != View::TurnStatus && viewInAdvanced(turnStatusReturnView);
+    default: return false;
+  }
+}
+
 HmiCommand commandQueue[COMMAND_QUEUE_SIZE];
 uint8_t commandHead = 0, commandTail = 0, commandCount = 0;
 uint8_t commandOutstandingCount = 0;
@@ -1068,17 +1117,25 @@ const char *mainItemLabel(uint8_t index) {
 
 // Nhom TAO AM la nhom cuoi va chi hien khi HMI da khai bao CO bo tao am.
 // May khong lap phan cung se nhin y nhu truoc khi co tinh nang nay.
+// CAI DAT CHUNG: cac nhom van hanh (NHIET DO, DAO TRUNG, HE THONG, QUAT HUT, TAO AM) roi NANG CAO,
+// CHE DO TEST, THOAT. Nhom 4/5/8 (PID, bao ve nhiet, hieu chuan) chi mo duoc tu NANG CAO.
+constexpr uint8_t CHUNG_GROUP_IDS[] = {1U, 2U, 3U, 6U, 7U};
 uint8_t visibleChungGroupCount() {
-  return currentConfig.humidifierInstalled ?
-      static_cast<uint8_t>(GROUP_COUNT - 1U) :
-      static_cast<uint8_t>(GROUP_COUNT - 2U);
+  return currentConfig.humidifierInstalled ? 5U : 4U;
 }
-uint8_t chungItemCount() { return static_cast<uint8_t>(visibleChungGroupCount() + 2U); }
-uint8_t chungTestIndex() { return visibleChungGroupCount(); }
+uint8_t chungGroupAt(uint8_t index) { return CHUNG_GROUP_IDS[index < 5U ? index : 4U]; }
+uint8_t chungIndexOfGroup(uint8_t group) {
+  for (uint8_t i = 0; i < 5U; ++i) if (CHUNG_GROUP_IDS[i] == group) return i;
+  return 0U;
+}
+uint8_t chungAdvancedIndex() { return visibleChungGroupCount(); }
+uint8_t chungTestIndex() { return static_cast<uint8_t>(visibleChungGroupCount() + 1U); }
+uint8_t chungItemCount() { return static_cast<uint8_t>(visibleChungGroupCount() + 3U); }
 const char *chungItemLabel(uint8_t index) {
   const uint8_t groupCount = visibleChungGroupCount();
-  if (index < groupCount) return GROUPS[index + 1U].label;
-  if (index == groupCount) return "CHE DO TEST";
+  if (index < groupCount) return GROUPS[chungGroupAt(index)].label;
+  if (index == groupCount) return "NANG CAO";
+  if (index == groupCount + 1U) return "CHE DO TEST";
   return "THOAT";
 }
 
@@ -1398,6 +1455,12 @@ void alignChungMenuWindow() {
   chungTop = chungIndex >= 3 ? static_cast<uint8_t>(chungIndex - 3) : 0;
 }
 
+// Dinh nghia ben duoi (muc NANG CAO) - khai bao truoc vi goBack() goi toi.
+void alignAdvMenuWindow();
+void advPinBack();
+void advBeginExit();
+void advOpenPin(PinPurpose purpose);
+
 void goBack() {
   switch (view) {
     case View::Home: break;
@@ -1408,13 +1471,17 @@ void goBack() {
       alignMainMenuWindow();
       break;
     case View::SettingList:
-      if (selectedGroup == 0U) {
+      if (advGroup(selectedGroup)) {
+        view = View::AdvMenu;
+        advIndex = selectedGroup == 4U ? 0U : (selectedGroup == 5U ? 3U : 4U);
+        alignAdvMenuWindow();
+      } else if (selectedGroup == 0U) {
         view = View::MainMenu;
         mainIndex = MAIN_CAI_DAT_ME;
         alignMainMenuWindow();
       } else {
         view = View::ChungMenu;
-        chungIndex = static_cast<uint8_t>(selectedGroup - 1U);
+        chungIndex = chungIndexOfGroup(selectedGroup);
         alignChungMenuWindow();
       }
       break;
@@ -1443,14 +1510,18 @@ void goBack() {
       setListSelection(GROUPS[2U].count, settingListItemCount(2U));
       break;
     case View::AutoTune:
-      // "Tu chinh PID" gio la dong phu cua nhom NHIET DO (khong con la muc
-      // rieng trong ChungMenu) - quay ve dung dong nay trong SettingList.
-      view = View::SettingList;
-      selectedGroup = 1U;  // NHIET DO
-      setListSelection(static_cast<int>(GROUPS[1U].count) +
-                            visibleExtraIndexOf(1U, GroupExtra::AutoTuneEntry),
-                        settingListItemCount(1U));
+      view = View::AdvMenu;
+      advIndex = 1U;
+      alignAdvMenuWindow();
       break;
+    case View::AdvPin: advPinBack(); break;
+    case View::AdvMenu: advBeginExit(); break;
+    case View::PidMonitor: view = View::AdvMenu; advIndex = 2U; alignAdvMenuWindow(); break;
+    case View::ThermalProfile: view = View::AdvMenu; advIndex = 5U; alignAdvMenuWindow(); break;
+    case View::AdvHistory: view = View::AdvMenu; advIndex = 6U; alignAdvMenuWindow(); break;
+    case View::AdvHistoryView: view = View::AdvHistory; break;
+    case View::WebAccess: view = View::AdvMenu; advIndex = 7U; alignAdvMenuWindow(); break;
+    case View::TechRequest: view = techReturnView; break;
     case View::EventLog:
       view = eventLogReturnView;
       if (view == View::MainMenu) {
@@ -1496,6 +1567,7 @@ void goBack() {
 }
 
 void openGroup(uint8_t group) {
+  if (advGroup(group) && !advActive) return;   // chi vao duoc tu NANG CAO
   if (configSave.active) {
     showToast("DANG CHO XAC NHAN LUU", true);
     return;
@@ -1523,8 +1595,10 @@ void openChungMenu() {
 void selectChungItem() {
   const uint8_t groupCount = visibleChungGroupCount();
   if (chungIndex < groupCount) {
-    openGroup(static_cast<uint8_t>(chungIndex + 1U));
+    openGroup(chungGroupAt(chungIndex));
   } else if (chungIndex == groupCount) {
+    advOpenPin(PinPurpose::Enter);     // NANG CAO: luon hoi ma truoc (hoac tao ma lan dau)
+  } else if (chungIndex == groupCount + 1U) {
     // CHE DO TEST - openTestMode() tu kiem tra dieu kien + dat dirty.
     openTestMode();
   } else {
@@ -1586,14 +1660,14 @@ void openSettingIndex(uint8_t settingIndex, View returnView) {
     showToast("DANG AP - THONG SO BI KHOA", true);
     return;
   }
-  if (configSave.active) {
+  if (configSave.active || advSaving) {
     showToast("DANG LUU - VUI LONG CHO", true);
     return;
   }
   const SettingItem &item = SETTINGS[editSettingIndex];
   float minimum, maximum;
-  settingLimits(currentConfig, item, minimum, maximum);
-  editValue = constrain(readSetting(currentConfig, item), minimum, maximum);
+  settingLimits(editConfigView(), item, minimum, maximum);
+  editValue = constrain(readSetting(editConfigView(), item), minimum, maximum);
   view = View::EditSetting;
   dirty = true;
 }
@@ -2161,6 +2235,18 @@ void commitSetting() {
     showToast("DANG AP - KHONG DUOC DOI", true);
     return;
   }
+  if (advActive && advGroup(selectedGroup)) {
+    // NANG CAO: chi ghi vao ban nhap trong RAM; luu mot lan khi thoat (advBeginExit), khong ghi EEPROM khi xoay.
+    const SettingItem &advItem = SETTINGS[editSettingIndex];
+    float lo, hi;
+    settingLimits(advDraft, advItem, lo, hi);
+    writeSetting(advDraft, advItem, constrain(editValue, lo, hi));
+    sanitizeConfig(advDraft);
+    advEditedMask |= static_cast<uint64_t>(1U) << editSettingIndex;
+    view = editReturnView;
+    dirty = true;
+    return;
+  }
   MachineConfig candidate = currentConfig;
   const SettingItem &item = SETTINGS[editSettingIndex];
   float minimum, maximum;
@@ -2210,9 +2296,12 @@ void exitSettingGroup() {
     view = View::MainMenu;
     mainIndex = MAIN_CAI_DAT_ME;
     alignMainMenuWindow();
+  } else if (advGroup(selectedGroup)) {
+    goBack();
+    return;
   } else {
     view = View::ChungMenu;
-    chungIndex = static_cast<uint8_t>(selectedGroup - 1U);
+    chungIndex = chungIndexOfGroup(selectedGroup);
     alignChungMenuWindow();
   }
   dirty = true;
@@ -2400,6 +2489,11 @@ void executeConfirmation(bool accepted) {
       } else {
         view = returnView;
       }
+    } else if (action == ConfirmAction::AdvRestore) {
+      if (queueCommand(HmiCommandType::AdvancedRestore, COMMAND_DEFAULT_VALID_MS, 0, histIndex)) {
+        showToast("DANG KHOI PHUC...");
+      }
+      view = returnView;
     } else if (action == ConfirmAction::FirmwareRollback) {
       // Khong dung man rieng nhu FirmwareProgress (rollback la doi con tro
       // + khoi dong lai gan nhu tuc thi, khong co qua trinh tai % nao de
@@ -2457,6 +2551,355 @@ bool handleInlineConfirmation() {
     }
   }
   return true;
+}
+
+
+// ============================================================
+// NANG CAO: phien ky thuat, nhap ma, luu mot lan khi thoat, ban ghi cu, yeu cau tu Web
+// ============================================================
+constexpr uint8_t ADV_ITEM_COUNT = 10U;
+enum AdvItem : uint8_t { ADV_PID, ADV_TUNE, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_PROFILE, ADV_HISTORY, ADV_WEB, ADV_PINCHG, ADV_EXIT };
+void alignAdvMenuWindow() { advTop = advIndex >= 3U ? static_cast<uint8_t>(advIndex - 3U) : 0U; }
+
+void pinWipe() {
+  for (uint8_t i = 0; i < ADV_PIN_DIGITS; ++i) { pinDigits[i] = 0U; pinFirst[i] = 0U; }
+  pinPos = 0U; pinCur = 0U;
+}
+
+void advOpenPin(PinPurpose purpose) {
+  const TechStatus &t = currentRuntime.tech;
+  if (t.storageError) { showToast("LOI BO NHO MA KY THUAT", true); return; }
+  if (purpose == PinPurpose::Enter && !t.pinSet) purpose = PinPurpose::SetNew;   // lan dau: tao ma
+  if (purpose == PinPurpose::Enter && t.lockRemainingS) {
+    char line[27];
+    snprintf(line, sizeof(line), "BI KHOA CON %us", static_cast<unsigned>(t.lockRemainingS));
+    showToast(line, true);
+    return;
+  }
+  pinWipe();
+  pinBusy = false;
+  pinPurpose = purpose;
+  pinReturnView = advActive ? View::AdvMenu : View::ChungMenu;
+  view = View::AdvPin;
+  armInputGuard();
+  dirty = true;
+}
+
+// Giu phien con song khi nguoi ky thuat dang thao tac; tu khoa o firmware sau 120 s im lang.
+void advSendLock(bool keepAlive) {
+  if (queueCommand(HmiCommandType::TechLock, COMMAND_DEFAULT_VALID_MS, 0, keepAlive ? 1UL : 0UL)) {
+    if (!keepAlive) advLockWanted = false;
+  }
+}
+
+// Ket thuc phien nang cao (khong luu gi): bo ban nhap, khoa lai o firmware.
+void advEnd(bool toChungMenu) {
+  const bool was = advActive;
+  advActive = false;
+  advSaving = false;
+  advEditedMask = 0U;
+  pinWipe();
+  pinBusy = false;
+  if (was) { advLockWanted = true; advSendLock(false); }
+  if (toChungMenu) {
+    view = View::ChungMenu;
+    chungIndex = chungAdvancedIndex();
+    alignChungMenuWindow();
+  }
+  dirty = true;
+}
+
+void advEnter() {
+  advActive = true;
+  advSaving = false;
+  advDraft = currentConfig;
+  advEditedMask = 0U;
+  advIndex = advTop = 0U;
+  advKeepAliveAt = millis();
+  advGraceUntil = advKeepAliveAt + ADV_UNLOCK_GRACE_MS;
+  pinWipe();
+  view = View::AdvMenu;
+  armInputGuard();
+  dirty = true;
+}
+
+// Cau hinh moi cua firmware (Web, AutoTune...) lam moi ban nhap; giu nguyen cac muc nguoi dung da sua.
+void advRebaseDraft() {
+  if (!advActive) return;
+  const MachineConfig edited = advDraft;
+  advDraft = currentConfig;
+  for (uint8_t i = 0; i < SETTING_COUNT; ++i) {
+    if (advEditedMask & (static_cast<uint64_t>(1U) << i)) writeSetting(advDraft, SETTINGS[i], readSetting(edited, SETTINGS[i]));
+  }
+}
+
+// Thoat NANG CAO (giu lau): luu TAT CA thay doi mot lan, khong hoi. Chi roi phien khi firmware xac nhan da luu.
+void advBeginExit() {
+  if (!advActive) { advEnd(true); return; }
+  if (advSaving) return;
+  MachineConfig candidate = currentConfig;
+  bool changed = false;
+  for (uint8_t i = 0; i < SETTING_COUNT; ++i) {
+    if (!(advEditedMask & (static_cast<uint64_t>(1U) << i))) continue;
+    const float want = readSetting(advDraft, SETTINGS[i]);
+    if (fabsf(readSetting(candidate, SETTINGS[i]) - want) < 0.0001f) continue;
+    writeSetting(candidate, SETTINGS[i], want);
+    changed = true;
+  }
+  if (!changed) { advEnd(true); return; }       // khong doi -> khong ghi EEPROM
+  sanitizeConfig(candidate);
+  if (!startConfigSave(candidate)) return;       // dang co giao dich khac: giu phien, thu lai sau
+  advSaving = true;
+  showToast("DANG LUU THAY DOI...");
+  dirty = true;
+}
+
+void advPinBack() {
+  if (pinBusy) return;
+  if (pinPos > 0U) {
+    --pinPos;
+    pinCur = pinDigits[pinPos];
+    pinDigits[pinPos] = 0U;
+  } else if (pinPurpose == PinPurpose::SetConfirm) {
+    pinWipe();
+    pinPurpose = PinPurpose::SetNew;
+  } else {
+    pinWipe();
+    view = pinReturnView;
+    if (view == View::AdvMenu) { advIndex = ADV_PINCHG; alignAdvMenuWindow(); }
+    else { chungIndex = chungAdvancedIndex(); alignChungMenuWindow(); }
+  }
+  dirty = true;
+}
+
+void advPinSubmit() {
+  uint32_t value = 0U;
+  for (uint8_t i = 0; i < ADV_PIN_DIGITS; ++i) value = value * 10U + pinDigits[i];
+  if (pinPurpose == PinPurpose::SetNew) {
+    for (uint8_t i = 0; i < ADV_PIN_DIGITS; ++i) { pinFirst[i] = pinDigits[i]; pinDigits[i] = 0U; }
+    pinPos = 0U; pinCur = 0U;
+    pinPurpose = PinPurpose::SetConfirm;
+    dirty = true;
+    return;
+  }
+  if (pinPurpose == PinPurpose::SetConfirm) {
+    bool equal = true;
+    for (uint8_t i = 0; i < ADV_PIN_DIGITS; ++i) equal = equal && pinFirst[i] == pinDigits[i];
+    if (!equal) {
+      pinWipe();
+      pinPurpose = PinPurpose::SetNew;
+      showToast("MA KHONG KHOP - NHAP LAI", true);
+      buzzerPlayCue(BuzzerCue::Error);
+      dirty = true;
+      return;
+    }
+  }
+  const HmiCommandType type = pinPurpose == PinPurpose::Enter ? HmiCommandType::TechPinVerify : HmiCommandType::TechPinSet;
+  if (queueCommand(type, COMMAND_DEFAULT_VALID_MS, 0, value)) {
+    pinBusy = true;
+    pinBusyAt = millis();
+  } else {
+    pinWipe();
+    if (pinPurpose == PinPurpose::SetConfirm) pinPurpose = PinPurpose::SetNew;
+  }
+  value = 0U;
+  for (uint8_t i = 0; i < ADV_PIN_DIGITS; ++i) pinDigits[i] = 0U;   // chu so khong o lai trong RAM cua HMI
+  dirty = true;
+}
+
+// Ket qua lenh ky thuat tu firmware tong (ACK).
+void onTechAck(HmiCommandType type, bool ok) {
+  if (type == HmiCommandType::TechPinVerify) {
+    pinBusy = false;
+    pinWipe();
+    if (ok && view == View::AdvPin) advEnter();
+    dirty = true;
+  } else if (type == HmiCommandType::TechPinSet) {
+    pinBusy = false;
+    pinWipe();
+    if (view == View::AdvPin) {
+      if (ok) {
+        if (!advActive) advEnter();
+        else { view = View::AdvMenu; advIndex = ADV_PINCHG; alignAdvMenuWindow(); }
+      } else pinPurpose = PinPurpose::SetNew;
+    }
+    dirty = true;
+  } else if (type == HmiCommandType::TechDecision) {
+    techDecisionSent = false;
+  } else if (type == HmiCommandType::AdvancedRestore && ok && advActive) {
+    advEditedMask = 0U;
+    advDraft = currentConfig;     // currentConfig duoc firmware cap nhat ngay sau khoi phuc
+  }
+}
+
+void techDecide(bool approve) {
+  if (techDecisionSent) return;
+  if (queueCommand(HmiCommandType::TechDecision, COMMAND_DEFAULT_VALID_MS, 0, approve ? 1UL : 0UL)) {
+    techDecisionSent = true;
+    showToast(approve ? "DANG KIEM TRA & AP DUNG" : "DA TU CHOI YEU CAU WEB");
+  }
+}
+
+bool techRequestMayOpen() {
+  if (splashActive || confirmationActive()) return false;
+  switch (view) {
+    case View::Alarm: case View::TestMode: case View::TestSummary: case View::WifiChange:
+    case View::FirmwareProgress: case View::TurnStatus: case View::TechRequest: return false;
+    default: return true;
+  }
+}
+
+// Goi moi vong hmiUpdate(): giu/huy phien, mo man yeu cau tu Web, gioi han thoi gian cho ACK.
+void serviceAdvanced(uint32_t now) {
+  const TechStatus &t = currentRuntime.tech;
+  if (pinBusy && now - pinBusyAt > 4000UL) { pinBusy = false; pinWipe(); dirty = true; }
+  if (advLockWanted) advSendLock(false);
+
+  if (t.pendingKind && !techReqShown && techRequestMayOpen()) {
+    techReqShown = true;
+    techDecisionSent = false;
+    techReqIndex = 0U;
+    techReturnView = view;
+    view = View::TechRequest;
+    buzzerPlayCue(BuzzerCue::Ok);
+    dirty = true;
+  } else if (!t.pendingKind) {
+    techReqShown = false;
+    if (view == View::TechRequest) { view = techReturnView; dirty = true; }
+  }
+
+  if (advSaving && !configSave.active) { advSaving = false; showToast("LUU THAT BAI - GIU THAY DOI", true); }
+  if (!advActive) return;
+  if (!viewInAdvanced(view)) { advEnd(false); return; }             // bi dua ra ngoai (het gio, ve Home...)
+  if (!t.hmiUnlocked && timeReached(now, advGraceUntil)) {          // firmware da khoa (het 120 s, khoi dong lai...)
+    advEnd(false);
+    view = View::Home;
+    showToast("MA KY THUAT DA KHOA", true);
+    return;
+  }
+  if (now - advKeepAliveAt >= ADV_KEEPALIVE_MS && now - lastInteractionAt < 90000UL && !advLockWanted) {
+    advKeepAliveAt = now;
+    advSendLock(true);
+  }
+}
+
+const char *advItemLabel(uint8_t i) {
+  switch (i) {
+    case ADV_PID: return "PID / Gia nhiet";
+    case ADV_TUNE: return "Smart AutoTune";
+    case ADV_MONITOR: return "PID Monitor";
+    case ADV_PROTECT: return "Bao ve nhiet";
+    case ADV_CALIB: return "Hieu chuan";
+    case ADV_PROFILE: return "Ho so nhiet";
+    case ADV_HISTORY: return "Ban ghi cu";
+    case ADV_WEB: return currentRuntime.tech.webAllowed ? "Quyen Web: HIEN" : "Quyen Web: AN";
+    case ADV_PINCHG: return "Doi ma ky thuat";
+    default: return "Thoat (luu)";
+  }
+}
+
+void advSelect() {
+  switch (advIndex) {
+    case ADV_PID: openGroup(4U); break;
+    case ADV_PROTECT: openGroup(5U); break;
+    case ADV_CALIB: openGroup(8U); break;
+    case ADV_TUNE: openAutoTuneEntry(); break;
+    case ADV_MONITOR: monPage = 0U; view = View::PidMonitor; dirty = true; break;
+    case ADV_PROFILE: profilePage = 0U; view = View::ThermalProfile; dirty = true; break;
+    case ADV_HISTORY: histIndex = 0U; view = View::AdvHistory; dirty = true; break;
+    case ADV_WEB: webChoice = currentRuntime.tech.webAllowed; view = View::WebAccess; dirty = true; break;
+    case ADV_PINCHG: advOpenPin(PinPurpose::SetNew); break;
+    default: advBeginExit(); break;
+  }
+}
+
+constexpr uint8_t MON_ITEM_COUNT = 18U;     // PID Monitor: muc 0..17
+constexpr uint8_t PROFILE_FIRST = 12U, PROFILE_COUNT = 8U;   // Ho so nhiet: muc 12..19
+// Mot muc thong tin chi-doc (nhan + gia tri). Du lieu lay tu bo dieu khien dang chay, khong co so gia.
+void infoItem(uint8_t i, const char *&label, char *v, size_t n) {
+  const MachineRuntime &r = currentRuntime;
+  const PidMonitorData &m = r.pidMon;
+  const bool ok = m.valid && isfinite(r.temperature);
+  v[0] = '\0';
+  switch (i) {
+    case 0: label = "PV nhiet do"; if (ok) snprintf(v, n, "%.2fC", r.temperature); break;
+    case 1: label = "SP dat"; snprintf(v, n, "%.2fC", currentConfig.targetTemp); break;
+    case 2: label = "Sai so"; if (ok) snprintf(v, n, "%+.2fC", m.error); break;
+    case 3: label = "PID (P+I+D)"; if (ok) snprintf(v, n, "%+.1f%%", m.pidCorrection); break;
+    case 4: label = "Hold FF"; if (ok) snprintf(v, n, "%.1f%%", m.holdFf); break;
+    case 5: label = "Vent FF"; if (ok) snprintf(v, n, "%.1f%%", m.ventFf); break;
+    case 6: label = "Gioi han"; if (ok) snprintf(v, n, "%.0f-%.0f%%", m.limitLo, m.limitHi); break;
+    case 7: label = "Yeu cau cuoi"; if (ok) snprintf(v, n, "%.1f%%", m.requestPct); break;
+    case 8: label = "SSR TB 60s"; if (ok) snprintf(v, n, "%.1f%%", m.actualAvgPct); break;
+    case 9: label = "Kp"; snprintf(v, n, "%.2f", currentConfig.kp); break;
+    case 10: label = "Ki"; snprintf(v, n, "%.3f", currentConfig.ki); break;
+    case 11: label = "Kd"; snprintf(v, n, "%.1f", currentConfig.kd); break;
+    case 12: label = "Tin cay ho so"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%u%%", static_cast<unsigned>(r.thermalConfidence)); break;
+    case 13: label = "Heater gain"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%.3f", r.thermalGain); break;
+    case 14: label = "Heater delay"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%.0fs", r.thermalDelaySec); break;
+    case 15: label = "Coast"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%.2fC", r.thermalCoastC); break;
+    case 16: label = "Hold power"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%.1f%%", r.thermalHoldPct); break;
+    case 17: label = "Vent gain"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%.3f", r.thermalVentGain); break;
+    case 18: {
+      static const char *const learn[] = {"CHUA HOC", "DANG HOC", "DAT", "THICH NGHI", "SUY GIAM"};
+      label = "Trang thai hoc";
+      if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%s", learn[r.thermalLearnState < 5U ? r.thermalLearnState : 0U]);
+      break;
+    }
+    default: label = "Loi du bao"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%.2fC", r.thermalPredictionError); break;
+  }
+  if (!v[0]) snprintf(v, n, "--");
+}
+
+// Truong ky thuat dung chung cho man yeu cau tu Web va man ban ghi cu.
+const char *advFieldLabel(uint8_t f) {
+  static const char *const labels[AdvancedHistory::F_COUNT] = {
+    "Kp", "Ki", "Kd", "Tran CS", "Chu ky PID", "Can bang", "Muc tang TT", "TG k.tang",
+    "Nguong toc do", "Khung toc do", "So lan doi dau", "Khung dao dong", "CS tune", "Bien do tune", "Bu nhiet", "Bu do am"};
+  return f < AdvancedHistory::F_COUNT ? labels[f] : "?";
+}
+void advFieldText(uint8_t f, float value, char *out, size_t n) {
+  if (f == AdvancedHistory::F_ADAPTIVE) snprintf(out, n, "%s", value > 0.5f ? "BAT" : "TAT");
+  else if (AdvancedHistory::FieldLimits[f].integer) snprintf(out, n, "%ld", lroundf(value));
+  else snprintf(out, n, f == AdvancedHistory::F_KI ? "%.3f" : "%.2f", value);
+}
+// Dem va tra ve truong thu `k` (0-based) co bit trong mask.
+int8_t advMaskedField(uint16_t mask, uint8_t k) {
+  for (uint8_t f = 0; f < AdvancedHistory::F_COUNT; ++f) {
+    if (!(mask & (1U << f))) continue;
+    if (k == 0U) return static_cast<int8_t>(f);
+    --k;
+  }
+  return -1;
+}
+uint8_t advMaskCount(uint16_t mask) {
+  uint8_t c = 0U;
+  for (uint8_t f = 0; f < AdvancedHistory::F_COUNT; ++f) if (mask & (1U << f)) ++c;
+  return c;
+}
+uint8_t techReqItemCount() {
+  const TechStatus &t = currentRuntime.tech;
+  return static_cast<uint8_t>((t.pendingKind == 1U ? advMaskCount(t.pendingMask) : 1U) + 2U);
+}
+
+const char *const AUTOTUNE_PHASE_TEXT[] = {
+  "SAN SANG", "LAM NONG", "GIA NHIET", "LAM NGUOI", "KIEM CHUNG", "HOAN THANH", "THAT BAI",
+  "DO NEN", "KICH THICH", "TRUOT NHIET", "KICH THICH 2", "TIEN SAT SV", "GAN SV", "ON DINH", "TINH PID"};
+const char *const AUTOTUNE_REASON_TEXT[] = {
+  "-", "BAO VE NHIET", "LOI CAM BIEN", "DOI CHE DO", "QUA GIO LAM NONG", "QUA GIO GIAI DOAN", "QUA GIO TONG",
+  "KHONG LAP LAI", "BIEN DO NHO", "CHU KY NGAN", "KU KHONG HOP LE", "HE SO SAI", "LOI LUU", "THANH CONG",
+  "THIEU CONG SUAT", "NEN KHONG ON DINH", "KHONG DAP UNG", "MO HINH SAI", "BI GIOI HAN CS",
+  "QUA GIO TIEN SAT", "RELAY THAT BAI", "UNG VIEN SAI", "KIEM CHUNG SAI"};
+const char *autoTunePhaseText(uint8_t p) { return p < sizeof(AUTOTUNE_PHASE_TEXT) / sizeof(AUTOTUNE_PHASE_TEXT[0]) ? AUTOTUNE_PHASE_TEXT[p] : "?"; }
+const char *autoTuneReasonText(uint8_t r) { return r < sizeof(AUTOTUNE_REASON_TEXT) / sizeof(AUTOTUNE_REASON_TEXT[0]) ? AUTOTUNE_REASON_TEXT[r] : "?"; }
+
+void openAdvRestoreConfirm() {
+  confirmAction = ConfirmAction::AdvRestore;
+  confirmReturnView = View::AdvHistory;
+  confirmYes = false;
+  clearToast();
+  armInputGuard();
+  dirty = true;
 }
 
 void handleInput() {
@@ -2525,6 +2968,10 @@ void handleInput() {
       exitSettingGroup();
       return;
     }
+    if (view == View::TechRequest) {      // giu nut = TU CHOI (an toan), khong bao gio la dong y
+      techDecide(false);
+      return;
+    }
     goBack();
     return;
   }
@@ -2566,9 +3013,7 @@ void handleInput() {
         } else if (listIndex < group.count + extraCount) {
           const GroupExtra extra = visibleGroupExtraAt(selectedGroup,
               static_cast<uint8_t>(listIndex - group.count));
-          if (extra == GroupExtra::AutoTuneEntry) {
-            openAutoTuneEntry();
-          } else if (extra == GroupExtra::TurnStats) {
+          if (extra == GroupExtra::TurnStats) {
             view = View::TurnStats;
             dirty = true;
           } else if (extra == GroupExtra::WifiChange) {
@@ -2666,7 +3111,7 @@ void handleInput() {
       const SettingItem &item = SETTINGS[editSettingIndex];
       if (rotary.step) {
         float minimum, maximum;
-        settingLimits(currentConfig, item, minimum, maximum);
+        settingLimits(editConfigView(), item, minimum, maximum);
         editValue = constrain(editValue + rotary.step * item.step, minimum, maximum);
         dirty = true;
       }
@@ -2677,6 +3122,94 @@ void handleInput() {
     case View::TurnStats:
       if (rotary.button == ButtonEvent::ShortPress) goBack();
       break;
+
+    case View::AdvPin:
+      if (pinBusy) { resetRotaryPending(); break; }
+      if (rotary.step) {
+        int v = (static_cast<int>(pinCur) + rotary.step) % 10;
+        if (v < 0) v += 10;
+        pinCur = static_cast<uint8_t>(v);
+        dirty = true;
+      }
+      if (rotary.button == ButtonEvent::ShortPress) {
+        pinDigits[pinPos++] = pinCur;
+        pinCur = 0U;
+        dirty = true;
+        if (pinPos >= ADV_PIN_DIGITS) advPinSubmit();
+      }
+      break;
+
+    case View::AdvMenu:
+      if (advSaving) { resetRotaryPending(); break; }
+      if (rotary.step) {
+        advIndex = static_cast<uint8_t>(constrain(static_cast<int>(advIndex) + rotary.step, 0, ADV_ITEM_COUNT - 1));
+        if (advIndex < advTop) advTop = advIndex;
+        if (advIndex >= advTop + 4U) advTop = static_cast<uint8_t>(advIndex - 3U);
+        dirty = true;
+      }
+      if (rotary.button == ButtonEvent::ShortPress) advSelect();
+      break;
+
+    case View::PidMonitor:
+    case View::ThermalProfile: {
+      const uint8_t count = view == View::PidMonitor ? MON_ITEM_COUNT : PROFILE_COUNT;
+      const uint8_t pages = static_cast<uint8_t>((count + 3U) / 4U);
+      uint8_t &page = view == View::PidMonitor ? monPage : profilePage;
+      if (rotary.step) {
+        int p = (static_cast<int>(page) + rotary.step) % pages;
+        if (p < 0) p += pages;
+        page = static_cast<uint8_t>(p);
+        dirty = true;
+      }
+      if (rotary.button == ButtonEvent::ShortPress) goBack();
+      break;
+    }
+
+    case View::AdvHistory: {
+      const uint8_t count = currentRuntime.tech.historyCount;
+      if (rotary.step) {
+        histIndex = static_cast<uint8_t>(constrain(static_cast<int>(histIndex) + rotary.step, 0, count));   // count = "Thoat"
+        dirty = true;
+      }
+      if (rotary.button == ButtonEvent::ShortPress) {
+        if (histIndex >= count) goBack();
+        else { histPage = 0U; view = View::AdvHistoryView; dirty = true; }
+      }
+      break;
+    }
+
+    case View::AdvHistoryView: {
+      if (rotary.step) {
+        int p = (static_cast<int>(histPage) + rotary.step) % 6;     // 16 truong, 3 dong/trang
+        if (p < 0) p += 6;
+        histPage = static_cast<uint8_t>(p);
+        dirty = true;
+      }
+      if (rotary.button == ButtonEvent::ShortPress) openAdvRestoreConfirm();
+      break;
+    }
+
+    case View::WebAccess:
+      if (rotary.step) { webChoice = !webChoice; dirty = true; }
+      if (rotary.button == ButtonEvent::ShortPress) {
+        if (webChoice == currentRuntime.tech.webAllowed) goBack();
+        else if (queueCommand(HmiCommandType::TechWebSet, COMMAND_DEFAULT_VALID_MS, 0, webChoice ? 1UL : 0UL)) goBack();
+      }
+      break;
+
+    case View::TechRequest: {
+      const uint8_t count = techReqItemCount();
+      if (techReqIndex >= count) techReqIndex = static_cast<uint8_t>(count - 1U);
+      if (rotary.step) {
+        techReqIndex = static_cast<uint8_t>(constrain(static_cast<int>(techReqIndex) + rotary.step, 0, count - 1));
+        dirty = true;
+      }
+      if (rotary.button == ButtonEvent::ShortPress) {
+        if (techReqIndex == count - 2U) techDecide(true);
+        else if (techReqIndex == count - 1U) techDecide(false);
+      }
+      break;
+    }
 
     case View::ConnectionInfo:
       if (rotary.button == ButtonEvent::ShortPress) goBack();
@@ -3410,7 +3943,7 @@ void drawSettingList() {
       const uint8_t settingIndex = GROUP_SETTING_INDEXES[group.first + local];
       const SettingItem &item = SETTINGS[settingIndex];
       if (settingLockedDuringBatch(settingIndex)) snprintf(value, sizeof(value), "KHOA");
-      else formatSettingValue(item, readSetting(currentConfig, item), value, sizeof(value));
+      else formatSettingValue(item, readSetting(editConfigView(), item), value, sizeof(value));
       // Ve GIA TRI truoc (can phai, khong bi ep vao cot cung x=86 nhu truoc),
       // roi moi ve NHAN vao dung phan con lai voi khe ho 4px. Cach cu ep gia
       // tri bat dau tu x=86 co dinh nen nhan dai nhat ("Che do ket noi", ket
@@ -3630,13 +4163,15 @@ const char *autoTuneStateText(AutoTuneState state) {
 
 void drawAutoTune() {
   char text[28];
-  drawHeader("TU CHINH PID", false);
+  drawHeader("SMART AUTOTUNE", false);
   drawCenteredFit(29, autoTuneStateText(currentRuntime.autoTuneState),
                   u8g2_font_helvB12_tf, u8g2_font_6x12_tf, u8g2_font_5x8_tf);
 
   if (currentRuntime.autoTuneState == AutoTuneState::Running) {
-    snprintf(text, sizeof(text), "TIEN DO %u%%",
+    snprintf(text, sizeof(text), "%s %u%%", autoTunePhaseText(currentRuntime.autoTunePhase),
              currentRuntime.autoTuneProgress);
+  } else if (currentRuntime.autoTuneState == AutoTuneState::Failed) {
+    snprintf(text, sizeof(text), "%s", autoTuneReasonText(currentRuntime.autoTuneReason));
   } else if (currentRuntime.batchRunning) {
     snprintf(text, sizeof(text), "HAY DUNG ME TRUOC");
   } else if (!currentRuntime.sensorOnline) {
@@ -4120,6 +4655,166 @@ void drawEventLog() {
 // cuoi man de khong che noi dung, nhung qua nho de doc/de bam nham. Gio thay
 // han noi dung man dang xem (xem render(): bo qua ve view khi dang confirm),
 // nen co the dung het khong gian cho cau hoi + 2 nut CO/HUY to, ro rang.
+
+// ---------------- NANG CAO: man hinh ----------------
+void drawSelectableRow(uint8_t row, bool selected) {
+  const int16_t y = 22 + row * 12;
+  if (selected) {
+    lcd.drawBox(0, y - 9, 128, 11);
+    lcd.setDrawColor(0);
+  }
+}
+void drawAdvPin() {
+  const char *title = pinPurpose == PinPurpose::Enter ? "MA KY THUAT" :
+                      (pinPurpose == PinPurpose::SetNew ? "TAO MA MOI" : "NHAP LAI MA");
+  drawHeader(title, false);
+  for (uint8_t i = 0; i < ADV_PIN_DIGITS; ++i) {
+    const int16_t x = static_cast<int16_t>(8 + i * 30);
+    if (i == pinPos && !pinBusy) {
+      lcd.drawBox(x, 16, 22, 24);
+      lcd.setDrawColor(0);
+      char d[2] = {static_cast<char>('0' + pinCur), '\0'};
+      lcd.setFont(u8g2_font_helvB14_tf);
+      lcd.drawStr(static_cast<int16_t>(x + (22 - lcd.getStrWidth(d)) / 2), 34, d);
+      lcd.setDrawColor(1);
+    } else {
+      lcd.drawFrame(x, 16, 22, 24);
+      if (i < pinPos || pinBusy) lcd.drawDisc(static_cast<int16_t>(x + 11), 28, 3);   // chu so da nhap luon bi che
+    }
+  }
+  lcd.setFont(u8g2_font_5x8_tf);
+  char line[28];
+  if (pinBusy) snprintf(line, sizeof(line), "DANG KIEM TRA...");
+  else if (currentRuntime.tech.lockRemainingS) snprintf(line, sizeof(line), "BI KHOA CON %us", static_cast<unsigned>(currentRuntime.tech.lockRemainingS));
+  else snprintf(line, sizeof(line), "XOAY:SO  NHAN:OK  GIU:LUI");
+  drawCenteredFit(54, line, u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+}
+
+void drawAdvMenu() {
+  drawHeader(advEditedMask ? "NANG CAO *" : "NANG CAO", false);
+  drawListPosition(advIndex, ADV_ITEM_COUNT);
+  lcd.setFont(u8g2_font_6x12_tf);
+  for (uint8_t row = 0; row < 4U && advTop + row < ADV_ITEM_COUNT; ++row) {
+    const uint8_t index = static_cast<uint8_t>(advTop + row);
+    drawSelectableRow(row, index == advIndex);
+    lcd.setFont(u8g2_font_6x12_tf);
+    lcd.drawStr(2, 22 + row * 12, advItemLabel(index));
+    lcd.setDrawColor(1);
+  }
+}
+
+// Trang thong tin chi-doc 4 dong/trang; xoay de doi trang.
+void drawInfoPage(const char *title, uint8_t first, uint8_t count, uint8_t page) {
+  const uint8_t pages = static_cast<uint8_t>((count + 3U) / 4U);
+  drawHeader(title, false);
+  drawListPosition(page, pages);
+  char value[14];
+  for (uint8_t row = 0; row < 4U; ++row) {
+    const uint8_t k = static_cast<uint8_t>(page * 4U + row);
+    if (k >= count) break;
+    const char *label = "";
+    infoItem(static_cast<uint8_t>(first + k), label, value, sizeof(value));
+    const int16_t y = 22 + row * 12;
+    lcd.setFont(u8g2_font_6x12_tf);
+    const int16_t valueX = max(2, 126 - static_cast<int16_t>(lcd.getStrWidth(value)));
+    lcd.drawStr(valueX, y, value);
+    drawLeftFit2(2, y, label, static_cast<int16_t>(valueX - 4), u8g2_font_6x12_tf, u8g2_font_5x8_tf);
+  }
+}
+void drawPidMonitor() { drawInfoPage("PID MONITOR", 0U, MON_ITEM_COUNT, monPage); }
+void drawThermalProfile() { drawInfoPage("HO SO NHIET", PROFILE_FIRST, PROFILE_COUNT, profilePage); }
+
+void drawAdvHistory() {
+  const uint8_t count = currentRuntime.tech.historyCount;
+  drawHeader("BAN GHI CU", false);
+  drawListPosition(histIndex, static_cast<uint8_t>(count + 1U));
+  lcd.setFont(u8g2_font_6x12_tf);
+  if (!count) lcd.drawStr(2, 22, "CHUA CO BAN GHI");
+  for (uint8_t i = 0; i <= count; ++i) {
+    const uint8_t row = static_cast<uint8_t>(count ? i : 1U);
+    drawSelectableRow(row, i == histIndex);
+    char line[24];
+    if (i == count) snprintf(line, sizeof(line), "Thoat");
+    else snprintf(line, sizeof(line), "Ban ghi %u%s", static_cast<unsigned>(i + 1U), i == 0U ? " moi nhat" : (i + 1U == count ? " cu nhat" : ""));
+    lcd.setFont(u8g2_font_6x12_tf);
+    lcd.drawStr(2, 22 + row * 12, line);
+    lcd.setDrawColor(1);
+  }
+}
+
+void drawAdvHistoryView() {
+  char title[14];
+  snprintf(title, sizeof(title), "BAN GHI %u", static_cast<unsigned>(histIndex + 1U));
+  drawHeader(title, false);
+  drawListPosition(histPage, 6U);
+  const AdvancedHistory::Snapshot &rec = currentRuntime.tech.history[histIndex < AdvancedHistory::Slots ? histIndex : 0U];
+  const AdvancedHistory::Snapshot now = AdvancedHistory::fromConfig(currentConfig);
+  char value[14];
+  for (uint8_t row = 0; row < 3U; ++row) {
+    const uint8_t f = static_cast<uint8_t>(histPage * 3U + row);
+    if (f >= AdvancedHistory::F_COUNT) break;
+    const int16_t y = 22 + row * 12;
+    advFieldText(f, AdvancedHistory::fieldValue(rec, f), value, sizeof(value));
+    lcd.setFont(u8g2_font_6x12_tf);
+    const int16_t valueX = max(2, 126 - static_cast<int16_t>(lcd.getStrWidth(value)));
+    lcd.drawStr(valueX, y, value);
+    // "!" = khac cau hinh hien tai (se doi neu khoi phuc)
+    if (AdvancedHistory::fieldValue(rec, f) != AdvancedHistory::fieldValue(now, f)) lcd.drawStr(2, y, "!");
+    drawLeftFit2(10, y, advFieldLabel(f), static_cast<int16_t>(valueX - 4), u8g2_font_6x12_tf, u8g2_font_5x8_tf);
+  }
+  lcd.setFont(u8g2_font_5x8_tf);
+  lcd.drawStr(2, 62, "NHAN:KHOI PHUC  GIU:LUI");
+}
+
+void drawWebAccess() {
+  drawHeader("QUYEN WEB PID", false);
+  drawCenteredFit(24, currentRuntime.tech.webAllowed ? "HIEN TAI: HIEN" : "HIEN TAI: AN",
+                  u8g2_font_6x12_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+  drawCenteredFit(44, webChoice ? "HIEN" : "AN", u8g2_font_helvB14_tf, u8g2_font_helvB12_tf, u8g2_font_6x12_tf);
+  lcd.setFont(u8g2_font_5x8_tf);
+  drawCenteredFit(54, webChoice ? "WEB CAN MA + HMI XAC NHAN" : "WEB KHONG VAO DUOC KY THUAT",
+                  u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+  drawCenteredFit(63, "XOAY:DOI  NHAN:LUU  GIU:LUI", u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+}
+
+void drawTechRequest() {
+  const TechStatus &t = currentRuntime.tech;
+  const uint8_t count = techReqItemCount();
+  if (techReqIndex >= count) techReqIndex = static_cast<uint8_t>(count - 1U);
+  drawHeader("YEU CAU WEB", false);
+  char secs[8];
+  snprintf(secs, sizeof(secs), "%us", static_cast<unsigned>(t.pendingRemainingS));
+  lcd.setFont(u8g2_font_5x8_tf);
+  lcd.drawStr(max(78, 127 - static_cast<int16_t>(lcd.getStrWidth(secs))), 8, secs);
+  const uint8_t top = techReqIndex >= 3U ? static_cast<uint8_t>(techReqIndex - 3U) : 0U;
+  const AdvancedHistory::Snapshot cur = AdvancedHistory::fromConfig(currentConfig);
+  char oldText[12], newText[12], value[26];
+  for (uint8_t row = 0; row < 4U && top + row < count; ++row) {
+    const uint8_t item = static_cast<uint8_t>(top + row);
+    const int16_t y = 22 + row * 12;
+    drawSelectableRow(row, item == techReqIndex);
+    lcd.setFont(u8g2_font_6x12_tf);
+    if (item == count - 2U) {
+      lcd.drawStr(2, y, "CO - AP DUNG");
+    } else if (item == count - 1U) {
+      lcd.drawStr(2, y, "KHONG - TU CHOI");
+    } else if (t.pendingKind == 1U) {
+      const int8_t f = advMaskedField(t.pendingMask, item);
+      if (f >= 0) {
+        advFieldText(static_cast<uint8_t>(f), AdvancedHistory::fieldValue(cur, static_cast<uint8_t>(f)), oldText, sizeof(oldText));
+        advFieldText(static_cast<uint8_t>(f), AdvancedHistory::fieldValue(t.pendingValues, static_cast<uint8_t>(f)), newText, sizeof(newText));
+        snprintf(value, sizeof(value), "%s>%s", oldText, newText);
+        const int16_t valueX = max(2, 126 - static_cast<int16_t>(lcd.getStrWidth(value)));
+        lcd.drawStr(valueX, y, value);
+        drawLeftFit2(2, y, advFieldLabel(static_cast<uint8_t>(f)), static_cast<int16_t>(valueX - 4), u8g2_font_6x12_tf, u8g2_font_5x8_tf);
+      }
+    } else {
+      lcd.drawStr(2, y, "CHAY SMART AUTOTUNE");
+    }
+    lcd.setDrawColor(1);
+  }
+}
+
 void drawConfirmScreen() {
   drawHeader("XAC NHAN");
 
@@ -4137,6 +4832,11 @@ void drawConfirmScreen() {
     line1 = "HUY TU DO PID?";
   } else if (confirmAction == ConfirmAction::TurningToggle) {
     line1 = pendingTurningConfig.turningEnabled ? "BAT DAO TU DONG?" : "TAT DAO TU DONG?";
+  } else if (confirmAction == ConfirmAction::AdvRestore) {
+    static char restoreLine[24];
+    snprintf(restoreLine, sizeof(restoreLine), "BAN GHI %u?", static_cast<unsigned>(histIndex + 1U));
+    line1 = "KHOI PHUC CAU HINH";
+    line2 = restoreLine;
   } else if (confirmAction == ConfirmAction::CloudPinReset) {
     line1 = "DAT LAI MA PIN WEB";
     line2 = "TAO MA 6 SO MOI?";
@@ -4211,8 +4911,10 @@ void render(uint32_t now) {
   const bool periodicSplash = splashActive;
   // No prophylactic reinitialization or duplicate page draws. Static menus
   // stay still; only actual changes/dynamic data and real I2C faults redraw.
+  const bool periodicAdvanced = (view == View::PidMonitor || view == View::ThermalProfile ||
+                                 view == View::TechRequest) && now - lastAdvDrawAt >= ADV_REFRESH_MS;
   const bool periodic = periodicHome || periodicAlarm ||
-                        periodicSplash || periodicFirmwareProgress;
+                        periodicSplash || periodicFirmwareProgress || periodicAdvanced;
   if (!dirty && !periodic) return;
   if (now - lastDrawAt < DISPLAY_MIN_DRAW_MS) return;
 
@@ -4245,6 +4947,14 @@ void render(uint32_t now) {
       case View::ConnectionInfo: drawConnectionInfo(); break;
       case View::QrCode: drawQrCode(); break;
       case View::AutoTune: drawAutoTune(); break;
+      case View::AdvPin: drawAdvPin(); break;
+      case View::AdvMenu: drawAdvMenu(); break;
+      case View::PidMonitor: drawPidMonitor(); break;
+      case View::ThermalProfile: drawThermalProfile(); break;
+      case View::AdvHistory: drawAdvHistory(); break;
+      case View::AdvHistoryView: drawAdvHistoryView(); break;
+      case View::WebAccess: drawWebAccess(); break;
+      case View::TechRequest: drawTechRequest(); break;
       case View::TestMode: drawTestMode(); break;
       case View::TestSummary: drawTestSummary(); break;
       case View::WifiChange: drawWifiChange(); break;
@@ -4284,6 +4994,7 @@ void render(uint32_t now) {
   if (view == View::Home) lastHomeDrawAt = now;
   if (view == View::Alarm) lastAlarmDrawAt = now;
   if (view == View::FirmwareProgress) lastFirmwareProgressDrawAt = now;
+  if (view == View::PidMonitor || view == View::ThermalProfile || view == View::TechRequest) lastAdvDrawAt = now;
 }
 
 // ============================================================
@@ -4562,6 +5273,8 @@ bool runtimeVisibleChanged(const MachineRuntime &before,
     case View::AutoTune:
       return before.autoTuneState != after.autoTuneState ||
              before.autoTuneProgress != after.autoTuneProgress ||
+             before.autoTunePhase != after.autoTunePhase ||
+             before.autoTuneReason != after.autoTuneReason ||
              before.batchRunning != after.batchRunning ||
              before.sensorOnline != after.sensorOnline;
 
@@ -4590,6 +5303,25 @@ bool runtimeVisibleChanged(const MachineRuntime &before,
       return before.wifiPortalState != after.wifiPortalState ||
              fixedTextChanged(before.wifiPortalApName, after.wifiPortalApName,
                               sizeof(before.wifiPortalApName));
+
+    // Man dong: ve lai theo chu ky (periodicAdvanced) thay vi theo tung thay doi nho cua runtime.
+    case View::PidMonitor:
+    case View::ThermalProfile:
+    case View::TechRequest:
+      return false;
+
+    case View::AdvHistory:
+    case View::AdvHistoryView:
+      return before.tech.historyCount != after.tech.historyCount;
+
+    case View::WebAccess:
+      return before.tech.webAllowed != after.tech.webAllowed;
+
+    case View::AdvMenu:
+      return before.tech.webAllowed != after.tech.webAllowed;
+
+    case View::AdvPin:
+      return before.tech.lockRemainingS != after.tech.lockRemainingS;
 
     case View::MainMenu:
     case View::ChungMenu:
@@ -4777,10 +5509,11 @@ void applyHostConfig(MachineConfig config) {
   // Dong bo tu firmware khong duoc tu y day nguoi dung ra khoi trang dang mo.
   // ACK luu se xu ly transaction; mailbox config chi cap nhat gia tri nen.
   currentConfig = config;
+  advRebaseDraft();
   if (view == View::EditSetting && !configSave.active) {
     const SettingItem &item = SETTINGS[editSettingIndex];
     float minimum, maximum;
-    settingLimits(currentConfig, item, minimum, maximum);
+    settingLimits(editConfigView(), item, minimum, maximum);
     editValue = constrain(editValue, minimum, maximum);
   } else if (view == View::SettingList) {
     // groupVisibleExtraCount() (vd Doi wifi/Dat lai PIN/Cap nhat firmware)
@@ -4809,14 +5542,22 @@ void processConfigAck(const ConfigAckInbox &ack) {
   portEXIT_CRITICAL(&hmiApiMux);
   if (!matched) return;
 
+  const bool advTxn = advSaving;
   if (ack.ok) {
     sanitizeConfig(accepted);
     currentConfig = accepted;
     showToast("DA LUU CAU HINH");
     buzzerPlayCue(BuzzerCue::Save);
+    if (advTxn) advEnd(true);           // da luu xong -> khoa lai, ve CAI DAT CHUNG
   } else {
     currentConfig = rollback;
-    showToast("LOI LUU - DA HOAN TAC", true);
+    if (advTxn) {
+      advSaving = false;                // giu nguyen cac thay doi de nguoi dung thu lai
+      advRebaseDraft();
+      showToast("LOI LUU - GIU THAY DOI", true);
+    } else {
+      showToast("LOI LUU - DA HOAN TAC", true);
+    }
     buzzerPlayCue(BuzzerCue::Error);
   }
   dirty = true;
@@ -4857,6 +5598,7 @@ void processCommandAcks() {
     }
     showToast(ack.message[0] ? ack.message :
               (ack.ok ? "LENH DA THUC HIEN" : "LENH BI TU CHOI"), !ack.ok);
+    if (command.type >= HmiCommandType::TechPinVerify) onTechAck(command.type, ack.ok);
 
     // Neu yeu cau mo cong Wi-Fi/vao thu nghiem bi tu choi ngay tai firmware
     // tong, dua nguoi dung tro lai man hinh truoc do thay vi ket ket qua cho.
@@ -5070,6 +5812,7 @@ void hmiUpdate(uint32_t now) {
     lastInteractionAt = now;
   }
 
+  serviceAdvanced(now);
   buzzerUpdate(now);
   if (toastLine[0]) {
     if (confirmationActive()) {
