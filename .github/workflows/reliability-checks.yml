@@ -102,6 +102,9 @@ jobs:
       - name: Smart AutoTune V1 simulation gates (simulation only, physical commissioning required)
         run: python3 tools/test_smart_autotune.py --report-dir /tmp/mayap-smart-autotune-report
 
+      - name: Technical PIN, Web permission, HMI-approved requests and old records (host tests of the real controller code)
+        run: python3 tools/test_tech_access.py --sanitize
+
       - name: Thermal control-only metrics and safety threshold qualification (physical performance unverified)
         uses: actions/upload-artifact@v4
         with:
