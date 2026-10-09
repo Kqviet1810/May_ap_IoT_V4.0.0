@@ -445,7 +445,11 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
   tech["pending"] = rt.tech.pendingKind;          // 0 none, 1 config, 2 Smart AutoTune: waiting for the HMI
   tech["pendingS"] = rt.tech.pendingRemainingS;
   tech["result"] = static_cast<uint8_t>(rt.tech.resultState);
-  tech["resultId"] = rt.tech.resultId;
+  {
+    MayapTech::Detail detail;
+    MayapTech::readDetail(detail);
+    tech["resultId"] = detail.resultId;
+  }
   // Smart AutoTune progress for the Web: stage, result and the reason a candidate was refused (names are resolved by the Web).
   r["autoTunePhase"] = rt.autoTunePhase;
   r["autoTuneReason"] = rt.autoTuneReason;
@@ -453,7 +457,7 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
   // PID monitor numbers only while a Web client asked for them (lease flag "mon"): one extra ~200 B object at the lease cadence.
   if (monitorWanted(millis())) {
     JsonObject m = r["pidMon"].to<JsonObject>();
-    m["sp"] = rt.temperature - rt.pidMon.error;
+    m["sp"] = rt.temperature + rt.pidMon.error;      // error = SP - PV
     m["err"] = rt.pidMon.error;
     m["corr"] = rt.pidMon.pidCorrection;
     m["hold"] = rt.pidMon.holdFf;

@@ -4980,14 +4980,18 @@ class MachineController {
     t.lockRemainingS = static_cast<uint16_t>(std::min<uint32_t>(65535UL, (techGate_.lockRemainingMs(now) + 999UL) / 1000UL));
     t.webSessionRemainingS = static_cast<uint16_t>(std::min<uint32_t>(65535UL, techGate_.webRemainingMs(now) / 1000UL));
     t.historyCount = historyCount_;
-    for (uint8_t i = 0; i < AdvancedHistory::Slots; ++i) t.history[i] = historyCache_[i];
     t.pendingKind = static_cast<uint8_t>(techPending_.kind);
     t.pendingMask = techPending_.mask;
-    t.pendingValues = techPending_.values;
     t.pendingRemainingS = techPending_.kind == MayapTech::Kind::None ? 0U : static_cast<uint8_t>(std::min<uint32_t>(
         255UL, (timeReached(now, techPending_.deadline) ? 0UL : static_cast<uint32_t>(techPending_.deadline - now)) / 1000UL));
     t.resultState = techResult_;
-    snprintf(t.resultId, sizeof(t.resultId), "%s", techResultId_);
+    // Heavy parts go to the single shared copy (HMI list / requested values / request id), not into every runtime mailbox.
+    MayapTech::Detail detail;
+    detail.historyCount = historyCount_;
+    for (uint8_t i = 0; i < AdvancedHistory::Slots; ++i) detail.history[i] = historyCache_[i];
+    detail.pending = techPending_.values;
+    snprintf(detail.resultId, sizeof(detail.resultId), "%s", techResultId_);
+    MayapTech::publishDetail(detail);
   }
   // Read-only PID monitor. Numbers come from the controller that is running; the 60 s mean is of the arbiter's REAL SSR state.
   void publishPidMonitor(uint32_t now) {

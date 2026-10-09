@@ -1206,11 +1206,10 @@ struct TechStatus {
   uint8_t pendingKind = 0;            // 0 none, 1 config change, 2 Smart AutoTune
   uint8_t pendingRemainingS = 0;      // of the 60 s the HMI has to answer
   uint16_t pendingMask = 0;           // which snapshot fields the Web asked to change
-  AdvancedHistory::Snapshot pendingValues;
   uint8_t historyCount = 0;           // advanced-config records available on the HMI (0..3)
-  AdvancedHistory::Snapshot history[AdvancedHistory::Slots];   // cached copies for the HMI list (rank 0 = newest); never the Web
   TechResult resultState = TechResult::None;   // outcome of the last Web technical request
-  char resultId[40] = "";
+  // The heavy parts (old-record snapshots, requested values, request id) live in MayapTech::Detail (tech_request.h):
+  // MachineRuntime is copied into many static mailboxes, so it only carries scalars.
 };
 // Read-only PID monitor. Every figure comes from the running controller (nothing is simulated); feed-forward is reported once.
 struct PidMonitorData {

@@ -8,6 +8,7 @@
 */
 
 #include "config.h"
+#include "tech_request.h"
 #include "boot_diagnostic.h"
 #include "boot_assets.h"
 #include <Arduino.h>
@@ -4747,7 +4748,9 @@ void drawAdvHistoryView() {
   snprintf(title, sizeof(title), "BAN GHI %u", static_cast<unsigned>(histIndex + 1U));
   drawHeader(title, false);
   drawListPosition(histPage, 6U);
-  const AdvancedHistory::Snapshot &rec = currentRuntime.tech.history[histIndex < AdvancedHistory::Slots ? histIndex : 0U];
+  MayapTech::Detail detail;
+  MayapTech::readDetail(detail);
+  const AdvancedHistory::Snapshot &rec = detail.history[histIndex < AdvancedHistory::Slots ? histIndex : 0U];
   const AdvancedHistory::Snapshot now = AdvancedHistory::fromConfig(currentConfig);
   char value[14];
   for (uint8_t row = 0; row < 3U; ++row) {
@@ -4788,6 +4791,8 @@ void drawTechRequest() {
   lcd.drawStr(max(78, 127 - static_cast<int16_t>(lcd.getStrWidth(secs))), 8, secs);
   const uint8_t top = techReqIndex >= 3U ? static_cast<uint8_t>(techReqIndex - 3U) : 0U;
   const AdvancedHistory::Snapshot cur = AdvancedHistory::fromConfig(currentConfig);
+  MayapTech::Detail detail;
+  MayapTech::readDetail(detail);
   char oldText[12], newText[12], value[26];
   for (uint8_t row = 0; row < 4U && top + row < count; ++row) {
     const uint8_t item = static_cast<uint8_t>(top + row);
@@ -4802,7 +4807,7 @@ void drawTechRequest() {
       const int8_t f = advMaskedField(t.pendingMask, item);
       if (f >= 0) {
         advFieldText(static_cast<uint8_t>(f), AdvancedHistory::fieldValue(cur, static_cast<uint8_t>(f)), oldText, sizeof(oldText));
-        advFieldText(static_cast<uint8_t>(f), AdvancedHistory::fieldValue(t.pendingValues, static_cast<uint8_t>(f)), newText, sizeof(newText));
+        advFieldText(static_cast<uint8_t>(f), AdvancedHistory::fieldValue(detail.pending, static_cast<uint8_t>(f)), newText, sizeof(newText));
         snprintf(value, sizeof(value), "%s>%s", oldText, newText);
         const int16_t valueX = max(2, 126 - static_cast<int16_t>(lcd.getStrWidth(value)));
         lcd.drawStr(valueX, y, value);

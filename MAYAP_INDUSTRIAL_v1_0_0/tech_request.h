@@ -47,4 +47,27 @@ inline void discard() {
   portEXIT_CRITICAL(&stagedMux());
 }
 
+
+// Heavy technical details for the HMI / Web. They are NOT part of MachineRuntime (which is copied into ~8 static mailboxes);
+// the controller publishes ONE copy here and the HMI / bridge read it only while they need it.
+struct Detail {
+  uint8_t historyCount = 0;
+  AdvancedHistory::Snapshot history[AdvancedHistory::Slots];   // rank 0 = newest; HMI only, the Web never reads it
+  AdvancedHistory::Snapshot pending;                           // values the Web asked for (full snapshot with the request applied)
+  char resultId[RequestIdCapacity] = "";                       // requestId of the last Web technical request
+};
+inline Detail &sharedDetail() { static Detail d; return d; }
+inline portMUX_TYPE &detailMux() { static portMUX_TYPE m = portMUX_INITIALIZER_UNLOCKED; return m; }
+// Controller side: copy only when something changed (nothing is written while the HMI/Web are idle).
+inline void publishDetail(const Detail &next) {
+  portENTER_CRITICAL(&detailMux());
+  if (memcmp(&sharedDetail(), &next, sizeof(Detail)) != 0) sharedDetail() = next;
+  portEXIT_CRITICAL(&detailMux());
+}
+inline void readDetail(Detail &out) {
+  portENTER_CRITICAL(&detailMux());
+  out = sharedDetail();
+  portEXIT_CRITICAL(&detailMux());
+}
+
 }  // namespace MayapTech
