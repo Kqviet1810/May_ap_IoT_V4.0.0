@@ -33,25 +33,6 @@ int main() {
   assert(wrap.update(5U, true, 0xFFFFFFF0U, 0, 60000) == Action::None);
   assert(silence(5U, 0xFFFFFFF0U) == 21U);
   assert(wrap.update(60022U, true, 0xFFFFFFF0U, 0, 60000) == Action::Reinit);      // genuinely silent for 60.032 s
-  WifiRecovery wifi;
-  for (unsigned i = 0; i < 5; ++i) wifi.failure(100);
-  assert(!wifi.wanted(100));
-  wifi.failure(100);
-  assert(wifi.wanted(100));
-  wifi.started(100);
-  assert(!wifi.wanted(100 + WIFI_OFFLINE_MS));
-  for (unsigned i = 0; i < 6; ++i) wifi.failure(101);
-  assert(!wifi.wanted(120099));
-  assert(wifi.wanted(120100));
-  wifi.started(120100);
-  assert(!wifi.isolate());
-  wifi.started(240100);
-  assert(wifi.isolate());
-  wifi.success(240101);
-  assert(!wifi.isolate() && !wifi.wanted(1000000));
-  WifiRecovery longOutage;
-  longOutage.offline(0xFFFFFF00U);
-  assert(!longOutage.wanted(0xFFFFFF00U + WIFI_OFFLINE_MS - 1U));
-  assert(longOutage.wanted(0xFFFFFF00U + WIFI_OFFLINE_MS));
+  // Wi-Fi escalation (6 failures / 5 min outage / cooldown) moved into wifi_fsm.h: tests/wifi-fsm.cpp.
   std::puts("Runtime policy: online services reinit/isolate/degrade without controller restart PASS");
 }

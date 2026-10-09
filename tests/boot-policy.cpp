@@ -104,5 +104,19 @@ int main() {
     flow.advance(190000U); assert(flow.stage() == Stage::Running);
     flow.advance(200000U); assert(flow.stage() == Stage::Running);
   }
+  // Level 0 starts the radio tasks 1.5 s after the local tasks are healthy; crash-loop levels keep their long, conservative waits.
+  { Sequencer f; f.begin(0U, 0U);
+    assert(f.networkDelay() == 1500U && f.serviceGap() == 250U);
+    Sequencer g; g.begin(3U, 0U); assert(g.networkDelay() == 45000U && g.serviceGap() == 3000U); }
+  // Home gate: valid stable sensor + local safety, else diagnostic after 30 s (never "ready").
+  { LocalInputs ok; ok.tasksHealthy = ok.displayHealthy = ok.sensorUsable = ok.temperatureFinite = true; ok.sensorBootReason = 0U;
+    LocalInputs bad = ok; bad.sensorUsable = false; bad.sensorBootReason = 1U;
+    HomeGate g; g.begin(500U);
+    assert(g.update(1000U, bad) == HomeGate::Phase::Waiting && g.reason() == BlockReason::SensorNoResponse && blockCode(g.reason()) == 101U);
+    assert(g.update(30499U, bad) == HomeGate::Phase::Waiting);
+    assert(g.update(30500U, bad) == HomeGate::Phase::Diagnostic);
+    assert(g.update(31000U, ok) == HomeGate::Phase::Diagnostic);                     // must hold READY_HOLD_MS first
+    assert(g.update(31000U + READY_HOLD_MS, ok) == HomeGate::Phase::Ready);
+    assert(g.update(99999U, bad) == HomeGate::Phase::Ready); }                       // a later sensor loss is an alarm, not a boot problem
   puts("boot policy: reset classification, L0-L3, offline admission, stability and rollover PASS");
 }

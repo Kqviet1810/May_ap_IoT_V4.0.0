@@ -16,6 +16,12 @@ static volatile uint32_t currentStage = 0U;
 static volatile uint8_t homeReleased = 0U;
 static volatile uint8_t operationsReady = 0U;
 static volatile uint8_t readyStatus = 0U;
+// Boot diagnostic screen (shown instead of the logo when the Home gate is still closed 30 s after power-up).
+static volatile uint8_t diagActive = 0U;
+static volatile uint16_t diagCode = 0U;
+static volatile uint8_t diagReason = 0U;
+static volatile uint32_t diagAgeMs = 0U;
+static volatile uint8_t homeRequested = 0U;
 
 inline void persistUnlocked() {
   ++diagnostic.sequence;
@@ -39,6 +45,8 @@ inline void mayapBootDiagnosticBegin() {
   __atomic_store_n(&MayapBootInternal::homeReleased, 0U, __ATOMIC_RELEASE);
   __atomic_store_n(&MayapBootInternal::operationsReady, 0U, __ATOMIC_RELEASE);
   __atomic_store_n(&MayapBootInternal::readyStatus, 0U, __ATOMIC_RELEASE);
+  __atomic_store_n(&MayapBootInternal::diagActive, 0U, __ATOMIC_RELEASE);
+  __atomic_store_n(&MayapBootInternal::homeRequested, 0U, __ATOMIC_RELEASE);
   using namespace MayapBoot;
   const esp_reset_reason_t reason = esp_reset_reason();
   const ResetKind kind = reason == ESP_RST_POWERON ? ResetKind::PowerOn :
@@ -110,6 +118,23 @@ inline bool mayapBootOperationsReady() {
 inline void mayapBootAcknowledgeHomeFrame() {
   __atomic_store_n(&MayapBootInternal::operationsReady, 1U, __ATOMIC_RELEASE);
 }
+// Coordinator -> HMI: the gate is still closed after the 30 s deadline; show WHY (code + reason), never "ready".
+inline void mayapBootPublishDiagnostic(uint16_t code, MayapBoot::BlockReason reason, uint32_t ageMs) {
+  __atomic_store_n(&MayapBootInternal::diagCode, code, __ATOMIC_RELEASE);
+  __atomic_store_n(&MayapBootInternal::diagReason, static_cast<uint8_t>(reason), __ATOMIC_RELEASE);
+  __atomic_store_n(&MayapBootInternal::diagAgeMs, ageMs, __ATOMIC_RELEASE);
+  __atomic_store_n(&MayapBootInternal::diagActive, 1U, __ATOMIC_RELEASE);
+}
+inline void mayapBootClearDiagnostic() { __atomic_store_n(&MayapBootInternal::diagActive, 0U, __ATOMIC_RELEASE); }
+inline bool mayapBootDiagnosticActive() { return __atomic_load_n(&MayapBootInternal::diagActive, __ATOMIC_ACQUIRE) != 0U; }
+inline uint16_t mayapBootDiagnosticCode() { return __atomic_load_n(&MayapBootInternal::diagCode, __ATOMIC_ACQUIRE); }
+inline MayapBoot::BlockReason mayapBootDiagnosticReason() {
+  return static_cast<MayapBoot::BlockReason>(__atomic_load_n(&MayapBootInternal::diagReason, __ATOMIC_ACQUIRE));
+}
+inline uint32_t mayapBootDiagnosticAgeMs() { return __atomic_load_n(&MayapBootInternal::diagAgeMs, __ATOMIC_ACQUIRE); }
+// Operator pressed the button on the diagnostic screen: continue to Home (alarms there still show the real fault).
+inline void mayapBootRequestHome() { __atomic_store_n(&MayapBootInternal::homeRequested, 1U, __ATOMIC_RELEASE); }
+inline bool mayapBootHomeRequested() { return __atomic_load_n(&MayapBootInternal::homeRequested, __ATOMIC_ACQUIRE) != 0U; }
 inline void mayapBootShowReady() {
   __atomic_store_n(&MayapBootInternal::readyStatus, 1U, __ATOMIC_RELEASE);
 }

@@ -53,7 +53,7 @@ test('Home and boot success depend on local stability, never server connectivity
   assert.match(stability, /sensorHealthy/);
   assert.match(stability, /displayHealthy/);
   assert.match(body(ino, 'static bool localTasksHealthy('), /supervisorHeartbeatMs/);
-  assert.match(hmi, /mayapBootHomeReleased\(\) \|\| elapsed >= SPLASH_MAX_MS/);
+  assert.match(hmi, /mayapBootHomeReleased\(\) \|\| \(!mayapBootDiagnosticActive\(\) && elapsed >= SPLASH_MAX_MS\)/);
 });
 
 test('Supervisor admission gates retain fatal thresholds and persist reason before TWDT fallback', () => {
@@ -86,4 +86,53 @@ test('LCD splash renders centered logo and only three dots as requested', () => 
   assert.doesNotMatch(splash, /drawStr|drawCenteredText|drawHeader|drawToast/);
   const assets = read(dir + 'boot_assets.h');
   assert.doesNotMatch(assets, /bootStatusBits|bootStatus[0-7]/);
+});
+
+test('Home is released only by the local gate: valid stable sensor + every local safety condition, else a 30 s diagnostic', () => {
+  const stability = body(ino, 'static void updateBootStability(');
+  assert.match(stability, /homeGate\.update\(now, in\)/);
+  for (const field of ['tasksHealthy', 'displayHealthy', 'storageBlocked', 'tripLatched', 'sensorUsable', 'sensorBootReason'])
+    assert.match(stability, new RegExp(`in\\.${field}`), field);
+  // the old "tasks stable for N ms" Home rule is gone: Home needs the gate
+  assert.doesNotMatch(stability, /localTaskStability\.held\(now, homeDelay\)/);
+  assert.equal((ino.match(/mayapBootReleaseHome\(\)/g) || []).length, 1);
+  assert.match(stability, /Phase::Diagnostic[\s\S]*mayapBootPublishDiagnostic\(MayapBoot::blockCode\(why\), why, homeGate\.age\(now\)\)/);
+  // a diagnostic is never reported as ready: the operator override does not call mayapBootShowReady()
+  const override = stability.slice(stability.indexOf('mayapBootHomeRequested()'), stability.indexOf('} else {', stability.indexOf('mayapBootHomeRequested()')));
+  assert.doesNotMatch(override, /mayapBootShowReady/);
+  const policy = read(dir + 'boot_policy.h');
+  assert.match(policy, /BOOT_DEADLINE_MS = 30000U/);
+  assert.match(policy, /READY_HOLD_MS = 1500U/);
+  // the control task publishes the verdicts the gate reads (no struct shared across tasks)
+  const control = body(ino, 'void controlTask(');
+  for (const v of ['bootSensorUsable', 'bootSensorReason', 'bootStorageBlocked']) assert.ok(control.includes(v), v);
+  // HMI: input on the diagnostic screen is only "continue"; nothing else is accepted during the splash
+  assert.match(body(hmi, 'void handleInput()'), /mayapBootDiagnosticActive\(\) && rotary\.button == ButtonEvent::ShortPress\) mayapBootRequestHome\(\)/);
+  assert.match(read(dir + 'config.h'), /SENSOR_RECOVERY_GOOD_SAMPLES = 3UL/);   // the simulation's "usable" rule mirrors this constant
+});
+
+test('Wi-Fi has one decision-maker; MQTT, Cloud and OTA can never touch the radio; power mode stays PERFORMANCE', () => {
+  const net = read(dir + 'network_service.h');
+  assert.match(net, /#include "wifi_fsm\.h"/);
+  assert.match(body(net, 'inline void mayapNetworkUpdate('), /wifiFsm\.update\(now, associated, staDisconnectAt, wifiJitterMs\(\)\)/);
+  assert.doesNotMatch(net, /staBackoff|deepPolicy|mayapRequestWifiDeepRecovery|DeepPhase::Isolated/);
+  assert.doesNotMatch(ino, /mayapRequestWifiDeepRecovery/);
+  // the heavy owner-drain transaction starts for exactly two reasons
+  const deep = body(net, 'inline bool mayapNetworkDeepRecoveryUpdate(');
+  assert.match(deep, /wifiFsm\.state\(\) != MayapNetwork::WifiState::Recovery\) return false/);
+  assert.match(deep, /explicitStop/);
+  // no MQTT / Cloud / OTA source can call the Wi-Fi driver or the recovery machinery
+  for (const file of ['mqtt_transport.h', 'mqtt_uplink.h', 'mqtt_ws.h', 'mqtt_wire.h', 'transaction_bridge.h', 'cloud_alert_link.h', 'ota_web_update.h']) {
+    const source = read(dir + file).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    assert.doesNotMatch(source, /\bWiFi\.(begin|reconnect|disconnect|mode|setSleep|setAutoReconnect)\b|esp_wifi_(stop|start|connect|disconnect|restore|deinit|set_ps)|wifiFsm|mayapRadioQuiesceBegin\(/, file);
+  }
+  // the station is (re)started in exactly these places
+  const netCode = net.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const connectSites = [...netCode.matchAll(/WiFi\.(?:begin|reconnect)\(/g)].length;
+  assert.equal(connectSites, 6, 'station start (1) + portal test (1) + RECOVERY (2) + light reconnect (2)');
+  // PERFORMANCE: modem sleep stays behind MAYAP_WIFI_ECO (default 0); nothing else sets a power-save mode
+  assert.match(read(dir + 'wifi_power_policy.h'), /#define MAYAP_WIFI_ECO 0/);
+  assert.equal([...net.matchAll(/esp_wifi_set_ps\(/g)].length, 1);
+  for (const file of fs.readdirSync(path.resolve(__dirname, '..', dir)).filter((f) => /\.(h|ino)$/.test(f)))
+    if (file !== 'network_service.h') assert.doesNotMatch(read(dir + file), /esp_wifi_set_ps|WiFi\.setSleep/, file);
 });

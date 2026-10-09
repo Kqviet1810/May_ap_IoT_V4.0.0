@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <initializer_list>
 #include "../MAYAP_INDUSTRIAL_v1_0_0/runtime_recovery_policy.h"
+#include "../MAYAP_INDUSTRIAL_v1_0_0/wifi_fsm.h"
 static uint32_t clockMs=1;
 uint32_t millis() { return clockMs; }
 void mayapSerialPrintf(bool, const char *, ...) {}
@@ -37,23 +38,22 @@ struct FakeWifi {
   bool reconnect() { assert(mayapOnlineOwnersDrained()); ++reconnects; return reconnectResult; }
   bool begin(const char *, const char *) { assert(mayapOnlineOwnersDrained()); ++begins; return true; }
 } WiFi;
+constexpr uint32_t BACKOFF_STEPS_MS[]={1000UL,2000UL,4000UL,8000UL,16000UL,30000UL,60000UL};
+constexpr uint8_t BACKOFF_STEP_COUNT=7;
 namespace MayapNetworkInternal {
-static MayapRecovery::WifiRecovery deepPolicy;
-enum class DeepPhase : uint8_t { Idle, Quiesce, OffWait, Isolated };
+// The REAL decision logic (wifi_fsm.h): the extracted transaction below must only ever run because this FSM says RECOVERY (or an
+// explicit radio stop), never because of anything else.
+static MayapNetwork::WifiFsmConfig fsmConfig(){MayapNetwork::WifiFsmConfig c;c.recoveryCooldownMs=MayapRecovery::WIFI_COOLDOWN_MS;c.recoveryAfterOutageMs=MayapRecovery::WIFI_OFFLINE_MS;return c;}
+static MayapNetwork::WifiFsm wifiFsm(BACKOFF_STEPS_MS,BACKOFF_STEP_COUNT,fsmConfig());
+enum class DeepPhase : uint8_t { Idle, Quiesce, OffWait };
 static DeepPhase deepPhase=DeepPhase::Idle;
-static uint32_t deepPhaseAt=0, connectionStartedAt=0;
+static uint32_t connectionStartedAt=0;
 static volatile uint32_t staDisconnectAt=0U;
-static bool deepRequested=false, radioActive=true;
+static bool radioActive=true;
 static bool wifiPowerModeAppliedValid=false;
 static uint8_t requestedMode=static_cast<uint8_t>(ConnectivityMode::Online);
 static char activeSsid[33]="test";
 static char activePassword[65]="pass";
-struct Backoff {
-  unsigned failures=0;
-  void reset(uint32_t) {}
-  void onFailure(uint32_t) { ++failures; }
-  void onSuccess() {}
-} staBackoff;
 bool credentialsConfigured() { return configured; }
 void publish(NetworkStateCode, bool connected) { assert(!connected); }
 void stopRadio() {
@@ -85,6 +85,22 @@ bool saveCredentials(const char*,const char*){return true;}
 void portalBeginStarting(uint32_t now){assert(mayapOnlineOwnersDrained());portalListeners=3;portalPhase=PortalPhase::ApActive;portalOpenedAt=now;}
 void serviceStarting(uint32_t){}
 #include "actual-portal.inc"
+}
+// Drive the real FSM into RECOVERY exactly as production does: failed attempts (12 s each) and the ladder, until it says Recover
+// (six failures, or a five-minute outage, whichever comes first).
+static void enterRecovery(){
+ using namespace MayapNetworkInternal;
+ wifiFsm=MayapNetwork::WifiFsm(BACKOFF_STEPS_MS,BACKOFF_STEP_COUNT,fsmConfig());
+ wifiFsm.reset(clockMs);
+ MayapNetwork::WifiAction a=MayapNetwork::WifiAction::None;
+ for(int i=0;i<10 && a!=MayapNetwork::WifiAction::Recover;i++){
+  a=wifiFsm.update(clockMs,false,0,0);
+  if(a==MayapNetwork::WifiAction::Recover)break;
+  assert(a==MayapNetwork::WifiAction::Begin);wifiFsm.attemptStarted(clockMs);
+  clockMs+=12000;assert(wifiFsm.update(clockMs,false,0,0)==MayapNetwork::WifiAction::None);
+  clockMs+=61000;
+ }
+ assert(a==MayapNetwork::WifiAction::Recover&&wifiFsm.state()==MayapNetwork::WifiState::Recovery);
 }
 void quietAll(){
  mayapSetRadioOtaQuiesced(true);
@@ -122,21 +138,26 @@ void testPortal(){
 void testLongOutage(){
  using namespace MayapNetworkInternal;
  portal=false;configured=true;requestedMode=static_cast<uint8_t>(ConnectivityMode::Online);radioActive=true;
- WiFi.reconnectResult=false;deepPolicy=MayapRecovery::WifiRecovery{};deepPhase=DeepPhase::Idle;
- const unsigned outageAttempts=WiFi.reconnects, radioOffs=WiFi.off;
+ WiFi.reconnectResult=false;deepPhase=DeepPhase::Idle;
+ wifiFsm=MayapNetwork::WifiFsm(BACKOFF_STEPS_MS,BACKOFF_STEP_COUNT,fsmConfig());wifiFsm.reset(clockMs);
+ const unsigned heavy0=WiFi.reconnects, radioOffs=WiFi.off;
+ unsigned light=0;
  for(uint32_t t=0;t<12U*3600000U;t+=250U){
   clockMs+=250; // virtual network trace, not a physical control timing claim
-  mayapRequestWifiDeepRecovery();mayapNetworkDeepRecoveryUpdate(clockMs,false);
-  quietAll();mayapNetworkDeepRecoveryUpdate(clockMs,false);
+  // networkTask order: the owner-drain transaction first, then the FSM decision (Wi-Fi facts only: never associated here).
+  mayapNetworkDeepRecoveryUpdate(clockMs,false);quietAll();mayapNetworkDeepRecoveryUpdate(clockMs,false);
+  const MayapNetwork::WifiAction a=wifiFsm.update(clockMs,false,0,0);
+  if(a==MayapNetwork::WifiAction::Begin){++light;wifiFsm.attemptStarted(clockMs);}   // plain reconnect: never touches the drain path
   for(uint8_t i=0;i<4;i++)mayapServiceBeat(static_cast<MayapRecovery::Service>(i));
   mayapServiceSupervisorUpdate(clockMs);
  }
- assert(WiFi.off==radioOffs);
- assert(WiFi.reconnects>outageAttempts);
- assert(WiFi.reconnects-outageAttempts<=1U+12U*3600000U/MayapRecovery::WIFI_COOLDOWN_MS);
+ assert(WiFi.off==radioOffs);                                    // the driver is never switched off/on by recovery
+ const unsigned heavy=WiFi.reconnects-heavy0;
+ assert(heavy>0 && heavy<=2U+12U*3600000U/MayapRecovery::WIFI_OFFLINE_MS);   // heavy path: at most one per 5 min of continuous outage
+ assert(light>heavy*3U && light<=12U*3600000U/12000U);           // light attempts are the common case, bounded by connect timeout + ladder
  // An owner stuck in an active TLS operation cannot be falsely drained.
- deepPhase=DeepPhase::Idle;deepPolicy=MayapRecovery::WifiRecovery{};mayapRadioQuiesceEnd();
- assert(mayapOnlineIoEnter(MayapRecovery::Service::Mqtt));mayapRequestWifiDeepRecovery();
+ deepPhase=DeepPhase::Idle;mayapRadioQuiesceEnd();
+ assert(mayapOnlineIoEnter(MayapRecovery::Service::Mqtt));enterRecovery();
  assert(mayapNetworkDeepRecoveryUpdate(++clockMs,false));quietAll();
  const unsigned before=WiFi.reconnects;
  for(unsigned i=0;i<1000;i++){clockMs+=1000;assert(mayapNetworkDeepRecoveryUpdate(clockMs,false));mayapServiceSupervisorUpdate(clockMs);}
@@ -163,7 +184,9 @@ int main() {
   assert(mayapServiceDegradedMask()==0U);
 
   mayapSetRadioOtaQuiesced(false);
-  mayapRequestWifiDeepRecovery();
+  assert(!mayapNetworkDeepRecoveryUpdate(clockMs,false));       // FSM not in RECOVERY: no owner is disturbed
+  assert(!mayapRadioRecoveryRequested() && WiFi.reconnects==0);
+  enterRecovery();
   assert(mayapNetworkDeepRecoveryUpdate(clockMs,false));
   assert(mayapRadioRecoveryRequested() && WiFi.off==0 && WiFi.reconnects==0);
   assert(mayapNetworkDeepRecoveryUpdate(++clockMs,true));
@@ -175,12 +198,11 @@ int main() {
   assert(WiFi.reconnects==1 && WiFi.off==0 && WiFi.disconnects==0);
   assert(!mayapRadioRecoveryRequested());
 
-  mayapRequestWifiDeepRecovery();
+  // After a recovery the FSM leaves RECOVERY: nothing else may start the transaction again (no external trigger exists).
   mayapOnlineOwnerQuiet(Service::Mqtt);
   assert(!mayapNetworkDeepRecoveryUpdate(++clockMs,false));
-  assert(WiFi.reconnects==1 && WiFi.off==0);
-  clockMs += WIFI_COOLDOWN_MS;
-  mayapRequestWifiDeepRecovery();
+  assert(WiFi.reconnects==1 && WiFi.off==0 && MayapNetworkInternal::wifiFsm.state()==MayapNetwork::WifiState::Connecting);
+  enterRecovery();
   assert(mayapNetworkDeepRecoveryUpdate(clockMs,false));
   mayapOnlineOwnerQuiet(Service::Mqtt);
   assert(!mayapNetworkDeepRecoveryUpdate(++clockMs,false));
@@ -199,7 +221,7 @@ int main() {
 
   MayapNetworkInternal::requestedMode=static_cast<uint8_t>(ConnectivityMode::Online);
   MayapNetworkInternal::radioActive=true;
-  portal=true; mayapRequestWifiDeepRecovery();
+  portal=true; enterRecovery();
   mayapOnlineOwnerQuiet(Service::Mqtt);
   assert(!mayapNetworkDeepRecoveryUpdate(++clockMs,false));
   assert(WiFi.off==1 && WiFi.reconnects==2);

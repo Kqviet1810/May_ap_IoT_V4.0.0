@@ -2808,6 +2808,12 @@ constexpr uint32_t BAUD = 9600;
 constexpr uint8_t SLAVE_ID = 1;
 constexpr uint32_t FIRST_POLL_DELAY_MS = 500;
 constexpr uint32_t POLL_PERIOD_MS = 2000;
+// Cold start only: identify the sensor with the SAME verification (six consecutive CRC-valid, uniquely matching pairs, then three good
+// samples) but poll every 600 ms instead of every 2 s. Bounded in frames AND time, so an absent sensor is never polled fast for long.
+constexpr uint32_t STARTUP_POLL_PERIOD_MS = 600;
+constexpr uint32_t STARTUP_FAST_WINDOW_MS = 15000;
+constexpr uint32_t STARTUP_FAST_FRAMES = 9;
+constexpr uint32_t STARTUP_FRAME_GAP_MS = 3000;
 constexpr uint32_t RESPONSE_TIMEOUT_MS = 200;
 constexpr uint32_t RETRY_GAP_MS = 80;
 constexpr uint8_t ATTEMPTS_PER_CYCLE = 2;
@@ -2926,6 +2932,14 @@ class SHT485Industrial {
   SensorProfile sensorProfile() const { return decoder_.profile(); }
   uint16_t rawTemperatureRegister() const { return rawTempRegister_; }
   bool formatLocked() const { return decoder_.locked(); }
+  // Why the sensor is not usable yet (boot diagnosis; the control decision still comes from processSensor()):
+  // 0 = frames decode in a locked format, 1 = nothing valid ever received (wiring / power / address / baud), 2 = frames arrive but no
+  // format could be locked (wrong or ambiguous register layout), 3 = locked but the link is currently failing.
+  uint8_t bootReason() const {
+    if (!hasEverReceivedData_ && goodFrames_ == 0U) return 1U;
+    if (!decoder_.locked()) return 2U;
+    return dataValid() ? 0U : 3U;
+  }
   uint32_t dataAgeMs() const {
     return hasEverReceivedData_ ? elapsedMs(millis(), lastGoodFrameMs_) : UINT32_MAX;
   }
@@ -2960,6 +2974,7 @@ class SHT485Industrial {
   bool uartRecoveredBefore_ = false;
   uint32_t uartRecoveryAt_ = 0U;
   uint32_t bootMs_ = 0;
+  uint32_t lastFrameMs_ = 0;
   uint32_t nextPollMs_ = 0;
   uint32_t retryAtMs_ = 0;
   uint32_t responseStartedMs_ = 0;
@@ -3057,6 +3072,7 @@ class SHT485Industrial {
           static_cast<unsigned>(decoder_.profile()), temp, decoder_.temperature());
     }
     ++goodFrames_;
+    lastFrameMs_ = now;
     // A CRC-valid discovery frame completes the poll without rapid retry.
     // Heater stays inhibited until six consecutive samples lock one format.
     if (!usable) {
@@ -3099,8 +3115,16 @@ class SHT485Industrial {
     uartRecoveryCount_ = 0U;
     if (!startupResolved_) { startupResolved_ = true; setEvent(EventStartupPresent); }
     else if (!wasOnline) setEvent(EventRestored);
-    nextPollMs_ = now + SHT485Config::POLL_PERIOD_MS;
+    nextPollMs_ = now + pollPeriodMs(now);
     state_ = State::Idle;
+  }
+  uint32_t pollPeriodMs(uint32_t now) const {
+    // Fast while identification is still incomplete AND either the cold-start window is open or frames are actually arriving (a sensor
+    // that wakes up late keeps the fast cadence until it is verified; an absent or silent one never holds the bus above 2 s for long).
+    const bool identifying = goodFrames_ < SHT485Config::STARTUP_FAST_FRAMES;
+    const bool windowOpen = elapsedMs(now, bootMs_) < SHT485Config::STARTUP_FAST_WINDOW_MS ||
+                            (goodFrames_ > 0U && elapsedMs(now, lastFrameMs_) < SHT485Config::STARTUP_FRAME_GAP_MS);
+    return (identifying && windowOpen) ? SHT485Config::STARTUP_POLL_PERIOD_MS : SHT485Config::POLL_PERIOD_MS;
   }
   void recoverUart(uint32_t now) {
     // Owner-only, after a fully failed cycle. Preserve counters/filter and
@@ -3141,7 +3165,7 @@ class SHT485Industrial {
       recoverUart(now);
       return;
     }
-    nextPollMs_ = now + SHT485Config::POLL_PERIOD_MS;
+    nextPollMs_ = now + pollPeriodMs(now);
     state_ = State::Idle;
   }
   void updateFreshness(uint32_t now) {
@@ -7013,6 +7037,8 @@ class MachineController {
     runtime_.temperature = temperature_;
     runtime_.humidity = humidity_;
     runtime_.sensorOnline = sensorUsable_;
+    runtime_.sensorBootReason = sensor_.bootReason();
+    runtime_.storageBlocked = storageFaultLatched_;
     runtime_.sensorStartupGrace = !timeReached(now, sensorStartupGraceUntil_) &&
                                   !sensorUsable_;
     runtime_.resumeConfirmationRequired = resumeConfirmationRequired_;

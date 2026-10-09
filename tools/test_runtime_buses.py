@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
     (out / 'online_isolation.h').write_text((root / 'MAYAP_INDUSTRIAL_v1_0_0/online_isolation.h').read_text(), encoding='utf-8')
     (out / 'actual-services.inc').write_text(services, encoding='utf-8')
     network = (root / 'MAYAP_INDUSTRIAL_v1_0_0/network_service.h').read_text(encoding='utf-8')
-    start = network.index('inline void mayapRequestWifiDeepRecovery()')
+    start = network.index('inline bool mayapNetworkDeepRecoveryUpdate(')
     end = network.index('inline void mayapSetWifiPortalOtaQuiesced', start)
     (out / 'actual-network.inc').write_text(network[start:end], encoding='utf-8')
     realtime = (root / 'MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h').read_text(encoding='utf-8')
@@ -121,7 +121,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
                  'mayapBootAcknowledgeHomeFrame'):
         mailbox += re.search(r'inline (?:bool|void) ' + name + r'\(\) \{[^}]*\}', boot)[0] + '\n'
     (out / 'actual-boot-mailbox.inc').write_text(mailbox, encoding='utf-8')
-    for test in ('runtime-buses', 'runtime-network', 'runtime-attiny', 'runtime-attiny-state', 'runtime-stability', 'runtime-cloud-alert', 'runtime-alarm-fallback', 'runtime-web-connect', 'runtime-transactions', 'runtime-online-isolation'):
+    for test in ('runtime-buses', 'runtime-network', 'wifi-fsm', 'runtime-attiny', 'runtime-attiny-state', 'runtime-stability', 'runtime-cloud-alert', 'runtime-alarm-fallback', 'runtime-web-connect', 'runtime-transactions', 'runtime-online-isolation'):
         executable = out / (test + ('.exe' if __import__('os').name == 'nt' else ''))
         command = [args.cxx, '-std=c++11', '-Wall', '-Wextra', '-Werror', '-I', str(out),
                    str(root / ('tests/' + test + '.cpp')), '-o', str(executable)]

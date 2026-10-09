@@ -9,11 +9,11 @@
   "entries": [
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/boot_policy.h",
-      "sha256": "34cc4c14e5398f8672e377ad694e65e931238d55cf77f6a4191e4fdd5367c1b3"
+      "sha256": "83cca18945f4fb65adfdb5b9d8f58dfbe7b5e5a8f40cda9f8112bfbcda0915e3"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/boot_diagnostic.h",
-      "sha256": "facd0a11822eaf76db2adc4281775690bf63b6d71af9b2437ed88d8cfcdb16e1"
+      "sha256": "86073fd6a3c1dc7f30b1eb9eabc13aece257d372f7e8d4da36ab2dd0199e50f3"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/boot_assets.h",
@@ -61,12 +61,12 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "2be2ce76d6f34f12548770c72f7de9acdb6fbf1650fca4bbdc2ec91c2531a381",
+      "sha256": "ce8683d691e509be1761ff9b636bebac75027f2b237308034eb0e3a61f7705eb",
       "filter": "config"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "c056cdff6185c8737c28ac174db072415dd5ef45936894bb8868e73838b71270",
+      "sha256": "070db51ec69e4bee84d9243e9df07642fcf087e658e01e238368893d0d630113",
       "signature": "class MachineController {"
     },
     {
@@ -92,7 +92,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "ec82d6d943ed025ee33183982dd8380594769c90aa2ff329f3a6a568969619e8",
+      "sha256": "24be5431687089688eb8a21015648624895e0a9b6f5c4e558e8b8c4f21f1dbff",
       "signature": "bool decodeFrame("
     },
     {
@@ -102,7 +102,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/hmi.h",
-      "sha256": "bae6f5049d527391660886977c344d2535b5382a45ccd9460d5d71105ec1e7d7",
+      "sha256": "0c62d257b6d6cdb13d0e351ff32dc895d0c7b690b440bae16af7219d31d25372",
       "signature": "void drawSplash()"
     },
     {
@@ -127,12 +127,12 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino",
-      "sha256": "d71825510821917702a1e24debee2d930e74e03ce6220bbe892601295c00504b",
+      "sha256": "8658b7cdcbc840590273a689698293f71cd0de6f1c46a3ecc0ffcf904ce4fd86",
       "signature": "static void updateBootStability("
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino",
-      "sha256": "44fd8781ce966d952af978114a9d148444c4aec3d63cdbbd8e6d300208ef2579",
+      "sha256": "036b7f4d1b6f2213050b8cd13a65858f87266796bf9e1b920a560992468e9ad3",
       "signature": "void setup()"
     },
     {
@@ -461,5 +461,6 @@
   "onlineIsolationReview": "2026-10-04: narrowly reviewed removal of dormant heap reboot branch, auxiliary task-create reboot and unbounded auxiliary startup readiness; health heap now requests Online pause only. Radio gate atomically closes admission and requires socket/TLS/OTA closure ACKs before mutation. FaultDescriptor change is comment-only; controlTask/PID/heater/output/sensor/turning, RTC/EEPROM, OTA success and real control/WDT/panic safety remain protected. HMI task placement moves from network core 0 to local core 1 at unchanged priority 2, below control 5/supervisor 6; HMI behavior and local trip thresholds are unchanged.",
   "alarmDeliveryReview": "2026-10-05: bounded Cloud-only fault edge mailbox, event-aware TLS lease and alarm priority. FaultManager safety fingerprint is preserved by removing only the three conditional notification hooks; all PID, output, controller, storage and safety bodies remain protected. Config changes only Cloud queue 8->16 and fault tracking 16->48. TLS memory thresholds are unchanged. D1 durable receipts and per-recipient bounded Push retries replace HTTP-status-only delivery acknowledgment.",
   "turningRtcReviewNote": "2026-10-05: only reject zero/unavailable automatic deadline while awaiting RTC anchor; homing/manual persistence from main retained. No thermal, motor safety or EEPROM schema changes.",
-  "wifiStateReviewNote": "2026-10-05: reviewed config declaration and OTA admission accessor changes only: raw Wi-Fi for network I/O, stable presentation for controller/HMI faults. OTA interlocks, schemas, PID, Adaptive, heater safety and signed transactions unchanged."
+  "wifiStateReviewNote": "2026-10-05: reviewed config declaration and OTA admission accessor changes only: raw Wi-Fi for network I/O, stable presentation for controller/HMI faults. OTA interlocks, schemas, PID, Adaptive, heater safety and signed transactions unchanged.",
+  "fastBootWifiFsmReviewNote": "2026-10-09: startup/Wi-Fi simplification. No thermal, SSR, fan, turning, alarm or batch-recovery logic changed. boot_policy.h: LOCAL_SETTLE 3000->1500 ms, service gaps/waits 1000->250 ms (level 0 only; crash-loop levels keep 8/10/45 s), plus the pure HomeGate (Home needs valid stable sensor + local safety, 30 s deadline -> diagnostic). boot_diagnostic.h: diagnostic mailbox atomics. .ino setup()/updateBootStability(): the Home release now comes from HomeGate instead of 'tasks stable 4.5 s'; the control task publishes three atomics (sensor usable/reason, storage blocked); the network task no longer turns a supervisor request into a Wi-Fi recovery. hmi.h drawSplash(): shows the boot diagnostic instead of the logo. config.h: SPLASH_MAX_MS 6000->35000 (failsafe only), two runtime diagnosis fields. machine_control.h: SHT485Industrial cold-start cadence 600 ms (bounded by 9 frames and a 15 s window / 3 s frame gap) with the SAME six-frame lock + three-good-sample verification, bootReason() accessor, decodeFrame() records the frame time; MachineController only publishes the two diagnosis fields. network_service.h/wifi_fsm.h: one Wi-Fi FSM (CONNECTING/CONNECTED/BACKOFF/RECOVERY), per-attempt deep-recovery request, supervisor->Wi-Fi coupling, 3-cycle isolation and WifiRecovery removed; MQTT/Cloud/OTA are not inputs; power mode untouched (PERFORMANCE, ECO off). Host evidence: tests/wifi-fsm.cpp, tests/runtime-network.cpp (real owner-drain transaction), tests/runtime-buses.cpp (real SHT485Industrial + 30 cold-boot simulation), tests/staged-boot.test.cjs."
 }

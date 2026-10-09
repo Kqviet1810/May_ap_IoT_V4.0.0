@@ -16,14 +16,16 @@ enum class RestartReason : uint32_t {
 enum class ResetKind : uint8_t { PowerOn, Brownout, Software, Unexpected, DeepSleep };
 enum class Status : uint8_t { Hardware, Memory, Sensor, Control, Safety, Network, Server, Ready };
 
-constexpr uint32_t LOCAL_SETTLE_MS = 3000U;
+// Radio tasks start as soon as the local tasks (control, HMI, supervisor) have been healthy this long. The sensor is polled by the control
+// task from the same moment, so RS485 identification and Wi-Fi/MQTT initialisation run in parallel after the safe hardware is up.
+constexpr uint32_t LOCAL_SETTLE_MS = 1500U;
 constexpr uint32_t SUCCESS_STABLE_MS = 25000U;
 constexpr uint32_t RECOVERY_LOCAL_MS = 45000U;
 constexpr uint32_t FAILURES_CLEAR_MS = 600000U;
 // Startup admission budgets only; runtime reconnect/backoff remains unchanged.
-constexpr uint32_t WIFI_WAIT_MS = 1000U;
-constexpr uint32_t MQTT_WAIT_MS = 1000U;
-constexpr uint32_t SERVICE_GAP_MS = 1000U;
+constexpr uint32_t WIFI_WAIT_MS = 250U;
+constexpr uint32_t MQTT_WAIT_MS = 250U;
+constexpr uint32_t SERVICE_GAP_MS = 250U;
 constexpr uint32_t READY_DISPLAY_MS = 500U;
 constexpr uint32_t RECORD_MAGIC = 0x4D425431U;
 constexpr uint32_t RECORD_VERSION = 2U;
@@ -157,6 +159,7 @@ class Sequencer {
     return level_ == 3U ? RECOVERY_LOCAL_MS : level_ == 2U ? 10000U : level_ == 1U ? 8000U : LOCAL_SETTLE_MS;
   }
   bool homeBeforeNetwork() const { return level_ >= 2U; }
+  uint32_t level() const { return level_; }
   bool releaseNetwork(uint32_t now, const Stability &local) const {
     return local.held(now, networkDelay());
   }
@@ -170,5 +173,84 @@ class Sequencer {
   uint32_t level_ = 0U;
   Stage stage_ = Stage::SafeOutputs;
   uint32_t enteredAt_ = 0U;
+};
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Home gate. The splash is left for Home ONLY when the sensor delivers a valid, stable temperature and every local safety condition is
+// met. If that has not happened 30 s after power-up the machine does NOT pretend: it shows the diagnostic screen with the concrete code
+// of what is still missing (control keeps running locally, independent of the network) and goes to Home by itself as soon as the cause
+// is gone. Pure logic: the host tests drive exactly this code.
+constexpr uint32_t BOOT_DEADLINE_MS = 30000U;
+constexpr uint32_t READY_HOLD_MS = 1500U;      // every condition continuously true this long ("stable")
+
+enum class BlockReason : uint8_t {
+  None, SafetyTrip, Tasks, Storage, Display, SensorNoResponse, SensorFormat, SensorUnstable
+};
+struct LocalInputs {
+  bool tasksHealthy = false;       // control + HMI + supervisor heartbeats fresh, no cycle trip
+  bool displayHealthy = false;
+  bool storageBlocked = false;     // EEPROM required but unavailable
+  bool tripLatched = false;        // system trip (output safe state) latched
+  bool sensorUsable = false;       // controller verdict: valid frame, locked format, plausibility + 3 good samples
+  bool temperatureFinite = false;
+  uint8_t sensorBootReason = 1U;   // SHT485Industrial::bootReason()
+};
+inline BlockReason blockReason(const LocalInputs &in) {
+  if (in.tripLatched) return BlockReason::SafetyTrip;
+  if (!in.tasksHealthy) return BlockReason::Tasks;
+  if (in.storageBlocked) return BlockReason::Storage;
+  if (!in.displayHealthy) return BlockReason::Display;
+  if (in.sensorUsable && in.temperatureFinite) return BlockReason::None;
+  switch (in.sensorBootReason) {
+    case 1U: return BlockReason::SensorNoResponse;
+    case 2U: return BlockReason::SensorFormat;
+    default: return BlockReason::SensorUnstable;
+  }
+}
+// Codes reuse the controller's fault numbers where one exists (E101 sensor lost, E102 invalid, E103 suspect, E301 EEPROM).
+inline uint16_t blockCode(BlockReason r) {
+  switch (r) {
+    case BlockReason::SafetyTrip: return 990U;
+    case BlockReason::Tasks: return 991U;
+    case BlockReason::Storage: return 301U;
+    case BlockReason::Display: return 992U;
+    case BlockReason::SensorNoResponse: return 101U;
+    case BlockReason::SensorFormat: return 102U;
+    case BlockReason::SensorUnstable: return 103U;
+    default: return 0U;
+  }
+}
+inline const char *blockText(BlockReason r) {
+  switch (r) {
+    case BlockReason::SafetyTrip: return "SYSTEM TRIP";
+    case BlockReason::Tasks: return "TASK HEARTBEAT";
+    case BlockReason::Storage: return "EEPROM";
+    case BlockReason::Display: return "LCD";
+    case BlockReason::SensorNoResponse: return "SENSOR NO REPLY";
+    case BlockReason::SensorFormat: return "SENSOR FORMAT";
+    case BlockReason::SensorUnstable: return "SENSOR UNSTABLE";
+    default: return "OK";
+  }
+}
+class HomeGate {
+ public:
+  enum class Phase : uint8_t { Waiting, Ready, Diagnostic };
+  void begin(uint32_t now) { start_ = now; phase_ = Phase::Waiting; reason_ = BlockReason::SensorNoResponse; ok_ = Stability(); }
+  Phase update(uint32_t now, const LocalInputs &in) {
+    reason_ = blockReason(in);
+    ok_.update(now, reason_ == BlockReason::None);
+    if (phase_ == Phase::Ready) return phase_;           // later sensor loss is an alarm on Home, not a boot problem
+    if (ok_.held(now, READY_HOLD_MS)) phase_ = Phase::Ready;
+    else if (static_cast<uint32_t>(now - start_) >= BOOT_DEADLINE_MS) phase_ = Phase::Diagnostic;
+    return phase_;
+  }
+  Phase phase() const { return phase_; }
+  BlockReason reason() const { return reason_; }
+  uint32_t age(uint32_t now) const { return static_cast<uint32_t>(now - start_); }
+ private:
+  uint32_t start_ = 0U;
+  Phase phase_ = Phase::Waiting;
+  BlockReason reason_ = BlockReason::SensorNoResponse;
+  Stability ok_;
 };
 }  // namespace MayapBoot

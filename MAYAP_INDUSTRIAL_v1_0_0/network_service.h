@@ -4,6 +4,7 @@
 #include "service_recovery.h"
 #include "wifi_stable_state.h"
 #include "wifi_power_policy.h"
+#include "wifi_fsm.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
@@ -82,12 +83,21 @@ static MayapWifiPower::Mode wifiPowerModeApplied = MayapWifiPower::Mode::Perform
 // tang khac. Khong con dung 2 bien lastRetryAt/lastStartAttemptAt + hang so co
 // dinh nhu truoc: moi that bai lien tiep se tu keo gian khoang cho ra thay vi
 // dap WiFi.begin() moi 30s vinh vien khi mat mang keo dai.
-static BackoffTimer staBackoff{};
-static MayapRecovery::WifiRecovery deepPolicy;
-enum class DeepPhase : uint8_t { Idle, Quiesce, OffWait, Isolated };
+// ONE decision-maker for the station link (wifi_fsm.h): CONNECTING -> CONNECTED -> BACKOFF -> RECOVERY. Wi-Fi facts only; MQTT/Cloud/OTA
+// outcomes never reach it. `deepPhase` below is only the owner-drain transaction the FSM's RECOVERY state (and an explicit radio stop)
+// runs - it decides nothing by itself.
+static MayapNetwork::WifiFsmConfig wifiFsmConfig() {
+  MayapNetwork::WifiFsmConfig c;
+  c.connectTimeoutMs = NETWORK_CONNECT_TIMEOUT_MS;
+  c.driverGaveUpMs = NETWORK_DRIVER_GAVE_UP_MS;
+  c.recoveryCooldownMs = MayapRecovery::WIFI_COOLDOWN_MS;
+  c.recoveryAfterOutageMs = MayapRecovery::WIFI_OFFLINE_MS;
+  return c;
+}
+static MayapNetwork::WifiFsm wifiFsm(BACKOFF_STEPS_MS, BACKOFF_STEP_COUNT, wifiFsmConfig());
+inline uint32_t wifiJitterMs() { return esp_random() % (BACKOFF_JITTER_MAX_MS + 1U); }
+enum class DeepPhase : uint8_t { Idle, Quiesce, OffWait };
 static DeepPhase deepPhase = DeepPhase::Idle;
-static uint32_t deepPhaseAt = 0U;
-static bool deepRequested = false;
 
 // ------------------------- Thong tin dang nhap Wi-Fi ------------------------
 // Doc/ghi tu networkTask. SSID/mat khau nap tu NVS (Preferences); neu chua
@@ -523,10 +533,8 @@ inline void portalStop() {
   wifiPowerModeAppliedValid = false;
   if (WiFi.isConnected()) {
     connectionStartedAt = 0U;
-    deepPolicy.success(millis());
-    staBackoff.onSuccess();
   } else {
-    staBackoff.reset(millis());
+    wifiFsm.reset(millis());
   }
   portalPhase = PortalPhase::Idle;
   pendingCredentialsReady = false;
@@ -901,13 +909,9 @@ inline IPAddress mayapNetworkLocalIp() {
   return IPAddress(__atomic_load_n(&MayapNetworkInternal::publishedLocalIp, __ATOMIC_ACQUIRE));
 }
 
-// Owner networkTask only. Other tasks cooperate through radioQuiesce; no
-// socket is forcibly stopped from this task while another owner is in TLS I/O.
-inline void mayapRequestWifiDeepRecovery() {
-  if (MayapNetworkInternal::deepPhase == MayapNetworkInternal::DeepPhase::Idle) {
-    MayapNetworkInternal::deepRequested = true;
-  }
-}
+// Owner networkTask only. Other tasks cooperate through radioQuiesce; no socket is forcibly stopped from this task while another
+// owner is in TLS I/O. This transaction runs for exactly two reasons: an explicit radio stop (Offline / no credentials) and the FSM's
+// RECOVERY state. Nothing else (no MQTT/Cloud failure, no supervisor request, no per-attempt trigger) can start it.
 inline bool mayapNetworkDeepRecoveryUpdate(uint32_t now, bool externalIoBusy) {
   using namespace MayapNetworkInternal;
   const bool portal = mayapWifiPortalExclusiveRequested();
@@ -919,7 +923,6 @@ inline bool mayapNetworkDeepRecoveryUpdate(uint32_t now, bool externalIoBusy) {
   if (deepPhase == DeepPhase::Idle) {
     if (portal) return false;
     if (explicitStop) {
-      deepRequested = false;
       if (!radioActive) {
         __atomic_store_n(&MayapServiceInternal::radioQuiesce, 0U, __ATOMIC_RELEASE);
         if (!portal) mayapRadioQuiesceEnd();
@@ -932,12 +935,7 @@ inline bool mayapNetworkDeepRecoveryUpdate(uint32_t now, bool externalIoBusy) {
       mayapSerialPrintf(false, "[WIFI-RECOVERY] quiesce owners before explicit radio stop\n");
       return true;
     }
-    if (!deepPolicy.cooldownReady(now)) {
-      deepRequested = false;
-      return false;
-    }
-    if (!deepRequested && !deepPolicy.wanted(now)) return false;
-    deepRequested = false;
+    if (wifiFsm.state() != MayapNetwork::WifiState::Recovery) return false;
     mayapRadioQuiesceBegin();
     deepPhase = DeepPhase::Quiesce;
     __atomic_store_n(&MayapServiceInternal::radioQuiesce, 1U, __ATOMIC_RELEASE);
@@ -981,24 +979,15 @@ inline bool mayapNetworkDeepRecoveryUpdate(uint32_t now, bool externalIoBusy) {
     connectionStartedAt = now;
     staDisconnectAt = 0U;
     wifiPowerModeAppliedValid = false;
-    deepPolicy.started(now);
-    staBackoff.onFailure(now);
-    deepPhaseAt = now;
-    deepPhase = deepPolicy.isolate() ? DeepPhase::Isolated : DeepPhase::Idle;
+    wifiFsm.recoveryDone(now);
+    deepPhase = DeepPhase::Idle;
     __atomic_store_n(&MayapServiceInternal::radioQuiesce, 0U, __ATOMIC_RELEASE);
     mayapRadioQuiesceEnd();
     publish(NetworkStateCode::Connecting, false);
     mayapSerialPrintf(false,
-        "[WIFI-RECOVERY] safe reconnect accepted=%u isolate=%u (NO RADIO RESET)\n",
-        reconnectAccepted, deepPhase == DeepPhase::Isolated);
-    return deepPhase == DeepPhase::Isolated;
-  }
-
-  if (deepPhase == DeepPhase::Isolated) {
-    if (!portal && online &&
-        MayapRecovery::age(now, deepPhaseAt) < MayapRecovery::WIFI_ISOLATE_MS)
-      return true;
-    deepPhase = DeepPhase::Idle;
+        "[WIFI-RECOVERY] RECOVERY done: in-place reconnect accepted=%u (owners drained, NO RADIO RESET) recoveries=%lu\n",
+        reconnectAccepted, static_cast<unsigned long>(wifiFsm.recoveries()));
+    return false;
   }
   return false;
 }
@@ -1051,14 +1040,14 @@ inline void mayapNetworkUpdate(uint32_t now) {
     // Nguoi dung chu dong rut OFFLINE - khi ho bat lai ONLINE (co the sau
     // vai gio/vai ngay), cho phep thu ket noi ngay lap tuc thay vi ke thua
     // buoc backoff cua lan mat mang KHONG lien quan truoc do.
-    staBackoff.reset(now);
+    wifiFsm.reset(now);
     if (!portalOwnsRadio) publish(NetworkStateCode::Offline, false);
     return;
   }
 
   if (!credentialsConfigured()) {
     // Do not tear the interface down here; quiesce owners first.
-    staBackoff.reset(now);
+    wifiFsm.reset(now);
     if (!portalOwnsRadio) publish(NetworkStateCode::NotConfigured, false);
     return;
   }
@@ -1087,38 +1076,19 @@ inline void mayapNetworkUpdate(uint32_t now) {
     // day khong sao - chi la 2 phep gan so). Khi cong dong va nhuong lai
     // quyen dieu khien STA, vong lap ben duoi luon bat dau tu do tre ngan
     // nhat, khong "an theo" so lan that bai cua mang CU truoc khi mo cong.
-    staBackoff.reset(now);
+    wifiFsm.reset(now);
     return;
   }
 
-  if (!radioActive) {
-    if (!staBackoff.ready(now)) {
-      publish(NetworkStateCode::Connecting, false);
-      return;
-    }
-    mayapRadioQuiesceBegin();
-    if (!mayapOnlineOwnersDrained()) return;
-    const bool started = startStation(now);
-    mayapRadioQuiesceEnd();
-    if (!started) {
-      deepPolicy.failure(now);
-      // setHostname()/mode() that bai (rat hiem - loi driver): lui backoff
-      // truoc khi thu lai, khong dap lien tuc gay xoay vong CPU vo ich.
-      staBackoff.onFailure(now);
-      publish(NetworkStateCode::Connecting, false);
-      return;
-    }
-    return;  // vua goi WiFi.begin(): danh cho no NETWORK_CONNECT_TIMEOUT_MS de ket noi
-  }
+  // ---- station link: one decision-maker (wifi_fsm.h). Wi-Fi facts in, at most one action out. ----
+  const bool associated = radioActive && WiFi.isConnected();
+  const MayapNetwork::WifiAction action = wifiFsm.update(now, associated, staDisconnectAt, wifiJitterMs());
 
-  if (WiFi.isConnected()) {
-    deepPolicy.success(now);
-    staBackoff.onSuccess();  // dat lai retry counter dung yeu cau
+  if (associated) {
     int32_t rssi = WiFi.RSSI();
     if (rssi < -127) rssi = -127;
     if (rssi > 0) rssi = 0;
-    publish(NetworkStateCode::Connected, true,
-            static_cast<int8_t>(rssi));
+    publish(NetworkStateCode::Connected, true, static_cast<int8_t>(rssi));
     applyWifiPowerMode();
     // Dong bo gio qua NTP (xem serviceNtpSync() o tren) - chi khi mang STA
     // that su on dinh (khong phai luc cong Wi-Fi dang test SSID moi).
@@ -1127,22 +1097,32 @@ inline void mayapNetworkUpdate(uint32_t now) {
   }
 
   publish(NetworkStateCode::Connecting, false);
-  deepPolicy.offline(now);
-  // The driver already reported this attempt over (and with auto-reconnect off nothing retries on its own): do not sit out the rest
-  // of the long timeout.
-  const uint32_t startedAt = connectionStartedAt;
-  const uint32_t droppedAt = staDisconnectAt;
-  const bool driverGaveUp = droppedAt != 0U && static_cast<int32_t>(droppedAt - startedAt) >= 0 &&
-      elapsedMs(now, droppedAt) >= NETWORK_DRIVER_GAVE_UP_MS;
-  if (!driverGaveUp && elapsedMs(now, connectionStartedAt) < NETWORK_CONNECT_TIMEOUT_MS) {
-    return;  // van con trong thoi gian cho hop ly cho lan thu hien tai
-  }
-  if (!staBackoff.ready(now)) return;  // dang trong thoi gian lui backoff
+  if (action != MayapNetwork::WifiAction::Begin) return;   // CONNECTING (waiting), BACKOFF (ladder) or RECOVERY (deep path owns it)
 
-  staBackoff.onFailure(now);
-  deepPolicy.failure(now);
+  if (!radioActive) {
+    // Cold start (or after an explicit stop): the driver is OFF, bring the station up. Owners are idle at this point, the drain
+    // handshake is the same one every radio mode change uses.
+    mayapRadioQuiesceBegin();
+    if (!mayapOnlineOwnersDrained()) return;
+    const bool started = startStation(now);
+    mayapRadioQuiesceEnd();
+    if (started) wifiFsm.attemptStarted(now);
+    else wifiFsm.attemptFailed(now, wifiJitterMs());   // setHostname()/mode() refused (rare driver error): back off, never spin
+    return;
+  }
+
+  // The station is up but not associated: a plain in-place reconnect. No owner drain (their sockets died with the link), no
+  // WIFI_OFF/WIFI_STA cycle, no driver re-init.
+  (void)WiFi.setAutoReconnect(false);
+  const bool accepted = WiFi.reconnect();
+  if (!accepted) {
+    const char *password = activePassword[0] == '\0' ? nullptr : activePassword;
+    (void)WiFi.begin(activeSsid, password);
+  }
   connectionStartedAt = now;
-  // Do not touch STA here. Next networkTask cycle enters the shared quiesce
-  // handshake, then reconnects in place after every TLS/socket owner is drained.
-  mayapRequestWifiDeepRecovery();
+  staDisconnectAt = 0U;
+  wifiPowerModeAppliedValid = false;
+  wifiFsm.attemptStarted(now);
+  mayapSerialPrintf(false, "[WIFI] reconnect attempt (BACKOFF->CONNECTING) failures=%u accepted=%u\n",
+                    static_cast<unsigned>(wifiFsm.failures()), accepted ? 1U : 0U);
 }

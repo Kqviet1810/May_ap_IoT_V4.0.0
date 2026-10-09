@@ -10,10 +10,8 @@ constexpr uint32_t ISOLATE_AFTER_MS = 60000U;
 // Communication failure is never a valid reason to restart the controller.
 constexpr uint32_t RESTART_AFTER_MS = 300000U;
 constexpr uint32_t ISOLATE_PAUSE_MS = 30000U;
-constexpr uint32_t WIFI_OFF_MS = 500U;
 constexpr uint32_t WIFI_COOLDOWN_MS = 120000U;
 constexpr uint32_t WIFI_OFFLINE_MS = 300000U;
-constexpr uint32_t WIFI_ISOLATE_MS = 120000U;
 inline uint32_t age(uint32_t now, uint32_t then) { return static_cast<uint32_t>(now - then); }
 // How long a service has been silent. A service on the other core may beat BETWEEN the supervisor reading `now` and reading
 // the beat, so `beat` can be a few ms NEWER than `now`: plain unsigned subtraction would turn that into ~4.29e9 ms of silence
@@ -54,27 +52,4 @@ class ServiceWatch {
   bool degraded_ = false;
 };
 
-class WifiRecovery {
- public:
-  void success(uint32_t now) { failures_ = 0U; outageAt_ = now; outageActive_ = false; cycles_ = 0U; }
-  void failure(uint32_t now) { if (failures_ < 255U) ++failures_; offline(now); }
-  void offline(uint32_t now) { if (!outageActive_) { outageAt_ = now; outageActive_ = true; } }
-  bool cooldownReady(uint32_t now) const {
-    return !attempted_ || age(now, lastRecoveryAt_) >= WIFI_COOLDOWN_MS;
-  }
-  bool wanted(uint32_t now) const {
-    return (failures_ >= 6U || (outageActive_ && age(now, outageAt_) >= WIFI_OFFLINE_MS)) &&
-        cooldownReady(now);
-  }
-  void started(uint32_t now) {
-    attempted_ = true; lastRecoveryAt_ = now; failures_ = 0U;
-    outageAt_ = now; outageActive_ = false;
-    if (cycles_ < 255U) ++cycles_;
-  }
-  bool isolate() const { return cycles_ >= 3U; }
- private:
-  uint8_t failures_ = 0U, cycles_ = 0U;
-  uint32_t outageAt_ = 0U, lastRecoveryAt_ = 0U;
-  bool outageActive_ = false, attempted_ = false;
-};
 }  // namespace MayapRecovery

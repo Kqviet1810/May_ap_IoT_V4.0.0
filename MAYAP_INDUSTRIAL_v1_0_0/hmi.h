@@ -2469,6 +2469,8 @@ void handleInput() {
   // man hinh chua hien menu), tranh vua bat may lo xoay num la da nhay vao
   // mot trang nao do ma khong biet.
   if (splashActive) {
+    // Only the diagnostic screen takes input: a press means "go to Home anyway" (alarms there still show the real fault).
+    if (mayapBootDiagnosticActive() && rotary.button == ButtonEvent::ShortPress) mayapBootRequestHome();
     resetRotaryPending();
     return;
   }
@@ -3089,7 +3091,37 @@ void drawCenteredText(int16_t y, const char *text) {
 }
 
 // Minimal splash requested by the operator: centered logo and three dots.
+// Boot diagnostic (replaces the logo when the Home gate is still closed after 30 s): the concrete code and cause, never "ready".
+void drawBootDiagnostic() {
+  const MayapBoot::BlockReason why = mayapBootDiagnosticReason();
+  const char *line1 = "KIEM TRA THIET BI";
+  const char *line2 = "";
+  switch (why) {
+    case MayapBoot::BlockReason::SensorNoResponse: line1 = "CAM BIEN KHONG TRA LOI"; line2 = "KIEM TRA DAY RS485 / NGUON"; break;
+    case MayapBoot::BlockReason::SensorFormat: line1 = "CAM BIEN SAI DINH DANG"; line2 = "KIEM TRA LOAI CAM BIEN"; break;
+    case MayapBoot::BlockReason::SensorUnstable: line1 = "CAM BIEN CHUA ON DINH"; line2 = "KIEM TRA DAY / NHIEU"; break;
+    case MayapBoot::BlockReason::Storage: line1 = "BO NHO EEPROM LOI"; line2 = "KIEM TRA CHIP EEPROM"; break;
+    case MayapBoot::BlockReason::Tasks: line1 = "LOI TIEN TRINH HE THONG"; line2 = "TAT/BAT NGUON LAI"; break;
+    case MayapBoot::BlockReason::SafetyTrip: line1 = "NGAT AN TOAN HE THONG"; line2 = "TAT/BAT NGUON LAI"; break;
+    default: break;
+  }
+  char code[28];
+  snprintf(code, sizeof(code), "E%u %s", static_cast<unsigned>(mayapBootDiagnosticCode()), MayapBoot::blockText(why));
+  lcd.setDrawColor(1);
+  lcd.setFont(u8g2_font_5x8_tf);
+  char head[28];
+  snprintf(head, sizeof(head), "CHAN DOAN KHOI DONG %lus", static_cast<unsigned long>(mayapBootDiagnosticAgeMs() / 1000UL));
+  lcd.drawStr(0, 8, head);
+  lcd.drawHLine(0, 10, 128);
+  drawCenteredFit(24, code, u8g2_font_helvB10_tf, u8g2_font_6x12_tf, u8g2_font_5x8_tf);
+  drawCenteredFit(36, line1, u8g2_font_6x12_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+  drawCenteredFit(46, line2, u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+  drawCenteredFit(56, "DIEU KHIEN CUC BO VAN CHAY", u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+  drawCenteredFit(63, "NHAN NUT: VAO MAN HINH CHINH", u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+}
+
 void drawSplash() {
+  if (mayapBootDiagnosticActive()) { drawBootDiagnostic(); return; }
   lcd.setDrawColor(1);
   lcd.drawXBMP((128 - BOOT_LOGO_WIDTH) / 2, BOOT_LOGO_TOP,
                BOOT_LOGO_WIDTH, BOOT_LOGO_HEIGHT, bootLogoBits);
@@ -4203,7 +4235,10 @@ void render(uint32_t now) {
     const uint32_t elapsed = now - splashStartedAt;
     // Home is a local startup decision; neither Internet nor sensor faults
     // may hide local alarms/controls indefinitely. Max remains a failsafe.
-    if (mayapBootHomeReleased() || elapsed >= SPLASH_MAX_MS) {
+    // Home only when the boot coordinator says the machine is really ready (valid stable sensor + local safety). Past 30 s the
+    // diagnostic screen replaces the logo. The long failsafe only guards against a stopped coordinator; it never applies while a
+    // diagnosis is being shown, so the display can never claim readiness the machine does not have.
+    if (mayapBootHomeReleased() || (!mayapBootDiagnosticActive() && elapsed >= SPLASH_MAX_MS)) {
       splashActive = false;
       dirty = true;
     }

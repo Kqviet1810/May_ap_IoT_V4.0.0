@@ -108,6 +108,10 @@ static volatile uint8_t controlStarted = 0U;
 static volatile uint8_t hmiStarted = 0U;
 static volatile uint8_t sensorHealthy = 0U;
 static volatile uint8_t displayHealthy = 0U;
+// Controller verdicts for the boot Home gate (written by the control task, read by the boot coordinator: no struct is shared).
+static volatile uint8_t bootSensorUsable = 0U;
+static volatile uint8_t bootSensorReason = 1U;
+static volatile uint8_t bootStorageBlocked = 0U;
 static volatile uint8_t networkReady = 0U;
 static volatile uint8_t mqttReady = 0U;
 static volatile uint8_t mqttConnected = 0U;
@@ -116,6 +120,7 @@ static volatile uint8_t otaReady = 0U;
 static MayapBoot::Sequencer bootSequence;
 static MayapBoot::Stability localTaskStability;
 static MayapBoot::Stability localSuccessStability;
+static MayapBoot::HomeGate homeGate;
 static bool bootStageEntered = false;
 static bool bootSuccessMarked = false;
 static bool bootFailuresCleared = false;
@@ -170,6 +175,10 @@ void controlTask(void *parameter) {
     __atomic_store_n(&sensorHealthy,
         runtime.sensorOnline && !runtime.sensorStartupGrace && isfinite(runtime.temperature) ? 1U : 0U,
         __ATOMIC_RELEASE);
+    __atomic_store_n(&bootSensorUsable,
+        runtime.sensorOnline && isfinite(runtime.temperature) ? 1U : 0U, __ATOMIC_RELEASE);
+    __atomic_store_n(&bootSensorReason, runtime.sensorBootReason, __ATOMIC_RELEASE);
+    __atomic_store_n(&bootStorageBlocked, runtime.storageBlocked ? 1U : 0U, __ATOMIC_RELEASE);
     const uint32_t cycleUs = static_cast<uint32_t>(
         std::min<int64_t>(UINT32_MAX, esp_timer_get_time() - cycleStartedUs));
     __atomic_store_n(&controlLastCycleUs, cycleUs, __ATOMIC_RELEASE);
@@ -279,9 +288,8 @@ void networkTask(void *parameter) {
     const bool externalIoBusy =
         __atomic_load_n(&mqttIoBusy, __ATOMIC_ACQUIRE) != 0U ||
         __atomic_load_n(&cloudIoBusy, __ATOMIC_ACQUIRE) != 0U;
-    if (mayapServiceRecoveryRequested(MayapRecovery::Service::Network)) {
-      mayapRequestWifiDeepRecovery();
-    }
+    // A supervisor "network silent" request is only acknowledged below (this loop running proves the task is alive). It never starts
+    // a Wi-Fi recovery: the link's one escalation path is the FSM in network_service.h.
     if (mayapOnlineMemoryPressure()) {
       memoryPaused = true;
       mayapRadioQuiesceBegin();
@@ -555,14 +563,32 @@ static void updateBootStability(uint32_t now) {
     mayapBootClearFailures();
     bootFailuresCleared = true;
   }
-  // Home has its own LOCAL deadline. Connection success/timeouts do not enter
-  // this decision. Levels 2/3 release Home before any network task exists.
-  const uint32_t homeDelay = bootSequence.homeBeforeNetwork()
-      ? MayapBoot::LOCAL_SETTLE_MS : MayapBoot::LOCAL_SETTLE_MS + 1500U;
-  if (!bootReadyShown && localTaskStability.held(now, homeDelay)) {
+  // Home is a LOCAL decision (no Internet input) and needs a REAL machine: valid stable temperature + every local safety condition.
+  // Past MayapBoot::BOOT_DEADLINE_MS the diagnostic screen names what is missing; Home follows by itself once it is fixed.
+  MayapBoot::LocalInputs in;
+  in.tasksHealthy = tasksHealthy;
+  in.displayHealthy = __atomic_load_n(&displayHealthy, __ATOMIC_ACQUIRE) != 0U;
+  in.storageBlocked = __atomic_load_n(&bootStorageBlocked, __ATOMIC_ACQUIRE) != 0U;
+  in.tripLatched = mayapSystemTripLatched();
+  in.sensorUsable = __atomic_load_n(&bootSensorUsable, __ATOMIC_ACQUIRE) != 0U;
+  in.temperatureFinite = in.sensorUsable;
+  in.sensorBootReason = __atomic_load_n(&bootSensorReason, __ATOMIC_ACQUIRE);
+  const MayapBoot::HomeGate::Phase phase = homeGate.update(now, in);
+  if (phase == MayapBoot::HomeGate::Phase::Diagnostic) {
+    const MayapBoot::BlockReason why = homeGate.reason();
+    if (!mayapBootDiagnosticActive())
+      mayapSerialPrintf(false, "[BOOT-DIAG-SCREEN] %lus code=E%u %s\n", static_cast<unsigned long>(homeGate.age(now) / 1000UL),
+                        static_cast<unsigned>(MayapBoot::blockCode(why)), MayapBoot::blockText(why));
+    mayapBootPublishDiagnostic(MayapBoot::blockCode(why), why, homeGate.age(now));
+    if (mayapBootHomeRequested() && !bootReadyShown) { bootReadyShown = true; bootReadyAt = now - MayapBoot::READY_DISPLAY_MS; }
+  } else {
+    mayapBootClearDiagnostic();
+  }
+  if (!bootReadyShown && phase == MayapBoot::HomeGate::Phase::Ready) {
     mayapBootShowReady();
     bootReadyShown = true;
     bootReadyAt = now;
+    mayapSerialPrintf(false, "[BOOT-HOME] sensor ready + local safety OK at %lums\n", static_cast<unsigned long>(homeGate.age(now)));
   }
   if (bootReadyShown && elapsedMs(now, bootReadyAt) >= MayapBoot::READY_DISPLAY_MS) {
     mayapBootReleaseHome();
@@ -709,6 +735,7 @@ void setup() {
       static_cast<unsigned long>(diagnostic.consecutiveFailedBoots),
       static_cast<unsigned long>(diagnostic.recoveryLevel));
   bootSequence.begin(diagnostic.recoveryLevel, millis());
+  homeGate.begin(millis());
   mayapBootSetStage(MayapBoot::Stage::SafeOutputs);
 
   i2cMutex = xSemaphoreCreateMutexStatic(&i2cMutexBuffer);
