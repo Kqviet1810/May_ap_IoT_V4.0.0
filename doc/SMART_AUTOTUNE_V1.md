@@ -133,5 +133,7 @@ Nothing below has been run on a real oven. No production accuracy is claimed fro
 | Adaptive V1 base (ba0272c) | 1,458,309 | 163,192 |
 | Smart AutoTune V1 (fbfbe8d) | 1,449,817 | 162,080 |
 | delta | -8,492 | -1,112 |
+| Final hardening (078cac3, CI run 37879635135) | 1,451,089 | 162,120 |
+| delta vs Smart AutoTune V1 | +1,272 | +40 |
 
-Hard app-partition limit 3,342,336 B (43 %); dynamic memory limit 327,680 B. Soft CI budgets 1,460,000 / 164,000 are met: headroom 10,183 B Flash / 1,920 B RAM. `sizeof(SmartAutoTune)` = 852 B (RelayAutoTune 208 B); the smaller totals come from the rewritten `updateAutoTune` replacing the older relay-only supervisor path. No budget was raised.
+Hard app-partition limit 3,342,336 B (43 %); dynamic memory limit 327,680 B. Soft CI budgets 1,460,000 / 164,000 are met: headroom 10,183 B Flash / 1,920 B RAM before the hardening, 8,911 B / 1,880 B after. `sizeof(SmartAutoTune)` = 904 B on the 64-bit host after the hardening (852 B before; RelayAutoTune 208 B); the smaller totals come from the rewritten `updateAutoTune` replacing the older relay-only supervisor path. No budget was raised.
