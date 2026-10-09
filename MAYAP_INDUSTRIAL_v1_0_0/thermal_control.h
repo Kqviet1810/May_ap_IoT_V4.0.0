@@ -30,6 +30,7 @@ class ThermalController {
     filteredDerivative_ = 0.0f;
     ffApplied_ = 0.0f;
     addApplied_ = 0.0f;
+    lastCorrection_ = 0.0f; lastLo_ = 0.0f; lastHi_ = 100.0f; lastHoldFf_ = 0.0f; lastVentFf_ = 0.0f;   // telemetry follows the reset
   }
 
   // Ap dung cau hinh moi ma giu nguyen cong suat hien tai. Cach nay tranh
@@ -167,10 +168,19 @@ class ThermalController {
     }
     addApplied_ = addFf;
     output_ = clampFloat(pp + integral_ + d, lo, hi);
+    // Read-only telemetry (PID monitor): the correction is P + I + D with the feed-forwards REMOVED, so they are never counted twice.
+    lastCorrection_ = p + integral_ + d;
+    lastLo_ = lo; lastHi_ = hi;
+    lastHoldFf_ = ff; lastVentFf_ = addFf;
     return output_;
   }
 
   float output() const { return output_; }
+  float lastCorrection() const { return lastCorrection_; }
+  float lastLimitLo() const { return lastLo_; }
+  float lastLimitHi() const { return lastHi_; }
+  float lastHoldFf() const { return lastHoldFf_; }
+  float lastVentFf() const { return lastVentFf_; }
   float integral() const { return integral_; }
   float feedForwardApplied() const { return ffApplied_; }
 
@@ -184,6 +194,7 @@ class ThermalController {
   float output_ = 0.0f;
   float ffApplied_ = 0.0f;
   float addApplied_ = 0.0f;  // additive (vent) feed-forward contained in output_
+  float lastCorrection_ = 0.0f, lastLo_ = 0.0f, lastHi_ = 100.0f, lastHoldFf_ = 0.0f, lastVentFf_ = 0.0f;   // telemetry only
 };
 
 // Physical heat is metered from the arbiter's actual SSR state, not PID demand.

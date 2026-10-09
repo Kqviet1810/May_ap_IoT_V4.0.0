@@ -14,6 +14,10 @@
 #include <HardwareSerial.h>
 #include <Wire.h>
 #include <Preferences.h>
+#include <esp_random.h>
+#include "tech_access.h"
+#include "advanced_history.h"
+#include "tech_request.h"
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 #include <esp32-hal-rgb-led.h>
@@ -2113,6 +2117,17 @@ static_assert(sizeof(BatchRecordV1) <= EEPROM_BATCH_SLOT_BYTES,
 static_assert(sizeof(BatchRecordLegacyV2) <= EEPROM_BATCH_SLOT_BYTES,
               "Legacy batch record khong vua slot AT24C32");
 
+// Technical records live in spare AT24C512 space after the 7-day history (0x2F80); config/batch/history addresses are unchanged.
+constexpr uint16_t EEPROM_ADDR_TECH_AUTH_A = 0x3000U;
+constexpr uint16_t EEPROM_ADDR_TECH_AUTH_B = 0x3080U;
+constexpr uint16_t EEPROM_ADDR_ADV_HISTORY = 0x3100U;      // three CRC slots, one record each
+constexpr uint16_t EEPROM_ADV_HISTORY_SLOT_BYTES = 0x0040U;
+static_assert(EEPROM_ADDR_TECH_AUTH_A >= EEPROM_ADDR_TEMP_HISTORY + TEMP_HISTORY_STORAGE_BYTES, "tech records overlap the temperature history");
+static_assert(EEPROM_ADDR_TECH_AUTH_A + sizeof(TechAccess::AuthRecord) <= EEPROM_ADDR_TECH_AUTH_B, "auth A overlaps auth B");
+static_assert(EEPROM_ADDR_TECH_AUTH_B + sizeof(TechAccess::AuthRecord) <= EEPROM_ADDR_ADV_HISTORY, "auth B overlaps the advanced history");
+static_assert(sizeof(AdvancedHistory::Record) <= EEPROM_ADV_HISTORY_SLOT_BYTES, "advanced history record does not fit its slot");
+static_assert(EEPROM_ADDR_ADV_HISTORY + AdvancedHistory::Slots * EEPROM_ADV_HISTORY_SLOT_BYTES <= EEPROM_CAPACITY_BYTES, "advanced history beyond the chip");
+
 class PersistentStore {
  public:
   bool begin() {
@@ -2205,6 +2220,38 @@ class PersistentStore {
     if (!ready_ || !refreshBatchCache()) return false;
     out = batchPayload_;
     return true;
+  }
+
+  // ---- technical access record (PIN hash, Web permission, strike counters): two alternating slots with sequence + CRC ----------
+  // Error = the chip could not be read (never reported as "blank": the PIN gate stays closed). Blank = both slots read fine, none valid.
+  TechAccess::LoadStatus loadTechAuth(TechAccess::AuthRecord &best) {
+    if (!ready_) return TechAccess::LoadStatus::Error;
+    TechAccess::AuthRecord a{}, b{};
+    const bool readA = readRecord(EEPROM_ADDR_TECH_AUTH_A, a), readB = readRecord(EEPROM_ADDR_TECH_AUTH_B, b);
+    const bool va = readA && TechAccess::recordValid(a), vb = readB && TechAccess::recordValid(b);
+    if (va || vb) { best = (!vb || (va && newer(a.sequence, b.sequence))) ? a : b; return TechAccess::LoadStatus::Ok; }
+    return (readA && readB) ? TechAccess::LoadStatus::Blank : TechAccess::LoadStatus::Error;
+  }
+  bool saveTechAuth(TechAccess::AuthRecord &rec) {
+    if (!ready_) return false;
+    TechAccess::AuthRecord a{}, b{};
+    const bool va = readRecord(EEPROM_ADDR_TECH_AUTH_A, a) && TechAccess::recordValid(a);
+    const bool vb = readRecord(EEPROM_ADDR_TECH_AUTH_B, b) && TechAccess::recordValid(b);
+    // write the slot that does NOT hold the newest valid record
+    const bool targetA = !va ? true : (!vb ? false : newer(b.sequence, a.sequence));
+    const uint16_t target = targetA ? EEPROM_ADDR_TECH_AUTH_A : EEPROM_ADDR_TECH_AUTH_B;
+    if (!writeRecord(target, rec)) return false;
+    TechAccess::AuthRecord verify{};
+    return readRecord(target, verify) && TechAccess::recordValid(verify) && memcmp(&verify, &rec, sizeof(rec)) == 0;
+  }
+  // ---- advanced-config history slots ------------------------------------------------------------------------------------
+  bool readAdvHistory(uint8_t slot, AdvancedHistory::Record &out) const {
+    if (!ready_ || slot >= AdvancedHistory::Slots) return false;
+    return readRecord(static_cast<uint16_t>(EEPROM_ADDR_ADV_HISTORY + slot * EEPROM_ADV_HISTORY_SLOT_BYTES), out);
+  }
+  bool writeAdvHistory(uint8_t slot, const AdvancedHistory::Record &record) const {
+    if (!ready_ || slot >= AdvancedHistory::Slots) return false;
+    return writeRecord(static_cast<uint16_t>(EEPROM_ADDR_ADV_HISTORY + slot * EEPROM_ADV_HISTORY_SLOT_BYTES), record);
   }
 
   bool saveBatch(const PackedBatchV1 &payload) {
@@ -3608,6 +3655,19 @@ enum class TurnPhase : uint8_t {
 // ============================================================================
 // BO DIEU KHIEN TONG
 // ============================================================================
+// Storage adapters for the pure technical-access gate and the 3-slot advanced history (contracts: tech_access.h, advanced_history.h).
+struct TechAuthStorage {
+  PersistentStore &store;
+  TechAccess::LoadStatus load(TechAccess::AuthRecord &record) { return store.loadTechAuth(record); }
+  bool save(TechAccess::AuthRecord &record) { return store.saveTechAuth(record); }
+  uint32_t random32() { return esp_random(); }
+};
+struct AdvHistoryStorage {
+  PersistentStore &store;
+  bool read(uint8_t slot, AdvancedHistory::Record &record) { return store.readAdvHistory(slot, record); }
+  bool write(uint8_t slot, const AdvancedHistory::Record &record) { return store.writeAdvHistory(slot, record); }
+};
+
 class MachineController {
  public:
   // Bounded local initialization before sensor/batch recovery. No network I/O.
@@ -3672,6 +3732,8 @@ class MachineController {
     }
     storageFaultLatched_ = EXTERNAL_EEPROM_REQUIRED && (!storeReady || !configLoaded_);
     faults_.set(FaultCode::StorageUnavailable, storageFaultLatched_, bootAt_);
+    techGate_.begin(bootAt_);      // PIN record (a read error keeps the gate closed), strike counters, Web permission (default HIDDEN)
+    history_.begin();
     mayapSetConnectivityMode(config_.connectivityMode);
     lastNetworkStatus_ = mayapGetNetworkStatus();
     networkStatusInitialized_ = true;
@@ -4379,6 +4441,11 @@ class MachineController {
           ? !thermalEnvelopeFollowsTarget
           : directSafetyThresholdChange;
       const bool pidAuthorityValid = mayapPidHasAuthority(requested);
+      // Technical fields (PID, protection, calibration, tune relay) change only inside an unlocked HMI "Nang cao" session, or through a
+      // Web request the HMI approved (that path saves directly, not through here). A Web config patch can never reach this far.
+      const AdvancedHistory::Snapshot beforeAdvanced = AdvancedHistory::fromConfig(config_);
+      const bool advancedChange = !AdvancedHistory::same(beforeAdvanced, AdvancedHistory::fromConfig(requested));
+      const bool techLocked = advancedChange && !techGate_.hmiUnlocked(now);
       const bool protectedBatchChange = (batchRunning_ || resumePending_) && (
           requested.autoResumeOnPowerLoss != config_.autoResumeOnPowerLoss ||
           requested.totalIncubationDays != config_.totalIncubationDays ||
@@ -4408,45 +4475,21 @@ class MachineController {
       const MachineConfig previousConfig = config_;
       MachineConfig readback{};
       const bool safetySaveBlocked = batchClearPending_ || safetyJournalFaultLatched_;
-      const bool saveAllowed = !safetySaveBlocked &&
+      const bool saveAllowed = !safetySaveBlocked && !techLocked &&
           !protectedBatchChange && pidAuthorityValid;
+      // The previous advanced values are kept as a history record BEFORE the new ones are written, so a restore can always undo this
+      // save. A failed backup does not stop the save itself (the chip is probably failing anyway: the save below reports that).
+      if (saveAllowed && advancedChange) (void)history_.push(beforeAdvanced);
       const bool ok = saveAllowed && store_.saveConfig(requested, readback);
       if (ok) {
-        config_ = readback;
-        hmiSetConfig(config_);
-        mayapRealtimeSetConfig(config_);
-        mayapCloudSetConfig(config_);
-        mayapSetConnectivityMode(config_.connectivityMode);
-        eventLog_.push(now, EventType::ConfigSaved,
-                       static_cast<uint16_t>(EventCode::ConfigSaved));
-
-        // Chi re-project I khi hinh dang PID/actuator thuc su doi. SV la lenh
-        // dieu khien: khong duoc back-calculate I de huy P-response cua buoc SV.
-        // Cac thay doi khong lien quan (dao, am, thong gio...) cung khong duoc
-        // reset derivative/timestamp cua PID. Neu gain/cap va SV cung doi, giu
-        // bumpless tai SV cu; sample cam bien ke tiep se ap dung buoc SV moi.
-        if (thermalPidRuntimeConfigChanged(previousConfig, config_)) {
-          pid_.applyConfigBumpless(now, previousConfig.targetTemp,
-                                   temperature_, config_);
-          pidPower_ = pid_.output();
-        }
-
-        // Lich dao la moc tuyet doi tinh tu LAN DAO THAT gan nhat. Doi chu ky
-        // hoac BAT/TAT dao trong luc me dang chay chi chieu lai deadline tu
-        // lastTurnEpoch_/lastTurnAt_, tuyet doi khong lay thoi diem bam LUU
-        // lam moc moi (neu khong moi lan sua chu ky se bi dem lai tu dau).
-        if (batchRunning_ &&
-            (previousConfig.turningEnabled != config_.turningEnabled ||
-             previousConfig.turnIntervalMin != config_.turnIntervalMin)) {
-          scheduleNextTurnFromAnchor(now);
-        }
-
+        commitSavedConfig(now, previousConfig, readback);
       } else if (saveAllowed) {
         latchStorageFault("CONFIG SAVE");
       }
       if (ok) clearStorageDegraded(now);
       hmiConfirmConfigSave(transactionId, ok, ok ? &readback : nullptr);
       const char *configFailureReason = !pidAuthorityValid ? "INVALID_PID_GAINS"
+          : techLocked ? "CONFIG_TECH_LOCKED"
           : protectedBatchChange ? "CONFIG_BATCH_LOCKED"
           : safetySaveBlocked ? "CONFIG_SAFETY_BLOCK"
           : "CONFIG_EEPROM_ERROR";
@@ -4454,6 +4497,7 @@ class MachineController {
                                 configFailureReason);
       const char *configFailureTag = ok ? ""
           : !pidAuthorityValid ? "(INVALID_PID)"
+          : techLocked ? "(TECH_LOCK)"
           : protectedBatchChange ? "(BATCH_LOCK)"
           : safetySaveBlocked ? "(SAFETY_BLOCK)" : "(EEPROM)";
       mayapSerialPrintf(false, "[CFG] save=%s%s SV=%.1f HIGH=%.1f EMG=%.1f turn=%umin\n",
@@ -4624,9 +4668,19 @@ class MachineController {
           break;
         }
         case HmiCommandType::AutoTuneStart:
+          // A remote (Web) start is never executed here: it is only a request that the HMI must approve (see handleTechCommand).
+          if (command.source == HmiCommandSource::Remote) { message = "TECH_VIA_HMI_APPROVAL"; break; }
           ok = startAutoTune(now, message); break;
         case HmiCommandType::AutoTuneCancel:
           ok = cancelAutoTune(now, message); break;
+        case HmiCommandType::TechPinVerify:
+        case HmiCommandType::TechPinSet:
+        case HmiCommandType::TechLock:
+        case HmiCommandType::TechWebSet:
+        case HmiCommandType::TechDecision:
+        case HmiCommandType::TechRequestSubmit:
+        case HmiCommandType::AdvancedRestore:
+          ok = handleTechCommand(now, command, message); break;
         case HmiCommandType::ResumeYes:
           if (resumePending_ && resumeConfirmationRequired_) {
             resumeConfirmationRequired_ = false;
@@ -4682,6 +4736,259 @@ class MachineController {
       hmiConfirmCommand(command.id, ok, message);
       mayapRealtimeConfirmCommand(command.id, ok, message);
     }
+  }
+
+  // After a config record was written and read back: publish it and re-project what depends on it.
+  void commitSavedConfig(uint32_t now, const MachineConfig &previousConfig, const MachineConfig &readback) {
+    config_ = readback;
+    hmiSetConfig(config_);
+    mayapRealtimeSetConfig(config_);
+    mayapCloudSetConfig(config_);
+    mayapSetConnectivityMode(config_.connectivityMode);
+    eventLog_.push(now, EventType::ConfigSaved,
+                   static_cast<uint16_t>(EventCode::ConfigSaved));
+
+    // Chi re-project I khi hinh dang PID/actuator thuc su doi. SV la lenh
+    // dieu khien: khong duoc back-calculate I de huy P-response cua buoc SV.
+    // Cac thay doi khong lien quan (dao, am, thong gio...) cung khong duoc
+    // reset derivative/timestamp cua PID. Neu gain/cap va SV cung doi, giu
+    // bumpless tai SV cu; sample cam bien ke tiep se ap dung buoc SV moi.
+    if (thermalPidRuntimeConfigChanged(previousConfig, config_)) {
+      pid_.applyConfigBumpless(now, previousConfig.targetTemp,
+                               temperature_, config_);
+      pidPower_ = pid_.output();
+    }
+
+    // Lich dao la moc tuyet doi tinh tu LAN DAO THAT gan nhat. Doi chu ky
+    // hoac BAT/TAT dao trong luc me dang chay chi chieu lai deadline tu
+    // lastTurnEpoch_/lastTurnAt_, tuyet doi khong lay thoi diem bam LUU
+    // lam moc moi (neu khong moi lan sua chu ky se bi dem lai tu dau).
+    if (batchRunning_ &&
+        (previousConfig.turningEnabled != config_.turningEnabled ||
+         previousConfig.turnIntervalMin != config_.turnIntervalMin)) {
+      scheduleNextTurnFromAnchor(now);
+    }
+  }
+
+  // Keep the advanced values that are about to be replaced (used by the AutoTune commit; the HMI/Web paths push inline).
+  void recordAdvancedHistory(const MachineConfig &before) {
+    (void)history_.push(AdvancedHistory::fromConfig(before));
+  }
+
+  // ----------------------------- Technical access (PIN, Web permission, HMI-approved Web requests) ---------------------------
+  // Every decision is taken HERE, on the ESP32. The Web can only ask: a request is parked (60 s) until the HMI answers Yes/No, and the
+  // same safety conditions as a local change (no batch / resume, no storage or safety-journal fault, PID authority) are checked again at
+  // the moment of execution. The PIN travels as a number in HmiCommand::alarmMask and is never stored or logged in clear.
+  bool techEditBlocked(const char *&message) const {
+    if (batchRunning_ || resumePending_) { message = "DANG AP - KHONG DOI PID"; return true; }
+    if (autotune_.running()) { message = "AUTO TUNE DANG CHAY"; return true; }
+    if (batchClearPending_ || safetyJournalFaultLatched_ || storageFaultLatched_ || storageDegraded_) { message = "LOI AN TOAN/BO NHO"; return true; }
+    return false;
+  }
+  void finishTechPending(uint32_t now, TechResult result) {
+    (void)now;
+    if (techPending_.kind != MayapTech::Kind::None) {
+      techResult_ = result;
+      snprintf(techResultId_, sizeof(techResultId_), "%s", techPending_.requestId);
+    }
+    techPending_ = TechPending{};
+  }
+  bool techResultText(TechAccess::Result r, uint32_t now, bool remote, const char *&message) {
+    switch (r) {
+      case TechAccess::Result::Ok: message = remote ? "OK" : "MA DUNG"; return true;
+      case TechAccess::Result::Wrong:
+        snprintf(techMessage_, sizeof(techMessage_), remote ? "WRONG_PIN %u/%u" : "SAI MA %u/%u",
+                 static_cast<unsigned>(techGate_.failCount()), static_cast<unsigned>(TechAccess::MaxAttempts));
+        message = techMessage_; return false;
+      case TechAccess::Result::Locked:
+        snprintf(techMessage_, sizeof(techMessage_), remote ? "LOCKED %lus" : "BI KHOA %lus",
+                 static_cast<unsigned long>((techGate_.lockRemainingMs(now) + 999UL) / 1000UL));
+        message = techMessage_; return false;
+      case TechAccess::Result::NotSet: message = remote ? "PIN_NOT_SET" : "CHUA CO MA"; return false;
+      case TechAccess::Result::WebHidden: message = "WEB_HIDDEN"; return false;
+      case TechAccess::Result::NotUnlocked: message = remote ? "NOT_UNLOCKED" : "CAN NHAP MA KY THUAT"; return false;
+      case TechAccess::Result::StorageError: message = remote ? "STORAGE_ERROR" : "LOI BO NHO MA"; return false;
+      default: message = remote ? "INVALID_PIN" : "MA KHONG HOP LE"; return false;
+    }
+  }
+  bool handleTechCommand(uint32_t now, const HmiCommand &command, const char *&message) {
+    const bool remote = command.source == HmiCommandSource::Remote;
+    const uint32_t digits = command.alarmMask;
+    char pin[TechAccess::PinDigits + 1U] = "";
+    const bool pinOk = digits <= 9999UL;
+    if (pinOk) snprintf(pin, sizeof(pin), "%04lu", static_cast<unsigned long>(digits));
+    bool ok = false;
+    switch (command.type) {
+      case HmiCommandType::TechPinVerify: {
+        if (!pinOk) { message = remote ? "INVALID_PIN" : "MA KHONG HOP LE"; break; }
+        const TechAccess::Result r = remote ? techGate_.unlockWeb(now, pin) : techGate_.unlockHmi(now, pin);
+        ok = techResultText(r, now, remote, message);
+        break;
+      }
+      case HmiCommandType::TechPinSet: {
+        if (remote) { message = "CHI HMI DUOC DOI MA"; break; }
+        if (!pinOk) { message = "MA KHONG HOP LE"; break; }
+        const TechAccess::Result r = techGate_.setPin(now, pin);
+        ok = techResultText(r, now, false, message);
+        if (ok) message = "DA LUU MA KY THUAT";
+        break;
+      }
+      case HmiCommandType::TechLock:
+        if (remote) { techGate_.revokeWeb(); ok = true; message = "OK"; break; }
+        if (command.alarmMask == 1UL) techGate_.touchHmi(now);   // keep-alive while the technician is working
+        else techGate_.lockHmi();
+        ok = true; message = "OK";
+        break;
+      case HmiCommandType::TechWebSet: {
+        if (remote) { message = "CHI HMI DUOC DOI QUYEN"; break; }
+        const bool allow = command.alarmMask != 0UL;
+        const TechAccess::Result r = techGate_.setWebAllowed(now, allow);
+        ok = techResultText(r, now, false, message);
+        if (ok) {
+          if (!allow) { finishTechPending(now, TechResult::Revoked); MayapTech::discard(); }
+          message = allow ? "WEB: HIEN" : "WEB: AN";
+        }
+        break;
+      }
+      case HmiCommandType::TechDecision: {
+        if (remote) { message = "CHI HMI DUOC XAC NHAN"; break; }
+        if (techPending_.kind == MayapTech::Kind::None) { message = "KHONG CO YEU CAU"; break; }
+        if (command.alarmMask == 0UL) { finishTechPending(now, TechResult::Declined); ok = true; message = "DA TU CHOI"; break; }
+        ok = executeTechPending(now, message);
+        break;
+      }
+      case HmiCommandType::TechRequestSubmit:
+        if (!remote) { message = "CHI WEB DUOC GUI"; break; }
+        ok = submitTechRequest(now, message);
+        break;
+      case HmiCommandType::AdvancedRestore: {
+        if (remote) { message = "CHI HMI DUOC KHOI PHUC"; break; }
+        ok = restoreAdvanced(now, static_cast<uint8_t>(command.alarmMask > 255UL ? 255U : command.alarmMask), message);
+        break;
+      }
+      default: break;
+    }
+    TechAccess::secureZero(pin, sizeof(pin));
+    return ok;
+  }
+  bool submitTechRequest(uint32_t now, const char *&message) {
+    if (!techGate_.webAllowed()) { MayapTech::discard(); message = "WEB_HIDDEN"; return false; }
+    if (!techGate_.webSessionActive(now)) { MayapTech::discard(); message = "WEB_LOCKED"; return false; }
+    MayapTech::Staged staged;
+    if (!MayapTech::take(staged)) { message = "NO_REQUEST"; return false; }
+    if (techPending_.kind != MayapTech::Kind::None) { message = "BUSY_PENDING"; return false; }
+    if (!runtime_.networkConnected) { message = "NO_NETWORK"; return false; }
+    if (batchRunning_ || resumePending_) { message = "BATCH_LOCKED"; return false; }
+    TechPending next;
+    next.kind = staged.kind;
+    snprintf(next.requestId, sizeof(next.requestId), "%s", staged.requestId);
+    if (staged.kind == MayapTech::Kind::Config) {
+      const AdvancedHistory::Snapshot current = AdvancedHistory::fromConfig(config_);
+      AdvancedHistory::Snapshot wanted = current;
+      AdvancedHistory::copyFields(wanted, staged.values, staged.mask);
+      next.mask = AdvancedHistory::differingMask(current, wanted);     // only what really differs is shown to the HMI
+      next.values = wanted;
+      if (next.mask == 0U) { message = "NO_CHANGE"; return false; }
+    } else if (staged.kind != MayapTech::Kind::AutoTune) {
+      message = "UNSUPPORTED"; return false;
+    }
+    next.deadline = now + MayapTech::RequestTtlMs;
+    techPending_ = next;
+    techResult_ = TechResult::Pending;
+    snprintf(techResultId_, sizeof(techResultId_), "%s", next.requestId);
+    message = "PENDING_HMI";
+    return true;
+  }
+  // The HMI said Yes. Every safety condition is checked again NOW; nothing is applied on a stale yes.
+  bool executeTechPending(uint32_t now, const char *&message) {
+    const TechPending request = techPending_;
+    if (timeReached(now, request.deadline)) { finishTechPending(now, TechResult::Expired); message = "HET HAN"; return false; }
+    if (!techGate_.webAllowed() || !techGate_.webSessionActive(now)) { finishTechPending(now, TechResult::Revoked); message = "QUYEN WEB DA THU HOI"; return false; }
+    bool ok = false;
+    if (request.kind == MayapTech::Kind::AutoTune) {
+      ok = startAutoTune(now, message);
+    } else {
+      ok = applyAdvancedSnapshot(now, request.values, message);
+    }
+    finishTechPending(now, ok ? TechResult::Applied : TechResult::Failed);
+    return ok;
+  }
+  // Apply the technical fields of `target` to the live configuration: undo record first, one atomic A/B config save, then publish.
+  bool applyAdvancedSnapshot(uint32_t now, const AdvancedHistory::Snapshot &target, const char *&message) {
+    if (techEditBlocked(message)) return false;
+    const AdvancedHistory::Snapshot current = AdvancedHistory::fromConfig(config_);
+    if (AdvancedHistory::same(current, target)) { message = "KHONG DOI"; return true; }
+    MachineConfig candidate = config_;
+    AdvancedHistory::applyTo(candidate, target);
+    sanitizeMachineConfig(candidate);
+    if (!mayapPidHasAuthority(candidate)) { message = "PID KHONG HOP LE"; return false; }
+    if (!history_.push(current)) { message = "LOI LUU BAN GHI CU"; return false; }
+    const MachineConfig previousConfig = config_;
+    MachineConfig readback{};
+    if (!store_.saveConfig(candidate, readback)) {
+      latchStorageFault("CONFIG SAVE");
+      message = "LOI LUU CAU HINH";
+      return false;
+    }
+    commitSavedConfig(now, previousConfig, readback);
+    clearStorageDegraded(now);
+    message = "DA AP DUNG";
+    return true;
+  }
+  bool restoreAdvanced(uint32_t now, uint8_t rank, const char *&message) {
+    if (!techGate_.hmiUnlocked(now)) { message = "CAN NHAP MA KY THUAT"; return false; }
+    AdvancedHistory::Snapshot target;
+    if (!history_.get(rank, target)) { message = "KHONG CO BAN GHI"; return false; }
+    if (!applyAdvancedSnapshot(now, target, message)) return false;
+    if (!strcmp(message, "DA AP DUNG")) message = "DA KHOI PHUC";
+    return true;
+  }
+  // Once per control cycle: expiry/revocation of the pending request and the read-only mirror for the HMI and the Web.
+  void serviceTech(uint32_t now) {
+    if (techGate_.storageError() && timeReached(now, techRetryAt_)) {
+      techRetryAt_ = now + 3000UL;
+      techGate_.retryLoad(now);
+      history_.begin();
+    }
+    if (techPending_.kind != MayapTech::Kind::None) {
+      if (!techGate_.webAllowed() || !techGate_.webSessionActive(now)) finishTechPending(now, TechResult::Revoked);
+      else if (!runtime_.networkConnected || timeReached(now, techPending_.deadline)) finishTechPending(now, TechResult::Expired);
+    }
+    // Wi-Fi / Cloudflare lost: the Web session ends with it (local thermal control never depended on any of this).
+    if (!runtime_.networkConnected && techGate_.webSessionActive(now)) techGate_.revokeWeb();
+    TechStatus &t = runtime_.tech;
+    t.pinSet = techGate_.pinConfigured();
+    t.storageError = techGate_.storageError();
+    t.hmiUnlocked = techGate_.hmiUnlocked(now);
+    t.webAllowed = techGate_.webAllowed();
+    t.webSession = techGate_.webSessionActive(now);
+    t.lockRemainingS = static_cast<uint16_t>(std::min<uint32_t>(65535UL, (techGate_.lockRemainingMs(now) + 999UL) / 1000UL));
+    t.webSessionRemainingS = static_cast<uint16_t>(std::min<uint32_t>(65535UL, techGate_.webRemainingMs(now) / 1000UL));
+    t.historyCount = history_.count();
+    t.pendingKind = static_cast<uint8_t>(techPending_.kind);
+    t.pendingMask = techPending_.mask;
+    t.pendingValues = techPending_.values;
+    t.pendingRemainingS = techPending_.kind == MayapTech::Kind::None ? 0U : static_cast<uint8_t>(std::min<uint32_t>(
+        255UL, (timeReached(now, techPending_.deadline) ? 0UL : static_cast<uint32_t>(techPending_.deadline - now)) / 1000UL));
+    t.resultState = techResult_;
+    snprintf(t.resultId, sizeof(t.resultId), "%s", techResultId_);
+  }
+  // Read-only PID monitor. Numbers come from the controller that is running; the 60 s mean is of the arbiter's REAL SSR state.
+  void publishPidMonitor(uint32_t now) {
+    const uint32_t dtMs = std::min<uint32_t>(elapsedMs(now, pidMonAt_), 1000UL);
+    pidMonAt_ = now;
+    const bool on = outputs_.state().heaterSsr && outputs_.state().heatMaster;
+    pidMonActual_ += ((on ? 100.0f : 0.0f) - pidMonActual_) * std::min(1.0f, static_cast<float>(dtMs) / 60000.0f);
+    PidMonitorData &m = runtime_.pidMon;
+    m.valid = sensorUsable_ && isfinite(temperature_);
+    m.error = m.valid ? config_.targetTemp - temperature_ : 0.0f;
+    m.pidCorrection = pid_.lastCorrection();
+    m.holdFf = pid_.lastHoldFf();
+    m.ventFf = pid_.lastVentFf();
+    m.limitLo = pid_.lastLimitLo();
+    m.limitHi = pid_.lastLimitHi();
+    m.requestPct = runtime_.heaterPower;
+    m.actualAvgPct = pidMonActual_;
   }
 
   bool startBatch(uint32_t now, const char *&message) {
@@ -5503,6 +5810,7 @@ class MachineController {
     }
     if (tunedReady) {
       MachineConfig readback{};
+      recordAdvancedHistory(config_);   // the pre-tune PID stays available on the HMI ("BAN GHI CU")
       if (store_.saveConfig(tuned, readback)) {
         config_ = readback;
         hmiSetConfig(config_);
@@ -7352,6 +7660,8 @@ class MachineController {
     }
     runtime_.stateCode = stateCode;
     snprintf(runtime_.machineState, sizeof(runtime_.machineState), "%s", state);
+    serviceTech(now);
+    publishPidMonitor(now);
     hmiSetRuntime(runtime_);
     mayapRealtimeSetRuntime(runtime_);
     mayapCloudSetRuntime(runtime_);
@@ -7760,6 +8070,24 @@ class MachineController {
   PowerManager power_{};
   RtcDs3231 rtc_{};
   PersistentStore store_{};
+  TechAuthStorage techAuthStorage_{store_};
+  TechAccess::Gate<TechAuthStorage> techGate_{techAuthStorage_};
+  AdvHistoryStorage advHistoryStorage_{store_};
+  AdvancedHistory::Ring<AdvHistoryStorage> history_{advHistoryStorage_};
+  // A Web technical request waits here for the HMI's Yes/No; RAM only (a reboot cancels it), at most one at a time.
+  struct TechPending {
+    MayapTech::Kind kind = MayapTech::Kind::None;
+    uint32_t deadline = 0;
+    uint16_t mask = 0;
+    AdvancedHistory::Snapshot values;
+    char requestId[MayapTech::RequestIdCapacity] = "";
+  } techPending_;
+  TechResult techResult_ = TechResult::None;
+  char techResultId_[MayapTech::RequestIdCapacity] = "";
+  char techMessage_[40] = "";
+  uint32_t techRetryAt_ = 0;
+  uint32_t pidMonAt_ = 0;
+  float pidMonActual_ = 0.0f;
   InputManager inputs_{};
   SHT485Industrial sensor_{};
   ThermalController pid_{};

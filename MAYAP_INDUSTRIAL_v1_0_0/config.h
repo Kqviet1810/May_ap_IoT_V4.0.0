@@ -6,6 +6,7 @@
 #include <math.h>
 
 #include "build_public.h"
+#include "advanced_history.h"
 
 // ============================================================================
 // MAY AP TRUNG INDUSTRIAL v3.4.0 - CAU HINH DUY NHAT CAN SUA
@@ -1196,6 +1197,31 @@ struct HmiEventSnapshot {
   HmiEventItem items[HMI_EVENT_DISPLAY_CAPACITY]{};
 };
 
+// Technical access ("Nang cao") state, mirrored READ-ONLY for the HMI and the Web. Owner: MachineController (control task).
+enum class TechResult : uint8_t { None, Pending, Applied, Declined, Expired, Failed, Revoked };
+struct TechStatus {
+  bool pinSet = false, hmiUnlocked = false, webAllowed = false, webSession = false, storageError = false;
+  uint16_t lockRemainingS = 0;
+  uint16_t webSessionRemainingS = 0;
+  uint8_t pendingKind = 0;            // 0 none, 1 config change, 2 Smart AutoTune
+  uint8_t pendingRemainingS = 0;      // of the 60 s the HMI has to answer
+  uint16_t pendingMask = 0;           // which snapshot fields the Web asked to change
+  AdvancedHistory::Snapshot pendingValues;
+  uint8_t historyCount = 0;           // advanced-config records available on the HMI (0..3)
+  TechResult resultState = TechResult::None;   // outcome of the last Web technical request
+  char resultId[40] = "";
+};
+// Read-only PID monitor. Every figure comes from the running controller (nothing is simulated); feed-forward is reported once.
+struct PidMonitorData {
+  bool valid = false;
+  float error = 0;                    // SP - PV
+  float pidCorrection = 0;            // P + I + D only (feed-forwards excluded)
+  float holdFf = 0, ventFf = 0;       // learned hold feed-forward / vent feed-forward, each counted once
+  float limitLo = 0, limitHi = 100;   // adaptive authority corridor of the final request [%]
+  float requestPct = 0;               // final heater request after every limit [%]
+  float actualAvgPct = 0;             // moving average (60 s) of the REAL SSR ON share [%]
+};
+
 struct MachineRuntime {
   float temperature = NAN;
   float humidity = NAN;
@@ -1288,6 +1314,9 @@ struct MachineRuntime {
   WifiPortalState wifiPortalState = WifiPortalState::Idle;
   char wifiPortalApName[20] = "";
   char wifiPortalPassword[16] = "";
+
+  TechStatus tech;
+  PidMonitorData pidMon;
 };
 
 enum class HmiCommandType : uint8_t {
@@ -1302,7 +1331,15 @@ enum class HmiCommandType : uint8_t {
   BatchOverdueContinue,
   // User-requested stop of an Auto Tune already in progress. Appended to keep
   // every existing command numeric value stable for queues/tests/protocol.
-  AutoTuneCancel
+  AutoTuneCancel,
+  // Technical access (appended: every older value keeps its number). PIN digits travel as a number in alarmMask.
+  TechPinVerify,      // Local: unlock the HMI session; Remote: unlock the Web session (only while the HMI permission is ON)
+  TechPinSet,         // Local only: create / change the PIN
+  TechLock,           // Local: end the HMI session; Remote: end the Web session
+  TechWebSet,         // Local only: alarmMask 1 = Web may use technical features, 0 = hidden (revokes the session + pending request)
+  TechDecision,       // Local only: alarmMask 1 = approve, 0 = decline the pending Web request
+  TechRequestSubmit,  // Remote only: the staged technical request (config values or Smart AutoTune)
+  AdvancedRestore     // Local only: alarmMask = rank 0..2 of the advanced-config record to restore
 };
 // F-09 (audit truoc phat hanh v3.7.1): AlarmAck truoc day khong phan biet
 // lenh den tu bang dieu khien vat ly (HMI) hay tu xa (MQTT/web) - mot nguoi
