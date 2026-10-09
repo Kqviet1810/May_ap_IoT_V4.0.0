@@ -1370,6 +1370,22 @@ struct HmiCommand {
 };
 enum class BuzzerCue : uint8_t { None, Key, Save, Ok, Error };
 
+// HMI "Thiet bi ket noi": the accounts linked to this machine (Cloud). Display names and roles only - never e-mail or account ids.
+// The ref is an opaque handle the Worker understands; the owner cannot be removed.
+constexpr uint8_t MEMBER_LIST_MAX = 8U;
+struct MemberEntry { char ref[17]; char name[17]; uint8_t owner; };
+enum class MemberListState : uint8_t { Idle, Loading, Ready, Error, Offline };
+struct MemberListSnapshot {
+  MemberListState state = MemberListState::Idle;
+  uint8_t count = 0;
+  uint8_t removeResult = 0;      // 0 none, 1 removed, 2 failed (cleared by the next request)
+  uint32_t seq = 0;
+  MemberEntry entry[MEMBER_LIST_MAX] = {};
+};
+void mayapRequestMemberList();
+void mayapRequestMemberRemove(uint8_t index);
+MemberListSnapshot mayapMemberSnapshot();
+
 using HmiI2cLockFn = bool (*)(uint32_t timeoutMs);
 using HmiI2cUnlockFn = void (*)();
 

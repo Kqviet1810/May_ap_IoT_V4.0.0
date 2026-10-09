@@ -173,3 +173,58 @@ test('PID Monitor and thermal profile are read-only views fed by the running con
   const monCase = input.slice(input.indexOf('case View::PidMonitor:'), input.indexOf('case View::AdvHistory:'));
   assert.doesNotMatch(monCase, /queueCommand|startConfigSave/);
 });
+
+test('HE THONG: Thong tin ket noi gathers Doi wifi / Ma QR / Dat lai PIN / Thiet bi ket noi; Thoi gian ngu is a system item', () => {
+  const slots = bodyOf('GroupExtra groupExtraSlot(');
+  assert.match(slots, /group == 3 && slot == 0\) return GroupExtra::ConnectionInfo/);
+  assert.match(slots, /group == 3 && slot == 1\) return GroupExtra::SleepTime/);
+  assert.match(slots, /group == 3 && slot == 2\) return GroupExtra::FirmwareWebUpdate/);
+  for (const moved of ['WifiChange', 'QrCode', 'CloudPinReset']) assert.doesNotMatch(slots, new RegExp(`return GroupExtra::${moved}`));
+  // the sub-menu: Chi tiet is the old "Thong tin ket noi" view; cloud-backed items only while Online
+  const items = bodyOf('ConnItem connMenuItemAt(');
+  const order = ['Detail', 'WifiChange', 'QrCode', 'PinReset', 'Members', 'Exit'].map((n) => items.indexOf(`ConnItem::${n}`));
+  assert.ok(order.every((v, i) => v >= 0 && (i === 0 || v > order[i - 1])), 'order Chi tiet, Doi wifi, QR, PIN, Thiet bi, Thoat');
+  assert.match(items, /if \(online\) items\[n\+\+\] = ConnItem::WifiChange/);
+  assert.match(items, /if \(online\) \{ items\[n\+\+\] = ConnItem::PinReset; items\[n\+\+\] = ConnItem::Members; \}/);
+  const input = bodyOf('void handleInput()');
+  assert.match(input, /case ConnItem::Detail: view = View::ConnectionInfo/);
+  assert.match(input, /case ConnItem::Members: openMemberList\(\)/);
+  // every sub screen returns to the sub-menu, the sub-menu returns to HE THONG
+  const back = bodyOf('void goBack()');
+  for (const v of ['WifiChange', 'ConnectionInfo', 'QrCode', 'MemberList']) assert.match(back, new RegExp(`case View::${v}:[\\s\\S]*?view = View::ConnMenu`));
+  assert.match(back, /case View::ConnMenu:\s*view = View::SettingList/);
+  assert.match(bodyOf('void openCloudPinResetConfirm('), /confirmReturnView = View::ConnMenu/);
+});
+
+test('Thiet bi ket noi: list from Cloud, owner cannot be removed, removal needs CO/KHONG confirmation', () => {
+  const input = bodyOf('void handleInput()');
+  assert.match(input, /memberView\.entry\[memberIndex\]\.owner\) showToast\("KHONG XOA DUOC CHU MAY"/);
+  assert.match(input, /else openMemberRemoveConfirm\(memberIndex\)/);
+  assert.match(bodyOf('void openMemberRemoveConfirm('), /confirmAction = ConfirmAction::MemberRemove/);
+  assert.match(hmi, /action == ConfirmAction::MemberRemove\) \{\s*mayapRequestMemberRemove\(memberRemovePending\)/);
+  assert.match(bodyOf('void openMemberList('), /CHI DUNG DUOC KHI ONLINE/);
+  const cloud = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'cloud_alert_link.h'), 'utf8');
+  assert.match(cloud, /!memberSnap\.entry\[removeAt\]\.owner/);                       // firmware refuses an owner row even if asked
+  assert.match(cloud, /"\/api\/device\/members\/remove"/);
+  assert.match(cloud, /servicePinReset\(\);\s*serviceMembers\(\);/);                    // same Cloud owner/admission path as reset-PIN, no new task
+});
+
+test('Man hinh ngu: only temperature + humidity, thin divider clear of top and bottom, small clock top-left, 2 min default, managed in HE THONG', () => {
+  assert.match(hmi, /SLEEP_MINUTES_DEFAULT = 2U/);
+  const draw = bodyOf('void drawSleep()');
+  assert.match(draw, /lcd\.drawStr\(0, 8, currentRuntime\.timeText\)/);                // same small clock slot as the Home header
+  const divider = draw.match(/drawVLine\(64, (\d+), (\d+)\)/);
+  assert.ok(divider && Number(divider[1]) >= 8 && Number(divider[1]) + Number(divider[2]) <= 56, 'divider leaves a margin at top and bottom');
+  assert.doesNotMatch(draw, /targetTemp|currentDay|machineState/);                       // nothing else on the sleep screen
+  const update = bodyOf('void hmiUpdate(');
+  assert.match(update, /now - lastInteractionAt >= static_cast<uint32_t>\(sleepMinutes\) \* 60000UL/);
+  assert.match(update, /view == View::Home && !splashActive && !confirmationActive\(\)/);
+  assert.match(update, /currentRuntime\.activeFaultCount == 0 && currentRuntime\.alarmMask == 0/);   // a fault or alarm always wakes the screen
+  // the first input only wakes the screen; it never triggers the action underneath
+  const input = bodyOf('void handleInput()');
+  assert.match(input, /if \(sleepActive && \(rotary\.step \|\| rotary\.button != ButtonEvent::None\)\) \{\s*sleepActive = false;[\s\S]*?return;/);
+  assert.match(bodyOf('void loadSleepMinutes('), /"mayap_ui"[\s\S]*sleep_min/);
+  const edit = input.slice(input.indexOf('case View::SleepTime:'));
+  assert.match(edit, /constrain\(static_cast<int>\(sleepEditValue\) \+ rotary\.step, 0, SLEEP_MINUTES_MAX\)/);
+  assert.match(edit, /saveSleepMinutes\(sleepEditValue\)/);
+});

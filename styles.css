@@ -542,6 +542,8 @@ dialog::backdrop{background:#071e1a88;backdrop-filter:blur(3px)}
 .deviceListItem button{border:0;background:var(--dangerSoft);color:var(--danger);border-radius:9px;min-height:40px;padding:8px 14px;font-size:var(--fs-xs);font-weight:700;cursor:pointer;transition:filter var(--ease)}
 .deviceListItem button:hover{filter:brightness(.95)}
 
+/* Thanh dieu huong chi hien khi bam nut 3 gach (man nho / dien thoai ngang); man lon giu sidebar. */
+.navToggle{display:none}
 /* =============================== Responsive =================================== */
 /* Tablet dọc: giữ đầu trang một hàng, thu sidebar để thông số đủ chỗ. */
 @media(max-width:1024px) and (min-width:801px){
@@ -836,3 +838,16 @@ body[data-page="batch"] .telemetryCanvasWrap{flex:1 1 0;height:0;min-height:72px
 .avatarRefresh:focus-visible{outline:2px solid currentColor;outline-offset:-3px}
 #profilePhotoDialog{width:min(360px,calc(100vw - 24px))}
 #profilePhotoDialog .googleLogin{margin:16px 0;display:flex;justify-content:center}
+
+/* Man nho: thanh tab an, nut 3 gach co dinh o goc duoi trai; bam vao moi hien thanh tab (khong che noi dung nua). */
+@media(max-width:800px),(max-height:500px){
+  .navToggle{display:grid;place-items:center;position:fixed;z-index:60;left:max(12px,env(safe-area-inset-left,0px));bottom:calc(14px + var(--safeBottomMax));width:48px;height:48px;padding:0;border:1px solid var(--navBorder);border-radius:16px;background:var(--navBg);color:var(--navActiveText);box-shadow:var(--shadow);cursor:pointer}
+  .navToggle svg{width:24px;height:24px}
+  .navToggle:focus-visible{outline:2px solid var(--ring);outline-offset:3px}
+  .sidebar{position:static;inset:auto;height:0;padding:0;bottom:auto;overflow:visible}
+  .nav{display:none;position:fixed;z-index:59;left:max(12px,env(safe-area-inset-left,0px));bottom:calc(72px + var(--safeBottomMax));width:min(220px,calc(100vw - 24px));height:auto;margin:0;grid-template-columns:1fr;gap:4px;padding:8px;border-radius:20px}
+  .nav.open{display:grid}
+  .nav button{min-height:48px;padding:6px 12px;display:flex;flex-direction:row;justify-content:flex-start;align-items:center;gap:12px;text-align:left}
+  .nav button b{font-size:var(--fs-sm)}
+  .main{padding-bottom:calc(76px + var(--safeBottomMax))}
+}

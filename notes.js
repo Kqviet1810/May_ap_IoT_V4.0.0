@@ -43,9 +43,7 @@
     function bounds() {
       const v = root.visualViewport, left = v?.offsetLeft || 0, top = v?.offsetTop || 0;
       const width = v?.width || root.innerWidth, height = v?.height || root.innerHeight;
-      const nav = document.querySelector('.nav')?.getBoundingClientRect();
-      let bottom = top + height - 12;
-      if (nav && nav.top > top + height / 2 && nav.width > width / 2) bottom = Math.min(bottom, nav.top - 12);
+      const bottom = top + height - 12;
       const safe = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safeBottom')) || 0;
       return { left:left + 12, right:left + width - 12, top:top + 12, bottom:Math.max(top + 64, bottom - safe), width, height };
     }
@@ -54,10 +52,8 @@
       bubble.style.left = `${dock.side === 'left' ? b.left : Math.max(b.left, b.right - 52)}px`;
       const targetY = b.top + (maxY - b.top) * dock.y;
       const x = parseFloat(bubble.style.left);
-      const obstacles = [...document.querySelectorAll('.nav,footer,.main button,.main input,.main select,.main textarea')].map(n => n.getBoundingClientRect()).filter(r => r.width && r.height && r.left < x + 52 && r.right > x && r.bottom > b.top && r.top < b.bottom);
-      const candidates = [targetY,b.top,maxY,...obstacles.flatMap(r => [r.top - 60,r.bottom + 8])].filter(y => y >= b.top && y <= maxY && obstacles.every(r => y + 52 <= r.top - 8 || y >= r.bottom + 8));
-      candidates.sort((a,c) => Math.abs(a-targetY) - Math.abs(c-targetY));
-      bubble.style.top = `${candidates[0] ?? targetY}px`;
+      // Fixed on every tab: only a drag by the user changes its position (no dodging of page content, no jumps on scroll).
+      bubble.style.top = `${targetY}px`;
       if (!panel.hidden) {
         const width = Math.min(b.width <= 600 ? b.width - 24 : 360, b.width - 24), r = bubble.getBoundingClientRect();
         panel.style.width = all ? '' : `${width}px`;
@@ -102,8 +98,6 @@
       drag = null;
     }
     bubble.addEventListener('pointerup', endDrag); bubble.addEventListener('pointercancel', endDrag);
-    let scrollFrame = 0;
-    document.addEventListener('scroll', () => { if (!scrollFrame) scrollFrame = root.requestAnimationFrame(() => { scrollFrame = 0; position(); }); }, { passive:true, capture:true });
     root.addEventListener('resize', position, { passive:true }); root.visualViewport?.addEventListener('resize', position, { passive:true }); root.visualViewport?.addEventListener('scroll', position, { passive:true });
     function context() { return getContext() || {}; }
     function writable() { return Boolean(context().notesWritable && listNotes && saveNote && deleteNote); }

@@ -123,3 +123,23 @@ test('UI/core scripts share one release-qualified asset set and cache',()=>{
   assert.ok(html.includes(`./${name}.js?v=${version}`));assert.ok(sw.includes(`./${name}.js?v=${version}`));
  }
 });
+
+test('small screens: tab bar is a hamburger-opened panel (no content hidden); the notes bubble stays put on every tab', () => {
+  const fs2 = require('node:fs');
+  const html = fs2.readFileSync('index.html', 'utf8'), css = fs2.readFileSync('styles.css', 'utf8');
+  const app = fs2.readFileSync('app.js', 'utf8'), notes = fs2.readFileSync('notes.js', 'utf8');
+  assert.match(html, /id="navToggle"[^>]*aria-controls="mainNav"|aria-controls="mainNav"[^>]*id="navToggle"/);
+  assert.match(html, /<nav class="nav" id="mainNav">/);
+  const mobile = css.slice(css.lastIndexOf('@media(max-width:800px),(max-height:500px){'));
+  assert.match(mobile, /\.navToggle\{display:grid[^}]*position:fixed[^}]*left:/);          // fixed button on the left edge
+  assert.match(mobile, /\.nav\{display:none;position:fixed/);                              // hidden until opened
+  assert.match(mobile, /\.nav\.open\{display:grid\}/);
+  assert.match(css, /\.navToggle\{display:none\}/);                                        // desktop keeps the sidebar
+  assert.match(app, /navToggle\.addEventListener\('click'/);
+  assert.match(app, /event\.key === 'Escape' && navPanel\.classList\.contains\('open'\)/);
+  assert.match(app, /setNavOpen\(false\); showPage\(button\.dataset\.page\)/);              // choosing a tab closes the panel
+  // notes bubble: no dodging of page content, no repositioning on scroll - only a drag moves it
+  assert.doesNotMatch(notes, /obstacles|candidates|scrollFrame/);
+  assert.match(notes, /bubble\.style\.top = `\$\{targetY\}px`/);
+  assert.doesNotMatch(notes, /document\.addEventListener\('scroll'/);
+});

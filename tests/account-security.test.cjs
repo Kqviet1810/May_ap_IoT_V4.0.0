@@ -313,3 +313,28 @@ test('/api/mqtt-session issues a verifiable control grant only to owners/operato
   assert.equal((await h.call('/api/mqtt-session',owner,{device_id:id,client_id:'short'})).status,400);
   assert.equal((await h.call('/api/mqtt-session',undefined,body)).status,401);
 });
+test('HMI device members: device key lists display names only, removes non-owners, never the owner, rejects a wrong key',async()=>{
+  const h=await setup(), owner=await h.login('owner-sub'), guest=await h.login('guest-sub'), id=await h.device(0xA1);
+  const key='a'.repeat(64), pepper={MAYAP_SESSION_PEPPER:h.env.DEVICE_KEY_PEPPER};
+  h.sql.prepare('UPDATE devices SET device_key_hash=? WHERE device_id=?').run(await h.auth.hash(key,pepper),id);
+  assert.equal((await h.call('/api/account/devices/claim',owner,{device_id:id,pin:'123456'})).status,200);
+  h.sql.prepare("INSERT INTO user_devices(user_sub,device_id,role,created_at) VALUES(?,?,'viewer',?)").run('guest-sub',id,Date.now());
+  h.sql.prepare('INSERT INTO push_subscriptions(device_id,endpoint,p256dh,auth,user_sub,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').run(id,'https://push.example/g','p','a','guest-sub',1,1);
+  const call=(path,data)=>h.call(path,null,data,'POST',{Origin:''});
+  assert.equal((await call('/api/device/members',{device_id:id,device_key:'b'.repeat(64)})).status,401);
+  assert.equal((await call('/api/device/members',{device_id:id,device_key:'short'})).status,401);
+  const listed=await (await call('/api/device/members',{device_id:id,device_key:key})).json();
+  assert.equal(listed.success,true); assert.equal(listed.members.length,2);
+  assert.deepEqual(listed.members.map(m=>m.role),['owner','viewer']);
+  assert.ok(listed.members.every(m=>Object.keys(m).sort().join()==='name,ref,role'));      // no e-mail, no account id
+  assert.ok(!JSON.stringify(listed).includes('@example.test'));
+  const ownerRef=listed.members[0].ref, guestRef=listed.members[1].ref;
+  assert.equal((await call('/api/device/members/remove',{device_id:id,device_key:key,ref:ownerRef})).status,403);
+  assert.equal((await call('/api/device/members/remove',{device_id:id,device_key:key,ref:'0'.repeat(16)})).status,404);
+  assert.equal((await call('/api/device/members/remove',{device_id:id,device_key:'b'.repeat(64),ref:guestRef})).status,401);
+  assert.equal(h.sql.prepare('SELECT COUNT(*) n FROM user_devices WHERE device_id=?').get(id).n,2);
+  assert.equal((await call('/api/device/members/remove',{device_id:id,device_key:key,ref:guestRef})).status,200);
+  assert.equal(h.sql.prepare('SELECT COUNT(*) n FROM user_devices WHERE device_id=?').get(id).n,1);
+  assert.equal(h.sql.prepare("SELECT COUNT(*) n FROM push_subscriptions WHERE user_sub='guest-sub'").get().n,0);
+  assert.equal(h.sql.prepare("SELECT role FROM user_devices WHERE device_id=?").get(id).role,'owner');
+});

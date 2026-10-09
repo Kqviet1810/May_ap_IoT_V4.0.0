@@ -3788,7 +3788,13 @@
       if (!card.open) return;
       document.querySelectorAll('.settingCard').forEach((other) => { if (other !== card) other.open = false; });
     }));
-    document.querySelectorAll('.nav button').forEach((button) => button.addEventListener('click', () => showPage(button.dataset.page)));
+    const navPanel = $('mainNav'), navToggle = $('navToggle');
+    // Thanh tab an tren man nho: nut 3 gach mo/dong; chon trang, bam ra ngoai hoac Esc se dong lai.
+    const setNavOpen = (open) => { navPanel.classList.toggle('open', open); navToggle.setAttribute('aria-expanded', open ? 'true' : 'false'); navToggle.setAttribute('aria-label', open ? 'Đóng menu' : 'Mở menu'); };
+    navToggle.addEventListener('click', () => setNavOpen(!navPanel.classList.contains('open')));
+    document.addEventListener('pointerdown', (event) => { if (navPanel.classList.contains('open') && !navPanel.contains(event.target) && !navToggle.contains(event.target)) setNavOpen(false); });
+    document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && navPanel.classList.contains('open')) { setNavOpen(false); navToggle.focus(); } });
+    document.querySelectorAll('.nav button').forEach((button) => button.addEventListener('click', () => { setNavOpen(false); showPage(button.dataset.page); }));
 
     $('deviceSelector').addEventListener('change', (event) => {
       const previous = state.selectedId;

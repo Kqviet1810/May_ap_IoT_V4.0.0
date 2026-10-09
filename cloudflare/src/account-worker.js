@@ -274,8 +274,34 @@ async function claim(request, env, auth, data) {
   if (owner?.user_sub!==auth.user_sub) return json({success:false,error:'Thiết bị đã thuộc một tài khoản khác.'},409);
   return json({success:true,device_id:id,device_name:device.device_name || id});
 }
+
+// Physical presence at the machine manages who is linked to it (HMI "Thiết bị kết nối"): authenticated by the firmware's device key,
+// like reset-pin. The list shows display names + roles only (never e-mail); the owner can never be removed from the machine.
+const memberRef = async (env, sub) => (await hash('member:'+sub, env)).slice(0, 16);
+async function handleDeviceMembers(request, env, remove) {
+  let data = null;
+  try { data = await body(request); } catch (_) { return json({ success:false, error:'JSON_INVALID' }, 400); }
+  const id = String(data?.device_id || '').trim(), key = String(data?.device_key || '');
+  if (!idRe.test(id) || !/^[a-f0-9]{64}$/.test(key) || !env.DEVICE_KEY_PEPPER || !env.MAYAP_SESSION_PEPPER) return json({ success:false, error:'DEVICE_AUTH' }, 401);
+  const device = await env.DB.prepare('SELECT device_key_hash FROM devices WHERE device_id=?').bind(id).first();
+  if (!device || !await verifyDeviceKey(key, env.DEVICE_KEY_PEPPER, device.device_key_hash)) return json({ success:false, error:'DEVICE_AUTH' }, 401);
+  const { results } = await env.DB.prepare(`SELECT ud.user_sub, ud.role, u.name FROM user_devices ud JOIN users u ON u.google_sub=ud.user_sub
+    WHERE ud.device_id=? ORDER BY CASE ud.role WHEN 'owner' THEN 0 ELSE 1 END, ud.created_at LIMIT 8`).bind(id).all();
+  const rows = [];
+  for (const row of results) rows.push({ sub:row.user_sub, ref:await memberRef(env, row.user_sub), role:row.role, name:String(row.name || '').trim().slice(0, 16) || 'Tài khoản' });
+  if (!remove) return json({ success:true, members:rows.map(({ ref, role, name }) => ({ ref, role, name })) });
+  const target = rows.find(row => row.ref === String(data?.ref || ''));
+  if (!target) return json({ success:false, error:'MEMBER_NOT_FOUND' }, 404);
+  if (target.role === 'owner') return json({ success:false, error:'OWNER_PROTECTED' }, 403);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM user_devices WHERE device_id=? AND user_sub=? AND role!='owner'").bind(id, target.sub),
+    env.DB.prepare('DELETE FROM push_subscriptions WHERE device_id=? AND user_sub=?').bind(id, target.sub),
+  ]);
+  return json({ success:true });
+}
 async function fetchAccount(request, env, ctx) {
   const url=new URL(request.url), path=url.pathname, method=request.method;
+  if (method==='POST' && (path==='/api/device/members' || path==='/api/device/members/remove')) return handleDeviceMembers(request, env, path.endsWith('/remove'));
   // Existing physical-device authentication and task architecture stay unchanged.
   if ((method==='POST' && physical.has(path)) || (method==='GET' && /^\/api\/firmware\/download\//.test(path))) {
     return physicalWorker.fetch(request,env,ctx);

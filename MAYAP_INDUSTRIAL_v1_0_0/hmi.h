@@ -19,6 +19,7 @@
 #include <string.h>
 #include <type_traits>
 #include <ctype.h>
+#include <Preferences.h>
 #include <stdlib.h>
 #if MAYAP_HMI_ENCODER_INTERRUPT
 #include <driver/gpio.h>
@@ -629,18 +630,17 @@ static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) =
 // "Doi wifi" chi hien khi Online) qua visibleGroupExtraAt() de ra danh sach
 // LIEN TUC hien thi tren man hinh. (groupExtraSlotVisible/visibleGroupExtraAt/
 // groupVisibleExtraCount dat o DUOI, sau khai bao currentConfig - xem do.)
-enum class GroupExtra : uint8_t { None, TurnStats, WifiChange, ConnectionInfo, QrCode, CloudPinReset, FirmwareWebUpdate, AutoTuneEntry, VentilationEntry };
+enum class GroupExtra : uint8_t { None, TurnStats, WifiChange, ConnectionInfo, QrCode, CloudPinReset, FirmwareWebUpdate, AutoTuneEntry, VentilationEntry, SleepTime };
 GroupExtra groupExtraSlot(uint8_t group, uint8_t slot) {
   // "Tu chinh PID" (Smart AutoTune) nay nam trong NANG CAO, khong con la dong phu cua NHIET DO.
   if (group == 2 && slot == 0) return GroupExtra::TurnStats;      // DAO TRUNG -> "So lan dao"
   // Thu tu da quy hoach lai (nhom HE THONG): 2 muc ve MANG di lien nhau
   // truoc (thong tin + doi wifi), roi den DINH DANH/BAO MAT (QR + PIN), cuoi
   // cung la CAP NHAT (dung chung root voi may, it thao tac nhat).
-  if (group == 3 && slot == 0) return GroupExtra::ConnectionInfo;   // HE THONG -> "Thong tin ket noi"
-  if (group == 3 && slot == 1) return GroupExtra::WifiChange;       // HE THONG -> "Doi wifi"
-  if (group == 3 && slot == 2) return GroupExtra::QrCode;           // HE THONG -> "Ma QR ID"
-  if (group == 3 && slot == 3) return GroupExtra::CloudPinReset;    // HE THONG -> "Dat lai ma PIN"
-  if (group == 3 && slot == 4) return GroupExtra::FirmwareWebUpdate;
+  // Doi wifi / Ma QR / Dat lai ma PIN / Thiet bi ket noi nay nam TRONG "Thong tin ket noi" (View::ConnMenu).
+  if (group == 3 && slot == 0) return GroupExtra::ConnectionInfo;   // HE THONG -> "Thong tin ket noi" (menu con)
+  if (group == 3 && slot == 1) return GroupExtra::SleepTime;        // HE THONG -> "Thoi gian ngu" (man hinh ngu)
+  if (group == 3 && slot == 2) return GroupExtra::FirmwareWebUpdate;
   // Menu Thong gio la nhanh con cua QUAT HUT.
   if (group == 6 && slot == 0) return GroupExtra::VentilationEntry;
   return GroupExtra::None;
@@ -804,10 +804,12 @@ enum class View : uint8_t {
   EventLog, Alarm, TestMode, TestSummary, WifiChange, ConnectionInfo, QrCode,
   FirmwareProgress, TurnStatus, VentilationMenu, VentilationAdvanced, FirmwareMenu,
   // NANG CAO (can ma ky thuat): nhap ma, menu, PID Monitor, ho so nhiet, ban ghi cu, quyen Web, yeu cau tu Web.
-  AdvPin, AdvMenu, PidMonitor, ThermalProfile, AdvHistory, AdvHistoryView, WebAccess, TechRequest
+  AdvPin, AdvMenu, PidMonitor, ThermalProfile, AdvHistory, AdvHistoryView, WebAccess, TechRequest,
+  // HE THONG: "Thong tin ket noi" gom Chi tiet / Doi wifi / Ma QR / Dat lai PIN / Thiet bi ket noi; Thoi gian ngu.
+  ConnMenu, MemberList, SleepTime
 };
 
-enum class ConfirmAction : uint8_t { None, BatchToggle, AutoTuneStart, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AutoTuneCancel, AdvRestore };
+enum class ConfirmAction : uint8_t { None, BatchToggle, AutoTuneStart, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AutoTuneCancel, AdvRestore, MemberRemove };
 
 // Prototype thu cong: Arduino IDE tu sinh prototype cho ham trong .ino.
 // Neu ham dung enum/struct tuy chinh, prototype tu dong co the bi chen
@@ -870,6 +872,65 @@ uint8_t visibleExtraIndexOf(uint8_t group, GroupExtra target) {
     if (extra == target || extra == GroupExtra::None) return idx;
     ++idx;
   }
+}
+
+
+// ---- Menu con "Thong tin ket noi" (HE THONG): Chi tiet / Doi wifi / Ma QR ID / Dat lai ma PIN / Thiet bi ket noi / Thoat.
+// Doi wifi, Dat lai PIN va Thiet bi ket noi can Cloud nen chi hien khi dang Online (giong truoc day).
+enum class ConnItem : uint8_t { None, Detail, WifiChange, QrCode, PinReset, Members, Exit };
+ConnItem connMenuItemAt(uint8_t idx) {
+  const bool online = currentConfig.connectivityMode == ConnectivityMode::Online;
+  ConnItem items[6];
+  uint8_t n = 0;
+  items[n++] = ConnItem::Detail;
+  if (online) items[n++] = ConnItem::WifiChange;
+  items[n++] = ConnItem::QrCode;
+  if (online) { items[n++] = ConnItem::PinReset; items[n++] = ConnItem::Members; }
+  items[n++] = ConnItem::Exit;
+  return idx < n ? items[idx] : ConnItem::None;
+}
+uint8_t connMenuCount() { uint8_t n = 0; while (connMenuItemAt(n) != ConnItem::None) ++n; return n; }
+uint8_t connMenuIndexOf(ConnItem item) {
+  uint8_t i = 0;
+  while (true) { const ConnItem it = connMenuItemAt(i); if (it == item || it == ConnItem::None) return it == item ? i : 0U; ++i; }
+}
+const char *connItemLabel(ConnItem item) {
+  switch (item) {
+    case ConnItem::Detail: return "Chi tiet";
+    case ConnItem::WifiChange: return "Doi wifi";
+    case ConnItem::QrCode: return "Ma QR ID";
+    case ConnItem::PinReset: return "Dat lai ma PIN";
+    case ConnItem::Members: return "Thiet bi ket noi";
+    case ConnItem::Exit: return "Thoat";
+    default: return "";
+  }
+}
+uint8_t connMenuIndex = 0U;
+uint8_t memberIndex = 0U;
+uint32_t memberSeenSeq = 0xFFFFFFFFU;
+uint32_t memberPolledAt = 0U;
+uint8_t memberRemovePending = 0U;     // row the user asked to unlink (confirmation in flight)
+uint8_t memberShownResult = 0U;
+MemberListSnapshot memberView;
+// Thoi gian ngu: HMI-only preference (NVS), 0 = khong bao gio ngu. Khong thuoc cau hinh may.
+constexpr uint8_t SLEEP_MINUTES_DEFAULT = 2U;
+constexpr uint8_t SLEEP_MINUTES_MAX = 30U;
+uint8_t sleepMinutes = SLEEP_MINUTES_DEFAULT;
+uint8_t sleepEditValue = SLEEP_MINUTES_DEFAULT;
+bool sleepActive = false;
+void loadSleepMinutes() {
+  Preferences prefs;
+  if (!prefs.begin("mayap_ui", true)) return;
+  const uint8_t stored = prefs.getUChar("sleep_min", SLEEP_MINUTES_DEFAULT);
+  prefs.end();
+  sleepMinutes = stored <= SLEEP_MINUTES_MAX ? stored : SLEEP_MINUTES_DEFAULT;
+}
+bool saveSleepMinutes(uint8_t minutes) {
+  Preferences prefs;
+  if (!prefs.begin("mayap_ui", false)) return false;
+  const bool ok = prefs.putUChar("sleep_min", minutes) == sizeof(uint8_t);
+  prefs.end();
+  return ok;
 }
 
 bool lcdReady = false;
@@ -1148,6 +1209,7 @@ const char *groupExtraLabelFor(GroupExtra extra) {
     case GroupExtra::AutoTuneEntry: return "Tu chinh PID";
     case GroupExtra::TurnStats: return "So lan dao";
     case GroupExtra::WifiChange: return "Doi wifi";
+    case GroupExtra::SleepTime: return "Thoi gian ngu";
     case GroupExtra::ConnectionInfo: return "Thong tin ket noi";
     case GroupExtra::QrCode: return "Ma QR ID";
     case GroupExtra::CloudPinReset: return "Dat lai ma PIN";
@@ -1542,26 +1604,33 @@ void goBack() {
       break;
     case View::WifiChange:
       queueCommand(HmiCommandType::WifiPortalCancel);
-      view = View::SettingList;
-      selectedGroup = 3U;  // HE THONG
-      // Dung ham tra cuu thay vi hardcode vi tri - tranh sai khi thu tu
-      // groupExtraSlot() thay doi sau nay (da tung sai vi ly do nay).
-      setListSelection(static_cast<int>(GROUPS[3U].count) +
-                            visibleExtraIndexOf(3U, GroupExtra::WifiChange),
-                        settingListItemCount(3U));
+      view = View::ConnMenu;
+      connMenuIndex = connMenuIndexOf(ConnItem::WifiChange);
       break;
     case View::ConnectionInfo:
+      view = View::ConnMenu;
+      connMenuIndex = connMenuIndexOf(ConnItem::Detail);
+      break;
+    case View::QrCode:
+      view = View::ConnMenu;
+      connMenuIndex = connMenuIndexOf(ConnItem::QrCode);
+      break;
+    case View::MemberList:
+      view = View::ConnMenu;
+      connMenuIndex = connMenuIndexOf(ConnItem::Members);
+      break;
+    case View::ConnMenu:
       view = View::SettingList;
       selectedGroup = 3U;  // HE THONG
       setListSelection(static_cast<int>(GROUPS[3U].count) +
                             visibleExtraIndexOf(3U, GroupExtra::ConnectionInfo),
                         settingListItemCount(3U));
       break;
-    case View::QrCode:
+    case View::SleepTime:
       view = View::SettingList;
       selectedGroup = 3U;  // HE THONG
       setListSelection(static_cast<int>(GROUPS[3U].count) +
-                            visibleExtraIndexOf(3U, GroupExtra::QrCode),
+                            visibleExtraIndexOf(3U, GroupExtra::SleepTime),
                         settingListItemCount(3U));
       break;
     case View::Alarm: view = alarmReturnView; break;
@@ -1655,6 +1724,34 @@ void openWifiChange() {
     view = View::WifiChange;
     dirty = true;
   }
+}
+
+void openMemberList() {
+  if (currentConfig.connectivityMode != ConnectivityMode::Online) {
+    showToast("CHI DUNG DUOC KHI ONLINE", true);
+    return;
+  }
+  mayapRequestMemberList();
+  memberIndex = 0U;
+  memberSeenSeq = 0xFFFFFFFFU;
+  memberShownResult = 0U;
+  memberPolledAt = 0U;
+  view = View::MemberList;
+  dirty = true;
+}
+void openMemberRemoveConfirm(uint8_t row) {
+  memberRemovePending = row;
+  confirmAction = ConfirmAction::MemberRemove;
+  confirmReturnView = View::MemberList;
+  confirmYes = false;
+  clearToast();
+  armInputGuard();
+  dirty = true;
+}
+void openSleepEdit() {
+  sleepEditValue = sleepMinutes;
+  view = View::SleepTime;
+  dirty = true;
 }
 
 void openSettingIndex(uint8_t settingIndex, View returnView) {
@@ -1785,7 +1882,7 @@ void openCloudPinResetConfirm() {
     return;
   }
   confirmAction = ConfirmAction::CloudPinReset;
-  confirmReturnView = View::SettingList;
+  confirmReturnView = View::ConnMenu;
   confirmYes = false;
   clearToast();
   armInputGuard();
@@ -2481,6 +2578,11 @@ void executeConfirmation(bool accepted) {
         showToast("DANG LUU...");
       }
       view = returnView;
+    } else if (action == ConfirmAction::MemberRemove) {
+      mayapRequestMemberRemove(memberRemovePending);
+      memberShownResult = 0U;
+      showToast("DANG XOA...");
+      view = returnView;
     } else if (action == ConfirmAction::CloudPinReset) {
       if (queueCommand(HmiCommandType::CloudPinReset)) {
         showToast("DA GUI YEU CAU DAT LAI PIN");
@@ -2924,6 +3026,14 @@ void handleInput() {
     return;
   }
 
+  // Man hinh ngu: thao tac dau tien chi danh thuc (khong kich hoat gi), tranh bam nham khi dang "tat" man hinh.
+  if (sleepActive && (rotary.step || rotary.button != ButtonEvent::None)) {
+    sleepActive = false;
+    dirty = true;
+    resetRotaryPending();
+    return;
+  }
+
   // Dang tai/flash firmware (applyPhase==1): NUOT MOI THAO TAC, khong cho
   // thoat man hinh nay giua chung - giong san pham thuong mai, tranh nguoi
   // dung tuong may "treo" roi tat nguon giua luc dang ghi flash. Loi
@@ -3024,16 +3134,12 @@ void handleInput() {
           if (extra == GroupExtra::TurnStats) {
             view = View::TurnStats;
             dirty = true;
-          } else if (extra == GroupExtra::WifiChange) {
-            openWifiChange();
           } else if (extra == GroupExtra::ConnectionInfo) {
-            view = View::ConnectionInfo;
+            connMenuIndex = 0U;
+            view = View::ConnMenu;
             dirty = true;
-          } else if (extra == GroupExtra::QrCode) {
-            view = View::QrCode;
-            dirty = true;
-          } else if (extra == GroupExtra::CloudPinReset) {
-            openCloudPinResetConfirm();
+          } else if (extra == GroupExtra::SleepTime) {
+            openSleepEdit();
           } else if (extra == GroupExtra::FirmwareWebUpdate) {
             firmwareMenuIndex = 0U;
             view = View::FirmwareMenu;
@@ -3218,6 +3324,55 @@ void handleInput() {
       }
       break;
     }
+
+    case View::ConnMenu: {
+      const uint8_t count = connMenuCount();
+      if (connMenuIndex >= count) connMenuIndex = 0U;
+      if (rotary.step) {
+        connMenuIndex = static_cast<uint8_t>(constrain(static_cast<int>(connMenuIndex) + rotary.step, 0, count - 1));
+        dirty = true;
+      }
+      if (rotary.button == ButtonEvent::ShortPress) {
+        switch (connMenuItemAt(connMenuIndex)) {
+          case ConnItem::Detail: view = View::ConnectionInfo; dirty = true; break;
+          case ConnItem::WifiChange: openWifiChange(); break;
+          case ConnItem::QrCode: view = View::QrCode; dirty = true; break;
+          case ConnItem::PinReset: openCloudPinResetConfirm(); break;
+          case ConnItem::Members: openMemberList(); break;
+          default: goBack(); break;
+        }
+      }
+      break;
+    }
+
+    case View::MemberList: {
+      const bool ready = memberView.state == MemberListState::Ready;
+      const uint8_t rows = static_cast<uint8_t>((ready ? memberView.count : 0U) + 1U);   // + "Thoat"
+      if (memberIndex >= rows) memberIndex = static_cast<uint8_t>(rows - 1U);
+      if (rotary.step) {
+        memberIndex = static_cast<uint8_t>(constrain(static_cast<int>(memberIndex) + rotary.step, 0, rows - 1));
+        dirty = true;
+      }
+      if (rotary.button == ButtonEvent::ShortPress) {
+        if (ready && memberIndex < memberView.count) {
+          if (memberView.entry[memberIndex].owner) showToast("KHONG XOA DUOC CHU MAY", true);
+          else openMemberRemoveConfirm(memberIndex);
+        } else goBack();
+      }
+      break;
+    }
+
+    case View::SleepTime:
+      if (rotary.step) {
+        sleepEditValue = static_cast<uint8_t>(constrain(static_cast<int>(sleepEditValue) + rotary.step, 0, SLEEP_MINUTES_MAX));
+        dirty = true;
+      }
+      if (rotary.button == ButtonEvent::ShortPress) {
+        if (saveSleepMinutes(sleepEditValue)) { sleepMinutes = sleepEditValue; showToast("DA LUU"); buzzerPlayCue(BuzzerCue::Save); }
+        else showToast("LUU THAT BAI", true);
+        goBack();
+      }
+      break;
 
     case View::ConnectionInfo:
       if (rotary.button == ButtonEvent::ShortPress) goBack();
@@ -3891,6 +4046,81 @@ void drawChungMenu() {
       lcd.drawStr(12, y, chungItemLabel(index));
     }
   }
+}
+
+void drawConnMenu() {
+  const uint8_t count = connMenuCount();
+  if (connMenuIndex >= count) connMenuIndex = 0U;
+  drawHeader("KET NOI", false);
+  drawListPosition(connMenuIndex, count);
+  lcd.setFont(u8g2_font_6x12_tf);
+  const uint8_t top = connMenuIndex >= 4U ? static_cast<uint8_t>(connMenuIndex - 3U) : 0U;
+  for (uint8_t row = 0U; row < 4U && top + row < count; ++row) {
+    const uint8_t i = static_cast<uint8_t>(top + row);
+    const int16_t y = 22 + row * 12;
+    if (i == connMenuIndex) { lcd.drawBox(0, y - 9, 128, 11); lcd.setDrawColor(0); }
+    lcd.drawStr(12, y, connItemLabel(connMenuItemAt(i)));
+    if (i == connMenuIndex) lcd.setDrawColor(1);
+  }
+}
+
+void drawMemberList() {
+  const bool ready = memberView.state == MemberListState::Ready;
+  const uint8_t rows = static_cast<uint8_t>((ready ? memberView.count : 0U) + 1U);
+  if (memberIndex >= rows) memberIndex = static_cast<uint8_t>(rows - 1U);
+  drawHeader("THIET BI KET NOI", false);
+  if (ready) drawListPosition(memberIndex, rows);
+  lcd.setFont(u8g2_font_6x12_tf);
+  if (!ready) {
+    const char *msg = memberView.state == MemberListState::Offline ? "CAN ONLINE DE XEM"
+                    : memberView.state == MemberListState::Error ? "LOI KET NOI CLOUD"
+                    : "DANG TAI...";
+    drawCenteredFit(34, msg, u8g2_font_6x12_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+    lcd.drawBox(0, 41, 128, 11); lcd.setDrawColor(0); lcd.drawStr(12, 50, "Thoat"); lcd.setDrawColor(1);
+    return;
+  }
+  const uint8_t top = memberIndex >= 4U ? static_cast<uint8_t>(memberIndex - 3U) : 0U;
+  for (uint8_t row = 0U; row < 4U && top + row < rows; ++row) {
+    const uint8_t i = static_cast<uint8_t>(top + row);
+    const int16_t y = 22 + row * 12;
+    char text[28];
+    if (i == memberView.count) snprintf(text, sizeof(text), "Thoat");
+    else snprintf(text, sizeof(text), "%.13s%s", memberView.entry[i].name, memberView.entry[i].owner ? " (chu)" : "");
+    if (i == memberIndex) { lcd.drawBox(0, y - 9, 128, 11); lcd.setDrawColor(0); }
+    lcd.drawStr(12, y, text);
+    if (i == memberIndex) lcd.setDrawColor(1);
+  }
+}
+
+void drawSleepEdit() {
+  drawHeader("THOI GIAN NGU", false);
+  char text[24];
+  if (sleepEditValue == 0U) snprintf(text, sizeof(text), "TAT");
+  else snprintf(text, sizeof(text), "%u phut", static_cast<unsigned>(sleepEditValue));
+  drawCenteredFit(38, text, u8g2_font_helvB10_tf, u8g2_font_6x12_tf, u8g2_font_5x8_tf);
+  drawCenteredFit(54, "XOAY: DOI  NHAN: LUU  GIU: HUY", u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+}
+
+// Man hinh ngu: chi nhiet do + do am to, chia doi bang mot vach nho (cach dinh va day), gio:phut nho o goc trai.
+void drawSleep() {
+  char text[16];
+  lcd.setDrawColor(1);
+  lcd.setFont(u8g2_font_5x8_tf);
+  lcd.drawStr(0, 8, currentRuntime.timeText);
+  lcd.drawVLine(64, 14, 38);
+  auto drawValue = [&](int16_t zoneLeft, int16_t zoneWidth, const char *value, const char *unit) {
+    lcd.setFont(u8g2_font_logisoso26_tn);
+    int16_t w = static_cast<int16_t>(lcd.getStrWidth(value));
+    if (w > zoneWidth - 12) { lcd.setFont(u8g2_font_logisoso22_tn); w = static_cast<int16_t>(lcd.getStrWidth(value)); }
+    const int16_t x = zoneLeft + max(0, (zoneWidth - 10 - w) / 2);
+    lcd.drawStr(x, 44, value);
+    lcd.setFont(u8g2_font_6x12_tf);
+    lcd.drawStr(x + w + 2, 28, unit);
+  };
+  snprintf(text, sizeof(text), currentRuntime.sensorOnline ? "%.1f" : "--.-", currentRuntime.temperature);
+  drawValue(0, 64, text, "C");
+  snprintf(text, sizeof(text), currentRuntime.sensorOnline ? "%.0f" : "--", currentRuntime.humidity);
+  drawValue(66, 62, text, "%");
 }
 
 void drawVentilationMenu() {
@@ -4887,6 +5117,11 @@ void drawConfirmScreen() {
     snprintf(restoreLine, sizeof(restoreLine), "BAN GHI %u?", static_cast<unsigned>(histIndex + 1U));
     line1 = "KHOI PHUC CAU HINH";
     line2 = restoreLine;
+  } else if (confirmAction == ConfirmAction::MemberRemove) {
+    static char memberLine[24];
+    snprintf(memberLine, sizeof(memberLine), "%.16s", memberView.entry[memberRemovePending < MEMBER_LIST_MAX ? memberRemovePending : 0].name);
+    line1 = "XOA THIET BI KET NOI?";
+    line2 = memberLine;
   } else if (confirmAction == ConfirmAction::CloudPinReset) {
     line1 = "DAT LAI MA PIN WEB";
     line2 = "TAO MA 6 SO MOI?";
@@ -4989,7 +5224,10 @@ void render(uint32_t now) {
     drawConfirmScreen();
   } else {
     switch (view) {
-      case View::Home: drawHome(); break;
+      case View::Home: if (sleepActive) drawSleep(); else drawHome(); break;
+      case View::ConnMenu: drawConnMenu(); break;
+      case View::MemberList: drawMemberList(); break;
+      case View::SleepTime: drawSleepEdit(); break;
       case View::MainMenu: drawMainMenu(); break;
       case View::ChungMenu: drawChungMenu(); break;
       case View::VentilationMenu: drawVentilationMenu(); break;
@@ -5168,6 +5406,7 @@ void hmiBootDisplayUpdate(uint32_t now) {
 }
 
 void hmiBegin() {
+  loadSleepMinutes();
   buzzerBegin();
   buzzerPlayStartupChime();
   beginRotary();
@@ -5322,6 +5561,11 @@ bool runtimeVisibleChanged(const MachineRuntime &before,
     // QR ma hoa ID may - hang so trong suot phien chay, khong bao gio can
     // ve lai vi runtime thay doi.
     case View::QrCode:
+      return false;
+
+    case View::ConnMenu:
+    case View::MemberList:
+    case View::SleepTime:
       return false;
 
     case View::AutoTune:
@@ -5850,6 +6094,36 @@ void hmiUpdate(uint32_t now) {
   }
   handleInput();
   stabilizeViewTransition();
+
+  // Man hinh ngu: chi tren man hinh chinh, khi het thoi gian khong thao tac va khong co gi can nguoi van hanh nhin (canh bao/loi/xac nhan).
+  {
+    const bool canSleep = sleepMinutes > 0U && view == View::Home && !splashActive && !confirmationActive() &&
+                          heaterTestUiPhase == HeaterTestUiPhase::Idle && !toastLine[0] &&
+                          currentRuntime.activeFaultCount == 0 && currentRuntime.alarmMask == 0;
+    if (!sleepActive && canSleep &&
+        now - lastInteractionAt >= static_cast<uint32_t>(sleepMinutes) * 60000UL) {
+      sleepActive = true;
+      dirty = true;
+    } else if (sleepActive && !canSleep) {
+      sleepActive = false;
+      dirty = true;
+    }
+  }
+  // Thiet bi ket noi: Cloud tra ket qua bat dong bo; chi doc snapshot khi dang o man nay.
+  if (view == View::MemberList && now - memberPolledAt >= 200UL) {
+    memberPolledAt = now;
+    const MemberListSnapshot snap = mayapMemberSnapshot();
+    if (snap.seq != memberSeenSeq) {
+      memberSeenSeq = snap.seq;
+      memberView = snap;
+      dirty = true;
+      if (snap.removeResult != memberShownResult) {
+        memberShownResult = snap.removeResult;
+        if (snap.removeResult == 1U) showToast("DA XOA THIET BI");
+        else if (snap.removeResult == 2U) showToast("XOA THAT BAI", true);
+      }
+    }
+  }
 
   if (!confirmationActive() && heaterTestUiPhase == HeaterTestUiPhase::Idle &&
       view != View::Home && view != View::Alarm &&

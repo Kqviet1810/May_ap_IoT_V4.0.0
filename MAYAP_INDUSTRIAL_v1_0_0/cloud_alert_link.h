@@ -108,6 +108,9 @@ static uint32_t lastHeartbeatAt=0U;
 // device/reset-pin chi chap nhan device_key bi mat cua firmware, khong
 // phai PIN web, xem cloudflare/src/index.js::handleResetPin).
 static volatile uint8_t pinResetRequestFlag = 0U;
+static volatile uint8_t memberListRequestFlag = 0U;
+static volatile int8_t memberRemoveIndex = -1;   // pending removal from the HMI (-1 none)
+static MemberListSnapshot memberSnap;            // guarded by cloudMux
 
 // -------------------------------- Hang doi gui ----------------------------------
 // Chi networkTask dung (ca ghi lan doc) - moi logic quyet dinh gui gi cung
@@ -1131,6 +1134,75 @@ inline void servicePinReset() {
   }
 }
 
+
+// HMI "Thiet bi ket noi": list / unlink the accounts linked to this machine. Explicit, user-requested, one-shot HTTPS on the
+// same admission path as reset-pin (no new task, no new TLS owner). A deferred request keeps the user's intent; an HTTP error
+// is reported on the screen and never replayed automatically.
+inline bool sendMembers(bool remove, const char *ref) {
+  JsonDocument doc;
+  doc["device_id"] = mayapDeviceIdText();
+  doc["device_key"] = mayapDeviceSecret();
+  if (remove) doc["ref"] = ref;
+  String response;
+  int code = 0;
+  if (!postJson(remove ? "/api/device/members/remove" : "/api/device/members", doc, remove ? "member-remove" : "member-list", &response, &code)) return false;
+  if (remove) return true;
+  JsonDocument parsed;
+  if (deserializeJson(parsed, response) != DeserializationError::Ok || !parsed["success"].as<bool>()) return false;
+  MemberListSnapshot next;
+  next.state = MemberListState::Ready;
+  for (JsonObject item : parsed["members"].as<JsonArray>()) {
+    if (next.count >= MEMBER_LIST_MAX) break;
+    MemberEntry &entry = next.entry[next.count++];
+    snprintf(entry.ref, sizeof(entry.ref), "%s", item["ref"] | "");
+    snprintf(entry.name, sizeof(entry.name), "%s", item["name"] | "");
+    entry.owner = String(item["role"] | "") == "owner" ? 1U : 0U;
+  }
+  portENTER_CRITICAL(&cloudMux);
+  next.removeResult = memberSnap.removeResult;
+  next.seq = memberSnap.seq + 1U;
+  memberSnap = next;
+  portEXIT_CRITICAL(&cloudMux);
+  return true;
+}
+inline void memberSetState(MemberListState state, uint8_t removeResult = 0xFFU) {
+  portENTER_CRITICAL(&cloudMux);
+  memberSnap.state = state;
+  if (removeResult != 0xFFU) memberSnap.removeResult = removeResult;
+  ++memberSnap.seq;
+  portEXIT_CRITICAL(&cloudMux);
+}
+inline void serviceMembers() {
+  const int8_t removeAt = __atomic_exchange_n(&memberRemoveIndex, static_cast<int8_t>(-1), __ATOMIC_ACQ_REL);
+  bool list = __atomic_exchange_n(&memberListRequestFlag, 0U, __ATOMIC_ACQ_REL) != 0U;
+  if (removeAt < 0 && !list) return;
+  const NetworkStatus netStatus = mayapGetRawNetworkStatus();
+  if (netStatus.requestedMode != ConnectivityMode::Online || !netStatus.connected) {
+    memberSetState(MemberListState::Offline, removeAt >= 0 ? 2U : 0xFFU);
+    return;
+  }
+  if (removeAt >= 0) {
+    char ref[sizeof(MemberEntry::ref)] = "";
+    bool allowed = false;
+    portENTER_CRITICAL(&cloudMux);
+    if (static_cast<uint8_t>(removeAt) < memberSnap.count && !memberSnap.entry[removeAt].owner) {
+      snprintf(ref, sizeof(ref), "%s", memberSnap.entry[removeAt].ref);
+      allowed = true;
+    }
+    portEXIT_CRITICAL(&cloudMux);
+    if (!allowed) { memberSetState(MemberListState::Ready, 2U); }
+    else if (sendMembers(true, ref)) { memberSetState(MemberListState::Loading, 1U); list = true; }
+    else if (requestDeferred) { __atomic_store_n(&memberRemoveIndex, removeAt, __ATOMIC_RELEASE); return; }
+    else { memberSetState(MemberListState::Ready, 2U); }
+  }
+  if (list) {
+    if (!sendMembers(false, nullptr)) {
+      if (requestDeferred) __atomic_store_n(&memberListRequestFlag, 1U, __ATOMIC_RELEASE);
+      else memberSetState(MemberListState::Error);
+    }
+  }
+}
+
 }  // namespace MayapCloudInternal
 
 // ================================ API cong khai ================================
@@ -1154,6 +1226,23 @@ inline void mayapCloudRecover(uint32_t now) {
 // khong duoc phep block).
 inline void mayapRequestCloudPinReset() {
   __atomic_store_n(&MayapCloudInternal::pinResetRequestFlag, 1U, __ATOMIC_RELEASE);
+}
+
+inline void mayapRequestMemberList() {
+  { portENTER_CRITICAL(&MayapCloudInternal::cloudMux); MayapCloudInternal::memberSnap.state = MemberListState::Loading;
+    MayapCloudInternal::memberSnap.removeResult = 0U; ++MayapCloudInternal::memberSnap.seq; portEXIT_CRITICAL(&MayapCloudInternal::cloudMux); }
+  __atomic_store_n(&MayapCloudInternal::memberListRequestFlag, 1U, __ATOMIC_RELEASE);
+}
+inline void mayapRequestMemberRemove(uint8_t index) {
+  { portENTER_CRITICAL(&MayapCloudInternal::cloudMux); MayapCloudInternal::memberSnap.state = MemberListState::Loading;
+    MayapCloudInternal::memberSnap.removeResult = 0U; ++MayapCloudInternal::memberSnap.seq; portEXIT_CRITICAL(&MayapCloudInternal::cloudMux); }
+  __atomic_store_n(&MayapCloudInternal::memberRemoveIndex, static_cast<int8_t>(index), __ATOMIC_RELEASE);
+}
+inline MemberListSnapshot mayapMemberSnapshot() {
+  portENTER_CRITICAL(&MayapCloudInternal::cloudMux);
+  const MemberListSnapshot copy = MayapCloudInternal::memberSnap;
+  portEXIT_CRITICAL(&MayapCloudInternal::cloudMux);
+  return copy;
 }
 
 // Chi duoc goi tu networkTask (khong blocking task khac; ban than no CO the
@@ -1208,6 +1297,7 @@ inline void mayapCloudAlertUpdate(uint32_t now) {
   // Explicit user request gets first admission, not a permanently occupied
   // send gap left by routine heartbeat/alarm traffic.
   servicePinReset();
+  serviceMembers();
   serviceRegister(now);
   if (registered) {
     drainOutbox(now);
