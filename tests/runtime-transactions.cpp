@@ -22,10 +22,17 @@ constexpr uint8_t COMMAND_QUEUE_SIZE=4;
 constexpr size_t REALTIME_REQUEST_ID_CAPACITY=40;
 constexpr uint32_t AlarmNone=0,ALARM_KNOWN_MASK=0xffff,REALTIME_COMMAND_ACK_TIMEOUT_MS=8000,REALTIME_CONFIG_SAVE_ACK_TIMEOUT_MS=8000;
 constexpr uint16_t COMMAND_DEFAULT_VALID_MS=5000,COMMAND_AUTOTUNE_VALID_MS=5000;
-enum class HmiCommandType{None,LightToggle,AutoTuneStart,AlarmAck,FirmwareRollback};
+#include "actual-hmi-command-type.inc"
 enum class HmiCommandSource{Local,Remote};enum class BuzzerCue{Error};
 struct HmiCommand{uint32_t id=0;HmiCommandType type=HmiCommandType::None;uint32_t createdAt=0;uint16_t validForMs=0,actuatorLeaseMs=0;uint32_t alarmMask=0;HmiCommandSource source=HmiCommandSource::Local;};
-struct MachineConfig{};
+// Technical-access pieces are the REAL headers (pure C++). MachineConfig only carries the fields the bridge reads.
+typedef int portMUX_TYPE;
+#define portMUX_INITIALIZER_UNLOCKED 0
+#include "advanced_history.h"
+#include "tech_request.h"
+struct MachineConfig{float kp=5,ki=0.1f,kd=30,tempOffset=0,humidityOffset=0,heaterStuckMinRiseC=0.3f,tempRateLimitC=2,autotuneBandC=0.2f;
+ uint16_t pidCycleSec=2,heaterStuckDurationSec=600,tempRateWindowSec=300,tempOscillationWindowSec=900;
+ uint8_t maxHeaterPower=100,tempOscillationCrossLimit=6,autotuneRelayPowerPercent=40;bool adaptiveThermalBalanceEnabled=false,humidifierInstalled=false;};
 static HmiCommand commandQueue[4];static uint8_t commandTail=0,commandHead=0,commandCount=0,commandOutstandingCount=0;static uint32_t nextCommandId=1;
 bool commandConflictLocked(HmiCommandType){return false;}void showToast(const char*,bool){}void buzzerPlayCue(BuzzerCue){}
 #include "actual-transaction-hmi.inc"
@@ -33,7 +40,8 @@ void mayapRealtimeConfirmCommand(uint32_t,bool,const char*);
 namespace MayapRealtimeInternal {
 static bool activeAckKeyValid=true;static uint8_t activeAckKey[32]={7};static char activeOperation[40]="light.toggle";
 static uint32_t bootId=123,lastCommandSequence=0;static char lastCommandRequestId[40]="";
-static bool knownRuntimeValid=true;static struct{uint32_t alarmMask=0;}knownRuntime;
+static bool knownRuntimeValid=true;static struct{uint32_t alarmMask=0;struct{bool webAllowed=false,webSession=false;}tech;}knownRuntime;
+static MachineConfig knownConfig;static bool knownConfigValid=true;
 static bool configDirty=false;
 static uint32_t realtimeConfigRevision=0,lastVerifiedConfigRevision=0;
 static char lastVerifiedConfigRequestId[40]="";
@@ -51,7 +59,6 @@ const mbedtls_md_info_t *mbedtls_md_info_from_type(int){static mbedtls_md_info_t
 int mbedtls_md_hmac(const mbedtls_md_info_t*,const uint8_t*,size_t,const uint8_t*,size_t,uint8_t *digest){memset(digest,7,32);return 0;}
 #include "actual-transaction-terminal.inc"
 bool realtimeCommandChannelTrusted(){return true;}
-HmiCommandType mapCommandAction(const char*){return HmiCommandType::LightToggle;}
 static bool publishCallback=true;
 constexpr uint32_t TEMP_HISTORY_SAMPLE_SEC=300;
 struct MayapTemperatureHistoryPoint{uint32_t epoch=0;int16_t temperatureX10=375;};
@@ -77,6 +84,59 @@ void reset(){autoRun=false;for(auto &p:pendingCommands)p=PendingCommand{};for(au
  terminalCursor=0;
  commandTail=commandHead=commandCount=commandOutstandingCount=0;executions=saves=0;acks.clear();clockMs=100;}
 JsonDocument command(){JsonDocument d;d["v"]=2;d["requestId"]="cmd";d["bootId"]=123;d["expiresAt"]=time(nullptr)+20;d["action"]="light_toggle";return d;}
+JsonDocument techCommand(const char *action){JsonDocument d=command();d["action"]=action;return d;}
+static void techState(bool allowed,bool session){knownRuntime.tech.webAllowed=allowed;knownRuntime.tech.webSession=session;MayapTech::discard();}
+static const HmiCommand &lastQueued(){return commandQueue[(commandTail+3)%4];}
+// Web technical access at the MQTT edge: hidden/locked never parks anything, a request is only PARKED (never executed),
+// the PIN travels as digits to the ESP32, queue/tracker saturation never leaves a parked request behind.
+static void techTests(){
+ // hidden: every technical entry is refused before anything is staged or queued
+ reset();techState(false,false);
+ { JsonDocument d=techCommand("tech_request");d["kind"]="config";d["fields"]["kp"]=9.0;handleCommandMessage(d);assert(acks.back()=="rejected");assert(commandCount==0);MayapTech::Staged s;assert(!MayapTech::take(s)); }
+ { JsonDocument d=techCommand("autotune_start");handleCommandMessage(d);assert(acks.back()=="rejected"&&commandCount==0);MayapTech::Staged s;assert(!MayapTech::take(s)); }
+ // permission ON but Web not unlocked: still refused
+ reset();techState(true,false);
+ { JsonDocument d=techCommand("tech_request");d["kind"]="config";d["fields"]["kp"]=9.0;handleCommandMessage(d);assert(acks.back()=="rejected"&&commandCount==0); }
+ // unlocked: a valid config request is parked and queued as TechRequestSubmit, never as a config save
+ reset();techState(true,true);
+ { JsonDocument d=techCommand("tech_request");d["kind"]="config";d["fields"]["kp"]=9.0;d["fields"]["maxHeaterPower"]=70;handleCommandMessage(d);
+   assert(acks.back()=="accepted"&&commandCount==1);
+   assert(lastQueued().type==HmiCommandType::TechRequestSubmit&&lastQueued().source==HmiCommandSource::Remote);
+   MayapTech::Staged s;assert(MayapTech::take(s));assert(s.kind==MayapTech::Kind::Config);
+   assert(s.mask==((1U<<AdvancedHistory::F_KP)|(1U<<AdvancedHistory::F_MAX_POWER)));assert(s.values.kp==9.0f&&s.values.maxHeaterPower==70);
+   assert(s.values.ki==knownConfig.ki); }                             // untouched fields keep the device value
+ // a parked request blocks the next one (one pending request) and the queue is not touched
+ reset();techState(true,true);
+ { JsonDocument d=techCommand("tech_request");d["kind"]="config";d["fields"]["kp"]=9.0;handleCommandMessage(d);const uint8_t queued=commandCount;
+   JsonDocument e=techCommand("tech_request");e["requestId"]="cmd2";e["kind"]="config";e["fields"]["ki"]=1.0;handleCommandMessage(e);
+   assert(acks.back()=="busy"&&commandCount==queued); }
+ // out-of-range / unknown / non numeric fields are refused, nothing is clamped silently
+ for(int variant=0;variant<5;variant++){
+   reset();techState(true,true);JsonDocument d=techCommand("tech_request");d["kind"]="config";
+   if(variant==0)d["fields"]["kp"]=500.0;else if(variant==1)d["fields"]["notAField"]=1;else if(variant==2)d["fields"]["kp"]="9";
+   else if(variant==3)d["fields"]["maxHeaterPower"]=70.5;else d["kind"]="bogus";
+   handleCommandMessage(d);assert(acks.back()=="invalid"&&commandCount==0);MayapTech::Staged s;assert(!MayapTech::take(s)); }
+ // a legacy autotune_start is only a request now
+ reset();techState(true,true);
+ { JsonDocument d=techCommand("autotune_start");handleCommandMessage(d);assert(acks.back()=="accepted"&&commandCount==1);
+   assert(lastQueued().type==HmiCommandType::TechRequestSubmit&&lastQueued().type!=HmiCommandType::AutoTuneStart);
+   MayapTech::Staged s;assert(MayapTech::take(s)&&s.kind==MayapTech::Kind::AutoTune); }
+ // saturation: a full tracker / full queue leaves nothing parked
+ reset();techState(true,true);for(auto &p:pendingCommands)p.used=true;
+ { JsonDocument d=techCommand("tech_request");d["kind"]="config";d["fields"]["kp"]=9.0;handleCommandMessage(d);assert(acks.back()=="busy");MayapTech::Staged s;assert(!MayapTech::take(s)); }
+ reset();techState(true,true);commandOutstandingCount=4;
+ { JsonDocument d=techCommand("tech_request");d["kind"]="config";d["fields"]["kp"]=9.0;handleCommandMessage(d);assert(acks.back()=="busy");MayapTech::Staged s;assert(!MayapTech::take(s)); }
+ // PIN unlock: digits only, forwarded as a number to the ESP32; malformed PINs never reach the queue
+ reset();
+ { const char *bad[]={"123","12345","12a4","",nullptr};
+   for(const char **p=bad;*p;++p){reset();JsonDocument d=techCommand("tech_unlock");d["pin"]=*p;handleCommandMessage(d);assert(acks.back()=="invalid"&&commandCount==0);}
+   reset();JsonDocument d=techCommand("tech_unlock");d["pin"]="0427";handleCommandMessage(d);
+   assert(acks.back()=="accepted"&&lastQueued().type==HmiCommandType::TechPinVerify&&lastQueued().alarmMask==427UL&&lastQueued().source==HmiCommandSource::Remote); }
+ // a Web client can NOT reach the HMI-only commands by name
+ reset();techState(true,true);
+ { const char *hmiOnly[]={"tech_pin_set","tech_decision","advanced_restore","tech_web_set","tech_set_pin",nullptr};
+   for(const char **p=hmiOnly;*p;++p){reset();JsonDocument d=techCommand(*p);handleCommandMessage(d);assert(acks.back()=="unsupported"&&commandCount==0);} }
+}
 int main(){
  reset();autoRun=true;handleCommandMessage(command());assert(executions==1&&pendingCommands[0].completed&&pendingCommands[0].commandId!=0);flushCompletedTransactions();assert(!pendingCommands[0].used&&ackOutbox[0].signedAck&&!strcmp(ackOutbox[0].requestId,"cmd"));
  reset();for(auto &p:pendingCommands)p.used=true;autoRun=true;handleCommandMessage(command());assert(executions==0&&commandCount==0&&acks.back()=="busy");
@@ -90,5 +150,7 @@ int main(){
  reset();failSend=false;publishAck("cache","expired","");assert(terminalCursor==0);publishAck("cache","accepted","");assert(terminalCursor==0);publishAck("cache","applied","APPLIED","light.toggle");assert(terminalCursor==1);
  for(int i=0;i<100;i++) { assert(replayTerminal("cache")); }
  assert(terminalCursor==1&&!strcmp(terminalCache[0].requestId,"cache")&&!strcmp(terminalCache[0].result,"applied"));
+ techTests();
+ puts("Actual Web technical-access edge: hidden/locked refusal, parked-only requests, bounded fields, PIN digits, saturation PASS");
  puts("Actual transactions: immediate-controller admission, saturated trackers/outbox, late completion and failed history chunks PASS");
 }

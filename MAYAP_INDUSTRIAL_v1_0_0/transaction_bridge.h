@@ -979,7 +979,7 @@ inline void handleCommandMessage(const JsonDocument &doc) {
     break;
   }
   portEXIT_CRITICAL(&realtimeMux);
-  if (!reserved) { publishAck(requestId, "busy", "TRACKING_FULL"); return; }
+  if (!reserved) { if (type == HmiCommandType::TechRequestSubmit) MayapTech::discard(); publishAck(requestId, "busy", "TRACKING_FULL"); return; }
   const bool queued = queueCommand(type, validForMs, 0U, alarmMaskParam, &commandId,
       HmiCommandSource::Remote, [](uint32_t id, void *context) {
         // Lock order is HMI -> Web; callers never hold Web while entering HMI.
@@ -991,6 +991,7 @@ inline void handleCommandMessage(const JsonDocument &doc) {
     portENTER_CRITICAL(&realtimeMux);
     reserved->used = false;
     portEXIT_CRITICAL(&realtimeMux);
+    if (type == HmiCommandType::TechRequestSubmit) MayapTech::discard();   // never leave a parked request nobody will take
     publishAck(requestId, "busy", "");
     return;
   }
