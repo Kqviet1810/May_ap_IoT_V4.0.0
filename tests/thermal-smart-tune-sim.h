@@ -22,6 +22,8 @@ struct TuneOut {
   float gain = 0, delay = 0, coast100 = 0, hold = 0, ku = 0, pu = 0, kp = 0, ki = 0, kd = 0;
   uint8_t confidence = 0;
   float evOver = 0, evMae = 0, evP95 = 0, evRipple = 0;
+  // verification diagnostics (what the firmware itself measured and concluded - never plant truth)
+  const char *why = ""; float valRes = 0, valHold = 0; uint32_t valHorizonS = 0, valTailS = 0;
   unsigned saves = 0;
   uint32_t profileSaves = 0;
   bool oldKept = true;
@@ -68,6 +70,7 @@ static TuneOut tune(const Plant &base, float sp, TuneOpts &opt) {
   std::vector<double> pipe(lagTicks + 1U, 0.0);
   size_t cursor = 0;
   double temp = std::getenv("START_TEMP") ? std::atof(std::getenv("START_TEMP")) : p.ambient, heater = 0, heldFiltered = temp;
+  double heldRaw = temp;   // the probe's reading: quantised at the probe's resolution, exactly what the production raw value is
   unsigned samples = 0, sampleCounter = 0;
   bool started = false, frozenActive = false; float frozenValue = 0;
   const unsigned total = static_cast<unsigned>(maxS * 1000 / stepMs) + 1500U;
@@ -86,6 +89,7 @@ static TuneOut tune(const Plant &base, float sp, TuneOpts &opt) {
         const float sampled = static_cast<float>(std::round((temp + p.bias) / p.resolution) * p.resolution);
         filter.updateFilter(sampled, 60);
         heldFiltered = filter.value();
+        heldRaw = sampled;
         ++samples;
       }
       if (frozen && !frozenActive) { frozenActive = true; frozenValue = static_cast<float>(heldFiltered); }
@@ -105,7 +109,7 @@ static TuneOut tune(const Plant &base, float sp, TuneOpts &opt) {
     trip = fa && fault == Fault::Trip;
     maintenance = fa && fault == Fault::Maintenance;
     h->storageFaultLatched_ = fa && fault == Fault::StorageFault;
-    h->sample(static_cast<float>(temp), static_cast<float>(fed));
+    h->sample(static_cast<float>(heldRaw), static_cast<float>(fed));   // raw = probe reading (quantised), not the hidden true temperature
     if (!started && tick == 200U) {   // 20 s of sampling first, like a powered-up controller
       const char *message = nullptr;
       started = h->startAutoTune(now, message);
@@ -197,6 +201,8 @@ static TuneOut tune(const Plant &base, float sp, TuneOpts &opt) {
   out.ku = m.ku; out.pu = m.periodSec; out.confidence = m.confidence;
   out.evOver = h->autotune_.eval().overshoot; out.evMae = h->autotune_.eval().mae;
   out.evP95 = h->autotune_.eval().p95; out.evRipple = h->autotune_.eval().ripple;
+  out.why = h->autotune_.evalFull().why; out.valRes = h->autotune_.evalFull().resolution; out.valHold = h->autotune_.evalFull().holdFrac;
+  out.valHorizonS = h->autotune_.evalFull().horizonMs / 1000U; out.valTailS = h->autotune_.evalFull().tailMs / 1000U;
 #else
   out.ku = h->autotune_.result().ku; out.pu = h->autotune_.result().periodSec;
 #endif

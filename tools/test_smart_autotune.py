@@ -9,7 +9,7 @@ Builds against the production-derived harness includes (same extraction as tools
 
 Gates (a regression ceiling, not a claim of physical accuracy):
   * High = 0 and Emergency = 0 during every tune and in every post-tune run;
-  * ACCEPTED_BAD = 0 on the 36-case mini (qualification) matrix, <= tests/thermal-smart-autotune-baseline.json on the full matrix;
+  * ACCEPTED_BAD = 0 on the 36-case mini matrix AND on the 540-case full matrix (the independent 3 h post-tune run is the oracle; the firmware never sees it);
   * the full matrix accepts at least the recorded minimum (a "never accept anything" firmware must not pass);
   * every rejection restores the old PID and profile (checked inside the harness; a violation aborts the run).
 """
@@ -105,7 +105,7 @@ def main():
     if ft['cases'] != 540: problems.append(f"full: {ft['cases']} cases")
     for k in ('high_during_tune', 'emergency_during_tune', 'post_high', 'post_emergency'):
         if ft[k]: problems.append(f'full: {k}={ft[k]}')
-    if ft['ACCEPTED_BAD'] > base['fullAcceptedBadMax']: problems.append(f"full: ACCEPTED_BAD={ft['ACCEPTED_BAD']} > {base['fullAcceptedBadMax']}")
+    if ft['ACCEPTED_BAD'] != 0 or ft['ACCEPTED_BAD'] > base['fullAcceptedBadMax']: problems.append(f"full: ACCEPTED_BAD={ft['ACCEPTED_BAD']} (must be 0)")
     if ft['accepted'] < base['fullAcceptedMin']: problems.append(f"full: accepted {ft['accepted']} < {base['fullAcceptedMin']}")
     bad = [r for r in frows if r['verdict'] == 'ACCEPTED_BAD']
     md.append('ACCEPTED_BAD cases: ' + (', '.join(f"{r['label']}(eff {r['eff']}, mass {r['capacity']}, loss {r['loss']}, dead {r['dead']}, res {r['resolution']})" for r in bad) or 'none') + '\n')
@@ -125,7 +125,7 @@ def main():
     print('\n'.join(md))
     if problems:
         print('SMART AUTOTUNE GATE FAILED:\n  ' + '\n  '.join(problems)); raise SystemExit(1)
-    print('Smart AutoTune V1 gates PASS (simulation only): mini ACCEPTED_BAD=0, High/Emergency=0, full ACCEPTED_BAD=%d <= %d' % (ft['ACCEPTED_BAD'], base['fullAcceptedBadMax']))
+    print('Smart AutoTune V1 gates PASS (simulation only): mini ACCEPTED_BAD=0, High/Emergency=0, full ACCEPTED_BAD=%d (must be 0)' % ft['ACCEPTED_BAD'])
 
 if __name__ == '__main__':
     main()

@@ -452,6 +452,7 @@ struct AutoTuneEngineDefaults {
   MayapThermal::Assist assist() const { return MayapThermal::Assist(); }
   void tick(uint32_t, bool) {}
   void noteController(float, float) {}
+  void noteSensor(float, bool, bool) {}
   bool externalControl() const { return false; }
   bool preflight(float, const MachineConfig &, const char *&) { return true; }
   bool takeValidationStart(float &) { return false; }

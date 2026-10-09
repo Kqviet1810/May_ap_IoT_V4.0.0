@@ -225,6 +225,95 @@ static void validationRejectTests() {
   CHECK(!rr.started);
 }
 
+
+// ---- J. verification horizon, probe resolution and regime evidence (targeted regressions of the two full-matrix escapes) --------
+static void feedRaw(SmartAutoTune &a, const std::vector<float> &raws) {
+  for (float r : raws) a.noteSensor(r, true, false);
+}
+static void horizonPlannerTests() {
+  SmartTune::VerifyPlan pl;
+  // a quick oven keeps the original 45 min check (15 min tail): the verification is not slower than it used to be
+  CHECK(SmartTune::verificationPlan(150.0f, 118.0f, 0.01f, 3600000U, pl));
+  CHECK(pl.totalMs == 2700000U && pl.tailMs == 900000U && pl.warmMs == 1800000U);
+  // a slow loop (tauI 648 s = delay 60 s) needs a longer window: warm-up >= 3 tauI, tail >= 2 tauI (and 2.5 relay periods)
+  CHECK(SmartTune::verificationPlan(648.0f, 728.0f, 0.01f, 3600000U, pl));
+  CHECK(pl.warmMs >= 3U * 648000U && pl.tailMs >= 2U * 648000U && pl.tailMs >= 2.5f * 728000.0f - 1.0f && pl.totalMs > 2700000U);
+  const uint32_t fineTail = pl.tailMs;
+  // a coarse probe (0.1 C) stretches the tail by 1.5
+  CHECK(SmartTune::verificationPlan(648.0f, 728.0f, 0.1f, 3600000U, pl));
+  CHECK(pl.tailMs == static_cast<uint32_t>(fineTail * 1.5f));
+  // more than the hard maximum is refused outright (never shortened), and so is a window the tune no longer has time for
+  CHECK(!SmartTune::verificationPlan(4300.0f, 2000.0f, 0.01f, 3600000U, pl));
+  CHECK(SmartTune::verificationPlan(150.0f, 118.0f, 0.01f, 3600000U, pl));
+  CHECK(!SmartTune::verificationPlan(150.0f, 118.0f, 0.01f, SmartTune::TotalMaxMs - 2700000U, pl));
+  CHECK(!SmartTune::verificationPlan(NAN, 100.0f, 0.01f, 0U, pl) && !SmartTune::verificationPlan(0.0f, 100.0f, 0.01f, 0U, pl));
+  // the hard maximum is bounded
+  CHECK(SmartTune::ValidateHardMaxMs <= 9000000UL);
+}
+static void resolutionEstimatorTests() {
+  const double ress[] = {0.01, 0.1, 0.05, 0.2};
+  for (double res : ress) {
+    SmartAutoTune a; a.configure(37.5f); a.start(1000U, 20.0f);
+    std::vector<float> raws;
+    for (unsigned n = 0; n < 600; ++n) raws.push_back(static_cast<float>(std::round((20.0 + 0.004 * n + 0.0013 * (n % 7)) / res) * res));
+    feedRaw(a, raws);
+    CHECK(std::fabs(a.resolution() - res) < 0.002);
+  }
+  { SmartAutoTune a; a.configure(37.5f); a.start(1000U, 20.0f);       // no step at all (flat probe): nothing is proven -> coarsest class
+    feedRaw(a, std::vector<float>(300, 20.0f)); CHECK(a.resolution() >= 0.5f); }
+  { SmartAutoTune a; a.configure(37.5f); a.start(1000U, 20.0f);       // too few steps to trust
+    feedRaw(a, {20.0f, 20.0f, 20.1f, 20.1f, 20.2f, 20.2f, 20.3f, 20.3f}); CHECK(a.resolution() >= 0.5f);
+    feedRaw(a, {20.4f, 20.5f}); CHECK(std::fabs(a.resolution() - 0.1f) < 0.002f); }
+  { SmartAutoTune a; a.configure(37.5f); a.start(1000U, 20.0f);       // float dust below the noise floor is not a quantum
+    std::vector<float> raws; for (unsigned n = 0; n < 400; ++n) raws.push_back(20.0f + ((n % 2) ? 0.0004f : 0.0f) + (n / 40) * 0.1f);
+    feedRaw(a, raws); CHECK(std::fabs(a.resolution() - 0.1f) < 0.002f); }
+  { SmartAutoTune a; a.configure(37.5f); a.start(1000U, 20.0f);       // stale (not fresh) readings and NaN are ignored
+    for (unsigned n = 0; n < 100; ++n) a.noteSensor(20.0f + n * 0.01f, false, false);
+    a.noteSensor(NAN, true, false); CHECK(a.resolution() >= 0.5f); }
+}
+static void verificationRegressionTests() {
+  // (1) the former full344: slow loop (delay ~60 s), 0.1 C probe, PV parked one probe step under the setpoint. The old 15 min check
+  //     read MAE 0.100 and passed it; the true error could be 0.15. Now: longer window AND worst-case resolution margin -> refused.
+  {
+    Plant p; p.eff = 1.2; p.capacity = 1600000; p.loss = 180; p.dead = 30; p.lag = 30; p.ambient = 20; p.resolution = 0.1;
+    TuneOpts o; const TuneOut r = tune(p, 37.5f, o);
+    CHECK(r.started && !r.accepted && r.oldKept && r.saves == 0 && r.profileSaves == 0 && !r.high && !r.emergency);
+    CHECK(r.reason == AutoTuneReason::ValidationFailed && r.validated);
+    CHECK(std::strcmp(r.why, "mae") == 0 && std::fabs(r.valRes - 0.1f) < 0.003f);
+    CHECK(r.valHorizonS > 2700U && r.valTailS > 900U);                 // the window was stretched for the slow loop
+    CHECK(r.evMae <= 0.12f && r.evMae + 0.5f * r.valRes > 0.12f);       // it WOULD have passed on the measured number alone
+  }
+  // (2) the former full400: 0.1 C probe, the controller only reached its steady HOLD regime late in the window. Not enough evidence.
+  {
+    Plant p; p.eff = 1.5; p.capacity = 600000; p.loss = 180; p.dead = 0; p.lag = 8; p.ambient = 20; p.resolution = 0.1;
+    TuneOpts o; const TuneOut r = tune(p, 37.5f, o);
+    CHECK(r.started && !r.accepted && r.oldKept && r.saves == 0 && !r.high && !r.emergency);
+    CHECK(std::strcmp(r.why, "not-steady") == 0 && r.valHold < SmartTune::ValidHoldFrac);
+    CHECK(r.evMae + 0.5f * r.valRes <= 0.12f);                          // every numeric target looked fine: the refusal is the missing regime evidence
+  }
+  // (3) fast, fine probe: still accepted, same 45 min check, not slower than before (4290 s on this plant before the change)
+  {
+    TuneOpts o; const TuneOut r = tune(referencePlant(), 37.5f, o);
+    CHECK(r.accepted && r.saves == 1 && r.valHorizonS == 2700U && r.valTailS == 900U && std::fabs(r.valRes - 0.01f) < 0.002f);
+    CHECK(r.tuneS <= 4290.0 + 60.0 && r.valHold >= SmartTune::ValidHoldFrac);
+  }
+  // (4) medium oven (fine probe, delay ~13 s) and a medium oven with a 0.1 C probe that holds the tail band: both still accepted
+  {
+    Plant p; p.eff = 1.0; p.capacity = 600000; p.loss = 180; p.dead = 15; p.lag = 3; p.ambient = 20; p.resolution = 0.01;
+    TuneOpts o; const TuneOut r = tune(p, 37.5f, o);
+    CHECK(r.accepted && r.saves == 1 && !r.high && !r.emergency);
+    Plant q = p; q.dead = 0; q.lag = 8; q.resolution = 0.1;
+    TuneOpts o2; const TuneOut r2 = tune(q, 37.5f, o2);
+    CHECK(r2.accepted && r2.saves == 1 && r2.valTailS > 900U && !r2.high && !r2.emergency);   // coarse probe: longer tail
+  }
+  // (5) power-limited keeps its own reason; nothing reaches the verification
+  {
+    Plant weak; weak.eff = 0.5; weak.capacity = 600000; weak.loss = 300; weak.dead = 0; weak.ambient = 20; weak.resolution = 0.1;
+    TuneOpts o; const TuneOut r = tune(weak, 37.5f, o);
+    CHECK(!r.accepted && r.reason == AutoTuneReason::PowerLimited && r.oldKept && !r.validated);
+  }
+}
+
 // ---- I. matrix of other plants: nothing accepted may be bad, nothing may cross High/Emergency -----------------------------
 static void safetyMatrixTests() {
   const double effs[] = {0.7, 1.0, 1.5};
@@ -254,6 +343,9 @@ int main() {
   powerLossTests();
   validationRejectTests();
   safetyMatrixTests();
+  horizonPlannerTests();
+  resolutionEstimatorTests();
+  verificationRegressionTests();
   (void)mediumPlant;
   std::printf("Smart AutoTune V1: estimator, SIMC bounds, baseline gates, bumpless hand-over, accept+atomic save+profile seed, immediate aborts at every phase, power loss, rejection rollback (%u checks) PASS\n", checks);
   return 0;

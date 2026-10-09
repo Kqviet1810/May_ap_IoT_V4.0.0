@@ -82,7 +82,7 @@ int main(int argc, char **argv) {
   csv << std::fixed << std::setprecision(5);
   csv << "label,eff,capacity,loss,dead,lag,ambient,resolution,reach,class,reason,rejection,last_phase,tune_s,peak,high_tune,emergency_tune,"
          "kp,ki,kd,gain,gain_true,gain_err_pct,delay,delay_true,delay_err_s,coast100,coast_true,coast_err_c,hold,hold_true,ku,pu,confidence,"
-         "ev_over,ev_mae,ev_p95,ev_ripple,post_over,post_mae,post_p95,post_ripple,post_settle,post_high,post_emergency,verdict\n";
+         "ev_over,ev_mae,ev_p95,ev_ripple,post_over,post_mae,post_p95,post_ripple,post_settle,post_high,post_emergency,verdict,val_why,val_res,val_horizon_s,val_tail_s,val_hold\n";
   unsigned n = 0, accepted = 0, bad = 0, started = 0, model = 0, candidate = 0, validated = 0, timeouts = 0, safety = 0, sensor = 0, rejected = 0;
   unsigned highAny = 0, emergencyAny = 0, postHigh = 0, postEmergency = 0;
   for (size_t idx = 0; idx < cases.size(); ++idx) {
@@ -97,7 +97,7 @@ int main(int argc, char **argv) {
     }
     TuneOpts opts;
     const TuneOut o = tune(c.p, c.sp, opts);
-    if (std::getenv("TUNE_TRACE")) for (const std::string &l : diagnosticLines) if (l.compare(0, 6, "[TUNE]") == 0) std::fprintf(stderr, "%s", l.c_str());
+    if (std::getenv("TUNE_TRACE")) for (const std::string &l : diagnosticLines) if (l.compare(0, 5, "[TUNE") == 0) std::fprintf(stderr, "%s", l.c_str());
     if (o.started) ++started;
     if (o.modelDone) ++model;
     if (o.candidate) ++candidate;
@@ -144,7 +144,13 @@ int main(int argc, char **argv) {
     if (haveCandidateResult)
       csv << ',' << post.overshoot << ',' << post.mae << ',' << post.p95 << ',' << post.ripple << ',' << post.settling << ',' << post.high << ',' << post.emergency;
     else csv << ",,,,,,,";
-    csv << ',' << verdict << '\n';
+    csv << ',' << verdict;
+#ifndef LEGACY_ENGINE
+    csv << ',' << (o.why[0] ? o.why : "-") << ',' << o.valRes << ',' << o.valHorizonS << ',' << o.valTailS << ',' << o.valHold;
+#else
+    csv << ",-,0,0,0,0";
+#endif
+    csv << '\n';
     std::fprintf(stderr, "%s eff=%.1f cap=%.0f loss=%.0f dead=%.0f amb=%.0f res=%.2f -> %s %s/%s phase=%s t=%.0fs %s\n", c.label.c_str(), p.eff, p.capacity, p.loss,
                  p.dead, p.ambient, p.resolution, cls.c_str(), autoTuneReasonName(o.reason), autoTuneReasonName(o.rejection),
                  autoTunePhaseName(o.lastPhase), o.tuneS, verdict.c_str());

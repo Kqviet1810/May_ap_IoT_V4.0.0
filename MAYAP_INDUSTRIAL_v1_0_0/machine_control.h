@@ -5439,6 +5439,9 @@ class MachineController {
     if (abortReason != AutoTuneReason::None) autotune_.abort(abortReason);
     autotune_.checkTimeout(now);
     autotune_.noteController(pidPower_, pid_.integral());
+    // RAW probe reading + steady-HOLD regime: the verification reads the probe's real step size and only trusts a window in which the
+    // integral was active. Observation only; nothing here changes what the controller does.
+    autotune_.noteSensor(rawTemperature_, newSensorSample_, startupHeat_.phase() == ThermalStartupController::Phase::Hold);
     MachineConfig tuned{};
     const bool tunedReady = autotune_.running() && newSensorSample_ &&
         autotune_.update(now, temperature_, config_, tuned);
@@ -5451,6 +5454,19 @@ class MachineController {
     if (autotune_.validationSerial() != previousValidation)
       mayapSerialPrintf(false, "[TUNE] VALIDATING cycles=%u quality=%s\n",
           autotune_.cycleCount(), autoTuneReasonName(autotune_.rejection()));
+    // One summary line per verification (never per control cycle).
+#ifndef MAYAP_AUTOTUNE_LEGACY
+    if (!autotune_.running() && autotune_.evalFull().ran) {   // (this call ended the tune: updateAutoTune returns early when none is running)
+      const auto &ev = autotune_.evalFull();
+      const auto &md = autotune_.fullModel();
+      mayapSerialPrintf(false, "[TUNE-VALIDATE] res=%.3f delay=%.1f coast=%.1f period=%.0f horizon=%lu tail=%lu samples=%lu hold=%.2f@%lus over=%.3f MAE=%.3f P95=%.3f ripple=%.3f why=%s RESULT=%s\n",
+          static_cast<double>(ev.resolution), static_cast<double>(md.delaySec), static_cast<double>(md.coastSec), static_cast<double>(md.periodSec),
+          static_cast<unsigned long>(ev.horizonMs / 1000UL), static_cast<unsigned long>(ev.tailMs / 1000UL), static_cast<unsigned long>(ev.samples),
+          static_cast<double>(ev.holdFrac), static_cast<unsigned long>(ev.holdAfterMs == 0xFFFFFFFFUL ? 0UL : ev.holdAfterMs / 1000UL),
+          static_cast<double>(ev.overshoot), static_cast<double>(ev.mae), static_cast<double>(ev.p95), static_cast<double>(ev.ripple),
+          ev.why[0] ? ev.why : (autotune_.state() == AutoTuneState::Success ? "ok" : "abort"), autotune_.state() == AutoTuneState::Success ? "PASS" : "FAIL");
+    }
+#endif
     if (autotune_.phase() != previousPhase && autotune_.running())
       mayapSerialPrintf(false, "[TUNE] %s power=%.1f%% PV=%.3f\n",
           autoTunePhaseName(autotune_.phase()), autotune_.power(), temperature_);

@@ -30,10 +30,24 @@ constexpr uint32_t NearSpMaxMs = 5000000UL;        // the reused relay also keep
 constexpr uint32_t SettleMaxMs = 900000UL;
 constexpr uint32_t SettleCoolMs = 600000UL;      // wait this long at most for PV to fall SettleBelowC under the setpoint
 constexpr float SettleBelowC = 0.8f;
-constexpr uint32_t ValidateMs = 2700000UL;         // 45 min closed-loop check (at least; settle budget 30 min + tail)
-constexpr uint32_t ValidateMaxTailMs = 3000000UL;
+// Closed-loop verification horizon = warm-up (the loop must settle) + scored tail, both derived from what was IDENTIFIED on this oven
+// (SIMC integral time tauI = 10 x (delay + 4 s), relay period Pu). The floors are the 45 min of the original check; a slow loop needs
+// proportionally longer, and one that would need more than ValidateHardMaxMs is NOT accepted (nothing is concluded from a window
+// that is too short to show the slow behaviour).
+constexpr uint32_t ValidateMs = 2700000UL;         // 45 min floor (30 min warm-up + 15 min tail)
+constexpr uint32_t ValidateWarmMs = 1800000UL;     // warm-up floor
 constexpr uint32_t ValidateTailMs = 900000UL;      // the last 15 min are scored (at least) ...
 constexpr float ValidateTailPeriods = 2.5f;        // ... or 2.5 relay periods when the loop is slower than that
+constexpr float ValidateWarmTauI = 3.0f;           // warm-up >= 3 integral times
+constexpr float ValidateTailTauI = 2.0f;           // scored tail >= 2 integral times
+constexpr float CoarseResC = 0.05f;                // a probe step this coarse needs a longer tail (x1.5): fewer levels per minute
+constexpr float CoarseTailFactor = 1.5f;
+constexpr uint32_t ValidateHardMaxMs = 9000000UL;  // 150 min: above this the candidate is rejected, never shortened
+constexpr float ValidHoldFrac = 0.90f;             // share of the scored tail the controller must be in its steady HOLD regime
+// Sensor resolution is read off the raw probe steps that were really seen (nothing is configured, nothing comes from the simulator).
+constexpr float ResEpsC = 0.003f;                  // smaller PV steps are float dust / ADC noise, not quantisation
+constexpr uint8_t ResMinSteps = 4;                 // steps needed before the estimate is trusted
+constexpr float ResUnknownC = 0.5f;                // fewer steps than that: the probe is too coarse to prove anything
 constexpr uint32_t TotalMaxMs = 16200000UL;        // 270 min hard cap (a cold, heavy, weak oven needs > 80 min just to heat)
 
 // ---- safety / quality limits ------------------------------------------------------------------------------
@@ -54,7 +68,7 @@ constexpr float RelayCoastMarginC = 0.25f; // room kept under the High alarm bey
 constexpr float ApproachBrakeC = 0.6f;
 constexpr float ApproachGain = 40.0f;        // % per degC per (1 / coast100): brake loop gain 0.4
 constexpr float ValidOvershootC = 0.30f;
-constexpr float ValidMae = 0.12f, ValidP95 = 0.18f, ValidRipple = 0.30f;
+constexpr float ValidMae = 0.12f, ValidP95 = 0.18f, ValidRipple = 0.30f;   // targets - never relaxed
 constexpr float ValidSatFrac = 0.30f;
 constexpr float HoldMaxPct = 30.0f;        // a plant that needs more than 30 % duty just to stand still has < 3.3x authority margin: not accepted in V1
 constexpr float ApproachArriveC = 0.15f;   // PV moved less than this over the last 200 s = equilibrium
@@ -167,6 +181,23 @@ inline bool simc(float gain, float delaySec, float ku, float periodSec, float &k
   return kp >= KpMin && std::isfinite(ki);
 }
 
+// Verification horizon from what was identified (pure; unit-tested). warm-up >= 3 x tauI (the loop must settle), scored tail >=
+// max(15 min, 2.5 x relay period, 2 x tauI) and x1.5 on a coarse probe. False = the evidence cannot be collected within the hard
+// maximum or within the time the tune still has: the candidate must be REJECTED, never verified over a shorter window.
+struct VerifyPlan { uint32_t warmMs = 0, tailMs = 0, totalMs = 0; };
+inline bool verificationPlan(float tauISec, float periodSec, float resolutionC, uint32_t spentMs, VerifyPlan &plan) {
+  if (!std::isfinite(tauISec) || tauISec <= 0.0f) return false;
+  const float warm = std::max(static_cast<float>(ValidateWarmMs), ValidateWarmTauI * tauISec * 1000.0f);
+  float tail = std::max(static_cast<float>(ValidateTailMs),
+                        std::max(ValidateTailPeriods * std::max(0.0f, periodSec) * 1000.0f, ValidateTailTauI * tauISec * 1000.0f));
+  if (resolutionC >= CoarseResC) tail *= CoarseTailFactor;
+  const float total = std::max(static_cast<float>(ValidateMs), warm + tail);
+  if (!(total <= static_cast<float>(ValidateHardMaxMs))) return false;
+  if (static_cast<float>(spentMs) + total + 60000.0f > static_cast<float>(TotalMaxMs)) return false;
+  plan.warmMs = static_cast<uint32_t>(warm); plan.tailMs = static_cast<uint32_t>(tail); plan.totalMs = static_cast<uint32_t>(total);
+  return true;
+}
+
 struct Model {
   float gain = 0;          // degC per ON-second == degC/s at 100 % ACTUAL duty (effective plant gain)
   float delaySec = 0;      // apparent delay, SSR on -> reliable sensor response
@@ -189,10 +220,12 @@ class SmartAutoTune {
   explicit SmartAutoTune(uint8_t /*legacy preheat percent, unused*/ = 0) {}
   using Cycle = RelayAutoTune::Cycle;
   using Result = RelayAutoTune::Result;
-  struct Eval {   // closed-loop validation scores
+  struct Eval {   // closed-loop validation scores (MEASURED on the PV the controller sees; the resolution margin is applied when judging)
     float overshoot = 0, mae = 0, p95 = 0, ripple = 0, satFrac = 0, integralPeak = 0;
-    uint32_t samples = 0;
+    float resolution = 0, holdFrac = 0;
+    uint32_t samples = 0, horizonMs = 0, tailMs = 0, holdAfterMs = 0;
     bool ran = false, pass = false;
+    const char *why = "";   // first failed check, "" when passed
   };
 
   void configure(float target) { target_ = target; }
@@ -214,6 +247,7 @@ class SmartAutoTune {
     slopeCount_ = 0; slopeHead_ = 0; nearAt_ = 0;
     baseN_ = 0; baseSum_ = baseSq_ = 0; basePrev_ = input; baseFirst_ = input; baseFirstAt_ = now; baseMaxJump_ = 0;
     pvOff_ = pvPeak_ = input; validationStartPending_ = false;
+    rawPrev_ = NAN; resMin_ = 1e9f; resSteps_ = 0; holdRegime_ = false;
     relayRunning_ = false; relayHigh_ = 0; candidateValid_ = false; cand_ = Candidate();
     if (!std::isfinite(input) || !std::isfinite(target_)) abort(AutoTuneReason::SensorAbort);
   }
@@ -260,6 +294,21 @@ class SmartAutoTune {
     tickAt_ = now; tickOn_ = actualOn; tickSeen_ = true;
   }
   void noteController(float requestedPct, float integral) { reqPct_ = requestedPct; integral_ = integral; }
+  // Every control cycle: the RAW probe reading (when a fresh sample arrived) and whether the controller is in its steady HOLD regime
+  // (integral active). The probe step size is the smallest real change between two consecutive raw readings.
+  void noteSensor(float raw, bool freshSample, bool holdRegime) {
+    holdRegime_ = holdRegime;
+    if (!running() || !freshSample || !std::isfinite(raw)) return;
+    if (std::isfinite(rawPrev_)) {
+      const float step = std::fabs(raw - rawPrev_);
+      if (step > SmartTune::ResEpsC) { if (resSteps_ < 255U) ++resSteps_; resMin_ = std::min(resMin_, step); }
+    }
+    rawPrev_ = raw;
+  }
+  // Estimated probe resolution [degC] from the steps seen so far; coarse (0.5) while there is no evidence.
+  float resolution() const {
+    return resSteps_ >= SmartTune::ResMinSteps ? std::min(resMin_, SmartTune::ResUnknownC) : SmartTune::ResUnknownC;
+  }
 
   bool update(uint32_t now, float pv, const MachineConfig &cfg, MachineConfig &tunedOut) {
     if (!running()) return false;
@@ -602,18 +651,21 @@ class SmartAutoTune {
     const float q3 = model_.ku > 0.0f ? std::min(1.0f, (model_.ku / std::max(1e-3f, kp) - SmartTune::KuMargin + 1.0f) / 2.0f) : 0.5f;
     model_.confidence = static_cast<uint8_t>(SmartTune::ConfBase + SmartTune::ConfSpan * (q1 + q2 + q3) / 3.0f);
     ++modelSerial_;
-    // ---- start the closed-loop check
+    // ---- the closed-loop check: horizon from what was identified (SmartTune::verificationPlan; never from the simulator)
     {
-      float tail = SmartTune::ValidateTailPeriods * std::max(0.0f, model_.periodSec) * 1000.0f;
-      tail = std::max(static_cast<float>(SmartTune::ValidateTailMs), std::min(static_cast<float>(SmartTune::ValidateMaxTailMs), tail));
-      tailMs_ = static_cast<uint32_t>(tail);
-      validateMs_ = std::max<uint32_t>(SmartTune::ValidateMs, 1800000UL + tailMs_);
+      SmartTune::VerifyPlan plan;
+      eval_ = Eval(); eval_.ran = true; eval_.resolution = resolution();
+      if (!SmartTune::verificationPlan(tauI, model_.periodSec, eval_.resolution, elapsedMs(now, startedAt_), plan)) {
+        eval_.why = "horizon";
+        return failValidation(AutoTuneReason::ValidationFailed, true);
+      }
+      tailMs_ = plan.tailMs; validateMs_ = plan.totalMs;
+      eval_.horizonMs = validateMs_; eval_.tailMs = tailMs_;
     }
     ++validationSerial_;
     validationStartPending_ = true;
     enter(AutoTunePhase::Validating, now);
-    eval_ = Eval(); eval_.ran = true;
-    integralPeak_ = 0; slopeCount_ = 0; slopeHead_ = 0; for (uint8_t k = 0; k < HistN; ++k) scratch_.v.bins[k] = 0;
+    integralPeak_ = 0; tailHold_ = 0; holdFirstMs_ = 0xFFFFFFFFUL; slopeCount_ = 0; slopeHead_ = 0; for (uint8_t k = 0; k < HistN; ++k) scratch_.v.bins[k] = 0;
     tailMin_ = 1e9f; tailMax_ = -1e9f; tailSat_ = 0; tailN_ = 0; tailAbs_ = 0;
     maxOver_ = -1e9f;
     progress_ = 88;
@@ -628,11 +680,13 @@ class SmartAutoTune {
     pushSlope(now, pv);
     const float e = pv - target_;
     if (e > maxOver_) maxOver_ = e;
-    if (maxOver_ > SmartTune::ValidOvershootC) return failValidation(AutoTuneReason::ValidationFailed, true);
-    if (pv >= cfg.highTempAlarm - 0.15f) return failValidation(AutoTuneReason::ValidationFailed, true);
+    if (maxOver_ > SmartTune::ValidOvershootC) { eval_.overshoot = maxOver_; eval_.why = "overshoot"; return failValidation(AutoTuneReason::ValidationFailed, true); }
+    if (pv >= cfg.highTempAlarm - 0.15f) { eval_.overshoot = maxOver_; eval_.why = "high-margin"; return failValidation(AutoTuneReason::ValidationFailed, true); }
     progress_ = static_cast<uint8_t>(88 + std::min<uint32_t>(11U, el * 11U / validateMs_));
+    if (holdRegime_ && holdFirstMs_ == 0xFFFFFFFFUL) holdFirstMs_ = el;
     if (el + tailMs_ >= validateMs_) {
       ++tailN_;
+      if (holdRegime_) ++tailHold_;
       const float a = std::fabs(e);
       tailAbs_ += a;
       tailMin_ = std::min(tailMin_, pv); tailMax_ = std::max(tailMax_, pv);
@@ -653,10 +707,23 @@ class SmartAutoTune {
     eval_.ripple = tailN_ ? tailMax_ - tailMin_ : 99.0f;
     eval_.satFrac = tailN_ ? static_cast<float>(tailSat_) / static_cast<float>(tailN_) : 1.0f;
     eval_.integralPeak = integralPeak_;
+    eval_.holdFrac = tailN_ ? static_cast<float>(tailHold_) / static_cast<float>(tailN_) : 0.0f;
+    eval_.holdAfterMs = holdFirstMs_;
     const float maxOut = static_cast<float>(cfg.maxHeaterPower);
-    eval_.pass = tailN_ >= 100U && eval_.overshoot <= SmartTune::ValidOvershootC && eval_.mae <= SmartTune::ValidMae &&
-                 eval_.p95 <= SmartTune::ValidP95 && eval_.ripple <= SmartTune::ValidRipple &&
-                 eval_.satFrac <= SmartTune::ValidSatFrac && eval_.integralPeak < 0.95f * maxOut;
+    // The probe only says the true value is within half a step of what it reports, so every scored quantity is judged at its worst
+    // case: |true error| <= |measured error| + res/2 for each sample (overshoot, MAE, P95), peak-to-peak + res. Targets are NOT relaxed.
+    const float half = 0.5f * eval_.resolution;
+    const char *why = "";
+    if (tailN_ < 100U) why = "samples";
+    else if (eval_.overshoot + half > SmartTune::ValidOvershootC) why = "overshoot";
+    else if (eval_.mae + half > SmartTune::ValidMae) why = "mae";
+    else if (eval_.p95 + half > SmartTune::ValidP95) why = "p95";
+    else if (eval_.ripple + eval_.resolution > SmartTune::ValidRipple) why = "ripple";
+    else if (eval_.satFrac > SmartTune::ValidSatFrac) why = "saturation";
+    else if (eval_.integralPeak >= 0.95f * maxOut) why = "integral";
+    else if (eval_.holdFrac < SmartTune::ValidHoldFrac) why = "not-steady";
+    eval_.why = why;
+    eval_.pass = why[0] == '\0';
     if (!eval_.pass) return failValidation(AutoTuneReason::ValidationFailed, false);
     tunedOut = cfg;
     applyCandidate(tunedOut);
@@ -712,7 +779,11 @@ class SmartAutoTune {
   // validation
   Eval eval_;
   float tailMin_ = 0, tailMax_ = 0, tailAbs_ = 0, maxOver_ = 0, integralPeak_ = 0, reqPct_ = 0, integral_ = 0;
-  uint32_t tailN_ = 0, tailSat_ = 0, tailMs_ = SmartTune::ValidateTailMs, validateMs_ = SmartTune::ValidateMs;
+  uint32_t tailN_ = 0, tailSat_ = 0, tailHold_ = 0, holdFirstMs_ = 0xFFFFFFFFUL, tailMs_ = SmartTune::ValidateTailMs, validateMs_ = SmartTune::ValidateMs;
+  // probe resolution evidence + controller regime
+  float rawPrev_ = NAN, resMin_ = 1e9f;
+  uint8_t resSteps_ = 0;
+  bool holdRegime_ = false;
 };
 
 // The engine the controller drives. Host tests define MAYAP_AUTOTUNE_LEGACY to run the original relay-only tune.

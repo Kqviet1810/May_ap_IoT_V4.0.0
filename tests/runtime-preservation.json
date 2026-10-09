@@ -19,7 +19,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/thermal_control.h",
-      "sha256": "1a0487e691f8d6cc28a66d598ad2df5973d4832694a0e094436c96f65be2f579"
+      "sha256": "808cc3aa29998ec034158b4bb4dd6fb67b396b4fe34d14eb9b04e17230a02c18"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/firmware_update_guard.h",
@@ -64,7 +64,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "dd5e98692a0aed20c54a21522f666f78b9b8987383ec445e062107db41ebac0a",
+      "sha256": "b7676c5ee7a1206502533212e8d22d21a80946b19fe899038d5f73589c730ea9",
       "signature": "class MachineController {"
     },
     {
@@ -390,7 +390,7 @@
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
       "signature": "void updateAutoTune(",
-      "sha256": "9aa89b1bac5f0dac3a34e78d04c88a4d46f7d4d43a51b057dfc15f9c1fca03d0"
+      "sha256": "d1825edc928cdcba22332e2159d30ca6b36c429b84a2a09953ab4975bea0688a"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
@@ -457,5 +457,6 @@
   "alarmDeliveryReview": "2026-10-05: bounded Cloud-only fault edge mailbox, event-aware TLS lease and alarm priority. FaultManager safety fingerprint is preserved by removing only the three conditional notification hooks; all PID, output, controller, storage and safety bodies remain protected. Config changes only Cloud queue 8->16 and fault tracking 16->48. TLS memory thresholds are unchanged. D1 durable receipts and per-recipient bounded Push retries replace HTTP-status-only delivery acknowledgment.",
   "turningRtcReviewNote": "2026-10-05: only reject zero/unavailable automatic deadline while awaiting RTC anchor; homing/manual persistence from main retained. No thermal, motor safety or EEPROM schema changes.",
   "wifiStateReviewNote": "2026-10-05: reviewed config declaration and OTA admission accessor changes only: raw Wi-Fi for network I/O, stable presentation for controller/HMI faults. OTA interlocks, schemas, PID, Adaptive, heater safety and signed transactions unchanged.",
-  "smartAutotuneReviewNote": "2026-10-08: Smart AutoTune V1 (active identification -> model-based PI -> mandatory closed-loop validation -> atomic save). Reviewed changes: thermal_control.h (appended AutoTunePhase/Reason values, AutoTuneEngineDefaults no-op members, RelayAutoTune gains setPreheatPercent/setLimits and instance limits that default to the legacy constants, ThermalController::seedBumpless; PID/startup/relay math unchanged); MachineController startAutoTune (preflight only), updateAutoTune (engine-agnostic: tick with ACTUAL SSR state, candidate lives only in the engine, config_ untouched until the atomic save succeeds, profile seeded only afterwards) and the heating route (the candidate gains run through the SAME PID/startup/arbiter path under the tune permit; High/Emergency/inhibit/master-drop/sensor/storage abort conditions are a superset of the old ones). High/Emergency thresholds, FaultManager, OutputArbiter, EEPROM schemas, safety journal and OTA policy unchanged. ThermalLearner::seed gains an optional measured-hold flag (default off = unchanged); ProfileStorage gains a forced single-record offer. No blanket refresh: only the fingerprints of the touched protected bodies were recomputed."
+  "smartAutotuneReviewNote": "2026-10-08: Smart AutoTune V1 (active identification -> model-based PI -> mandatory closed-loop validation -> atomic save). Reviewed changes: thermal_control.h (appended AutoTunePhase/Reason values, AutoTuneEngineDefaults no-op members, RelayAutoTune gains setPreheatPercent/setLimits and instance limits that default to the legacy constants, ThermalController::seedBumpless; PID/startup/relay math unchanged); MachineController startAutoTune (preflight only), updateAutoTune (engine-agnostic: tick with ACTUAL SSR state, candidate lives only in the engine, config_ untouched until the atomic save succeeds, profile seeded only afterwards) and the heating route (the candidate gains run through the SAME PID/startup/arbiter path under the tune permit; High/Emergency/inhibit/master-drop/sensor/storage abort conditions are a superset of the old ones). High/Emergency thresholds, FaultManager, OutputArbiter, EEPROM schemas, safety journal and OTA policy unchanged. ThermalLearner::seed gains an optional measured-hold flag (default off = unchanged); ProfileStorage gains a forced single-record offer. No blanket refresh: only the fingerprints of the touched protected bodies were recomputed.",
+  "autotuneVerificationReviewNote": "2026-10-09: Smart AutoTune final hardening, verification only. thermal_control.h: AutoTuneEngineDefaults gains a no-op noteSensor(); MachineController::updateAutoTune: one observation call (noteSensor with the RAW probe reading, the fresh-sample flag and startupHeat_.phase()==Hold) and one [TUNE-VALIDATE] summary line when a tune ends. Both are read-only: no PID constant, Adaptive V1 authority, hold feed-forward, vent coordinator, startup algorithm, integral freeze, overshoot guard, High/Emergency threshold, OutputArbiter, SSR inhibit, master drop, E115, storage or atomic-save logic changed. All behaviour change is inside SmartAutoTune (thermal_smart_autotune.h): horizon from the identified loop, worst-case probe-resolution margin, steady-regime evidence; targets (overshoot 0.30, MAE 0.12, P95 0.18, ripple 0.30) unchanged. Only the fingerprints of the touched protected bodies were recomputed."
 }

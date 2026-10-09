@@ -55,7 +55,14 @@ Any NaN/Inf, `Kp < 1`, relay period < 2 θ or a value changed by `sanitizeMachin
 
 The candidate never touches `config_`; it lives in the engine and is applied to a copy for the PID call. Validation runs the production heating route (startup braking, scheduler, arbiter) with the SAME assist Adaptive V1 gives a measured profile (hold feed-forward, correction limiter, Ki ceiling) and the startup hint built from the model, PID reset to zero integral, from a real approach error. Scored over the tail window:
 
-overshoot ≤ 0.30 °C (checked over the whole check; immediate reject), MAE ≤ 0.12, P95 ≤ 0.18, ripple ≤ 0.30 °C, heater saturated ≤ 30 % of the tail, integral < 95 % of its limit; High = 0, Emergency = 0.
+overshoot ≤ 0.30 °C (checked over the whole check; immediate reject), MAE ≤ 0.12, P95 ≤ 0.18, ripple ≤ 0.30 °C, heater saturated ≤ 30 % of the tail, integral < 95 % of its limit; High = 0, Emergency = 0. **These targets are unchanged.** What changed in the final hardening (2026-10-09) is how much evidence the firmware demands before it believes a measured number:
+
+1. **Horizon from the identified loop, never from the simulator** (`SmartTune::verificationPlan`, pure and unit-tested). warm-up ≥ max(30 min, 3 × tauI) and scored tail ≥ max(15 min, 2.5 × relay period, 2 × tauI), where tauI = 4·(τc+θ) is the SIMC integral time computed from the *measured* delay (production has no τ of the oven and none is invented). A coarse probe (≥ 0.05 °C steps) stretches the tail × 1.5. The floors are the original 45 min, so a quick oven is verified exactly as before (reference plant: 2700 s, tune time unchanged at 4290 s). Hard maximum 150 min and the 270 min total cap: a candidate that would need more is **rejected** (`VALIDATION_FAILED`, `why=horizon`), never verified over a shorter window.
+2. **Probe resolution is read, not configured.** `noteSensor()` receives the RAW probe reading each fresh sample; the resolution is the smallest real step (> 3 mK, so float dust is ignored) between two consecutive readings, trusted after ≥ 4 steps, otherwise 0.5 °C (nothing proven). The probe only says the truth is within half a step, so each scored quantity is judged at its worst case: overshoot, MAE, P95 + res/2, ripple + res. Targets are not relaxed; a 0.1 °C probe therefore needs a measured MAE ≤ 0.07, P95 ≤ 0.13, ripple ≤ 0.20.
+3. **Steady-regime evidence.** The integral only works in the startup controller's HOLD phase. At least 90 % of the scored tail must be in HOLD (`why=not-steady` otherwise): a window where the integral was frozen proves nothing about the steady state the candidate will run in.
+
+Serial, once per verification (never per control cycle):
+`[TUNE-VALIDATE] res=0.100 delay=60.8 coast=76.0 period=728 horizon=4675 tail=2730 samples=1366 hold=1.00@384s over=-0.100 MAE=0.100 P95=0.110 ripple=0.000 why=mae RESULT=FAIL` (`hold=<fraction of tail>@<s until HOLD was first seen>`; `why` = first failed check, `ok` on PASS, `horizon` = refused before the check started).
 
 PASS → `saveConfig` (existing A/B slots + CRC + read-back) → on success the measured profile (`heaterGain`, `heaterDelaySec`, `coastRiseC`, `coastTimeSec`, `holdPowerPct`, `confidence`, `modelVersion`, signature, epoch) seeds `ThermalLearner` (hold marked *measured* so the biased-low forming windows are skipped) and is offered to `ProfileStorage::offerForced` (single flash writer = loop(), slot A/B, CRC, read-back). The PID record is the commit point; a power cut between the two records leaves a new PID with the previous/no profile, and a profile is only a capped seed (age cap 40, requalified online), so the pair is always safe.
 FAIL / abort / save error → nothing was applied: old PID and profile are untouched; heater scheduler, PID and startup controller are reset; POST_COOL + restart lockout apply; the failure reason is logged (`[TUNE] FAIL reason=… over=… mae=… p95=… ripple=…`). A truncated config save is `SAVE_FAILED` (+ storage fault latch as before).
@@ -71,31 +78,53 @@ FAIL / abort / save error → nothing was applied: old PID and profile are untou
 | | cases | accepted | rejected (safe) | ACCEPTED_BAD | High / Emergency during tune | post-tune High / Emergency |
 |---|---|---|---|---|---|---|
 | Mini matrix (every level of efficiency 50–200 %, mass light/medium/heavy, dead time 0–120 s, loss low/med/high, resolution 0.01/0.1, ambient 20/28) | 36 | 16 | 20 | **0** | 0 / 0 | 0 / 0 |
-| Full matrix | 540 | 251 | 289 | **2** | 0 / 0 | 0 / 0 |
+| Full matrix (final hardening) | 540 | 231 | 309 | **0** | 0 / 0 | 0 / 0 |
+| Full matrix before the hardening (7af68b0) | 540 | 251 | 289 | 2 | 0 / 0 | 0 / 0 |
 | Legacy relay-only, cold start (same 36 plants) | 36 | 1 | 0 (29 timeouts, 6 safety aborts) | 0 | **6** / 0 | 0 / 0 |
 | Legacy relay-only, warm start 37 °C | 36 | 10 | 0 (19 timeouts, 7 safety aborts) | **5** | **7** / 0 | 0 / 0 |
 
-ACCEPTED_BAD = accepted by AutoTune but, in a separate 3 h cold-start run with the accepted gains and profile under Adaptive V1, a REACHABLE plant misses overshoot ≤ 0.30 / MAE ≤ 0.12 / P95 ≤ 0.18 / ripple ≤ 0.30 / settled, or any plant crosses High/Emergency. The two residual cases (full344, full400) are `resolution 0.1` plants: full400 (fast plant, dead 0) stalls one probe quantum below SP (post-tune MAE 0.145, 0.025 °C over the 0.12 target; Adaptive V1's startup integral freeze `|error| < 0.15` combined with the 0.1 °C quantisation, also present with the default gains at other operating points), full344 ( lag 30 s + dead 30 s) shows a slow ripple (P95 0.39) in the 3 h run although its validation passed. None crossed a safety threshold. These are reported, not hidden; see limits.
+ACCEPTED_BAD = accepted by AutoTune but, in a separate 3 h cold-start run with the accepted gains and profile under Adaptive V1 (the oracle; the firmware never sees it), a REACHABLE plant misses overshoot ≤ 0.30 / MAE ≤ 0.12 / P95 ≤ 0.18 / ripple ≤ 0.30 / settled, or any plant crosses High/Emergency. The oracle is the production path (accepted gains + the persisted profile seed).
 
-Unit/abort/power-loss (`tests/thermal-smart-autotune-unit.cpp`, 438 checks): estimator recovery on synthetic ramps, SIMC numbers and bounds, baseline gates, bumpless hand-over, accept + one atomic save + profile seed + persisted profile, **84 immediate-abort cuts** (7 phases × 11 faults + operator cancel: heater OFF within one control cycle, no save, old PID/profile intact), power loss at each of the 7 phase boundaries and 5 truncated config saves (A/B slot keeps the old record), validation reject and HEAT_LIMITED rollback, warm chamber refused.
+**The two escapes of 7af68b0 and their root causes** (both `resolution 0.1`, neither crossed a safety threshold):
+
+* full344 (eff 1.2, 1.6 MJ/K, dead 30 + lag 30 s): validation parked PV on one probe step under SP (MAE exactly 0.100 ≤ 0.12) for the whole 15 min tail. With a 0.1 °C probe that number only bounds the true error to 0.15; the startup controller's hold cap sat a little under the real hold duty, so the offset never closed, and in the 3 h run Adaptive V1's learner later raised a gain-mismatch (prediction error 1.27 at ~7000 s), withdrew the feed-forward and the slow integral produced a 0.38 °C wander. A longer window alone would not have caught it; the resolution margin does (`why=mae`, 0.100 + 0.05 > 0.12). The late mismatch is Adaptive V1 behaviour and was left untouched.
+* full400 (eff 1.5, 0.6 MJ/K, dead 0): in the validation the startup controller sat in SoftLanding (integral frozen, I = 0.00) for 40 of 45 minutes and reached HOLD only 290 s before the end, so the 15 min tail looked perfect (MAE 0.009) without ever exercising the integral. In the 3 h run the same candidate never reached HOLD: with a 0.1 °C probe the 10 s IIR slope spikes above `|slope| ≤ 0.002` on every probe step, which keeps resetting the 60 s HOLD timer, `freezePositiveIntegral` stays true and PV is parked 0.145 °C below SP. It is now refused for lack of steady-regime evidence (`why=not-steady`, HOLD in 55 % of the tail).
+
+Effect of the hardening on the full matrix, same 540 plants: 20 of the 251 old accepts are now safe rejects (the 2 bad + 18 that happened to be good in the 3 h run; all 0.1 °C probes: 12 × `mae` bound, 7 × `not-steady`, 1 × `ripple`), no plant newly accepted, the 231 that remain have an identical outcome and the same tune time (median +10 s, worst +1586 s from the longer window of slow loops). Accepted-case worst post-tune numbers: MAE 0.081 (target 0.12), P95 0.120 (0.18), ripple 0.115 (0.30), overshoot 0.080 (0.30).
+
+**Sensitivity probes (not the oracle, reported so the number above is not over-read).** Re-running the 3 h oracle with a perturbed Adaptive seed (`SEED_CONF=30/60/100`) leaves 1–2 ACCEPTED_BAD (full501 in two of three, full165, full321, full480): all `resolution 0.1`, fast plants parked 0.14–0.15 °C under SP by the same quantisation / startup-freeze interplay as full400, and with no seed at all (`NO_SEED=1`, not a production configuration: the accepted profile is always persisted and seeded) 14. The verification cannot see this because in its own window the controller does reach SP; the cure lives in the startup controller (see limits), not in the verification.
+
+Unit/abort/power-loss (`tests/thermal-smart-autotune-unit.cpp`, 471 checks; new in the hardening: horizon planner, probe-resolution estimator, and the targeted regressions full344 / full400 / fast 0.01 °C plant (not slower) / medium plants (still accepted) / power-limited (own reason)): estimator recovery on synthetic ramps, SIMC numbers and bounds, baseline gates, bumpless hand-over, accept + one atomic save + profile seed + persisted profile, **84 immediate-abort cuts** (7 phases × 11 faults + operator cancel: heater OFF within one control cycle, no save, old PID/profile intact), power loss at each of the 7 phase boundaries and 5 truncated config saves (A/B slot keeps the old record), validation reject and HEAT_LIMITED rollback, warm chamber refused.
 
 ## Limits that remain
 
 * Simulation only: no heater kW, volume or CFM is known to the firmware, but the plant is an idealised first-order model. **Physical commissioning is required** before trusting any accepted gain.
 * The first tune needs a cold, empty oven (≥ 2.5 °C headroom); a hot oven is refused, not tuned.
 * Plants that need > 30 % duty to hold, or whose coast under the High alarm (0.7 °C of room by default) leaves the relay < 5 % of authority (strong heater, small mass), are refused as POWER_LIMITED (safe rejection; 132 of 540). Slow plants (dead time ≥ 60 s with heavy mass) can end in `RELAY_FAILED / TOTAL_TIMEOUT` (99 of 540).
-* Residual ACCEPTED_BAD (2 / 251) above; root cause lives in Adaptive V1 / the startup freeze, which this task was told not to redesign. Suggested next step: let the startup controller's integral freeze use a quantisation-aware threshold (`max(0.15, 1.5·LSB)`).
+* The verification refuses what it cannot prove, so with a 0.1 °C probe the acceptance rate is lower (97 of 270 accepted at 0.1 °C vs 134 of 270 at 0.01 °C). That is intended ("not sure → do not accept"). Open item for a later, separate task (not done here: startup algorithm / integral freeze were out of scope): on a 0.1 °C probe the startup controller can park PV one quantum under SP for hours (`slope` spikes keep it out of HOLD, hold cap just under the real hold duty). A quantisation-aware slope test (`max(0.002, k·LSB/60 s)`) and a hold-cap floor would remove the cause; it needs its own regression proof.
+* Horizons are heuristics derived from the identified loop (multiples of the SIMC integral time), not a proof of stability; they bound the risk, they do not remove the need for the physical run below.
 * Persisted-profile refresh after the 30-day age and the online mismatch logic are unchanged.
 * HMI shows the existing "DANG TU CHINH + progress %"; the phase names (`BASELINE/EXCITE/COAST/…`) are in the serial diagnostics (`[TUNE] …`) and progress is mapped 1–100 across the phases.
 
-## First AutoTune on a real oven (supervised, whole time)
+## First AutoTune on a real oven (supervised, whole time) — PHYSICAL COMMISSIONING PROCEDURE
 
-1. Empty oven, door closed, circulation fan normal, no eggs, ambient steady; SHT30 offset calibrated against an independent reference thermometer.
-2. Check High/Emergency thresholds (default High 38.2 °C, SP 37.5 °C): the tune needs the oven below SP − 2.5 °C.
-3. AUTO ON, HEATER switch ON, press AutoTune. Watch the SSR/heater and the serial `[TUNE]` lines: `BASELINE → EXCITE → COAST → APPROACH → NEAR_SP → SETTLE → VALIDATING → RESULT`.
-4. Keep the reference thermometer next to the probe. Expect: gain/delay plausible for the oven, `hold` ≈ the duty that keeps SP, MAE/P95 in `[TUNE] RESULT`. Any `FAIL` leaves the old PID untouched (read the reason).
-5. After SUCCESS let the oven hold SP for 1–2 h before the first batch and compare the reference reading with the displayed PV; only then load eggs.
-6. Any High/Emergency, unexpected heater behaviour, or a reference reading differing from PV by more than the calibration tolerance → stop, switch HEATER OFF, report with the serial log.
+Nothing below has been run on a real oven. No production accuracy is claimed from simulation.
+
+1. **Oven**: empty, no eggs, door closed, circulation fan normal, ambient steady.
+2. **Sensor**: SHT30 manually calibrated; an independent reference thermometer placed beside the probe for the whole procedure.
+3. **Start condition**: PV ≤ SP − 2.5 °C (default SP 37.5 °C, High 38.2 °C): the tune refuses a warmer oven.
+4. **Switches**: AUTO ON, HEATER ON, then press AutoTune. **A person watches the oven for the whole tune** (SSR/heater, PV, reference) and keeps a hand on the HEATER switch.
+5. **Serial**: expect `[TUNE] BASELINE → EXCITE → COAST → APPROACH → NEAR_SP → SETTLE → VALIDATING`, then `[TUNE-VALIDATE] …RESULT=PASS|FAIL`. Record `res`, `delay`, `coast`, `period`, `horizon`, `hold=` and `why=`. A FAIL leaves the old PID and profile untouched; a `why=mae|not-steady|horizon` refusal is a legitimate outcome, not a fault.
+6. **After SUCCESS**: hold SP 37.5 °C for **at least 1–2 h** and log PV, reference thermometer, heater duty and the Adaptive profile (gain, delay, hold, confidence, state). Compare the reference with the displayed PV before trusting anything.
+7. **Only then** test ventilation (one vent event at a time, log the dip and the recovery), and **only after that** the door-opening disturbance.
+8. Any High/Emergency, unexpected heater behaviour, or a reference differing from PV by more than the calibration tolerance → HEATER OFF, stop, keep the serial log.
+
+### PHYSICAL MEASUREMENT REQUIRED (not provable on a host)
+
+* Real heap / minimum heap / largest free block during a tune and after it; stack high-water of the control task and loop(); CPU time of `SmartAutoTune::update` and of `updateAutoTune` on the ESP32-S3.
+* The real oven: coast, delay, hold, gain, how quickly it reaches HOLD with the real probe, and whether the horizon (45–150 min) is long enough for its slow behaviour.
+* Real probe resolution and noise (the host only knows a quantised ideal probe).
+* Reference-thermometer error of the displayed PV at 37.5 °C over hours.
 
 ## Firmware size (CI, PILOT profile, ESP32-S3 `default_8MB`)
 
