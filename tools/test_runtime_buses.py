@@ -190,7 +190,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
             target.write_text(original.replace(*replacement), encoding='utf-8')
             executable = out / 'runtime-transactions-regression'
             subprocess.run([args.cxx, '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', str(out),
-                            '-I', str(json_include), str(root / 'tests/runtime-transactions.cpp'), '-o', str(executable)], check=True)
+                            '-I', str(json_include), '-I', str(root / 'MAYAP_INDUSTRIAL_v1_0_0'), str(root / 'tests/runtime-transactions.cpp'), '-o', str(executable)], check=True)
             result = subprocess.run([str(executable)], capture_output=True, text=True)
             target.write_text(original, encoding='utf-8')
             assert result.returncode != 0, 'Mutation not detected: ' + label
