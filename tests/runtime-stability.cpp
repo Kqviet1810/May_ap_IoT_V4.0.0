@@ -70,6 +70,7 @@ bool sendResetPin() {
 #include "actual-cloud-pin-reset.inc"
 static bool registered=true, dispatchDeferred=false;
 static unsigned dispatchAlarms=0,dispatchHeartbeats=0;
+void serviceMembers(){}   // HMI member list/unlink service: not part of this dispatch model
 void serviceRegister(uint32_t){}
 void drainOutbox(uint32_t){
   if(!outboxCount)return;
