@@ -1,6 +1,7 @@
 // Real browser cross-origin fetch + DOM; isolated GIS/API fixtures, no Google/customer I/O.
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const {chromium}=require(process.env.MAYAP_PLAYWRIGHT || 'playwright');
+async function openTab(page,name){const tab=page.locator(`[data-page="${name}"]`);if(!(await tab.isVisible()))await page.locator('#navToggle').click();await tab.click();}
 const out=path.resolve(process.argv[2] || '../../outputs/account-browser');fs.mkdirSync(out,{recursive:true});
 const home='http://127.0.0.1:8765',api='https://mayap-push-worker.vietk-mayaptrung.workers.dev';
 const token='ab'.repeat(32);
@@ -69,7 +70,7 @@ async function main(){
       }
       assert.equal(await reopened.locator(width<=800?'.mobileIdentity img':'.brand img').evaluate(img=>img.complete && img.naturalWidth>0),true);
       assert.equal(await reopened.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
-      await reopened.locator('[data-page="settings"]').click();
+      await openTab(reopened,'settings');
       assert.equal(await reopened.locator('#page-settings > :last-child').getAttribute('id'),'accountPanel');
       assert.equal(await reopened.locator('#revokeOtherSessions').count(),0);
       await reopened.screenshot({path:path.join(out,`account-settings-${width}.png`),fullPage:true});
@@ -97,7 +98,7 @@ async function main(){
     catch(error){console.error({returningErrors,state:await page.evaluate(()=>({auth:document.documentElement.dataset.auth,
       token:sessionStorage.getItem('mayap.account.session.v1'),account:window.MayapAccount?.current,message:document.getElementById('authMessage').textContent}))});throw error;}
     assert.ok(!(await page.evaluate(()=>window.authStates)).includes('guest'));
-    await page.locator('[data-page="settings"]').click();await page.locator('#logoutBtn').click();
+    await openTab(page,'settings');await page.locator('#logoutBtn').click();
     // Fixture returns 401 even if context init script re-seeds on navigation.
     await page.waitForFunction(()=>document.documentElement.dataset.auth==='guest');
     assert.equal(await page.locator('.landing').isVisible(),true);assert.equal(await page.locator('.appShell').isVisible(),false);

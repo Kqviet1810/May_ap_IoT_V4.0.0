@@ -39,10 +39,27 @@ async function main() {
     assert.equal(await page.locator('#notesBubble').count(), 1);
     await page.locator('#notesBubble').click();
     assert.equal(await page.locator('#notesPanel').isVisible(), true);
+    // Small screen: the tab list is hidden behind the hamburger button and never covers content until opened.
+    await page.locator('#notesPanel button[aria-label="Đóng ghi chú"]').click();   // close the notes panel again
+    assert.equal(await page.locator('#notesPanel').isVisible(), false);
+    assert.equal(await page.locator('#navToggle').isVisible(), true);
+    assert.equal(await page.locator('#mainNav').isVisible(), false);
+    await page.locator('#navToggle').click();
+    assert.equal(await page.locator('#mainNav').isVisible(), true);
+    assert.equal(await page.locator('#navToggle').getAttribute('aria-expanded'), 'true');
     await page.locator('.nav button[data-page="batch"]').click();
     assert.equal(await page.evaluate(() => document.body.dataset.page), 'batch');
+    assert.equal(await page.locator('#mainNav').isVisible(), false);  // choosing a tab closes the list
+    await page.locator('#navToggle').click();
     await page.locator('.nav button[data-page="settings"]').click();
     assert.equal(await page.evaluate(() => document.body.dataset.page), 'settings');
+    // The notes bubble stays exactly where it is while the page scrolls.
+    const bubbleTop = async () => page.locator('#notesBubble').evaluate(el => Math.round(el.getBoundingClientRect().top));
+    const before = await bubbleTop();
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(200);
+    assert.equal(await bubbleTop(), before);
+    await page.evaluate(() => window.scrollTo(0, 0));
     assert.deepEqual(errors, []);
     await page.screenshot({ path: path.join(out, 'v4-clean-web.png') });
     fs.writeFileSync(path.join(out, 'web-browser-qa.json'), JSON.stringify({
