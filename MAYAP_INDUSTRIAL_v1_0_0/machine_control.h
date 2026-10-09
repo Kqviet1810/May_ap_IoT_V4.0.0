@@ -3734,6 +3734,7 @@ class MachineController {
     faults_.set(FaultCode::StorageUnavailable, storageFaultLatched_, bootAt_);
     techGate_.begin(bootAt_);      // PIN record (a read error keeps the gate closed), strike counters, Web permission (default HIDDEN)
     history_.begin();
+    refreshHistoryCache();
     mayapSetConnectivityMode(config_.connectivityMode);
     lastNetworkStatus_ = mayapGetNetworkStatus();
     networkStatusInitialized_ = true;
@@ -4479,7 +4480,7 @@ class MachineController {
           !protectedBatchChange && pidAuthorityValid;
       // The previous advanced values are kept as a history record BEFORE the new ones are written, so a restore can always undo this
       // save. A failed backup does not stop the save itself (the chip is probably failing anyway: the save below reports that).
-      if (saveAllowed && advancedChange) (void)history_.push(beforeAdvanced);
+      if (saveAllowed && advancedChange) (void)pushHistory(beforeAdvanced);
       const bool ok = saveAllowed && store_.saveConfig(requested, readback);
       if (ok) {
         commitSavedConfig(now, previousConfig, readback);
@@ -4772,7 +4773,20 @@ class MachineController {
 
   // Keep the advanced values that are about to be replaced (used by the AutoTune commit; the HMI/Web paths push inline).
   void recordAdvancedHistory(const MachineConfig &before) {
-    (void)history_.push(AdvancedHistory::fromConfig(before));
+    (void)pushHistory(AdvancedHistory::fromConfig(before));
+  }
+  // The HMI list reads cached copies: the EEPROM is touched only when a record is written, never per control cycle.
+  void refreshHistoryCache() {
+    historyCount_ = 0;
+    for (uint8_t rank = 0; rank < AdvancedHistory::Slots; ++rank) {
+      if (history_.get(rank, historyCache_[rank])) historyCount_ = static_cast<uint8_t>(rank + 1U);
+      else break;
+    }
+  }
+  bool pushHistory(const AdvancedHistory::Snapshot &snapshot) {
+    const bool ok = history_.push(snapshot);
+    refreshHistoryCache();
+    return ok;
   }
 
   // ----------------------------- Technical access (PIN, Web permission, HMI-approved Web requests) ---------------------------
@@ -4922,7 +4936,7 @@ class MachineController {
     AdvancedHistory::applyTo(candidate, target);
     sanitizeMachineConfig(candidate);
     if (!mayapPidHasAuthority(candidate)) { message = "PID KHONG HOP LE"; return false; }
-    if (!history_.push(current)) { message = "LOI LUU BAN GHI CU"; return false; }
+    if (!pushHistory(current)) { message = "LOI LUU BAN GHI CU"; return false; }
     const MachineConfig previousConfig = config_;
     MachineConfig readback{};
     if (!store_.saveConfig(candidate, readback)) {
@@ -4949,6 +4963,7 @@ class MachineController {
       techRetryAt_ = now + 3000UL;
       techGate_.retryLoad(now);
       history_.begin();
+      refreshHistoryCache();
     }
     if (techPending_.kind != MayapTech::Kind::None) {
       if (!techGate_.webAllowed() || !techGate_.webSessionActive(now)) finishTechPending(now, TechResult::Revoked);
@@ -4964,7 +4979,8 @@ class MachineController {
     t.webSession = techGate_.webSessionActive(now);
     t.lockRemainingS = static_cast<uint16_t>(std::min<uint32_t>(65535UL, (techGate_.lockRemainingMs(now) + 999UL) / 1000UL));
     t.webSessionRemainingS = static_cast<uint16_t>(std::min<uint32_t>(65535UL, techGate_.webRemainingMs(now) / 1000UL));
-    t.historyCount = history_.count();
+    t.historyCount = historyCount_;
+    for (uint8_t i = 0; i < AdvancedHistory::Slots; ++i) t.history[i] = historyCache_[i];
     t.pendingKind = static_cast<uint8_t>(techPending_.kind);
     t.pendingMask = techPending_.mask;
     t.pendingValues = techPending_.values;
@@ -7564,6 +7580,9 @@ class MachineController {
     runtime_.sirenOn = outputs_.state().siren;
     runtime_.autoTuneState = autotune_.state();
     runtime_.autoTuneProgress = autotune_.progress();
+    runtime_.autoTunePhase = static_cast<uint8_t>(autotune_.phase());
+    runtime_.autoTuneReason = static_cast<uint8_t>(autotune_.reason());
+    runtime_.autoTuneRejection = static_cast<uint8_t>(autotune_.rejection());
     runtime_.primaryFaultCode = static_cast<uint16_t>(faults_.primary());
     runtime_.activeFaultCount = faults_.activeCount();
     runtime_.activeFaultDisplayCount = faults_.copyActiveForHmi(
@@ -8085,6 +8104,8 @@ class MachineController {
   TechResult techResult_ = TechResult::None;
   char techResultId_[MayapTech::RequestIdCapacity] = "";
   char techMessage_[40] = "";
+  AdvancedHistory::Snapshot historyCache_[AdvancedHistory::Slots];
+  uint8_t historyCount_ = 0;
   uint32_t techRetryAt_ = 0;
   uint32_t pidMonAt_ = 0;
   float pidMonActual_ = 0.0f;

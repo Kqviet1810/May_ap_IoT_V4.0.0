@@ -1208,6 +1208,7 @@ struct TechStatus {
   uint16_t pendingMask = 0;           // which snapshot fields the Web asked to change
   AdvancedHistory::Snapshot pendingValues;
   uint8_t historyCount = 0;           // advanced-config records available on the HMI (0..3)
+  AdvancedHistory::Snapshot history[AdvancedHistory::Slots];   // cached copies for the HMI list (rank 0 = newest); never the Web
   TechResult resultState = TechResult::None;   // outcome of the last Web technical request
   char resultId[40] = "";
 };
@@ -1262,6 +1263,9 @@ struct MachineRuntime {
   uint32_t alarmMask = AlarmNone;
   AutoTuneState autoTuneState = AutoTuneState::Idle;
   uint8_t autoTuneProgress = 0;
+  uint8_t autoTunePhase = 0;     // AutoTunePhase of the running / last tune (Web shows the stage)
+  uint8_t autoTuneReason = 0;    // AutoTuneReason of the last result (why it failed / rejected the candidate)
+  uint8_t autoTuneRejection = 0; // the quality reason behind a rejection
   MachineStateCode stateCode = MachineStateCode::Boot;
   uint16_t primaryFaultCode = 0;
   uint8_t activeFaultCount = 0;
