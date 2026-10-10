@@ -81,6 +81,7 @@ Một quy trình duy nhất: `doc/FIELD_ACCEPTANCE_PROCEDURE.md`. Kết quả: *
 | 8 | Smart ON (kiểm định riêng, chỉ sau khi baseline đạt) | NOT STARTED, không được phép trước bước 7 |
 
 ## 9. Quyết định phát hành
+* **Quyết định của người phụ trách (sau bản RC):** chốt nhánh nhiệt, làm nốt ba chỉnh sửa giao diện (màn hình ngủ chỉ hiện nhiệt độ lớn ở giữa; màn chỉnh thời gian ngủ cùng bố cục màn chỉnh thông số; Web chỉ dùng nút ba gạch trên màn thấp ≤ 600 px, màn cao giữ thanh tab dưới) rồi **merge PR #14 vào `main`**. Merge vào `main` **không phải** phát hành Production: không tag, không chạy workflow phát hành, không ký, không nạp firmware. Mọi điều kiện NO-GO ở mục 7 vẫn còn hiệu lực cho Production. Thay đổi giao diện không đổi số phiên bản firmware (1.1.4, tránh làm lệch dấu vân tay config.h); Web lên 1.1.12 để PWA tải lại CSS.
 * Hôm nay: **FIELD TEST REQUIRED**. RC sẵn sàng để thử trên thiết bị khi bạn nạp (USB) bản cờ 0 PILOT sinh từ đúng RC SHA.
 * **NO-GO cho Production** cho đến khi: mục 7 được xác nhận trên máy thật; biên bản nghiệm thu đạt; bạn chấp thuận.
 * Sau chấp thuận mới được: merge PR vào `main`, tạo tag (`vX.Y.Z`), chạy workflow phát hành, kiểm artifact và chữ ký, đánh dấu Production. **Chưa thực hiện bước nào trong số này.**

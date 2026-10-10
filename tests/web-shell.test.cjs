@@ -124,13 +124,18 @@ test('UI/core scripts share one release-qualified asset set and cache',()=>{
  }
 });
 
-test('small screens: tab bar is a hamburger-opened panel (no content hidden); the notes bubble stays put on every tab', () => {
+test('short screens (height <= XS 600px): tab bar is a hamburger-opened panel (no content hidden); taller screens keep the bottom tab bar; the notes bubble stays put on every tab', () => {
   const fs2 = require('node:fs');
   const html = fs2.readFileSync('index.html', 'utf8'), css = fs2.readFileSync('styles.css', 'utf8');
   const app = fs2.readFileSync('app.js', 'utf8'), notes = fs2.readFileSync('notes.js', 'utf8');
   assert.match(html, /id="navToggle"[^>]*aria-controls="mainNav"|aria-controls="mainNav"[^>]*id="navToggle"/);
   assert.match(html, /<nav class="nav" id="mainNav">/);
-  const mobile = css.slice(css.lastIndexOf('@media(max-width:800px),(max-height:500px){'));
+  const mobile = css.slice(css.lastIndexOf('@media(max-width:800px) and (max-height:600px),(max-height:500px){'));
+  assert.ok(mobile.length > 0 && css.includes('@media(max-width:800px) and (max-height:600px),(max-height:500px){'));   // hamburger only on short screens
+  // taller phones keep the always-visible 3-column bottom tab bar defined by the general bottom-bar block
+  const barBlock = css.slice(css.indexOf('@media(max-width:800px),(max-height:500px){\n  :root{--navH:84px}'));
+  assert.match(barBlock, /\.nav\{pointer-events:auto;[^}]*grid-template-columns:repeat\(3,1fr\)/);
+  assert.doesNotMatch(barBlock.slice(0, barBlock.indexOf('\n}\n')), /\.nav\{display:none/);
   assert.match(mobile, /\.navToggle\{display:grid[^}]*position:fixed[^}]*left:/);          // fixed button on the left edge
   assert.match(mobile, /\.nav\{display:none;position:fixed/);                              // hidden until opened
   assert.match(mobile, /\.nav\.open\{display:grid\}/);

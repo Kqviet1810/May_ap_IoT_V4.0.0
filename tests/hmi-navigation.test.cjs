@@ -209,13 +209,25 @@ test('Thiet bi ket noi: list from Cloud, owner cannot be removed, removal needs 
   assert.match(cloud, /servicePinReset\(\);\s*serviceMembers\(\);/);                    // same Cloud owner/admission path as reset-PIN, no new task
 });
 
-test('Man hinh ngu: only temperature + humidity, thin divider clear of top and bottom, small clock top-left, 2 min default, managed in HE THONG', () => {
+test('Man hinh ngu: only the temperature, as large as fits and centred, small clock top-left, 2 min default, managed in HE THONG', () => {
   assert.match(hmi, /SLEEP_MINUTES_DEFAULT = 2U/);
   const draw = bodyOf('void drawSleep()');
   assert.match(draw, /lcd\.drawStr\(0, 8, currentRuntime\.timeText\)/);                // same small clock slot as the Home header
-  const divider = draw.match(/drawVLine\(64, (\d+), (\d+)\)/);
-  assert.ok(divider && Number(divider[1]) >= 8 && Number(divider[1]) + Number(divider[2]) <= 56, 'divider leaves a margin at top and bottom');
+  assert.match(draw, /currentRuntime\.temperature/);
+  assert.match(draw, /u8g2_font_logisoso50_tn/);                                        // the biggest numeric font is tried first
+  assert.match(draw, /\(128 - \(w \+ UNIT_W\)\) \/ 2/);                               // horizontally centred
+  assert.doesNotMatch(draw, /humidity|drawVLine/);                                       // temperature only: no humidity, no divider
   assert.doesNotMatch(draw, /targetTemp|currentDay|machineState/);                       // nothing else on the sleep screen
+  // the sleep-time editor uses the SAME layout as the parameter editor (drawEditSetting): header, label y=23, big value y=48, hint y=62
+  const sleepEditDraw = bodyOf('void drawSleepEdit()');
+  const param = bodyOf('void drawEditSetting()');
+  assert.match(sleepEditDraw, /drawHeader\("SUA THONG SO", false\)/);
+  assert.match(param, /drawHeader\("SUA THONG SO", false\)/);
+  assert.match(sleepEditDraw, /drawCenteredFit\(23, "Thoi gian ngu"/);
+  assert.match(sleepEditDraw, /drawCenteredFit\(48, value, u8g2_font_helvB14_tf, u8g2_font_helvB12_tf, u8g2_font_6x12_tf\)/);
+  assert.match(param, /drawCenteredFit\(48, value, u8g2_font_helvB14_tf,\s*u8g2_font_helvB12_tf,\s*u8g2_font_6x12_tf\)/);
+  assert.match(sleepEditDraw, /lcd\.drawStr\(11, 62, "NHAN: LUU   GIU: HUY"\)/);
+  assert.match(param, /lcd\.drawStr\(11, 62, "NHAN: LUU   GIU: HUY"\)/);
   const update = bodyOf('void hmiUpdate(');
   assert.match(update, /now - lastInteractionAt >= static_cast<uint32_t>\(sleepMinutes\) \* 60000UL/);
   assert.match(update, /view == View::Home && !splashActive && !confirmationActive\(\)/);

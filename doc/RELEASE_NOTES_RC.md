@@ -10,6 +10,11 @@ Không thay đổi so với baseline hiện hành: PID, Adaptive Thermal V1, b�
 * **Cổng kiểm thử/CI:** sensor-path (cảnh báo/E115/E104 chạy trên nhiệt độ được báo cáo), A/B/C so với baseline đóng băng, Smart AutoTune OFF **và ON**, biến thể build cờ 0/1 với ngân sách Flash/RAM, artifact RC kèm `BUILD_INFO.txt` và `SHA256SUMS.txt`.
 * **Tài liệu:** kế hoạch nghiệm thu một quy trình, checklist đo ESP32 không nhiệt, hướng dẫn nâng cấp/rollback, bảng chặn xuất xưởng.
 
+## Giao diện (sau RC)
+* HMI màn hình ngủ: chỉ nhiệt độ, chữ số lớn nhất vừa màn hình, nằm giữa; giờ giữ ở góc trái trên. Độ ẩm không còn hiện ở màn hình ngủ.
+* HMI chỉnh thời gian ngủ: cùng bố cục màn chỉnh thông số (tiêu đề, nhãn, giá trị lớn, dòng hướng dẫn).
+* Web 1.1.12: nút ba gạch thay thanh tab dưới **chỉ** khi màn thấp (chiều cao ≤ 600 px); màn cao hơn giữ thanh tab dưới như trước.
+
 ## Không có trong RC
 D2–D6 (latch contactor, ngân sách đóng cắt, chương trình nhiệt, làm mát trứng, lưu chương trình) chỉ là module thiết kế, không được firmware include. `PriorMinError` giữ 3.5.
 

@@ -39,9 +39,14 @@ async function main() {
     assert.equal(await page.locator('#notesBubble').count(), 1);
     await page.locator('#notesBubble').click();
     assert.equal(await page.locator('#notesPanel').isVisible(), true);
-    // Small screen: the tab list is hidden behind the hamburger button and never covers content until opened.
     await page.locator('#notesPanel button[aria-label="Đóng ghi chú"]').click();   // close the notes panel again
     assert.equal(await page.locator('#notesPanel').isVisible(), false);
+    // Tall phone (390x844, height > XS 600 px): the bottom tab bar stays visible exactly as before; no hamburger.
+    assert.equal(await page.locator('#navToggle').isVisible(), false);
+    assert.equal(await page.locator('#mainNav').isVisible(), true);
+    assert.equal(await page.locator('.nav button[data-page="batch"]').isVisible(), true);
+    // Short screen (height <= XS 600 px): the tab list is hidden behind the hamburger button and never covers content until opened.
+    await page.setViewportSize({ width: 390, height: 560 });
     assert.equal(await page.locator('#navToggle').isVisible(), true);
     assert.equal(await page.locator('#mainNav').isVisible(), false);
     await page.locator('#navToggle').click();
@@ -53,6 +58,11 @@ async function main() {
     await page.locator('#navToggle').click();
     await page.locator('.nav button[data-page="settings"]').click();
     assert.equal(await page.evaluate(() => document.body.dataset.page), 'settings');
+    // Back to a tall screen: the bottom tab bar returns and the hamburger disappears.
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.locator('#navToggle').isVisible(), false);
+    assert.equal(await page.locator('#mainNav').isVisible(), true);
+    await page.setViewportSize({ width: 390, height: 560 });
     // The notes bubble stays exactly where it is while the page scrolls.
     const bubbleTop = async () => page.locator('#notesBubble').evaluate(el => Math.round(el.getBoundingClientRect().top));
     const before = await bubbleTop();

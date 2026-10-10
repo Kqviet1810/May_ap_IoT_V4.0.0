@@ -839,8 +839,10 @@ body[data-page="batch"] .telemetryCanvasWrap{flex:1 1 0;height:0;min-height:72px
 #profilePhotoDialog{width:min(360px,calc(100vw - 24px))}
 #profilePhotoDialog .googleLogin{margin:16px 0;display:flex;justify-content:center}
 
-/* Man nho: thanh tab an, nut 3 gach co dinh o goc duoi trai; bam vao moi hien thanh tab (khong che noi dung nua). */
-@media(max-width:800px),(max-height:500px){
+/* Man THAP (chieu cao <= XS = 600px, cung moc voi cac rut gon max-height:600px o tren): thanh tab an, nut 3 gach co dinh o goc duoi trai;
+   bam vao moi hien thanh tab (khong che noi dung nua). Man cao hon 600px van dung thanh tab duoi nhu truoc (khong an). Chi nam trong
+   bo cuc thanh-dieu-huong-duoi (max-width:800px hoac max-height:500px) nen khong anh huong may tinh/tablet ngang rong. */
+@media(max-width:800px) and (max-height:600px),(max-height:500px){
   .navToggle{display:grid;place-items:center;position:fixed;z-index:60;left:max(12px,env(safe-area-inset-left,0px));bottom:calc(14px + var(--safeBottomMax));width:48px;height:48px;padding:0;border:1px solid var(--navBorder);border-radius:16px;background:var(--navBg);color:var(--navActiveText);box-shadow:var(--shadow);cursor:pointer}
   .navToggle svg{width:24px;height:24px}
   .navToggle:focus-visible{outline:2px solid var(--ring);outline-offset:3px}
