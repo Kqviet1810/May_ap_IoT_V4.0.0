@@ -60,7 +60,7 @@ m1824 (the case asked for): Adaptive V1 overshoot 1.794 °C / Emergency → Smar
   for ~70 min and PV parks 0.1–1 °C under SP. That is a learner weakness (Phase 3), not a startup-brake error: the same plants pass in B only
   because their start happens to feed the learner better.
 * Remaining 18 High cases: 10 are start error 2.5 °C at ambient 35 (Kh 0.178 × the 15 s minimum observable pulse already exceeds the margin: not
-  avoidable without a sub-observable probe; physics-limited), 8 are dead-time 60–120 s plants whose first burst is covered but whose reheat is not.
+  avoidable without a sub-observable probe; physics-limited), 8 are strong plants with dead time 60–120 s (ambient 10–28): root cause not yet analysed, tracked for Phase 3.
 
 ## Not tested / open
 Smart AutoTune with the flag ON (the validation path shares the controller): NOT TESTED. On-chip Flash/RAM/CPU: NOT MEASURED. Interaction of the
