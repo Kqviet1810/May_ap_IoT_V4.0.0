@@ -150,8 +150,8 @@ inline void configure(PathHarness &h, const Scenario &sc) {
   h.config_.tempOffset = sc.path.tempOffset;
   h.batchRunning_ = true;
   h.config_.targetTemp = sc.sp;
-  h.thermalV1_.setSmartLearning(sc.mode == Mode::Smart);
-  h.startupHeat_.setSmart(sc.mode == Mode::Smart);   // Smart Thermal startup (feature flag); every other mode is the legacy controller
+  h.thermalV1_.setSmartLearning(sc.mode == Mode::Smart && !std::getenv("X_NO_HOLD"));
+  h.startupHeat_.setSmart(sc.mode == Mode::Smart && !std::getenv("X_NO_START"));   // Smart Thermal startup (feature flag); every other mode is the legacy controller
   h.config_.adaptiveThermalBalanceEnabled = sc.mode != Mode::Baseline;
   h.thermalV1_.setVentCoordination(sc.mode == Mode::Adaptive || sc.mode == Mode::Smart);
   h.config_.ventAutoEnabled = sc.ventProfile;

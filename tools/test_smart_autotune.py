@@ -49,12 +49,16 @@ def main():
     ap.add_argument('--report-dir', type=Path, default=Path(tempfile.gettempdir()) / 'mayap-smart-autotune')
     ap.add_argument('--jobs', type=int, default=min(4, os.cpu_count() or 1))
     ap.add_argument('--sanitize', action='store_true')
+    ap.add_argument('--smart-thermal', action='store_true', help='compile with -DMAYAP_SMART_THERMAL=1 and run the independent post-tune oracle in Smart mode (default flag value 0 is what ships)')
     args = ap.parse_args()
     out = args.report_dir; out.mkdir(parents=True, exist_ok=True)
     inc = out / 'include'
     run([sys.executable, str(ROOT / 'tools/test_thermal_control.py'), '--emit-includes', str(inc)], stdout=subprocess.DEVNULL)
     base = json.loads((ROOT / 'tests/thermal-smart-autotune-baseline.json').read_text())
     common = ['g++', '-std=c++11', '-Wall', '-Wextra', '-Werror', '-I', str(inc)]
+    if args.smart_thermal:
+        common += ['-DMAYAP_SMART_THERMAL=1']
+        os.environ['POST_MODE'] = 'smart'   # the harness forces the control mode per scenario; the post-tune oracle run must be the Smart mode to exercise the flag
     if args.sanitize: common += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-fno-pie', '-no-pie']
     opt = ['-O2']
 

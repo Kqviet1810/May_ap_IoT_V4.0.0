@@ -356,7 +356,7 @@ int main(int argc, char **argv) {
         std::cerr << "label,mode,t,temp,fed,sp,duty,vent,conf,state,gain,delay,hold,coast,ventGain,predErr,mismatch,ventPhase,ff,integral,gate,req,holdWin,info\n"; }
       const Result r = run(all[i].p, sc);
       std::cout << want << " " << modeName(sc.mode) << " ov=" << r.overshoot << " mae=" << r.mae << " p95=" << r.p95 << " ripple=" << r.ripple
-                << " settle=" << r.settling << " high=" << r.high << " emerg=" << r.emergency << " pass=" << r.pass << " conf=" << r.confidence << " tQual=" << r.timeQualifiedS << " rise=" << r.riseS << " mism=" << r.mismatchEvents << " byKh=" << r.mismatchKh << " byHold=" << r.mismatchHold << "\n";
+                << " settle=" << r.settling << " high=" << r.high << " emerg=" << r.emergency << " pass=" << r.pass << " conf=" << r.confidence << " tQual=" << r.timeQualifiedS << " rise=" << r.riseS << " mism=" << r.mismatchEvents << " byKh=" << r.mismatchKh << " byHold=" << r.mismatchHold << " khErrPct=" << r.khEstErrPct << " holdErrPp=" << r.holdErrPp << " delayErrS=" << r.delayErrS << " guards=" << r.overshootGuards << " tMismatch=" << r.timeMismatchS << "\n";
       return 0;
     }
     return 2;
