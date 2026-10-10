@@ -23,8 +23,8 @@ after a safe rejection — for Adaptive V1 and for Smart Thermal. The unchanged 
 1. *Is the plant really untunable?* 86 POWER_LIMITED and 31 RELAY_FAILED plants are SAFETY_LIMITED (strong heater on a small mass: the coast under
    the 0.7 °C High margin leaves < 5 % relay authority). Refusing is correct there; the High/Emergency counts of the passive controller on those
    plants (Adaptive 13/9, Smart 5/2) are the startup-physics cases of Phases 0/2, not a consequence of refusing.
-2. *Is the excitation too conservative?* The 56 REACHABLE POWER_LIMITED plants all need > 30 % hold duty; 45 of them pass passively with Smart,
-   i.e. nothing is lost. 11 do not.
+2. *Is the excitation too conservative?* POWER_LIMITED means hold duty > 30 % or relay authority < 5 % (the engine does not record which). Of the 56
+   REACHABLE ones, 45 pass passively with Smart, i.e. nothing is lost; 11 do not.
 3. *Is passive learning enough?* For 191 of 309 refusals (62 %) the Smart controller meets the unchanged oracle without any tune (Adaptive V1: 149).
 4. *Can an earlier profile be reused?* Not evaluated (needs a profile history the simulation does not model): NOT TESTED.
 5. *Safe partial identification?* Not implemented; the passive result above is the bar any such feature would have to beat on the 37 candidates.
