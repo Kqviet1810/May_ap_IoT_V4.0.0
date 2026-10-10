@@ -95,6 +95,17 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
     assert re.search(r'uint16_t heaterStuckDurationSec\s*=\s*900;', config), 'E115 test must match production default'
     constants = ['CIRC_FAN_BATCH_START_STAGGER_MS','POST_COOL_MS','VENT_SCHEDULE_MAX_RUNS','FAN_PRESTART_MS','MANUAL_FAN_CAN_DISABLE_HEATING','HUMIDIFIER_HYSTERESIS_RH','HEATER_BURST_QUANTUM_MS']
     (out / 'actual-heating-constants.inc').write_text('\n'.join(re.search(r'constexpr [^;\n]*\b'+n+r'\s*=[^;]*;',config)[0] for n in constants))
+    # Sensor-integrity harness (tests/thermal-sensor-integrity.cpp): the REAL High/Emergency trip block and timer, evaluated on what the
+    # sensor path reports (not on plant truth), plus the production alarm constants it depends on.
+    trip_start = machine.index('    const float safetyTemp = isfinite(rawTemperature_)')
+    trip_marker = '    if (emergencyActive_) highTemperatureActive_ = true;\n'
+    trip_end = machine.index(trip_marker, trip_start) + len(trip_marker)
+    (out / 'actual-alarm-trip.inc').write_text(machine[trip_start:trip_end])
+    timer_start = machine.index('class ConditionTimer {')
+    (out / 'actual-condition-timer.inc').write_text(machine[timer_start:body_end(machine, timer_start) + 1])
+    alarm_constants = ['HIGH_TEMP_CONFIRM_MS','HIGH_TEMP_CLEAR_HYSTERESIS_C','HIGH_TEMP_CLEAR_CONFIRM_MS','EMERGENCY_CLEAR_HYSTERESIS_C',
+                       'EMERGENCY_CLEAR_CONFIRM_MS','SENSOR_FROZEN_TIMEOUT_MS','SENSOR_FROZEN_EPSILON_C']
+    (out / 'actual-alarm-constants.inc').write_text('\n'.join(re.search(r'constexpr [^;\n]*\b'+n+r'\s*=[^;]*;',config)[0] for n in alarm_constants))
     start = machine.index('  void updateFilter(')
     end = machine.index('  void completeCycleSuccess(', start)
     iir = '\n'.join(re.search(r'constexpr [^;]*\b' + name + r'\s*=[^;]*;', machine)[0]
