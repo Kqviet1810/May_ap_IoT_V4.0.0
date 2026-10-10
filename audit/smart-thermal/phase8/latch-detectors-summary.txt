@@ -1,0 +1,109 @@
+fault | detector: cases latched, latency median/max s, plant peak worst C, worst s>=High
+ssr_stuck_on         none                 latched  0/ 4  lat med      -1 max      -1  peak   40.2  highS   3594
+ssr_stuck_on         unexpl300            latched  4/ 4  lat med     658 max     802  peak   40.2  highS    723
+ssr_stuck_on         unexpl600            latched  4/ 4  lat med     812 max    1122  peak   40.2  highS    723
+ssr_stuck_on         rep2                 latched  4/ 4  lat med     579 max     735  peak   40.2  highS    723
+ssr_stuck_on         rep3                 latched  4/ 4  lat med    1023 max    1265  peak   40.2  highS   1080
+ssr_stuck_on         rep2uncmd            latched  4/ 4  lat med     603 max     735  peak   40.2  highS    723
+ssr_stuck_on         rep1uncmd            latched  4/ 4  lat med     255 max     335  peak   40.2  highS    365
+ssr_stuck_on         frozen1200           latched  0/ 4  lat med      -1 max      -1  peak   40.2  highS   3594
+ssr_stuck_on         energy600            latched  0/ 4  lat med      -1 max      -1  peak   40.2  highS   3594
+ssr_stuck_on         energy1200           latched  0/ 4  lat med      -1 max      -1  peak   40.2  highS   3594
+ssr_stuck_on         unexpl300+rep2uncmd+energy600 latched  4/ 4  lat med     579 max     735  peak   40.2  highS    723
+
+ssr_contactor_stuck  none                 latched  0/ 4  lat med      -1 max      -1  peak  108.6  highS   5369
+ssr_contactor_stuck  unexpl300            latched  4/ 4  lat med     433 max     465  peak  108.6  highS   5369
+ssr_contactor_stuck  unexpl600            latched  4/ 4  lat med     733 max     765  peak  108.6  highS   5369
+ssr_contactor_stuck  rep2                 latched  0/ 4  lat med      -1 max      -1  peak  108.6  highS   5369
+ssr_contactor_stuck  rep3                 latched  0/ 4  lat med      -1 max      -1  peak  108.6  highS   5369
+ssr_contactor_stuck  rep2uncmd            latched  0/ 4  lat med      -1 max      -1  peak  108.6  highS   5369
+ssr_contactor_stuck  rep1uncmd            latched  2/ 4  lat med     199 max     199  peak  108.6  highS   5369
+ssr_contactor_stuck  frozen1200           latched  0/ 4  lat med      -1 max      -1  peak  108.6  highS   5369
+ssr_contactor_stuck  energy600            latched  0/ 4  lat med      -1 max      -1  peak  108.6  highS   5369
+ssr_contactor_stuck  energy1200           latched  0/ 4  lat med      -1 max      -1  peak  108.6  highS   5369
+ssr_contactor_stuck  unexpl300+rep2uncmd+energy600 latched  4/ 4  lat med     433 max     465  peak  108.6  highS   5369
+
+stuck_low            none                 latched  0/ 8  lat med      -1 max      -1  peak   77.6  highS   3340
+stuck_low            unexpl300            latched  0/ 8  lat med      -1 max      -1  peak   77.6  highS   3340
+stuck_low            unexpl600            latched  0/ 8  lat med      -1 max      -1  peak   77.6  highS   3340
+stuck_low            rep2                 latched  0/ 8  lat med      -1 max      -1  peak   77.6  highS   3340
+stuck_low            rep3                 latched  0/ 8  lat med      -1 max      -1  peak   77.6  highS   3340
+stuck_low            rep2uncmd            latched  0/ 8  lat med      -1 max      -1  peak   77.6  highS   3340
+stuck_low            rep1uncmd            latched  0/ 8  lat med      -1 max      -1  peak   77.6  highS   3340
+stuck_low            frozen1200           latched  6/ 8  lat med    1222 max    1242  peak   77.6  highS   3340
+stuck_low            energy600            latched  6/ 8  lat med     432 max     799  peak   43.5  highS   2087
+stuck_low            energy1200           latched  6/ 8  lat med     422 max    1043  peak   45.9  highS   2087
+stuck_low            unexpl300+rep2uncmd+energy600 latched  6/ 8  lat med     432 max     799  peak   43.5  highS   2087
+
+frozen_value         none                 latched  0/ 4  lat med      -1 max      -1  peak   47.5  highS   4612
+frozen_value         unexpl300            latched  0/ 4  lat med      -1 max      -1  peak   47.5  highS   4612
+frozen_value         unexpl600            latched  0/ 4  lat med      -1 max      -1  peak   47.5  highS   4612
+frozen_value         rep2                 latched  0/ 4  lat med      -1 max      -1  peak   47.5  highS   4612
+frozen_value         rep3                 latched  0/ 4  lat med      -1 max      -1  peak   47.5  highS   4612
+frozen_value         rep2uncmd            latched  0/ 4  lat med      -1 max      -1  peak   47.5  highS   4612
+frozen_value         rep1uncmd            latched  0/ 4  lat med      -1 max      -1  peak   47.5  highS   4612
+frozen_value         frozen1200           latched  1/ 4  lat med    1198 max    1198  peak   47.5  highS   4612
+frozen_value         energy600            latched  1/ 4  lat med     678 max     678  peak   41.1  highS   4612
+frozen_value         energy1200           latched  1/ 4  lat med     746 max     746  peak   41.1  highS   4612
+frozen_value         unexpl300+rep2uncmd+energy600 latched  1/ 4  lat med     678 max     678  peak   41.1  highS   4612
+
+drift_low            none                 latched  0/ 8  lat med      -1 max      -1  peak   40.6  highS   4156
+drift_low            unexpl300            latched  0/ 8  lat med      -1 max      -1  peak   40.6  highS   4156
+drift_low            unexpl600            latched  0/ 8  lat med      -1 max      -1  peak   40.6  highS   4156
+drift_low            rep2                 latched  0/ 8  lat med      -1 max      -1  peak   40.6  highS   4156
+drift_low            rep3                 latched  0/ 8  lat med      -1 max      -1  peak   40.6  highS   4156
+drift_low            rep2uncmd            latched  0/ 8  lat med      -1 max      -1  peak   40.6  highS   4156
+drift_low            rep1uncmd            latched  0/ 8  lat med      -1 max      -1  peak   40.6  highS   4156
+drift_low            frozen1200           latched  0/ 8  lat med      -1 max      -1  peak   40.6  highS   4156
+drift_low            energy600            latched  1/ 8  lat med    1604 max    1604  peak   40.6  highS   4156
+drift_low            energy1200           latched  1/ 8  lat med    1556 max    1556  peak   40.6  highS   4156
+drift_low            unexpl300+rep2uncmd+energy600 latched  1/ 8  lat med    1604 max    1604  peak   40.6  highS   4156
+
+spike                none                 latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+spike                unexpl300            latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+spike                unexpl600            latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+spike                rep2                 latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+spike                rep3                 latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+spike                rep2uncmd            latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+spike                rep1uncmd            latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+spike                frozen1200           latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+spike                energy600            latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+spike                energy1200           latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+spike                unexpl300+rep2uncmd+energy600 latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+
+disconnect           none                 latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+disconnect           unexpl300            latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+disconnect           unexpl600            latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+disconnect           rep2                 latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+disconnect           rep3                 latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+disconnect           rep2uncmd            latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+disconnect           rep1uncmd            latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+disconnect           frozen1200           latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+disconnect           energy600            latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+disconnect           energy1200           latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+disconnect           unexpl300+rep2uncmd+energy600 latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+
+stuck_high           none                 latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+stuck_high           unexpl300            latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+stuck_high           unexpl600            latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+stuck_high           rep2                 latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+stuck_high           rep3                 latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+stuck_high           rep2uncmd            latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+stuck_high           rep1uncmd            latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+stuck_high           frozen1200           latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+stuck_high           energy600            latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+stuck_high           energy1200           latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+stuck_high           unexpl300+rep2uncmd+energy600 latched  0/ 4  lat med      -1 max      -1  peak   37.6  highS      0
+
+none                 none                 latched  0/17  lat med      -1 max      -1  peak   38.1  highS      0
+none                 unexpl300            latched  0/20  lat med      -1 max      -1  peak   38.1  highS      0
+none                 unexpl600            latched  0/20  lat med      -1 max      -1  peak   38.1  highS      0
+none                 rep2                 latched  0/20  lat med      -1 max      -1  peak   38.1  highS      0
+none                 rep3                 latched  0/20  lat med      -1 max      -1  peak   38.1  highS      0
+none                 rep2uncmd            latched  0/20  lat med      -1 max      -1  peak   38.1  highS      0
+none                 rep1uncmd            latched  0/20  lat med      -1 max      -1  peak   38.1  highS      0
+none                 frozen1200           latched  1/20  lat med   -1063 max   -1063  peak   38.1  highS      0
+none                 energy600            latched  1/20  lat med   -3968 max   -3968  peak   38.1  highS      0
+none                 energy1200           latched  1/20  lat med   -3442 max   -3442  peak   38.1  highS      0
+none                 unexpl300+rep2uncmd+energy600 latched  1/20  lat med   -3968 max   -3968  peak   38.1  highS      0
+

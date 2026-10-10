@@ -23,7 +23,7 @@ static void programTests() {
   Limits lim; const float high = 38.2f;
   // default: nothing is shipped, nothing is active, the set point passes through bit for bit
   { SetpointProgram sp; sp.configure(Program{}, lim, high); CHECK(!sp.active());
-    CHECK(sp.update(1000, 5, 37.5f) == 37.5f); CHECK(sp.update(9999999, 12, 37.123f) == 37.123f); }
+    CHECK(sp.update(1000, 5, 37.5f, 7) == 37.5f); CHECK(sp.update(9999999, 12, 37.123f, 7) == 37.123f); }
   // validation: each rule has a rejecting case
   CHECK(validate(program({{1, 375}}), lim, high) == Reject::None);
   CHECK(validate(program({}), lim, high) == Reject::Empty);
@@ -37,14 +37,14 @@ static void programTests() {
   CHECK(validate(program({{1, 375}}), lim, NAN) == Reject::NotFinite);
   { Program p = program({{1, 375}}); p.count = MaxStages + 1; CHECK(validate(p, lim, high) == Reject::TooMany); }
   // an invalid programme is not applied at all
-  { SetpointProgram sp; sp.configure(program({{1, 399}}), lim, high); CHECK(!sp.active()); CHECK(sp.update(1000, 3, 37.5f) == 37.5f); }
+  { SetpointProgram sp; sp.configure(program({{1, 399}}), lim, high); CHECK(!sp.active()); CHECK(sp.update(1000, 3, 37.5f, 7) == 37.5f); }
   // slew: a 0.4 C stage change takes >= 48 min, never overshoots the target, never moves faster than the limit
-  { SetpointProgram sp; sp.configure(program({{1, 375}, {4, 371}}), lim, high);
-    uint32_t t = 1000; float prev = sp.update(t, 1, 37.5f); CHECK(std::fabs(prev - 37.5f) < 1e-4f);
+  { SetpointProgram sp; sp.configure(program({{1, 375}, {4, 371}}), lim, high); CHECK(sp.activateForBatch(7));
+    uint32_t t = 1000; float prev = sp.update(t, 1, 37.5f, 7); CHECK(std::fabs(prev - 37.5f) < 1e-4f);
     Event e; CHECK(sp.takeEvent(e) && e.stage == 0 && e.targetX10 == 375); CHECK(!sp.takeEvent(e));
     float worst = 0; bool reached = false; uint32_t reachedAt = 0;
     for (int i = 0; i < 4 * 3600; ++i) {                       // 4 h on day 4, 1 s steps
-      t += 1000; const float v = sp.update(t, 4, 37.5f);
+      t += 1000; const float v = sp.update(t, 4, 37.5f, 7);
       worst = std::fmax(worst, std::fabs(v - prev)); prev = v;
       CHECK(v >= 37.1f - 1e-4f && v <= 37.5f + 1e-4f);
       if (!reached && std::fabs(v - 37.1f) < 1e-3f) { reached = true; reachedAt = static_cast<uint32_t>(i); }
@@ -53,16 +53,25 @@ static void programTests() {
     CHECK(reached && reachedAt >= 47 * 60 && reachedAt <= 49 * 60);
     CHECK(sp.takeEvent(e) && e.stage == 1 && e.targetX10 == 371); }
   // a stalled task is not a jump; NaN configured set point passes through; day 0 (no batch) restarts from the configured value
-  { SetpointProgram sp; sp.configure(program({{1, 375}, {2, 371}}), lim, high);
-    sp.update(1000, 2, 37.5f);
-    const float v = sp.update(1000U + 3600U * 1000U, 2, 37.5f);        // 1 h silent gap
+  { SetpointProgram sp; sp.configure(program({{1, 375}, {2, 371}}), lim, high); sp.activateForBatch(7);
+    sp.update(1000, 2, 37.5f, 7);
+    const float v = sp.update(1000U + 3600U * 1000U, 2, 37.5f, 7);        // 1 h silent gap
     CHECK(v >= 37.5f - 0.5f * 600.0f / 3600.0f - 1e-4f);               // dt is capped at 600 s
-    CHECK(std::isnan(sp.update(5000000, 2, NAN)));
-    CHECK(sp.update(6000000, 0, 36.0f) == 36.0f); }
+    CHECK(std::isnan(sp.update(5000000, 2, NAN, 7)));
+    CHECK(sp.update(6000000, 0, 36.0f, 7) == 36.0f); }
+  // confirmation gate: a valid programme does nothing until the operator confirms it for THAT batch
+  { SetpointProgram sp; sp.configure(program({{1, 375}, {2, 371}}), lim, high); CHECK(sp.active() && !sp.armedFor(7));
+    CHECK(sp.update(1000, 2, 37.5f, 7) == 37.5f); CHECK(sp.update(1000000, 2, 37.5f, 7) == 37.5f);       // configured, not confirmed: untouched
+    CHECK(!sp.activateForBatch(0));                                                                          // no batch id, no activation
+    CHECK(sp.activateForBatch(7) && sp.armedFor(7) && !sp.armedFor(8));
+    sp.update(2000000, 2, 37.5f, 7); float v = sp.update(2000000 + 600000, 2, 37.5f, 7); CHECK(v < 37.5f);
+    CHECK(sp.update(2700000, 2, 37.5f, 8) == 37.5f);                                                         // another batch: configured set point
+    sp.deactivate(); CHECK(sp.update(2800000, 2, 37.5f, 7) == 37.5f);
+    sp.activateForBatch(7); sp.configure(program({{1, 375}, {2, 371}}), lim, high); CHECK(!sp.armedFor(7)); /* re-configuring disarms */ }
   // millis() rollover
-  { SetpointProgram sp; sp.configure(program({{1, 375}, {2, 371}}), lim, high);
-    uint32_t t = 0xFFFFFFFFU - 5000U; sp.update(t, 2, 37.5f); float v = 0;
-    for (int i = 0; i < 20; ++i) { t += 1000U; v = sp.update(t, 2, 37.5f); }
+  { SetpointProgram sp; sp.configure(program({{1, 375}, {2, 371}}), lim, high); sp.activateForBatch(7);
+    uint32_t t = 0xFFFFFFFFU - 5000U; sp.update(t, 2, 37.5f, 7); float v = 0;
+    for (int i = 0; i < 20; ++i) { t += 1000U; v = sp.update(t, 2, 37.5f, 7); }
     CHECK(v < 37.5f && v > 37.4f); }
 }
 

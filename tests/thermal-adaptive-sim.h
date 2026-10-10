@@ -18,6 +18,7 @@
 #include "thermal-autotune-harness.h"
 #include "actual-filter.inc"
 #include "thermal-sensor-path.h"
+#include "thermal-safety-proposals.h"
 #include <cstdlib>
 #include <iostream>
 #include <map>
@@ -122,6 +123,9 @@ struct Result {
   double heaterOnAfterFaultS = 0;
   // long-run report: |PV - SP| per 6 h block (mean, max)
   std::vector<double> blockMae, blockMax;
+  // candidate detectors (D2/D3), first firing time in seconds or -1
+  double propUnexpl[NUnexpl] = {-1, -1, -1}, propRep[NRepHigh] = {-1, -1, -1, -1}, propFrozen[NFrozen] = {-1, -1}, propEnergy[NEnergy] = {-1, -1};
+  double latchedAtS = -1;   // when an ACTING detector opened the contactor (sensor-path suite only)
 };
 
 constexpr double HighC = 38.2, EmergencyC = 39.0;
@@ -206,6 +210,7 @@ inline Result run(const Plant &base, const Scenario &sc) {
   bool jumped = false;
   bool rebooted = false;
   unsigned sampleCounter = 0;
+  ProposalSet props;
   std::vector<double> blkSum, blkMax; std::vector<unsigned> blkN;
   double pathFrozenValue = 0;
   bool pathSpiked = false;
@@ -447,6 +452,17 @@ inline Result run(const Plant &base, const Scenario &sc) {
       if (h->thermalV1_.learner().mismatch() && r.timeMismatchS < 0 && changed) r.timeMismatchS = t - sc.changeAtS;
       r.maxPredErr = std::max<double>(r.maxPredErr, h->thermalV1_.learner().predictionError());
     }
+    if (tick % 10U == 0U) {
+      const auto &lp = h->thermalV1_.learner().profile();
+      const double holdFrac = lp.confidence >= 60 ? lp.holdPowerPct * 0.01 : -1.0;
+      props.update(t, on, h->temperature_, sc.sp, h->highTemperatureActive_, h->temperature_, holdFrac, lp.confidence >= 60 ? lp.heaterGain : -1.0);
+      if (sc.path.enabled && !h->proposalLatched_) {
+        const SensorPath &sp_ = sc.path;
+        const bool fire = (sp_.actUnexpl >= 0 && props.unexpl[sp_.actUnexpl].firedAt() >= 0) || (sp_.actRep >= 0 && props.rep[sp_.actRep].firedAt() >= 0) ||
+                          (sp_.actFrozen >= 0 && props.frozen[sp_.actFrozen].firedAt() >= 0) || (sp_.actEnergy >= 0 && props.energy[sp_.actEnergy].firedAt() >= 0);
+        if (fire) { h->proposalLatched_ = true; r.latchedAtS = t; }
+      }
+    }
     if (on) onTicks60++;
     if (sc.trace && sc.traceOut && tick % 600U == 599U) {
       duty60 = onTicks60 / 600.0; onTicks60 = 0;
@@ -469,6 +485,10 @@ inline Result run(const Plant &base, const Scenario &sc) {
     r.ripple = hi - lo;
   }
   r.settling = lastOut < static_cast<int>(sc.durationS - 1800) ? lastOut + 1 : -1;
+  for (int i = 0; i < NUnexpl; ++i) r.propUnexpl[i] = props.unexpl[i].firedAt();
+  for (int i = 0; i < NRepHigh; ++i) r.propRep[i] = props.rep[i].firedAt();
+  for (int i = 0; i < NFrozen; ++i) r.propFrozen[i] = props.frozen[i].firedAt();
+  for (int i = 0; i < NEnergy; ++i) r.propEnergy[i] = props.energy[i].firedAt();
   for (size_t b = 0; b < blkSum.size(); ++b) { r.blockMae.push_back(blkN[b] ? blkSum[b] / blkN[b] : 0.0); r.blockMax.push_back(blkMax[b]); }
   r.energyJ = energy;
   r.pass = r.high == 0 && r.emergency == 0 && r.overshoot <= 0.3 && r.mae <= 0.1 && r.p95 <= 0.15 &&

@@ -66,7 +66,7 @@ static const char *verdict(const Result &r, const Scenario &sc) {
 
 int main(int argc, char **argv) {
   const char *cmd = argc > 1 ? argv[1] : "run";
-  const bool smart = argc > 5 && std::strcmp(argv[5], "smart") == 0;
+  const bool smart = (argc > 5 && std::strcmp(argv[5], "smart") == 0) || (argc > 4 && std::strcmp(cmd, "latch") == 0 && argc > 5 && std::strcmp(argv[5], "smart") == 0);
   if (!std::strcmp(cmd, "count")) { std::cout << cases(smart).size() << "\n"; return 0; }
   if (!std::strcmp(cmd, "debug")) {   // debug <label> <fromS>: per-sample controller internals on stderr
     for (const Case &c : cases(smart)) if (c.label == argv[2]) {
@@ -76,6 +76,40 @@ int main(int argc, char **argv) {
       return 0;
     }
     return 2;
+  }
+  if (!std::strcmp(cmd, "latch")) {   // latch <shard> <shards> <out> [smart] : candidate detectors ACTING (open + keep the contactor open) on the sensor-path cases
+    struct Cfg { const char *name; int u, r, f, e; };
+    static const Cfg cfgs[] = {{"none", -1, -1, -1, -1}, {"unexpl300", 1, -1, -1, -1}, {"unexpl600", 2, -1, -1, -1}, {"rep2", -1, 0, -1, -1}, {"rep3", -1, 1, -1, -1},
+                               {"rep2uncmd", -1, 3, -1, -1}, {"rep1uncmd", -1, 4, -1, -1}, {"frozen1200", -1, -1, 1, -1}, {"energy600", -1, -1, -1, 0}, {"energy1200", -1, -1, -1, 1},
+                               {"unexpl300+rep2uncmd+energy600", 1, 3, -1, 0}};
+    const int shard = argc > 2 ? std::atoi(argv[2]) : 0, shards = argc > 3 ? std::atoi(argv[3]) : 1;
+    std::ofstream f; std::ostream *o = &std::cout;
+    if (argc > 4 && std::strcmp(argv[4], "-") != 0) { f.open(argv[4]); o = &f; }
+    *o << std::fixed << std::setprecision(2);
+    if (shard == 0) *o << "label,mode,fault,detector,truePeak,trueHighS,trueEmergencyS,latchedAtS,latencyS,e115S,e104S,fwHigh,unsafeCommandTicks,verdict\n";
+    const std::vector<Case> all = cases(smart);
+    for (size_t i = static_cast<size_t>(shard); i < all.size(); i += static_cast<size_t>(shards)) {
+      for (const Cfg &c : cfgs) {
+        Scenario sc = all[i].sc; sc.label = all[i].label; sc.path.actUnexpl = c.u; sc.path.actRep = c.r; sc.path.actFrozen = c.f; sc.path.actEnergy = c.e;
+        const Result r = run(all[i].p, sc);
+        *o << all[i].label << ',' << modeName(sc.mode) << ',' << sensorFaultName(sc.path.fault) << ',' << c.name << ',' << r.truePeak << ',' << r.trueHighS << ',' << r.trueEmergencyS << ','
+           << r.latchedAtS << ',' << (r.latchedAtS >= 0 ? r.latchedAtS - sc.path.faultAtS : -1.0) << ',' << r.e115S << ',' << r.e104S << ',' << r.fwHigh << ',' << r.unsafeCommandTicks << ',' << verdict(r, sc) << '\n';
+      }
+    }
+    return 0;
+  }
+  if (!std::strcmp(cmd, "ventenv")) {   // ventenv : does the exhaust fan that the firmware forces at High cool or heat? room colder / equal / hotter than the chamber
+    // The same overheating event (SSR stuck ON, contactor working) is replayed for several rooms and exhaust strengths (0 = the fan has no thermal effect).
+    std::cout << std::fixed << std::setprecision(2);
+    std::cout << "plant,room_c,exhaust_w_per_k,truePeak,trueHighS,trueEmergencyS,fwHigh,verdict\n";
+    for (const PlantDef &d : PLANTS) for (double room : {20.0, 30.0, 37.0, 40.0, 44.0}) for (double g : {0.0, 120.0, 300.0}) {
+      Plant p = makePlant(d); p.ambient = room; p.ventG = g;
+      Scenario sc; sc.sp = 37.5f; sc.durationS = 10800; sc.mode = Mode::Adaptive; sc.metricsFromS = 3600;
+      sc.path.enabled = true; sc.path.lagS = 10; sc.path.fault = SensorFault::SsrStuckOn; sc.path.faultAtS = 5400; sc.label = "ventenv";
+      const Result r = run(p, sc);
+      std::cout << d.name << ',' << room << ',' << g << ',' << r.truePeak << ',' << r.trueHighS << ',' << r.trueEmergencyS << ',' << r.fwHigh << ',' << verdict(r, sc) << '\n';
+    }
+    return 0;
   }
   const int shard = argc > 2 ? std::atoi(argv[2]) : 0, shards = argc > 3 ? std::atoi(argv[3]) : 1;
   std::ofstream f; std::ostream *o = &std::cout;

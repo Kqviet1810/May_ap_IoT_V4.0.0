@@ -390,6 +390,37 @@ int main(int argc, char **argv) {
     }
     return 0;
   }
+  if (cmd == "fpscan") {   // fpscan <suite> <shard> <shards> <out> : candidate safety detectors in OBSERVATION mode over fault-free suites (false-positive scan)
+    const std::string suite = argc > 2 ? argv[2] : "legacy788";
+    const int shard = argc > 3 ? std::atoi(argv[3]) : 0, shards = argc > 4 ? std::atoi(argv[4]) : 1;
+    std::ostream *o = &std::cout; std::ofstream f;
+    if (argc > 5) { f.open(argv[5]); o = &f; }
+    *o << std::fixed << std::setprecision(1);
+    if (shard == 0) *o << "suite,label,mode,class,high,emergency,unexpl180,unexpl300,unexpl600,rep2,rep3,rep4,rep2uncmd,rep1uncmd,frozen600,frozen1200,energy600,energy1200\n";
+    struct Item { std::string label; Plant p; Scenario sc; };
+    std::vector<Item> items;
+    if (suite == "legacy788" || suite == "matrix" || suite == "holdout") {
+      for (const Case &c : (suite == "matrix" ? matrixCases() : suite == "holdout" ? holdoutCases() : legacyCases())) items.push_back({c.label, c.p, c.sc});
+    } else if (suite == "vent" || suite == "ventx") {
+      for (const VentCase &c : ventCases(suite == "ventx")) items.push_back({c.plant + "/" + c.strength + "/" + c.schedule, c.p, c.sc});
+    } else if (suite == "hwchange") {
+      for (const HwCase &c : hwCases()) items.push_back({c.label + "/" + c.change, c.p, c.sc});
+    }
+    for (size_t i = 0; i < items.size(); ++i) {
+      if (static_cast<int>(i % shards) != shard) continue;
+      for (Mode m : {Mode::Adaptive, Mode::Smart}) {
+        Scenario sc = items[i].sc; sc.mode = m; sc.label = items[i].label;
+        const Result r = run(items[i].p, sc);
+        *o << suite << ',' << items[i].label << '#' << i << ',' << modeName(m) << ',' << reachName(r.reach) << ',' << r.high << ',' << r.emergency;
+        for (int k = 0; k < NUnexpl; ++k) *o << ',' << r.propUnexpl[k];
+        for (int k = 0; k < NRepHigh; ++k) *o << ',' << r.propRep[k];
+        for (int k = 0; k < NFrozen; ++k) *o << ',' << r.propFrozen[k];
+        for (int k = 0; k < NEnergy; ++k) *o << ',' << r.propEnergy[k];
+        *o << '\n';
+      }
+    }
+    return 0;
+  }
   if (cmd == "count") { std::cout << "holdout=" << holdoutCases().size() << " matrix=" << matrixCases().size() << " legacy788=" << legacyCases().size() << " vent=" << ventCases().size()
     << " hwchange=" << hwCases().size() << " faults=" << faultCases().size() << "\n"; return 0; }
   if (cmd == "mini") {  // quick development matrix: 54 representative plants, BASELINE vs ADAPTIVE

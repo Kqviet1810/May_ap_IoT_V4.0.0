@@ -32,6 +32,8 @@ struct SensorPath {
   double faultDurationS = 1e9;        // Disconnect / Spike: how long it lasts
   double faultValue = 0;              // StuckLow/High: reported value; Spike: added degC; Drift: degC per hour (reads LOW)
   float tempOffset = 0;               // user calibration offset (negative must never lower the safety temperature)
+  // Candidate detectors allowed to ACT (open the contactor and keep it open) in this run; -1 = observe only. See thermal-safety-proposals.h.
+  int actUnexpl = -1, actRep = -1, actFrozen = -1, actEnergy = -1;
 };
 
 struct PathHarness : TuneHarness {
@@ -41,7 +43,7 @@ struct PathHarness : TuneHarness {
   uint8_t sensorPlausibilityStreak_ = 0, goodSensorStreak_ = 0;
   float lastSuspectCandidate_ = NAN, lastAcceptedTemperature_ = NAN, sensorFrozenRefTemp_ = NAN;
   uint32_t sensorFrozenSince_ = 0;
-  bool heaterStuckTracking_ = false, heaterNotHeatingActive_ = false, sensorFrozenLatched_ = false;
+  bool heaterStuckTracking_ = false, heaterNotHeatingActive_ = false, sensorFrozenLatched_ = false, proposalLatched_ = false;
   uint32_t heaterStuckSinceAt_ = 0, heaterStuckAccumOnMs_ = 0;
   float heaterStuckStartTemp_ = NAN;
 
@@ -67,7 +69,7 @@ struct PathHarness : TuneHarness {
   // HeaterNotHeating, HighTemperature, EmergencyTemperature.
   void pathApplyFaults(bool externalCut) {
     const bool stop = !sensorUsable_ || sensorFrozenLatched_ || heaterNotHeatingActive_ ||
-                      highTemperatureActive_ || emergencyActive_ || externalCut;
+                      highTemperatureActive_ || emergencyActive_ || externalCut || proposalLatched_;
     faults_.inhibit = stop;
     faults_.drop = stop;
     faults_.cooling = highTemperatureActive_ || emergencyActive_;   // sensor-lost cooling is production code (sensorFaultNeedsFan)

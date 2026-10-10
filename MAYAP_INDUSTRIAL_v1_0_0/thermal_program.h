@@ -11,7 +11,10 @@
 //   * every stage target lies inside [minTargetC, min(maxTargetC, highAlarm - HighMarginC)]: never at or above a safety threshold;
 //   * consecutive stages differ by at most maxStepC;
 //   * the applied set point slews toward the stage target at most maxSlewCPerHour (a step of the table is never a step of the set point);
-//   * NaN/Inf/out-of-range input leaves the configured set point untouched.
+//   * NaN/Inf/out-of-range input leaves the configured set point untouched;
+//   * a programme NEVER changes the set point of a batch by itself: configure() only stores it. It acts on a batch only after
+//     activateForBatch(batchId) (an explicit operator confirmation recorded for THAT batch). A different batch id, a stop, or a
+//     reboot without the persisted confirmation (see program_store.h) leaves the configured set point alone.
 #include <cmath>
 #include <cstdint>
 
@@ -67,11 +70,17 @@ class SetpointProgram {
   void configure(const Program &p, const Limits &lim, float highAlarmC) {
     prog_ = p; lim_ = lim; valid_ = p.enabled && validate(p, lim, highAlarmC) == Reject::None;
     started_ = false; stage_ = 0xFF; event_ = Event{};
+    armed_ = false;                                   // a (re)configured programme is never active until confirmed again
   }
   bool active() const { return valid_; }
-  // `day`: 1-based incubation day (0 = no batch); `now`: millis(). Returns the set point to use.
-  float update(uint32_t now, uint8_t day, float configuredSp) {
-    if (!valid_ || day == 0 || !std::isfinite(configuredSp)) { started_ = false; return configuredSp; }
+  bool armedFor(uint32_t batchId) const { return valid_ && armed_ && armedBatch_ == batchId; }
+  // Operator confirmation for ONE batch (batchId must be non-zero). Returns false if there is no valid programme.
+  bool activateForBatch(uint32_t batchId) { if (!valid_ || batchId == 0U) return false; armed_ = true; armedBatch_ = batchId; started_ = false; return true; }
+  void deactivate() { armed_ = false; started_ = false; }
+  uint32_t armedBatch() const { return armed_ ? armedBatch_ : 0U; }
+  // `day`: 1-based incubation day (0 = no batch); `batchId`: the running batch; `now`: millis(). Returns the set point to use.
+  float update(uint32_t now, uint8_t day, float configuredSp, uint32_t batchId) {
+    if (!armedFor(batchId) || day == 0 || !std::isfinite(configuredSp)) { started_ = false; return configuredSp; }
     uint8_t idx = 0;
     for (uint8_t i = 0; i < prog_.count; ++i) if (day >= prog_.stages[i].fromDay) idx = i;
     const float target = prog_.stages[idx].targetX10 * 0.1f;
@@ -90,7 +99,8 @@ class SetpointProgram {
  private:
   Program prog_{};
   Limits lim_{};
-  bool valid_ = false, started_ = false;
+  bool valid_ = false, started_ = false, armed_ = false;
+  uint32_t armedBatch_ = 0;
   uint8_t stage_ = 0xFF;
   uint32_t lastMs_ = 0;
   float applied_ = 0;

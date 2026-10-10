@@ -61,26 +61,25 @@ struct CoolingOutput {
   uint32_t coolingSec = 0;
 };
 
-// Persisted state (so a reset can follow the resume policy). 20 bytes incl. CRC; written by the caller on phase change only.
+// Persisted state (so a reset can follow the resume policy). Packed, 24 bytes incl. sequence and CRC; written by the caller on phase change only.
+#pragma pack(push, 1)
 struct CoolingRecord {
   uint32_t magic = 0x4C4F4F43U;          // 'COOL'
   uint8_t version = 1, active = 0;
   uint16_t slot = 0;
   uint32_t slotStartEpoch = 0;           // start of the slot whose window was open
   uint32_t coolStartEpoch = 0;           // when cooling really began (the maximum-duration guard counts from here)
+  uint32_t seq = 0;                      // A/B store sequence (program_store.h)
   uint32_t crc = 0;
 };
+#pragma pack(pop)
 inline uint32_t crc32(const uint8_t *d, uint32_t n) {
   uint32_t c = 0xFFFFFFFFU;
   for (uint32_t i = 0; i < n; ++i) { c ^= d[i]; for (int k = 0; k < 8; ++k) c = (c >> 1) ^ (0xEDB88320U & (0U - (c & 1U))); }
   return ~c;
 }
 inline uint32_t recordCrc(const CoolingRecord &r) {
-  uint8_t b[16] = {static_cast<uint8_t>(r.magic), static_cast<uint8_t>(r.magic >> 8), static_cast<uint8_t>(r.magic >> 16), static_cast<uint8_t>(r.magic >> 24),
-                   r.version, r.active, static_cast<uint8_t>(r.slot), static_cast<uint8_t>(r.slot >> 8),
-                   static_cast<uint8_t>(r.slotStartEpoch), static_cast<uint8_t>(r.slotStartEpoch >> 8), static_cast<uint8_t>(r.slotStartEpoch >> 16), static_cast<uint8_t>(r.slotStartEpoch >> 24),
-                   static_cast<uint8_t>(r.coolStartEpoch), static_cast<uint8_t>(r.coolStartEpoch >> 8), static_cast<uint8_t>(r.coolStartEpoch >> 16), static_cast<uint8_t>(r.coolStartEpoch >> 24)};
-  return crc32(b, sizeof(b));
+  return crc32(reinterpret_cast<const uint8_t *>(&r), static_cast<uint32_t>(sizeof(CoolingRecord) - sizeof(uint32_t)));
 }
 inline void seal(CoolingRecord &r) { r.crc = recordCrc(r); }
 inline bool validRecord(const CoolingRecord &r) { return r.magic == 0x4C4F4F43U && r.version == 1 && r.crc == recordCrc(r); }

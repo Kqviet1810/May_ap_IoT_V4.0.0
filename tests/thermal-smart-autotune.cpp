@@ -98,6 +98,10 @@ int main(int argc, char **argv) {
     TuneOpts opts;
     const TuneOut o = tune(c.p, c.sp, opts);
     if (std::getenv("TUNE_TRACE")) for (const std::string &l : diagnosticLines) if (l.compare(0, 5, "[TUNE") == 0) std::fprintf(stderr, "%s", l.c_str());
+    if (const char *rc = std::getenv("TUNE_RELAY_CSV")) {   // measurement only: output edges during the tune (SSR / master contactor / exhaust / circulation)
+      FILE *rf = std::fopen(rc, "a");
+      if (rf) { std::fprintf(rf, "%s,%d,%.0f,%u,%u,%u,%u,%u\n", c.label.c_str(), o.accepted ? 1 : 0, o.tuneS, o.ssrEdges, o.masterEdges, o.ventEdges, o.circEdges, o.maxSsrEdges10min); std::fclose(rf); }
+    }
     if (o.started) ++started;
     if (o.modelDone) ++model;
     if (o.candidate) ++candidate;
