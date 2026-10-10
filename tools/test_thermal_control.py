@@ -185,7 +185,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
         shutil.copytree(out, args.emit_includes, dirs_exist_ok=True)
         print('Generated include directory: ' + str(args.emit_includes))
         raise SystemExit(0)
-    unit_tests = ['adaptive-observer','adaptive-thermal','thermal-autotune','thermal-control','thermal-startup','thermal-smart-startup','thermal-v2','thermal-output','thermal-heating','thermal-e115','thermal-config','thermal-filter','thermal-adaptive-unit','thermal-smart-autotune-unit']
+    unit_tests = ['adaptive-observer','adaptive-thermal','thermal-autotune','thermal-control','thermal-startup','thermal-smart-startup','thermal-program','thermal-v2','thermal-output','thermal-heating','thermal-e115','thermal-config','thermal-filter','thermal-adaptive-unit','thermal-smart-autotune-unit']
     if args.only: unit_tests = [t for t in args.only.split(',') if t]
     for test in unit_tests:
         variants = [1] if test in ('thermal-output','thermal-heating') else [0]
