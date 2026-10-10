@@ -31,8 +31,9 @@ plus 4 cases with the chamber in a room **hotter than the set point** (ambient 4
    profile, model version. It deliberately does not cover PID gains or set point (the profile describes the plant, not the controller) nor the
    sensor offset. A physical change of the heating elements is a compile-time constant in firmware, so the signature cannot see it; it is
    detected online only: heater 100→60 % is declared on all four plants (536, 536, 1460, 1392 s Adaptive V1; 536, 536, 1460, 5224 s Smart),
-   100→150 % is not declared by Adaptive V1 and by Smart only on the heavy plant (3942 s). Gain stays stale after such a change; control stays accurate
-   (tail MAE 0.015–0.14 °C in both). Open: faster gain tracking after a heater change (needs excitation the closed loop does not provide).
+   100→150 % is not declared by Adaptive V1 and by Smart only on the heavy plant (3942 s). Gain stays stale after such a change and the tail error is
+   NOT always small: 0.011–0.676 °C over the 16 hardware-change cases (worst: medium_d60 heater 100→60 %, 0.635 Adaptive V1 / 0.676 Smart; heavy_d30
+   heater 100→60 %, 0.063 vs 0.434). Open: faster gain tracking after a heater change (needs excitation the closed loop does not provide).
 4. **Persistence**: this program changed no persisted format (`ThermalProfile` 60 B unchanged, `MachineConfig` unchanged, new learner/startup members are
    RAM-only), so no EEPROM migration is needed and rollback to the previous firmware reads the same records.
 
