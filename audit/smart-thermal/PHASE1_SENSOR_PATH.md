@@ -38,14 +38,14 @@ matrices are **byte-identical** to the frozen baseline (`cmp` on all five CSVs);
 | stuck_low (30.0 / 36.5) | 8 | **TRUE_VIOLATION_STOPPED_LATE_BY_E115_E104 8** | **77.62** |
 | frozen value | 4 | UNDETECTED_TRUE_VIOLATION 3, STOPPED_LATE 1 | 47.45 |
 | drift low (0.5 / 2 °C·h⁻¹) | 8 | UNDETECTED_TRUE_VIOLATION 7, SAFE 1 | 40.56 |
-| SSR stuck ON, contactor works | 4 | **TRUE_VIOLATION_DETECTED_LATE 4** (High re-trips 10–25×; plant ≥ High for 3000–3600 s, ≥ Emergency up to 2264 s) | 40.21 |
+| SSR stuck ON, contactor works | 4 | **TRUE_VIOLATION_DETECTED_LATE 4** (High re-trips 10–25×; plant ≥ High for 2500–3600 s, ≥ Emergency up to 2264 s) | 40.21 |
 | SSR **and** contactor stuck | 4 | **ACTUATOR_UNSTOPPABLE_BY_FIRMWARE 4** | 108.56 |
 UNSAFE_COMMAND = 0 in all 60 cases: whenever the firmware knows it is unsafe, the heater is OFF in the same cycle.
 
 ## Findings (none is "fixed" here; all need a decision)
 * **S1 (P1) single-sensor limits are real.** A stuck-low probe (valid frames, plausible after the 3-sample suspect
   confirmation, or inside the 1.5 °C window) leaves the PID heating until E115 (900 s of accumulated ON) / E104 (20 min):
-  the plant reaches 41.9–77.6 °C. Frozen and slow-drift probes stay undetected whenever the reading is inside
+  the plant reaches 40.9–77.6 °C. Frozen and slow-drift probes stay undetected whenever the reading is inside
   `[SP − hysteresis, SP)` because E115/E104 evidence only accumulates while the reported PV is below `SP − hysteresis`.
   Software cannot close this; the independent hardware over-temperature cut-out (SAFETY_HARDWARE_REQUIREMENTS.md) is the
   only protection and is a commissioning precondition. This simulation does **not** replace it.
