@@ -52,6 +52,7 @@ constexpr float MismatchRatio = 1.349859f;        // exp(0.30): Kfast/Kslow (or 
 constexpr float RecoverRatio = 1.161834f;         // exp(0.15): back inside this the gain evidence has recovered (no libm log)
 constexpr uint16_t MismatchRuns = 24;            // consecutive informative evaluations
 constexpr uint16_t RecoverRuns = 40;
+constexpr uint32_t FastFreshMs = 600000UL;         // Smart: the fast gain counts as change evidence only if a full-weight window refreshed it this recently
 constexpr uint32_t MinValidLearningSec = 300;
 constexpr uint32_t HoldWindowMs = 120000;         // average ACTUAL duty over a flat window (minimum)
 constexpr uint32_t HoldWindowMaxMs = 300000;      //   ... stretched to 3x the learned delay, up to this
@@ -447,6 +448,7 @@ class ThermalLearner {
       if (weight >= 1.0f) {
         sxxF_[i] = lamF * sxxF_[i] + du[i] * du[i];
         sxyF_[i] = lamF * sxyF_[i] + du[i] * dS;
+        fastUpdateAt_ = sampleAt_ ? sampleAt_ : 1U;
       }
     }
     // best delay = max explained variance sxy^2/sxx among informed candidates
@@ -495,7 +497,12 @@ class ThermalLearner {
     // (and is simply raised again if the evidence persists).
     if (mismatch_ && lastMismatchAt_ != 0U && sampleAt_ - lastMismatchAt_ > Policy::MismatchMaxMs) mismatch_ = false;
     const float slow = sxxS_[best_] >= Policy::SxxMin ? sxyS_[best_] / (sxxS_[best_] + 0.05f) : 0.0f;
-    if (slow <= 0 || gainFast_ <= 0 || sxxF_[best_] < Policy::FastSxxMin) {
+    // Smart: the fast accumulators take only full-weight windows (PV away from the set point). While PV is regulated at SP they
+    // are not refreshed, but the slow ones keep taking the closed-loop-biased reduced-weight windows and drift upward, so
+    // "stale fast" against "drifting slow" is not evidence of a plant change (it made the assist drop for ~30 min in AutoTune
+    // case full165). A change that matters disturbs PV and refreshes the fast accumulators; the hold detector covers equilibrium shifts.
+    const bool staleFast = smartHold_ && (fastUpdateAt_ == 0U || sampleAt_ - fastUpdateAt_ > Policy::FastFreshMs);
+    if (slow <= 0 || gainFast_ <= 0 || sxxF_[best_] < Policy::FastSxxMin || staleFast) {
       if (mismatchRun_ > 0) --mismatchRun_;            // no evidence: decay slowly
       if (recoverRun_ > 0) --recoverRun_;
       return;
@@ -844,6 +851,7 @@ class ThermalLearner {
   uint32_t mismatchByReason_[4]{};
   float holdRef_ = 0, holdDevVar_ = 0, lastHoldObs_ = 0;
   bool holdDevSeen_ = false, holdObsSeen_ = false;
+  uint32_t fastUpdateAt_ = 0;   // sampleAt_ of the last full-weight (open-loop-like) update of the fast accumulators
   bool smartHold_ = (MAYAP_SMART_THERMAL != 0), holdPrevFlat_ = false, holdConverging_ = false, holdSettled_ = false;
   uint8_t holdAgreeStreak_ = 0;
   float holdPrevObs_ = NAN;
