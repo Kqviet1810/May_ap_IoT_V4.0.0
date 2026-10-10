@@ -361,7 +361,37 @@ static void pidAssistTests() {
     CHECK(step(c, 56000, NAN, 36.5f, cfg, true, &as) == 0); }
 }
 
+// Smart Thermal hold convergence: two agreeing flat windows move the hold faster (never past the measurement), a hold that is still
+// catching up is not a plant change, and a real plant change is still caught.
+static void smartHoldTests() {
+  struct Out { float hold; uint32_t mism; };
+  auto go = [](bool smart, double hours, double effAfter, double changeAtH) {
+    Rig r; r.closed = true; r.loss = 267; r.hours = hours;           // true hold = 267 * 15 / 16000 = 25 %
+    r.effAfter = effAfter; r.changeAtH = changeAtH;
+    ThermalLearner L; L.setSmartHold(smart); r.Lp = &L; r.run();
+    return Out{L.profile().holdPowerPct, L.mismatchEvents()};
+  };
+  { ThermalLearner L; CHECK(!L.smartHold()); L.setSmartHold(true); L.reset(); CHECK(L.smartHold()); }   // a configuration, survives reset()
+  const Out off1 = go(false, 1.5, -1, 1e9), on1 = go(true, 1.5, -1, 1e9);
+  const Out off3 = go(false, 3.0, -1, 1e9), on3 = go(true, 3.0, -1, 1e9);
+  std::printf("  hold 1.5h legacy %.1f smart %.1f | 3h legacy %.1f smart %.1f | mismatches %u/%u %u/%u\n", off1.hold, on1.hold, off3.hold, on3.hold, off1.mism, on1.mism, off3.mism, on3.mism);
+  CHECK(on1.hold >= off1.hold - 0.01f && on3.hold >= off3.hold - 0.01f);          // never slower
+  CHECK(on3.hold <= 25.0f * 1.04f + 0.5f);                                          // never past the equilibrium (measurement) by more than noise
+  CHECK(on3.mism <= off3.mism);                                                     // no new false plant-change alarm
+  // heater weakened to 60 % at 1 h (true hold 25 -> 41.7 %): the plant change is still declared exactly as in the legacy learner,
+  // and the hold follows the measurement faster than 1 pp per window, never past it.
+  { const Out l = go(false, 1.6, 0.6, 1.0), sm = go(true, 1.6, 0.6, 1.0);
+    std::printf("  heater 60%% at 1h, hold at 1.6h legacy %.1f smart %.1f (true 41.7), mismatches %u/%u\n", l.hold, sm.hold, l.mism, sm.mism);
+    CHECK(sm.hold >= l.hold + 2.0f && sm.hold <= 41.7f + 0.5f);
+    CHECK(l.mism >= 1 && sm.mism >= 1);
+    const Out up = go(true, 3.0, 1.5, 1.0);                                          // heater stronger: hold falls, change declared as before
+    const Out upLegacy = go(false, 3.0, 1.5, 1.0);
+    CHECK(up.mism >= upLegacy.mism && up.mism >= 1); }
+}
+
 int main() {
+  std::setvbuf(stdout, nullptr, _IONBF, 0);   // a failing CHECK aborts: keep its message
+  smartHoldTests();
   profileTests();
   learnerTests();
   plannerTests();

@@ -63,6 +63,9 @@ constexpr float HoldMaxStepPct = 8.0f;            // first windows (profile stil
 constexpr uint32_t HoldFormingWindows = 3;        // wide band + big steps only until this many windows
 constexpr float HoldSteadyBandC = 0.6f;           // afterwards only windows right at the setpoint count
 constexpr float HoldMaxRisePct = 1.0f;            // a LOWER hold than truth is safe, a HIGHER one overshoots
+constexpr float HoldFastRisePct = 3.0f;           // Smart: per-window rise when two flat windows agree
+constexpr float HoldFastFraction = 0.92f;         //   ... never past 92 % of the lower measurement
+constexpr float HoldFastAgreePct = 2.0f;          //   ... "agree" = within max(2 pp, 10 %)
 constexpr float HoldMaxFallPct = 4.0f;            //   after a disturbance ends: rise slowly, fall faster
 constexpr float HoldMismatchAbsPct = 5.0f;        // plant-change evidence: observed hold differs from the profile by
 constexpr float HoldMismatchRel = 0.25f;          //   max(5 pp, 25 %) ...
@@ -122,8 +125,15 @@ class ThermalLearner {
   ThermalLearner() { reset(); }
 
   void reset() {
+    const bool smart = smartHold_;     // a configuration, not learned state
     *this = ThermalLearner(Tag{});
+    smartHold_ = smart;
   }
+  // Smart Thermal hold convergence (flag, default MAYAP_SMART_THERMAL): two agreeing flat windows may move the hold faster
+  // (never above 92 % of the lower measurement), and a hold that is still catching up with the measured equilibrium is
+  // not reported as a plant change.
+  void setSmartHold(bool on) { smartHold_ = on; }
+  bool smartHold() const { return smartHold_; }
   // The stored profile is a seed, never evidence: confidence is capped by the caller and
   // the accumulators start with only a small pseudo-observation weight.
   // `measuredHold`: the hold in `p` was MEASURED just now by an accepted Smart AutoTune (relay mean duty at the setpoint),
@@ -362,7 +372,7 @@ class ThermalLearner {
       // no candidate can pair actuator history from before the edit with post-edit temperature.
       settleUntil_ = now + Policy::SettleMs + static_cast<uint32_t>(DelayGrid[Cands - 1] * 1000.0f);
       // Equilibrium duty depends on the setpoint: hold learned at the old target is no longer evidence.
-      holdWindows_ = 0U; holdScore_ = 0.0f;
+      holdWindows_ = 0U; holdScore_ = 0.0f; holdPrevFlat_ = false; holdConverging_ = false; holdSettled_ = false; holdAgreeStreak_ = 0;
       return GateReason::Settling;
     }
     lastSp_ = in.sp;
@@ -539,6 +549,7 @@ class ThermalLearner {
     if (lastMismatchAt_ != 0U && sampleAt_ - lastMismatchAt_ < Policy::MismatchRefractoryMs) return;
     lastMismatchAt_ = sampleAt_ ? sampleAt_ : 1U;
     mismatch_ = true; recoverRun_ = 0; holdAgreeRun_ = 0; ++mismatchEvents_;
+    holdSettled_ = false; holdAgreeStreak_ = 0;   // re-learning: the hold is "catching up" again
     mismatchCause_ = reason == 2 ? 2 : 1;
     // Make the slow accumulators forget the old plant quickly.
     for (uint8_t i = 0; i < Cands; ++i) { sxxS_[i] *= 0.35f; sxyS_[i] *= 0.35f; }
@@ -603,12 +614,34 @@ class ThermalLearner {
         const bool forming = holdWindows_ < Policy::HoldFormingWindows || mismatch_;
         const float up = forming ? Policy::HoldMaxStepPct : Policy::HoldMaxRisePct;
         const float down = forming ? Policy::HoldMaxStepPct : Policy::HoldMaxFallPct;
-        const float step = std::min(up, std::max(-down, 0.3f * dev));
+        float step = std::min(up, std::max(-down, 0.3f * dev));
+        holdConverging_ = false;
+        if (smartHold_ && !forming && dev > 0.0f) {
+          // The equilibrium duty of a flat window is a measurement, not an estimate: two of them that agree prove the
+          // hold is higher than the profile. Move toward 92 % of the LOWER one (never past a measurement), faster than
+          // the 1 pp/window noise guard that is right for a single window.
+          if (flat && holdPrevFlat_ && std::isfinite(holdPrevObs_)) {
+            const float lo = std::min(obs, holdPrevObs_);
+            const float target = Policy::HoldFastFraction * lo;
+            if (std::fabs(obs - holdPrevObs_) <= std::max(Policy::HoldFastAgreePct, 0.10f * lo) && target > profile_.holdPowerPct)
+              step = std::max(step, std::min(Policy::HoldFastRisePct, 0.5f * (target - profile_.holdPowerPct)));
+          }
+          // Still catching up with the measurement after this move. Only before the profile has ever agreed with two flat
+          // windows: afterwards a higher equilibrium duty IS evidence of a plant change (weaker heater, colder room).
+          holdConverging_ = !holdSettled_ && step < dev * 0.9f;
+        }
         profile_.holdPowerPct += step;
       }
+      if (smartHold_) {
+        if (flat && std::fabs(obs - profile_.holdPowerPct) <= std::max(Policy::HoldFastAgreePct, 0.10f * obs)) {
+          if (holdAgreeStreak_ < 255) ++holdAgreeStreak_;
+          if (holdAgreeStreak_ >= 2) holdSettled_ = true;
+        } else if (flat) holdAgreeStreak_ = 0;
+      }
+      holdPrevObs_ = obs; holdPrevFlat_ = flat;
       // Plant-change evidence: FLAT windows only (equilibrium duty is a direct measurement), compared
       // with a FIXED reference taken when a deviating run starts.
-      if (flat && holdWindows_ >= Policy::HoldFormingWindows) evaluateHoldWindow(obs, profileHoldBefore, 100.0f * Policy::SensorLsbC / (std::max(profile_.heaterGain, Limits::GainMin) * spanS));
+      if (flat && holdWindows_ >= Policy::HoldFormingWindows && !(smartHold_ && holdConverging_)) evaluateHoldWindow(obs, profileHoldBefore, 100.0f * Policy::SensorLsbC / (std::max(profile_.heaterGain, Limits::GainMin) * spanS));
       ++holdWindows_;
     }
     hold_.active = false;  // next window starts on the next sample
@@ -811,6 +844,9 @@ class ThermalLearner {
   uint32_t mismatchByReason_[4]{};
   float holdRef_ = 0, holdDevVar_ = 0, lastHoldObs_ = 0;
   bool holdDevSeen_ = false, holdObsSeen_ = false;
+  bool smartHold_ = (MAYAP_SMART_THERMAL != 0), holdPrevFlat_ = false, holdConverging_ = false, holdSettled_ = false;
+  uint8_t holdAgreeStreak_ = 0;
+  float holdPrevObs_ = NAN;
   uint32_t updates_ = 0, outliers_ = 0, mismatchEvents_ = 0, ventEvents_ = 0;
   uint8_t ventStreak_ = 0;
   Hints hint_{};

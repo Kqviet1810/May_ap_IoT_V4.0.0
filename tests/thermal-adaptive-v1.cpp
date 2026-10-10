@@ -50,6 +50,30 @@ static std::vector<Case> matrixCases() {
   return out;
 }
 
+// HOLDOUT matrix (Smart Thermal): parameter values that appear in NEITHER the 788 nor the 2160 matrix, so an improvement
+// that only fits those grids shows up as a gap here. Fixed, deterministic, never edited after the first A/B run.
+static std::vector<Case> holdoutCases() {
+  const double effs[] = {0.6, 0.85, 1.1, 1.35, 1.75};
+  const double caps[] = {250000, 900000, 1300000};
+  const double losses[] = {150, 240};
+  const double deads[] = {8, 25, 45, 90};
+  const double ambs[] = {12, 22, 31};
+  std::vector<Case> out;
+  unsigned k = 0;
+  for (double eff : effs) for (double cap : caps) for (double loss : losses) for (double dead : deads) for (double amb : ambs) {
+    Plant p; p.eff = eff; p.capacity = cap; p.loss = loss; p.dead = dead; p.ambient = amb;
+    const double lags[] = {5, 15, 20};
+    p.lag = lags[k % 3];
+    p.resolution = (k % 4 == 0) ? 0.05 : (k % 4 == 1) ? 0.1 : (k % 4 == 2) ? 0.02 : 0.1;
+    p.bias = (k % 6 == 0) ? 0.05 : 0.0;
+    p.noise = (k % 5 == 0) ? 0.02 : 0.0;
+    Case c; c.p = p; c.sc.sp = (k % 3 == 0) ? 36.5f : 37.5f; c.sc.durationS = 10800; c.label = "h" + std::to_string(out.size());
+    out.push_back(c);
+    ++k;
+  }
+  return out;
+}
+
 // The fixed 788-case matrix of docs/thermal-phase1-simulation.md (720 cold starts + 68 disturbances).
 static std::vector<Case> legacyCases() {
   std::vector<Case> out;
@@ -221,13 +245,13 @@ int main(int argc, char **argv) {
     }
     return 0;
   }
-  if (cmd == "matrix" || cmd == "legacy788") {
+  if (cmd == "matrix" || cmd == "legacy788" || cmd == "holdout") {
     const int shard = argc > 2 ? std::atoi(argv[2]) : 0, shards = argc > 3 ? std::atoi(argv[3]) : 1;
     std::ostream *o = &std::cout; std::ofstream f;
     if (argc > 4) { f.open(argv[4]); o = &f; }
     *o << std::fixed << std::setprecision(4);
     if (shard == 0) *o << HEADER;
-    return shardRun(cmd == "matrix" ? matrixCases() : legacyCases(), shard, shards, *o, smartOnly ? std::vector<Mode>{Mode::Smart} : std::vector<Mode>{Mode::Baseline, Mode::Adaptive});
+    return shardRun(cmd == "matrix" ? matrixCases() : cmd == "holdout" ? holdoutCases() : legacyCases(), shard, shards, *o, smartOnly ? std::vector<Mode>{Mode::Smart} : std::vector<Mode>{Mode::Baseline, Mode::Adaptive});
   }
   if (cmd == "vent") {
     const int shard = argc > 2 ? std::atoi(argv[2]) : 0, shards = argc > 3 ? std::atoi(argv[3]) : 1;
@@ -290,7 +314,21 @@ int main(int argc, char **argv) {
   }
   if (cmd == "case") {   // case <matrix|legacy788> <label#idx> <mode 0..3> [debugFrom]: one named case of a matrix, optionally with per-sample internals
     const std::string suite = argc > 2 ? argv[2] : "", want = argc > 3 ? argv[3] : "";
-    const std::vector<Case> all = suite == "matrix" ? matrixCases() : legacyCases();
+    if (suite == "hwchange") {   // label = "<plant>/<change>"
+      for (const HwCase &h : hwCases()) {
+        if (h.label + "/" + h.change != want) continue;
+        Scenario sc = h.sc; sc.mode = static_cast<Mode>(argc > 4 ? std::atoi(argv[4]) : 2); sc.label = want;
+        if (argc > 5 && std::atof(argv[5]) < 0) { sc.trace = true; sc.traceOut = &std::cerr;
+          std::cerr << "label,mode,t,temp,fed,sp,duty,vent,conf,state,gain,delay,hold,coast,ventGain,predErr,mismatch,ventPhase,ff,integral,gate,req,holdWin,info\n"; }
+        if (argc > 5 && std::atof(argv[5]) >= 0) { sc.debugOut = &std::cerr; sc.debugFrom = std::atof(argv[5]); sc.debugTo = sc.debugFrom + 600; }
+        const Result r = run(h.p, sc);
+        std::cout << want << " " << modeName(sc.mode) << " ov=" << r.overshoot << " mae=" << r.mae << " conf=" << r.confidence << " mism=" << r.mismatchEvents
+                  << " byKh=" << r.mismatchKh << " byHold=" << r.mismatchHold << " tMismatch=" << r.timeMismatchS << "\n";
+        return 0;
+      }
+      return 2;
+    }
+    const std::vector<Case> all = suite == "matrix" ? matrixCases() : suite == "holdout" ? holdoutCases() : legacyCases();
     for (size_t i = 0; i < all.size(); ++i) {
       if (all[i].label + "#" + std::to_string(i) != want) continue;
       Scenario sc = all[i].sc; sc.mode = static_cast<Mode>(argc > 4 ? std::atoi(argv[4]) : 2); sc.label = all[i].label;
@@ -299,12 +337,12 @@ int main(int argc, char **argv) {
         std::cerr << "label,mode,t,temp,fed,sp,duty,vent,conf,state,gain,delay,hold,coast,ventGain,predErr,mismatch,ventPhase,ff,integral,gate,req,holdWin,info\n"; }
       const Result r = run(all[i].p, sc);
       std::cout << want << " " << modeName(sc.mode) << " ov=" << r.overshoot << " mae=" << r.mae << " p95=" << r.p95 << " ripple=" << r.ripple
-                << " settle=" << r.settling << " high=" << r.high << " emerg=" << r.emergency << " pass=" << r.pass << " conf=" << r.confidence << " tQual=" << r.timeQualifiedS << " rise=" << r.riseS << "\n";
+                << " settle=" << r.settling << " high=" << r.high << " emerg=" << r.emergency << " pass=" << r.pass << " conf=" << r.confidence << " tQual=" << r.timeQualifiedS << " rise=" << r.riseS << " mism=" << r.mismatchEvents << " byKh=" << r.mismatchKh << " byHold=" << r.mismatchHold << "\n";
       return 0;
     }
     return 2;
   }
-  if (cmd == "count") { std::cout << "matrix=" << matrixCases().size() << " legacy788=" << legacyCases().size() << " vent=" << ventCases().size()
+  if (cmd == "count") { std::cout << "holdout=" << holdoutCases().size() << " matrix=" << matrixCases().size() << " legacy788=" << legacyCases().size() << " vent=" << ventCases().size()
     << " hwchange=" << hwCases().size() << " faults=" << faultCases().size() << "\n"; return 0; }
   if (cmd == "mini") {  // quick development matrix: 54 representative plants, BASELINE vs ADAPTIVE
     int pass[2] = {0, 0}, n = 0, high[2] = {0, 0}, em[2] = {0, 0};

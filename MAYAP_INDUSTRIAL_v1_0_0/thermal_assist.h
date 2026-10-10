@@ -4,6 +4,13 @@
 // is a no-op, which is how every pre-existing caller and test keeps its behaviour.
 #include <cmath>
 
+// Smart Thermal program switch. 0 (default, production until qualified and approved) = bit-identical Adaptive V1 / legacy PID.
+// 1 enables every Smart Thermal change at once (startup heat-in-flight brake, learner hold convergence). Each part also has its own
+// run-time setter for A/B tests. Rollback is rebuilding with 0.
+#ifndef MAYAP_SMART_THERMAL
+#define MAYAP_SMART_THERMAL 0
+#endif
+
 namespace MayapThermal {
 
 struct Assist {  // what the PID receives

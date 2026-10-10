@@ -135,6 +135,8 @@ class AdaptiveV1 {
   // only the ventilation compensation and its integral policy are removed.
   void setVentCoordination(bool on) { ventCoordination_ = on; }
   bool ventCoordination() const { return ventCoordination_; }
+  // Smart Thermal learner changes (see ThermalLearner::setSmartHold); a configuration that survives reset().
+  void setSmartLearning(bool on) { learner_.setSmartHold(on); }
   ThermalLearner &learner() { return learner_; }
   const ThermalLearner &learner() const { return learner_; }
   const VentCoordinator &vent() const { return vent_; }

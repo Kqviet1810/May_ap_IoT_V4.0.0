@@ -3,10 +3,10 @@
 #include "thermal_profile.h"
 
 // Smart Thermal startup (self-calibrated heat-in-flight brake, see ThermalStartupController::setSmart).
-// 0 = bit-identical legacy behaviour (production default until the whole Smart Thermal program is qualified and approved);
-// build with -DMAYAP_SMART_STARTUP=1 to enable. Rollback is the same switch.
+// Follows MAYAP_SMART_THERMAL (default 0 = bit-identical legacy behaviour; see thermal_assist.h); can be forced alone with
+// -DMAYAP_SMART_STARTUP=1. Rollback is the same switch.
 #ifndef MAYAP_SMART_STARTUP
-#define MAYAP_SMART_STARTUP 0
+#define MAYAP_SMART_STARTUP MAYAP_SMART_THERMAL
 #endif
 
 // Pure thermal algorithms. Including code provides MachineConfig, timing,

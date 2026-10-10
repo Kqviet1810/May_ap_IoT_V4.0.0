@@ -63,7 +63,7 @@ def main():
     md, problems = ['# Smart Thermal A/B/C (simulation only)', ''], []
 
     # --- reproducibility of A and B -----------------------------------------------------------------
-    frozen = {'legacy788': 'adaptive-788.csv', 'matrix': 'adaptive-2160.csv'}
+    frozen = {'legacy788': 'adaptive-788.csv', 'matrix': 'adaptive-2160.csv', 'holdout': 'adaptive-holdout360.csv'}
     if not args.skip_reproduce:
         for suite, name in frozen.items():
             got = sharded(binary, suite, args.jobs, out)
@@ -76,7 +76,7 @@ def main():
         md.append('')
 
     # --- matrices ------------------------------------------------------------------------------------
-    for suite, name, title in (('legacy788', 'adaptive-788.csv', '788'), ('matrix', 'adaptive-2160.csv', '2160')):
+    for suite, name, title in (('legacy788', 'adaptive-788.csv', '788'), ('matrix', 'adaptive-2160.csv', '2160'), ('holdout', 'adaptive-holdout360.csv', 'holdout-360')):
         smart = rows(sharded(binary, suite + '_smart', args.jobs, out))
         base = rows(BASE / name)
         A = {r['label']: r for r in base if r['mode'] == 'BASELINE_V4'}
@@ -89,7 +89,7 @@ def main():
         nreach = sum(r['class'] == 'REACHABLE' for r in B.values())
         reg = sorted(k for k in C if B[k]['target'] == 'PASS' and C[k]['target'] == 'FAIL')
         fix = sorted(k for k in C if B[k]['target'] == 'FAIL' and C[k]['target'] == 'PASS')
-        md += [f'## {title}-case matrix', '', '| | PASS | reachable PASS | High | Emergency |', '|---|---|---|---|---|',
+        md += [f'## {title}-case matrix' + (' (HOLDOUT: parameter values in neither of the other two matrices)' if suite == 'holdout' else ''), '', '| | PASS | reachable PASS | High | Emergency |', '|---|---|---|---|---|',
                f'| A legacy PID | {P(A)}/{len(A)} | {rc(A)}/{nreach} | {hi(A)} | {em(A)} |',
                f'| B Adaptive V1 | {P(B)}/{len(B)} | {rc(B)}/{nreach} | {hi(B)} | {em(B)} |',
                f'| C Smart Thermal | {P(C)}/{len(C)} | {rc(C)}/{nreach} | {hi(C)} | {em(C)} |', '',
@@ -109,6 +109,8 @@ def main():
                 w.writerow([B[k][c] for c in cols] + [d[k][c] for d in (A, B, C) for c in ('target', 'overshoot', 'mae', 'p95', 'ripple', 'settling', 'high', 'emergency')] + [reason(C[k])])
         if hi(C) > hi(B) or em(C) > em(B): problems.append(f'{title}: Smart has MORE High/Emergency than Adaptive V1')
         if title == '2160' and (hi(C) > 33 or em(C) > 17): problems.append('2160: Smart exceeds the frozen High/Emergency counts')
+        if hi(C) or em(C):
+            if hi(C) > 0 and title != '2160': problems.append(f'{title}: Smart has plant-true High/Emergency cases')
 
     # --- vent / hwchange / faults ---------------------------------------------------------------------
     for suite, name in (('vent', 'adaptive-vent63x3.csv'), ('hwchange', 'adaptive-hwchange.csv'), ('faults', 'adaptive-faults30.csv')):
