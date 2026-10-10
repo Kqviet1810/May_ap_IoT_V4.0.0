@@ -1,4 +1,6 @@
-# Báo cáo nghiệm thu cuối — Smart Thermal MAYAP V4 (PR #14)
+# Báo cáo nghiệm thu — Smart Thermal MAYAP V4 (PR #14) — BẢN 1, ĐÃ ĐƯỢC THAY THẾ bởi `FINAL_HANDOVER_REPORT.md`
+
+> Số liệu trong file này là TRƯỚC khi sửa hold/Kh (commit `077a423`). Bản sao CSV trước khi sửa nằm ở `before-fix/`.
 
 Cơ sở: commit `3db417c` trên nhánh `claude/gracious-hopper-zjvufg`. **Mã sản xuất (`MAYAP_INDUSTRIAL_v1_0_0/`) không đổi trong đợt này.**
 Không merge main, không deploy, không flash, không bật Smart Thermal. `MAYAP_SMART_THERMAL` vẫn mặc định 0. Oracle, High 38.2, Emergency 39.0, SP, baseline: không đổi.
