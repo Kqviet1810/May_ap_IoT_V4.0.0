@@ -144,6 +144,7 @@ inline void configure(PathHarness &h, const Scenario &sc) {
   h.config_.tempOffset = sc.path.tempOffset;
   h.batchRunning_ = true;
   h.config_.targetTemp = sc.sp;
+  h.startupHeat_.setSmart(sc.mode == Mode::Smart);   // Smart Thermal startup (feature flag); every other mode is the legacy controller
   h.config_.adaptiveThermalBalanceEnabled = sc.mode != Mode::Baseline;
   h.thermalV1_.setVentCoordination(sc.mode == Mode::Adaptive || sc.mode == Mode::Smart);
   h.config_.ventAutoEnabled = sc.ventProfile;
@@ -319,7 +320,7 @@ inline Result run(const Plant &base, const Scenario &sc) {
       (*sc.debugOut) << static_cast<int>(t) << " pv=" << temp << " fed=" << fed << " err=" << (sp - fed) << " req=" << h->pidPower_
                      << " I=" << h->pid_.integral() << " ff=" << h->pid_.feedForwardApplied() << " cap=" << h->startupHeat_.lastCeiling()
                      << " peak=" << h->startupHeat_.predictedPeak() << " slope=" << h->startupHeat_.slope()
-                     << " phase=" << static_cast<int>(h->startupHeat_.phase()) << " eff=" << h->adaptiveThermal_.decision().effective
+                     << " khObs=" << h->startupHeat_.observedGain() << " phase=" << static_cast<int>(h->startupHeat_.phase()) << " eff=" << h->adaptiveThermal_.decision().effective
                      << " vent=" << st0.ventFan << ' ' << MayapThermal::ventPhaseName(h->thermalV1_.plan().ventPhase) << " vff=" << h->thermalV1_.plan().ventFF
                      << " hff=" << h->thermalV1_.plan().holdFF << " ventPct=" << h->thermalV1_.plan().hint.ventPct
                      << " ventConf=" << static_cast<int>(h->thermalV1_.learner().profile().ventConfidence)

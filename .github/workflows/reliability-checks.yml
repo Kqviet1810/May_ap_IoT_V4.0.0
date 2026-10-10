@@ -122,6 +122,9 @@ jobs:
       - name: Smart AutoTune V1 simulation gates (simulation only, physical commissioning required)
         run: python3 tools/test_smart_autotune.py --report-dir /tmp/mayap-smart-autotune-report
 
+      - name: Smart Thermal A/B/C against the frozen baseline (simulation only; fails on more High/Emergency or a drifting baseline)
+        run: python3 tools/ab_smart_thermal.py --report-dir /tmp/mayap-ab-smart-report
+
       - name: Sensor-path integrity suite (alarms/E115/E104 fed by the REPORTED temperature; simulation only)
         run: python3 tools/test_thermal_sensor_path.py --sanitize --report-dir /tmp/mayap-sensor-path-report
 

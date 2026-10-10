@@ -2,6 +2,13 @@
 #include "thermal_assist.h"
 #include "thermal_profile.h"
 
+// Smart Thermal startup (self-calibrated heat-in-flight brake, see ThermalStartupController::setSmart).
+// 0 = bit-identical legacy behaviour (production default until the whole Smart Thermal program is qualified and approved);
+// build with -DMAYAP_SMART_STARTUP=1 to enable. Rollback is the same switch.
+#ifndef MAYAP_SMART_STARTUP
+#define MAYAP_SMART_STARTUP 0
+#endif
+
 // Pure thermal algorithms. Including code provides MachineConfig, timing,
 // constants and sanitizeMachineConfig; the host test runs these SAME classes.
 //
@@ -208,7 +215,7 @@ class ThermalStartupController {
     bucket_ = 0; firstHeatAt_ = 0; firstRiseAt_ = 0;
     lastHeatOffAt_ = 0; energyWindowStartedAt_ = 0; coastCleared_ = false;
     stableAt_ = 0; lastRequested_ = 0; holdPower_ = 0;
-    slope_ = 0; lastSampleAt_ = 0; lastPeak_ = 0;
+    slope_ = 0; lastSampleAt_ = 0; lastPeak_ = 0; khObs_ = 0;
     hint_ = MayapThermal::StartupHint{};
   }
   void observe(uint32_t now, bool heaterOn) {
@@ -238,6 +245,11 @@ class ThermalStartupController {
   // Learned plant knowledge from Adaptive Thermal V1. An invalid hint is exactly the
   // legacy controller: it replaces the lightest-plant coast assumption, never adds heat.
   void setHint(const MayapThermal::StartupHint &h) { hint_ = h; }
+  // Smart Thermal startup (feature flag, default OFF == bit-identical legacy). It only ever ADDS braking: the expected
+  // coast becomes max(legacy, self-calibrated heat in flight). It survives reset() (a configuration, not a state).
+  void setSmart(bool on) { smart_ = on; }
+  bool smart() const { return smart_; }
+  float observedGain() const { return khObs_; }
   Decision decide(uint32_t now, float sp, float pv, float maxPower) {
     if (!isfinite(sp) || !isfinite(pv)) return {0, true, phase_, pv};
     historyGap_ = false; // only a fresh real sensor sample can resume heat
@@ -249,6 +261,7 @@ class ThermalStartupController {
     const float measuredRate = (pv-lastPv_)/dt;
     slope_ += dt/(10.0f+dt)*(measuredRate-slope_);
     lastPv_ = pv; lastSampleAt_ = now;
+    if (smart_) observeGain(now);
     if (sp != lastSp_) { stableAt_ = 0U; phase_ = Phase::Approach; lastSp_ = sp; }
     if (firstRiseAt_ == 0U && firstHeatAt_ != 0U && slope_ > 0.003f &&
         static_cast<uint32_t>(now-firstHeatAt_) >= 15000U) firstRiseAt_ = now;
@@ -309,7 +322,10 @@ class ThermalStartupController {
     const float energyCoast = hs > 0.0f && hint_.coastPerOnMs > 0.0f
         ? legacyEnergyCoast + hs*(excessOnMs*hint_.coastPerOnMs - legacyEnergyCoast)
         : legacyEnergyCoast;
-    const float expectedCoast = fmaxf(slopeCoast, energyCoast);
+    float expectedCoast = fmaxf(slopeCoast, energyCoast);
+    // A learned profile (hint strength hs) already replaces the legacy assumption with data: the self-calibration only
+    // covers the unlearned time, so it fades out as the hint takes over.
+    if (smart_) expectedCoast = fmaxf(expectedCoast, (1.0f - hs) * smartCoast(now, sp-pv, excessOnMs, holdEff));
     const float error = sp-pv;
     const float peak = pv+expectedCoast;
     lastPeak_ = peak;
@@ -392,6 +408,54 @@ class ThermalStartupController {
  private:
   static constexpr uint8_t Buckets = 120U;
   static constexpr float MinimumCapacity = 180000.0f;
+  // Design envelope of the Smart startup. PriorGain: the heating rate (degC/s at 100 % bank) of the strongest plant the
+  // simulation domain allows (16 kW x effectiveness 2.0 on 180 kJ/degC = 0.178) plus 10 %. It applies ONLY until the first
+  // response has been seen; afterwards the measured gain replaces it. Both only add braking, they never add heat.
+  static constexpr float PriorGain = 0.196f;
+  static constexpr float LegacyGain = 16.0f * 1.35f / 180000.0f * 1000.0f;   // 0.12 degC per ON-second, as in decide()
+  static constexpr uint32_t PriorWindowMs = 150000U;
+  static constexpr float PriorMinError = 3.5f;
+  static constexpr float GainMargin = 1.15f;     // slope lags the heat and the loss subtracts from it: bias the estimate up
+  static constexpr float GainCeiling = 0.5f;     // sanity bound, degC/s
+  uint32_t recentOnMsOf(uint32_t horizonMs) const {
+    uint8_t n = static_cast<uint8_t>(std::min<uint32_t>(horizonMs / 2000U, Buckets));
+    uint32_t sum = 0;
+    for (uint8_t i = 0; i < n; ++i) sum += onMs_[(bucket_ + Buckets - i) % Buckets];
+    return sum;
+  }
+  // Heater gain under (nearly) constant full power: slope / duty. The running maximum is kept: a lagging slope
+  // under-reads (unsafe direction), a falling duty over-reads (safe direction).
+  void observeGain(uint32_t now) {
+    if (firstRiseAt_ == 0U || static_cast<uint32_t>(now - firstRiseAt_) < 20000U) return;
+    uint32_t on20 = 0;
+    for (uint8_t i = 1; i <= 10; ++i) on20 += onMs_[(bucket_ + Buckets - i) % Buckets];   // 10 completed 2 s buckets
+    const float duty = static_cast<float>(on20) / 20000.0f;
+    if (duty < 0.85f || !(slope_ > 0.01f)) return;
+    const float est = fminf(slope_ / duty, GainCeiling);
+    if (est > khObs_) khObs_ = est;
+  }
+  // Heat still to arrive: ON-time inside the observed apparent delay times the gain (prior until a response is seen).
+  float smartCoast(uint32_t now, float error, float legacyExcessOnMs, float holdEff) const {
+    if (firstRiseAt_ == 0U) {
+      // Unobserved start. Everything delivered more than PriorWindow ago has surfaced in the envelope (dead time <= 120 s,
+      // heater lag <= 30 s); a plant that still shows nothing is slow or was barely heated: the legacy model governs.
+      if (firstHeatAt_ != 0U && static_cast<uint32_t>(now - firstHeatAt_) >= PriorWindowMs) return 0.0f;
+      // The legacy model is wrong by at most PriorGain/0.12 = 1.63x. Below PriorMinError that error cannot reach the
+      // High alarm margin, so the legacy estimate is left alone (no change for small start errors).
+      if (error < PriorMinError) return 0.0f;
+      return legacyExcessOnMs * PriorGain * 0.001f;
+    }
+    // Only a heater STRONGER than the legacy 35 % reserve (0.12 degC/s) is under-predicted by the legacy energy model;
+    // for every other plant the legacy estimate stays the single authority (no behaviour change, no new conservatism).
+    if (!(khObs_ * GainMargin > LegacyGain)) return 0.0f;
+    const float delayMs = clampFloat(static_cast<float>(firstRiseAt_ - firstHeatAt_) + 12000.0f, 20000.0f, 240000.0f);
+    const uint32_t horizon = static_cast<uint32_t>(delayMs);
+    const float windowMs = static_cast<float>(std::min<uint32_t>(horizon, static_cast<uint32_t>(now - energyWindowStartedAt_)));
+    const float excess = fmaxf(0.0f, static_cast<float>(recentOnMsOf(horizon)) - holdEff * 0.01f * windowMs);
+    return excess * khObs_ * GainMargin * 0.001f;
+  }
+  bool smart_ = (MAYAP_SMART_STARTUP != 0);
+  float khObs_ = 0;
   uint32_t onMs_[Buckets]{};
   uint32_t observedAt_ = 0, bucketAt_ = 0;
   uint32_t firstHeatAt_ = 0, firstRiseAt_ = 0, lastHeatOffAt_ = 0;
