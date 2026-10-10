@@ -1,0 +1,26 @@
+HEAD f6960408e674f30b7f06e81f93778d7070c0ca0f
+== control
+cmd: python3 tools/test_thermal_control.py --sanitize --report-dir <report-dir>/control
+exit=0 seconds=1067
+== adaptive_gate
+cmd: python3 tools/test_thermal_adaptive.py --full --report-dir <report-dir>/adaptive
+exit=0 seconds=94
+== smart_autotune
+cmd: python3 tools/test_smart_autotune.py --sanitize --report-dir <report-dir>/autotune
+exit=0 seconds=146
+== sensor_path_adaptive
+cmd: python3 tools/test_thermal_sensor_path.py --sanitize --report-dir <report-dir>/sp --mode adaptive
+exit=0 seconds=30
+== sensor_path_smart
+cmd: python3 tools/test_thermal_sensor_path.py --report-dir <report-dir>/sp --mode smart
+exit=0 seconds=7
+== ab
+cmd: python3 tools/ab_smart_thermal.py --report-dir <report-dir>/ab
+exit=0 seconds=175
+== reliability
+cmd: python3 tools/check_reliability.py
+exit=0 seconds=1
+== release_sync
+cmd: python3 tools/check_release_sync.py
+exit=0 seconds=0
+DONE

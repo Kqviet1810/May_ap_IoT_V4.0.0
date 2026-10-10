@@ -16,6 +16,8 @@ struct TuneOut {
   AutoTuneReason reason = AutoTuneReason::None, rejection = AutoTuneReason::None;
   AutoTunePhase lastPhase = AutoTunePhase::Idle;
   double tuneS = 0, peak = 0;
+  // output edges while the tune was active (measurement for the relay budget; never used by the controller)
+  unsigned ssrEdges = 0, masterEdges = 0, ventEdges = 0, circEdges = 0, maxSsrEdges10min = 0;
   bool high = false, emergency = false;
   MachineConfig cfg;
   MayapThermal::ThermalProfile seed{};
@@ -123,6 +125,20 @@ static TuneOut tune(const Plant &base, float sp, TuneOpts &opt) {
     }
     h->cycle(now, sampleTick && h->sensorUsable_);
     const auto st = h->outputs_.state();
+    if (started) {
+      static bool pS = false, pM = false, pV = false, pC = false;
+      static std::deque<unsigned> ssrTicks;
+      if (tick == startTick) { pS = st.heaterSsr; pM = st.heatMaster; pV = st.ventFan; pC = st.circulationFan; ssrTicks.clear(); }
+      if (h->autotune_.running()) {
+        if (st.heaterSsr != pS) { ++out.ssrEdges; ssrTicks.push_back(tick); }
+        if (st.heatMaster != pM) ++out.masterEdges;
+        if (st.ventFan != pV) ++out.ventEdges;
+        if (st.circulationFan != pC) ++out.circEdges;
+        while (!ssrTicks.empty() && tick - ssrTicks.front() > 6000U) ssrTicks.pop_front();   // 10 min of 100 ms ticks
+        out.maxSsrEdges10min = std::max<unsigned>(out.maxSsrEdges10min, static_cast<unsigned>(ssrTicks.size()));
+      }
+      pS = st.heaterSsr; pM = st.heatMaster; pV = st.ventFan; pC = st.circulationFan;
+    }
     const bool on = st.heaterSsr && st.heatMaster;
     const bool unsafe = (fa && (fault != Fault::None) && fault != Fault::Cancel) || h->highTemperatureActive_ || h->emergencyActive_;
     if (unsafe && on && fault != Fault::None && fault != Fault::SensorFrozen) {

@@ -17,6 +17,8 @@
 #define MAYAP_ADAPTIVE_OBSERVER_ONLY 0
 #include "thermal-autotune-harness.h"
 #include "actual-filter.inc"
+#include "thermal-sensor-path.h"
+#include "thermal-safety-proposals.h"
 #include <cstdlib>
 #include <iostream>
 #include <map>
@@ -26,9 +28,9 @@
 
 namespace sim {
 
-enum class Mode : uint8_t { Baseline = 0, LearnNoVent = 1, Adaptive = 2 };
+enum class Mode : uint8_t { Baseline = 0, LearnNoVent = 1, Adaptive = 2, Smart = 3 };
 inline const char *modeName(Mode m) {
-  return m == Mode::Baseline ? "BASELINE_V4" : m == Mode::LearnNoVent ? "V1_NO_VENT_COORD" : "ADAPTIVE_V1";
+  return m == Mode::Baseline ? "BASELINE_V4" : m == Mode::LearnNoVent ? "V1_NO_VENT_COORD" : m == Mode::Smart ? "SMART_THERMAL" : "ADAPTIVE_V1";
 }
 enum class Reach : uint8_t { Reachable, HeatLimited, CoolingRequired, SafetyLimited };
 inline const char *reachName(Reach r) {
@@ -81,6 +83,8 @@ struct Scenario {
   float kp = 18.0f, ki = 0.8f, kd = 45.0f;
   bool seedSet = false;
   MayapThermal::ThermalProfile seed{};
+  // Sensor-path integrity (opt-in): High/Emergency/E115/E104 derived from the REPORTED temperature.
+  SensorPath path;
 };
 
 struct VentRecord { double start, end, minDev, postMax, recoverS, heaterOnS, windup; };
@@ -111,6 +115,17 @@ struct Result {
   double confAfterReboot = -1;
   uint32_t overshootGuards = 0;
   uint32_t mismatchKh = 0, mismatchHold = 0;
+  // sensor-path report (only filled when Scenario::path.enabled)
+  double truePeak = -1000, trueHighS = 0, trueEmergencyS = 0, onWhileTrueHighS = 0, sensorErrMax = 0;
+  double firstTrueHighS = -1, firstFwHighS = -1, firstFwEmergencyS = -1, e115S = -1, e104S = -1, sensorLostS = -1;
+  int fwHigh = 0, fwEmergency = 0;
+  uint32_t unsafeCommandTicks = 0;
+  double heaterOnAfterFaultS = 0;
+  // long-run report: |PV - SP| per 6 h block (mean, max)
+  std::vector<double> blockMae, blockMax;
+  // candidate detectors (D2/D3), first firing time in seconds or -1
+  double propUnexpl[NUnexpl] = {-1, -1, -1}, propRep[NRepHigh] = {-1, -1, -1, -1}, propFrozen[NFrozen] = {-1, -1}, propEnergy[NEnergy] = {-1, -1};
+  double latchedAtS = -1;   // when an ACTING detector opened the contactor (sensor-path suite only)
 };
 
 constexpr double HighC = 38.2, EmergencyC = 39.0;
@@ -131,11 +146,14 @@ inline double holdTruthPct(const Plant &p, double sp) {
 inline double coastTruthC(const Plant &p) { return p.khTrue() * (p.dead + p.lag); }
 inline double ventTruth(const Plant &p, double sp) { return p.ventG * (sp - p.ambient) / p.capacity; }
 
-inline void configure(TuneHarness &h, const Scenario &sc) {
+inline void configure(PathHarness &h, const Scenario &sc) {
+  h.config_.tempOffset = sc.path.tempOffset;
   h.batchRunning_ = true;
   h.config_.targetTemp = sc.sp;
+  h.thermalV1_.setSmartLearning(sc.mode == Mode::Smart && !std::getenv("X_NO_HOLD"));
+  h.startupHeat_.setSmart(sc.mode == Mode::Smart && !std::getenv("X_NO_START"));   // Smart Thermal startup (feature flag); every other mode is the legacy controller
   h.config_.adaptiveThermalBalanceEnabled = sc.mode != Mode::Baseline;
-  h.thermalV1_.setVentCoordination(sc.mode == Mode::Adaptive);
+  h.thermalV1_.setVentCoordination(sc.mode == Mode::Adaptive || sc.mode == Mode::Smart);
   h.config_.ventAutoEnabled = sc.ventProfile;
   h.config_.ventCycleMinutes = static_cast<uint8_t>(sc.ventCycleMin);
   h.config_.ventDutyDay1To3 = static_cast<uint8_t>(sc.ventDutyPct);
@@ -155,8 +173,8 @@ inline Result run(const Plant &base, const Scenario &sc) {
   bootReady = true; trip = maintenance = false;
   const double sp = sc.sp;
   Plant p = base;
-  std::unique_ptr<TuneHarness> hp(new TuneHarness());
-  TuneHarness *h = hp.get();
+  std::unique_ptr<PathHarness> hp(new PathHarness());
+  PathHarness *h = hp.get();
   configure(*h, sc);
   ActualSensorFilter filter;
   Result r;
@@ -168,7 +186,8 @@ inline Result run(const Plant &base, const Scenario &sc) {
   const unsigned lagTicks = static_cast<unsigned>(p.dead * 1000 / stepMs);
   std::vector<double> pipe(lagTicks + 1U, 0.0);
   size_t cursor = 0;
-  double temp = p.ambient, heater = 0, ventAir = 0;
+  double temp = p.ambient, heater = 0, ventAir = 0, sensPhys = p.ambient;
+  bool prevFwHigh = false, prevFwEmergency = false;
   double energy = 0;
   bool prevHigh = false, prevEmergency = false, ventPrev = false, reached = false;
   int lastOut = 0;
@@ -191,6 +210,10 @@ inline Result run(const Plant &base, const Scenario &sc) {
   bool jumped = false;
   bool rebooted = false;
   unsigned sampleCounter = 0;
+  ProposalSet props;
+  std::vector<double> blkSum, blkMax; std::vector<unsigned> blkN;
+  double pathFrozenValue = 0;
+  bool pathSpiked = false;
 
   for (unsigned tick = 0; tick < ticks; ++tick) {
     const double t = tick * dt;
@@ -219,7 +242,7 @@ inline Result run(const Plant &base, const Scenario &sc) {
     if (ev == "door" && tick == static_cast<unsigned>(e0 / dt)) temp -= sc.eventValue;
     if (ev == "reboot" && !rebooted && t >= e0) {
       rebooted = true;  // controller RAM is lost; the profile in NVS survives
-      hp.reset(new TuneHarness());
+      hp.reset(new PathHarness());
       h = hp.get();
       configure(*h, sc);
       MayapThermal::profileStorage.resetForTest();
@@ -235,6 +258,9 @@ inline Result run(const Plant &base, const Scenario &sc) {
     bool sampleTick = (tick % 20U) == 0U;
     if (jitter) sampleTick = (tick % 20U) == (static_cast<unsigned>(t / 7.0) % 3U) && (static_cast<unsigned>(t / 2.0) % 11U) != 0U;
     if (missing) sampleTick = false;
+    double fed = 0;
+    bool controlSample = false;
+    if (!sc.path.enabled) {
     if (sampleTick) {
       ++sampleCounter;
       if (!lossSensor && !badSample && !frozen) {
@@ -252,21 +278,58 @@ inline Result run(const Plant &base, const Scenario &sc) {
       h->sensorUsable_ = !lossSensor && !badSample && !frozen && samples >= 6;
     }
     if (lossSensor || badSample || frozen) h->sensorUsable_ = false;
-    const double fed = frozenActive ? frozenValue : heldFiltered;
+    fed = frozenActive ? frozenValue : heldFiltered;
     h->highTemperatureActive_ = temp >= HighC;
     h->emergencyActive_ = temp >= EmergencyC;
     h->faults_.cooling = h->highTemperatureActive_ || h->emergencyActive_;
     h->faults_.inhibit = cut || h->highTemperatureActive_ || h->emergencyActive_;
     h->faults_.drop = h->highTemperatureActive_ || h->emergencyActive_;
     h->sample(static_cast<float>(temp), static_cast<float>(fed));
-    h->cycle(now, sampleTick && h->sensorUsable_);
+    controlSample = sampleTick && h->sensorUsable_;
+    } else {
+      // ---- sensor-path mode: the controller and the alarms see ONLY what the probe reports ----------------
+      const SensorPath &sp_ = sc.path;
+      if (sp_.lagS <= 0.0) sensPhys = temp; else sensPhys += (temp - sensPhys) * dt / std::max(0.05, sp_.lagS);
+      const bool faultOn = t >= sp_.faultAtS && t < sp_.faultAtS + sp_.faultDurationS;
+      if (sp_.fault == SensorFault::Disconnect) h->pathDataValid_ = !faultOn;
+      else h->pathDataValid_ = true;
+      h->latestFrameValid_ = h->pathDataValid_;
+      bool accepted = false;
+      if (sampleTick && h->pathDataValid_) {
+        double sensed = sensPhys + p.bias + (p.noise > 0 ? p.noise * std::sin(t * 1.7) : 0.0);
+        if (faultOn) {
+          switch (sp_.fault) {
+            case SensorFault::StuckLow: case SensorFault::StuckHigh: sensed = sp_.faultValue; break;
+            case SensorFault::Frozen: sensed = pathFrozenValue; break;
+            case SensorFault::Spike: if (!pathSpiked) { sensed += sp_.faultValue; pathSpiked = true; } break;
+            case SensorFault::Drift: sensed -= sp_.faultValue * (t - sp_.faultAtS) / 3600.0; break;
+            default: break;
+          }
+        } else pathFrozenValue = std::round(sensed / p.resolution) * p.resolution;
+        const float reported = static_cast<float>(std::round(sensed / p.resolution) * p.resolution);
+        filter.updateFilter(reported, 60);
+        const float filtered = filter.value();
+        h->rawTemperature_ = std::max(reported, reported + sp_.tempOffset);  // offset can only RAISE the safety value
+        h->newSensorSample_ = false;
+        h->pathAccept(now, filtered + sp_.tempOffset, true);
+        accepted = h->newSensorSample_;
+        r.sensorErrMax = std::max(r.sensorErrMax, std::fabs(static_cast<double>(reported) - temp));
+      }
+      h->pathUsable();
+      h->pathAlarms(now);
+      h->pathEvidence(now);
+      h->pathApplyFaults(false);
+      controlSample = accepted;
+      fed = h->temperature_;
+    }
+    h->cycle(now, controlSample);
     if ((tick % 200U) == 0U) MayapThermal::profileStorage.service(now);
     if (sc.debugOut && sampleTick && t >= sc.debugFrom && t < sc.debugTo) {
       const auto st0 = h->outputs_.state();
       (*sc.debugOut) << static_cast<int>(t) << " pv=" << temp << " fed=" << fed << " err=" << (sp - fed) << " req=" << h->pidPower_
                      << " I=" << h->pid_.integral() << " ff=" << h->pid_.feedForwardApplied() << " cap=" << h->startupHeat_.lastCeiling()
                      << " peak=" << h->startupHeat_.predictedPeak() << " slope=" << h->startupHeat_.slope()
-                     << " phase=" << static_cast<int>(h->startupHeat_.phase()) << " eff=" << h->adaptiveThermal_.decision().effective
+                     << " khObs=" << h->startupHeat_.observedGain() << " phase=" << static_cast<int>(h->startupHeat_.phase()) << " eff=" << h->adaptiveThermal_.decision().effective
                      << " vent=" << st0.ventFan << ' ' << MayapThermal::ventPhaseName(h->thermalV1_.plan().ventPhase) << " vff=" << h->thermalV1_.plan().ventFF
                      << " hff=" << h->thermalV1_.plan().holdFF << " ventPct=" << h->thermalV1_.plan().hint.ventPct
                      << " ventConf=" << static_cast<int>(h->thermalV1_.learner().profile().ventConfidence)
@@ -276,15 +339,27 @@ inline Result run(const Plant &base, const Scenario &sc) {
     const auto st = h->outputs_.state();
     const bool on = st.heaterSsr && st.heatMaster;
     // ---- safety invariants: heat must be absent in every unsafe context ----------------------
-    const bool unsafe = cut || lossSensor || badSample || frozen || powerLoss || heaterOff ||
-                        h->highTemperatureActive_ || h->emergencyActive_ || testMode;
+    const bool unsafe = sc.path.enabled
+        ? (h->faults_.inhibit || h->faults_.drop || powerLoss || heaterOff || testMode)
+        : (cut || lossSensor || badSample || frozen || powerLoss || heaterOff ||
+           h->highTemperatureActive_ || h->emergencyActive_ || testMode);
     if (unsafe && on) {
       ++r.unsafeHeatTicks;
-      std::fprintf(stderr, "UNSAFE HEAT %s t=%.1f ev=%s mode=%s\n", sc.label.c_str(), t, ev.c_str(), modeName(sc.mode));
-      std::abort();
+      if (sc.path.enabled) ++r.unsafeCommandTicks;   // reported, not aborted: this is what the sensor-path suite measures
+      else {
+        std::fprintf(stderr, "UNSAFE HEAT %s t=%.1f ev=%s mode=%s\n", sc.label.c_str(), t, ev.c_str(), modeName(sc.mode));
+        std::abort();
+      }
     }
     // ---- plant ---------------------------------------------------------------------------------------
-    const double delivered = on ? 16000.0 * p.eff : 0.0;
+    // Actuator faults (sensor-path mode only): the SSR conducts although commanded OFF; the master contactor is the
+    // independent series element. The firmware has no feedback for either, so `on` (the command) stays what it believes.
+    bool actualOn = on;
+    if (sc.path.enabled && t >= sc.path.faultAtS) {
+      if (sc.path.fault == SensorFault::SsrStuckOn) actualOn = st.heatMaster;
+      else if (sc.path.fault == SensorFault::SsrContactorStuck) actualOn = true;
+    }
+    const double delivered = actualOn ? 16000.0 * p.eff : 0.0;
     const double delayed = pipe[cursor];
     pipe[cursor] = delivered;
     cursor = (cursor + 1U) % pipe.size();
@@ -304,6 +379,18 @@ inline Result run(const Plant &base, const Scenario &sc) {
     if (ch && !prevHigh) ++r.high;
     if (ce && !prevEmergency) ++r.emergency;
     prevHigh = ch; prevEmergency = ce;
+    if (sc.path.enabled) {
+      r.truePeak = std::max(r.truePeak, temp);
+      if (ch) { r.trueHighS += dt; if (r.firstTrueHighS < 0) r.firstTrueHighS = t; if (actualOn) r.onWhileTrueHighS += dt; }
+      if (ce) r.trueEmergencyS += dt;
+      if (h->highTemperatureActive_ && !prevFwHigh) { ++r.fwHigh; if (r.firstFwHighS < 0) r.firstFwHighS = t; }
+      if (h->emergencyActive_ && !prevFwEmergency) { ++r.fwEmergency; if (r.firstFwEmergencyS < 0) r.firstFwEmergencyS = t; }
+      prevFwHigh = h->highTemperatureActive_; prevFwEmergency = h->emergencyActive_;
+      if (h->heaterNotHeatingActive_ && r.e115S < 0) r.e115S = t;
+      if (h->sensorFrozenLatched_ && r.e104S < 0) r.e104S = t;
+      if (!h->sensorUsable_ && h->pathDataValid_ == false && r.sensorLostS < 0) r.sensorLostS = t;
+      if (actualOn && t >= sc.path.faultAtS && sc.path.fault != SensorFault::None) r.heaterOnAfterFaultS += dt;
+    }
     r.overshoot = std::max(r.overshoot, temp - sp);
     if (!reached && temp >= sp - 0.15) { reached = true; r.riseS = t; }
     if (std::fabs(temp - sp) > 0.15) lastOut = static_cast<int>(t);
@@ -313,6 +400,12 @@ inline Result run(const Plant &base, const Scenario &sc) {
       sec_on.push_back(0);
     }
     if (on && !sec_on.empty()) sec_on.back() = 1;
+    if (tick % 10U == 0U) {
+      const size_t b = static_cast<size_t>(t / 21600.0);
+      if (b >= blkSum.size()) { blkSum.resize(b + 1, 0.0); blkN.resize(b + 1, 0U); blkMax.resize(b + 1, 0.0); }
+      const double e = std::fabs(temp - sp);
+      blkSum[b] += e; ++blkN[b]; blkMax[b] = std::max(blkMax[b], e);
+    }
     if (t >= sc.durationS - 1800 && tick % 10U == 0U) {
       const double e = temp - sp;
       tail.push_back(std::fabs(e));
@@ -359,6 +452,17 @@ inline Result run(const Plant &base, const Scenario &sc) {
       if (h->thermalV1_.learner().mismatch() && r.timeMismatchS < 0 && changed) r.timeMismatchS = t - sc.changeAtS;
       r.maxPredErr = std::max<double>(r.maxPredErr, h->thermalV1_.learner().predictionError());
     }
+    if (tick % 10U == 0U) {
+      const auto &lp = h->thermalV1_.learner().profile();
+      const double holdFrac = lp.confidence >= 60 ? lp.holdPowerPct * 0.01 : -1.0;
+      props.update(t, on, h->temperature_, sc.sp, h->highTemperatureActive_, h->temperature_, holdFrac, lp.confidence >= 60 ? lp.heaterGain : -1.0);
+      if (sc.path.enabled && !h->proposalLatched_) {
+        const SensorPath &sp_ = sc.path;
+        const bool fire = (sp_.actUnexpl >= 0 && props.unexpl[sp_.actUnexpl].firedAt() >= 0) || (sp_.actRep >= 0 && props.rep[sp_.actRep].firedAt() >= 0) ||
+                          (sp_.actFrozen >= 0 && props.frozen[sp_.actFrozen].firedAt() >= 0) || (sp_.actEnergy >= 0 && props.energy[sp_.actEnergy].firedAt() >= 0);
+        if (fire) { h->proposalLatched_ = true; r.latchedAtS = t; }
+      }
+    }
     if (on) onTicks60++;
     if (sc.trace && sc.traceOut && tick % 600U == 599U) {
       duty60 = onTicks60 / 600.0; onTicks60 = 0;
@@ -381,6 +485,11 @@ inline Result run(const Plant &base, const Scenario &sc) {
     r.ripple = hi - lo;
   }
   r.settling = lastOut < static_cast<int>(sc.durationS - 1800) ? lastOut + 1 : -1;
+  for (int i = 0; i < NUnexpl; ++i) r.propUnexpl[i] = props.unexpl[i].firedAt();
+  for (int i = 0; i < NRepHigh; ++i) r.propRep[i] = props.rep[i].firedAt();
+  for (int i = 0; i < NFrozen; ++i) r.propFrozen[i] = props.frozen[i].firedAt();
+  for (int i = 0; i < NEnergy; ++i) r.propEnergy[i] = props.energy[i].firedAt();
+  for (size_t b = 0; b < blkSum.size(); ++b) { r.blockMae.push_back(blkN[b] ? blkSum[b] / blkN[b] : 0.0); r.blockMax.push_back(blkMax[b]); }
   r.energyJ = energy;
   r.pass = r.high == 0 && r.emergency == 0 && r.overshoot <= 0.3 && r.mae <= 0.1 && r.p95 <= 0.15 &&
            r.ripple <= 0.25 && r.settling >= 0;

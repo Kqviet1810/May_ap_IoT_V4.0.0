@@ -1,0 +1,32 @@
+Actual pinmap: GPIO1 drives both SSRs as one 16 kW bank; group count fixed at one
+Adaptive observer actual energy, hold windows, invalid gates, low-trust seed and wrap PASS
+Adaptive actual heating OFF waveform oracle, limits/AW/slew, invalid gates, self-heating/noise, cooling hysteresis, CRC/age/signature/all-byte power cuts PASS
+Actual AutoTune: preheat/capped actual swing, rolling quality, 34 immediate cuts, bounded deadlines, atomic save/power-cut/reset, outside-batch events and bounded diagnostics PASS
+Thermal host tests: PID limits/bumpless/filter, model settling, tune warmup/stability/timeout OK
+Thermal startup: phases, pre-PV braking, HOLD brake and millis rollover PASS
+Thermal V2: raw formats/lock/fault, 2-DOF/bumpless/AW, low duty/balance/safety/autotune/rollover/1M slots PASS
+Actual OutputArbiter: one 16 kW GPIO1 bank, boot/trip/inhibit/immediate OFF/pickup/relay wear/millis wrap PASS
+Actual heating route: 16 PID + 15 autotune safety/permit cuts, no windup/backlog, pickup/fan/storage/OTA/boot/trip, total requested %, autotune PDM PASS
+Actual E115: 5ms/300ms, 5/10/30/50/100% -> 900s actual GPIO ON; midburst cut140ms/no credit/resume PASS
+Actual EEPROM schemas 3..13: legacy cycle 1/10/60 loads, CRC rejected, constant timing; stale default thermal envelope re-anchors to SP while custom thresholds are preserved PASS
+Historical Q8 vs actual float: X10 filtered estimate delta <=0.002 C; no native precision claim PASS
+thermal-adaptive-unit: 737 checks passed
+Smart AutoTune V1: estimator, SIMC bounds, baseline gates, bumpless hand-over, accept+atomic save+profile seed, immediate aborts at every phase, power loss, rejection rollback (471 checks) PASS
+Adaptive current -> fast-path: High 8->8, Emergency 8->8, false learning 0
+Adaptive actual plant matrix: 1248 baseline/adaptive rows; cooling capacity unknown (zero watts credited)
+AUTOTUNE preheat 30%: 25/216 SUCCESS; failures bounded and gains retained
+AUTOTUNE preheat 40%: 20/216 SUCCESS; failures bounded and gains retained
+AUTOTUNE preheat 50%: 29/216 SUCCESS; failures bounded and gains retained
+AUTOTUNE candidate preheat30/relay20: 12/72 SUCCESS
+AUTOTUNE candidate preheat30/relay30: 9/72 SUCCESS
+AUTOTUNE candidate preheat30/relay40: 4/72 SUCCESS
+Thermal model metrics: <report-dir>/control/plant.csv
+CONTROL-ONLY / NO PRODUCTION SAFETY INTERVENTION: NEW300 SP37.5 High 168/168, Emergency 106/168
+SIMULATION TARGETS: 0/1536 pass; 1536 FAIL. Thresholds unchanged; this is not physical accuracy.
+HARD REGRESSION: SP30/ambient28/dead30/res0.01 no positive-heater tail while hot PASS
+ACTUAL HEATING ROUTE baseline: 40/788 PASS, 748 FAIL, High=2028, Emergency=1141
+ACTUAL HEATING ROUTE phase1: 186/788 PASS, 602 FAIL, High=0, Emergency=0
+
+real	2m54.172s
+user	2m50.934s
+sys	0m1.638s

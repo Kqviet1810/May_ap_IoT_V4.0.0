@@ -255,6 +255,49 @@ jobs:
           test "$FLASH" -le 1480000 || { echo "::error::ESP32 Flash exceeds V4 budget: ${FLASH} > 1480000"; exit 1; }
           test "$STATIC_RAM" -le 164000 || { echo "::error::ESP32 static RAM exceeds V4 budget: ${STATIC_RAM} > 164000"; exit 1; }
 
+      - name: Smart Thermal variants (MAYAP_SMART_THERMAL 0 explicit and 1) - same budgets, size delta against the default build, never published
+        shell: bash
+        run: |
+          set -o pipefail
+          size_of() { sed -n "s/.*$1 use[s]* \([0-9][0-9]*\) bytes.*/\1/p" "$2" | tail -n 1; }
+          for V in 0 1; do
+            arduino-cli compile \
+              --fqbn "${{ env.MAYAP_FQBN }}" \
+              --build-property "compiler.cpp.extra_flags=${MAYAP_CPP_FLAGS} -DMAYAP_BUILD_REVISION=${GITHUB_SHA:0:12} -DMAYAP_SMART_THERMAL=${V}" \
+              --output-dir "./build-smart-thermal-${V}" \
+              MAYAP_INDUSTRIAL_v1_0_0 2>&1 | tee "/tmp/mayap-size-smart-${V}.log"
+          done
+          BASE_F=$(size_of "Sketch" /tmp/mayap-size.log); BASE_R=$(size_of "Global variables" /tmp/mayap-size.log)
+          for V in 0 1; do
+            F=$(size_of "Sketch" "/tmp/mayap-size-smart-${V}.log"); R=$(size_of "Global variables" "/tmp/mayap-size-smart-${V}.log")
+            test -n "$F" && test -n "$R" || { echo "::error::Cannot read sizes for MAYAP_SMART_THERMAL=${V}"; exit 1; }
+            echo "MAYAP_SMART_THERMAL=${V}: Flash=${F} (default build ${BASE_F}, delta $((F - BASE_F))); static RAM=${R} (default ${BASE_R}, delta $((R - BASE_R)))"
+            test "$F" -le 1480000 || { echo "::error::Flash exceeds V4 budget with MAYAP_SMART_THERMAL=${V}: ${F}"; exit 1; }
+            test "$R" -le 164000 || { echo "::error::Static RAM exceeds V4 budget with MAYAP_SMART_THERMAL=${V}: ${R}"; exit 1; }
+          done
+          # The default (flag absent) and an explicit =0 must be the same firmware: identical Flash and RAM.
+          F0=$(size_of "Sketch" /tmp/mayap-size-smart-0.log); R0=$(size_of "Global variables" /tmp/mayap-size-smart-0.log)
+          test "$F0" = "$BASE_F" && test "$R0" = "$BASE_R" || { echo "::error::MAYAP_SMART_THERMAL=0 differs in size from the default build"; exit 1; }
+
+      - name: Release-candidate bookkeeping (build info and SHA-256 of every binary; nothing is signed or published here)
+        shell: bash
+        run: |
+          set -euo pipefail
+          FWV=$(sed -n 's/.*MAYAP_FIRMWARE_VERSION\[\] = "\([^"]*\)".*/\1/p' MAYAP_INDUSTRIAL_v1_0_0/config.h)
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "ref=${GITHUB_REF}"
+            echo "firmware_version=${FWV}"
+            echo "build_profile=${MAYAP_BUILD_PROFILE}"
+            echo "cpp_flags=${MAYAP_CPP_FLAGS}"
+            echo "fqbn=${{ env.MAYAP_FQBN }}"
+            echo "default_build=MAYAP_SMART_THERMAL=0 (flag absent; identical to explicit =0, verified by size)"
+            echo "smart_on_build=separate artifact, MAYAP_SMART_THERMAL=1, TEST ONLY: heater load must be isolated, never for operation"
+          } > ./build/BUILD_INFO.txt
+          cp ./build/BUILD_INFO.txt ./build-smart-thermal-1/BUILD_INFO.txt
+          (cd build && sha256sum MAYAP_INDUSTRIAL_v1_0_0.ino.bin MAYAP_INDUSTRIAL_v1_0_0.ino.merged.bin > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          (cd build-smart-thermal-1 && sha256sum MAYAP_INDUSTRIAL_v1_0_0.ino.bin MAYAP_INDUSTRIAL_v1_0_0.ino.merged.bin > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
       - name: Verify linked GPIO ISR cache safety
         shell: bash
         run: |
@@ -277,7 +320,22 @@ jobs:
             ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.merged.bin
             ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.elf
             ./build/MAYAP_INDUSTRIAL_v1_0_0.ino.map
+            ./build/BUILD_INFO.txt
+            ./build/SHA256SUMS.txt
             ./build-attiny/ATTINY13A_POWER_ALARM.hex
+          retention-days: 7
+
+      - name: Luu firmware Smart ON (CHI de do khi tai sưởi da co lap; khong bao gio de van hanh)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v6
+        with:
+          name: firmware-SMART-ON-TEST-ONLY-${{ github.sha }}
+          path: |
+            ./build-smart-thermal-1/MAYAP_INDUSTRIAL_v1_0_0.ino.bin
+            ./build-smart-thermal-1/MAYAP_INDUSTRIAL_v1_0_0.ino.merged.bin
+            ./build-smart-thermal-1/MAYAP_INDUSTRIAL_v1_0_0.ino.elf
+            ./build-smart-thermal-1/BUILD_INFO.txt
+            ./build-smart-thermal-1/SHA256SUMS.txt
           retention-days: 7
 
       - name: Doi ten file .bin theo tag

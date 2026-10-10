@@ -98,6 +98,10 @@ int main(int argc, char **argv) {
     TuneOpts opts;
     const TuneOut o = tune(c.p, c.sp, opts);
     if (std::getenv("TUNE_TRACE")) for (const std::string &l : diagnosticLines) if (l.compare(0, 5, "[TUNE") == 0) std::fprintf(stderr, "%s", l.c_str());
+    if (const char *rc = std::getenv("TUNE_RELAY_CSV")) {   // measurement only: output edges during the tune (SSR / master contactor / exhaust / circulation)
+      FILE *rf = std::fopen(rc, "a");
+      if (rf) { std::fprintf(rf, "%s,%d,%.0f,%u,%u,%u,%u,%u\n", c.label.c_str(), o.accepted ? 1 : 0, o.tuneS, o.ssrEdges, o.masterEdges, o.ventEdges, o.circEdges, o.maxSsrEdges10min); std::fclose(rf); }
+    }
     if (o.started) ++started;
     if (o.modelDone) ++model;
     if (o.candidate) ++candidate;
@@ -111,6 +115,7 @@ int main(int argc, char **argv) {
     if (o.accepted) {
       ++accepted;
       Scenario sc; sc.sp = c.sp; sc.durationS = 10800; sc.mode = Mode::Adaptive;
+      if (const char *pm = std::getenv("POST_MODE")) if (std::string(pm) == "smart") sc.mode = Mode::Smart;   // post-tune oracle run under the Smart Thermal flag (startup + learning); default stays Adaptive
       sc.gainsSet = true; sc.kp = o.kp; sc.ki = o.ki; sc.kd = o.kd;
 #ifndef LEGACY_ENGINE
       sc.seedSet = !std::getenv("NO_SEED"); sc.seed = o.seed;
@@ -118,7 +123,7 @@ int main(int argc, char **argv) {
 #endif
       sc.label = c.label;
       if (std::getenv("POST_TRACE")) { sc.trace = true; sc.traceOut = &std::cerr; }
-      if (std::getenv("POST_DEBUG")) { sc.debugOut = &std::cerr; sc.debugFrom = 3000; sc.debugTo = 3100; }
+      if (std::getenv("POST_DEBUG")) { sc.debugOut = &std::cerr; sc.debugFrom = std::getenv("POST_DEBUG_FROM") ? std::atof(std::getenv("POST_DEBUG_FROM")) : 3000; sc.debugTo = std::getenv("POST_DEBUG_TO") ? std::atof(std::getenv("POST_DEBUG_TO")) : 3100; }
       post = run(c.p, sc);
       if (std::getenv("POST_TRACE")) std::fprintf(stderr, "POST mismatchEvents=%u kh=%u hold=%u guards=%u conf=%d state=%d gain=%.4f delay=%.1f hold=%.1f\n", post.mismatchEvents, post.mismatchKh, post.mismatchHold, post.overshootGuards, post.confidence, post.state, post.gainEst, post.delayEst, post.holdEst);
       haveCandidateResult = true;

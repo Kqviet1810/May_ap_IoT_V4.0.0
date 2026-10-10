@@ -4092,35 +4092,45 @@ void drawMemberList() {
   }
 }
 
+// Man chinh thoi gian ngu: CUNG bo cuc voi man chinh thong so (drawEditSetting) de dong bo - tieu de, nhan, gia tri to, dong huong dan.
 void drawSleepEdit() {
-  drawHeader("THOI GIAN NGU", false);
-  char text[24];
-  if (sleepEditValue == 0U) snprintf(text, sizeof(text), "TAT");
-  else snprintf(text, sizeof(text), "%u phut", static_cast<unsigned>(sleepEditValue));
-  drawCenteredFit(38, text, u8g2_font_helvB10_tf, u8g2_font_6x12_tf, u8g2_font_5x8_tf);
-  drawCenteredFit(54, "XOAY: DOI  NHAN: LUU  GIU: HUY", u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+  drawHeader("SUA THONG SO", false);
+  drawCenteredFit(23, "Thoi gian ngu", u8g2_font_6x12_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+  char value[24];
+  if (sleepEditValue == 0U) snprintf(value, sizeof(value), "TAT");
+  else snprintf(value, sizeof(value), "%u phut", static_cast<unsigned>(sleepEditValue));
+  drawCenteredFit(48, value, u8g2_font_helvB14_tf, u8g2_font_helvB12_tf, u8g2_font_6x12_tf);
+  lcd.setFont(u8g2_font_5x8_tf);
+  lcd.drawStr(11, 62, "NHAN: LUU   GIU: HUY");
 }
 
-// Man hinh ngu: chi nhiet do + do am to, chia doi bang mot vach nho (cach dinh va day), gio:phut nho o goc trai.
+// Man hinh ngu: CHI nhiet do, chu so to nhat co the va nam giua man hinh; gio:phut nho o goc trai nhu truoc.
 void drawSleep() {
   char text[16];
   lcd.setDrawColor(1);
   lcd.setFont(u8g2_font_5x8_tf);
   lcd.drawStr(0, 8, currentRuntime.timeText);
-  lcd.drawVLine(64, 14, 38);
-  auto drawValue = [&](int16_t zoneLeft, int16_t zoneWidth, const char *value, const char *unit) {
-    lcd.setFont(u8g2_font_logisoso26_tn);
-    int16_t w = static_cast<int16_t>(lcd.getStrWidth(value));
-    if (w > zoneWidth - 12) { lcd.setFont(u8g2_font_logisoso22_tn); w = static_cast<int16_t>(lcd.getStrWidth(value)); }
-    const int16_t x = zoneLeft + max(0, (zoneWidth - 10 - w) / 2);
-    lcd.drawStr(x, 44, value);
-    lcd.setFont(u8g2_font_6x12_tf);
-    lcd.drawStr(x + w + 2, 28, unit);
-  };
   snprintf(text, sizeof(text), currentRuntime.sensorOnline ? "%.1f" : "--.-", currentRuntime.temperature);
-  drawValue(0, 64, text, "C");
-  snprintf(text, sizeof(text), currentRuntime.sensorOnline ? "%.0f" : "--", currentRuntime.humidity);
-  drawValue(66, 62, text, "%");
+  // Font so lon nhat con vua be ngang (chua cho cho don vi "C"); cao toi da 50 px nen khong de len dong gio o y<=8.
+  static const uint8_t *const FONTS[] = {u8g2_font_logisoso50_tn, u8g2_font_logisoso46_tn, u8g2_font_logisoso42_tn,
+                                         u8g2_font_logisoso38_tn, u8g2_font_logisoso34_tn, u8g2_font_logisoso30_tn,
+                                         u8g2_font_logisoso26_tn};
+  constexpr int16_t UNIT_W = 10;
+  const uint8_t *font = FONTS[sizeof(FONTS) / sizeof(FONTS[0]) - 1U];
+  int16_t w = 0;
+  for (size_t i = 0; i < sizeof(FONTS) / sizeof(FONTS[0]); ++i) {
+    lcd.setFont(FONTS[i]);
+    w = static_cast<int16_t>(lcd.getStrWidth(text));
+    font = FONTS[i];
+    if (w + UNIT_W <= 124) break;
+  }
+  lcd.setFont(font);
+  const int16_t asc = static_cast<int16_t>(lcd.getAscent());
+  const int16_t baseline = static_cast<int16_t>(min(63, 10 + (54 + asc) / 2));   // gua vung y=10..63
+  const int16_t x = static_cast<int16_t>(max(0, (128 - (w + UNIT_W)) / 2));
+  lcd.drawStr(x, baseline, text);
+  lcd.setFont(u8g2_font_6x12_tf);
+  lcd.drawStr(x + w + 2, baseline - asc + 10, "C");
 }
 
 void drawVentilationMenu() {

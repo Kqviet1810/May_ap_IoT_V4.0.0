@@ -1,0 +1,24 @@
+6774 runs
+('holdout', 'ADAPTIVE_V1') 360 {'energy600': 19, 'energy1200': 17, 'frozen600': 1}
+('holdout', 'SMART_THERMAL') 360 {'energy600': 20, 'energy1200': 22, 'frozen600': 1}
+('hwchange', 'ADAPTIVE_V1') 16 {'energy600': 4, 'energy1200': 6, 'frozen600': 1}
+('hwchange', 'SMART_THERMAL') 16 {'energy600': 4, 'energy1200': 5}
+('legacy788', 'ADAPTIVE_V1') 788 {'frozen600': 14, 'frozen1200': 9, 'energy600': 28, 'energy1200': 35}
+('legacy788', 'SMART_THERMAL') 788 {'frozen600': 20, 'frozen1200': 14, 'energy600': 23, 'energy1200': 36}
+('matrix', 'ADAPTIVE_V1') 2160 {'frozen600': 71, 'frozen1200': 21, 'energy600': 214, 'energy1200': 244, 'unexpl180': 17, 'rep1uncmd': 4}
+('matrix', 'SMART_THERMAL') 2160 {'frozen600': 84, 'frozen1200': 34, 'energy600': 208, 'energy1200': 259, 'unexpl180': 10, 'rep1uncmd': 4}
+('vent', 'ADAPTIVE_V1') 63 {'energy1200': 18, 'energy600': 15, 'frozen600': 11, 'frozen1200': 1}
+('vent', 'SMART_THERMAL') 63 {'energy1200': 18, 'energy600': 16, 'frozen600': 8, 'frozen1200': 2}
+
+unexpl180    fired    27 | plant-true High   16 | COOLING_REQUIRED w/o High    0 | other(true false positives)   11
+unexpl300    fired     0 | plant-true High    0 | COOLING_REQUIRED w/o High    0 | other(true false positives)    0
+unexpl600    fired     0 | plant-true High    0 | COOLING_REQUIRED w/o High    0 | other(true false positives)    0
+rep2         fired     0 | plant-true High    0 | COOLING_REQUIRED w/o High    0 | other(true false positives)    0
+rep3         fired     0 | plant-true High    0 | COOLING_REQUIRED w/o High    0 | other(true false positives)    0
+rep4         fired     0 | plant-true High    0 | COOLING_REQUIRED w/o High    0 | other(true false positives)    0
+rep2uncmd    fired     0 | plant-true High    0 | COOLING_REQUIRED w/o High    0 | other(true false positives)    0
+rep1uncmd    fired     8 | plant-true High    8 | COOLING_REQUIRED w/o High    0 | other(true false positives)    0
+frozen600    fired   211 | plant-true High    0 | COOLING_REQUIRED w/o High    0 | other(true false positives)  211
+frozen1200   fired    81 | plant-true High    0 | COOLING_REQUIRED w/o High    0 | other(true false positives)   81
+energy600    fired   551 | plant-true High    8 | COOLING_REQUIRED w/o High    0 | other(true false positives)  543
+energy1200   fired   660 | plant-true High    9 | COOLING_REQUIRED w/o High    0 | other(true false positives)  651

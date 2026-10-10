@@ -50,6 +50,30 @@ static std::vector<Case> matrixCases() {
   return out;
 }
 
+// HOLDOUT matrix (Smart Thermal): parameter values that appear in NEITHER the 788 nor the 2160 matrix, so an improvement
+// that only fits those grids shows up as a gap here. Fixed, deterministic, never edited after the first A/B run.
+static std::vector<Case> holdoutCases() {
+  const double effs[] = {0.6, 0.85, 1.1, 1.35, 1.75};
+  const double caps[] = {250000, 900000, 1300000};
+  const double losses[] = {150, 240};
+  const double deads[] = {8, 25, 45, 90};
+  const double ambs[] = {12, 22, 31};
+  std::vector<Case> out;
+  unsigned k = 0;
+  for (double eff : effs) for (double cap : caps) for (double loss : losses) for (double dead : deads) for (double amb : ambs) {
+    Plant p; p.eff = eff; p.capacity = cap; p.loss = loss; p.dead = dead; p.ambient = amb;
+    const double lags[] = {5, 15, 20};
+    p.lag = lags[k % 3];
+    p.resolution = (k % 4 == 0) ? 0.05 : (k % 4 == 1) ? 0.1 : (k % 4 == 2) ? 0.02 : 0.1;
+    p.bias = (k % 6 == 0) ? 0.05 : 0.0;
+    p.noise = (k % 5 == 0) ? 0.02 : 0.0;
+    Case c; c.p = p; c.sc.sp = (k % 3 == 0) ? 36.5f : 37.5f; c.sc.durationS = 10800; c.label = "h" + std::to_string(out.size());
+    out.push_back(c);
+    ++k;
+  }
+  return out;
+}
+
 // The fixed 788-case matrix of docs/thermal-phase1-simulation.md (720 cold starts + 68 disturbances).
 static std::vector<Case> legacyCases() {
   std::vector<Case> out;
@@ -104,17 +128,21 @@ static int shardRun(const std::vector<Case> &cases, int shard, int shards, std::
 // Ventilation scenarios (the exhaust fan is owned by the real profile logic; thermal only coordinates)
 // ---------------------------------------------------------------------------------------------
 struct VentCase { Plant p; Scenario sc; std::string plant, strength, schedule; };
-static std::vector<VentCase> ventCases() {
+static std::vector<VentCase> ventCases(bool extended = false) {
   struct PL { const char *n; double cap, loss, dead, lag; };
   const PL plants[] = {{"light", 180000, 120, 5, 8}, {"medium", 600000, 180, 15, 8}, {"heavy", 1600000, 300, 30, 8}};
   struct EX { const char *n; double g; };
-  const EX exhaust[] = {{"weak", 40}, {"medium", 120}, {"strong", 300}};
+  const EX exhaustStd[] = {{"weak", 40}, {"medium", 120}, {"strong", 300}};
+  const EX exhaustX[] = {{"very_strong_600", 600}};
+  const EX *exhaust = extended ? exhaustX : exhaustStd;
+  const size_t nExhaust = extended ? 1 : 3;
   struct SC { const char *n; unsigned cycle, duty; double firstAtS; double changeAtS; double ventScale; };
   const SC scheds[] = {{"short_3min", 20, 15, 4000, -1, 1}, {"long_12min", 40, 30, 4000, -1, 1}, {"repeated_3min_12cycle", 12, 25, 4000, -1, 1},
                        {"during_heatup", 40, 10, 400, -1, 1}, {"near_sp", 40, 10, 2400, -1, 1}, {"after_stable_hold", 40, 10, 6000, -1, 1},
                        {"fan_effect_x2_midrun", 20, 15, 4000, 10800, 2.0}};
   std::vector<VentCase> out;
-  for (const PL &pl : plants) for (const EX &ex : exhaust) for (const SC &sch : scheds) {
+  for (const PL &pl : plants) for (size_t xi = 0; xi < nExhaust; ++xi) for (const SC &sch : scheds) {
+    const EX &ex = exhaust[xi];
     VentCase c; c.p.eff = 1.0; c.p.capacity = pl.cap; c.p.loss = pl.loss; c.p.dead = pl.dead; c.p.lag = pl.lag; c.p.ambient = 20;
     c.p.resolution = 0.1; c.p.ventG = ex.g;
     c.sc.sp = 37.5f; c.sc.durationS = 21600; c.sc.ventProfile = true; c.sc.ventCycleMin = sch.cycle; c.sc.ventDutyPct = sch.duty;
@@ -125,6 +153,21 @@ static std::vector<VentCase> ventCases() {
     c.sc.metricsFromS = (std::string(sch.n) == "during_heatup" || std::string(sch.n) == "near_sp") ? 0.0 : 3600.0;
     c.plant = pl.n; c.strength = ex.n; c.schedule = sch.n;
     out.push_back(c);
+  }
+  if (extended) {   // environment HOTTER than the set point: the exhaust fan brings heat in (cooling is not available)
+    const PL hotPlants[] = {{"medium", 600000, 180, 15, 8}, {"heavy", 1600000, 300, 30, 8}};
+    const EX hotEx[] = {{"hot_ambient_120", 120}, {"hot_ambient_300", 300}};
+    for (const PL &pl : hotPlants) for (const EX &ex : hotEx) {
+      VentCase c; c.p.eff = 1.0; c.p.capacity = pl.cap; c.p.loss = pl.loss; c.p.dead = pl.dead; c.p.lag = pl.lag; c.p.ambient = 40;
+      c.p.resolution = 0.1; c.p.ventG = ex.g;
+      c.sc.sp = 37.5f; c.sc.durationS = 21600; c.sc.ventProfile = true; c.sc.ventCycleMin = 40; c.sc.ventDutyPct = 10;
+      const unsigned cycleSec = 40 * 60;
+      c.sc.ventOffsetSec = cycleSec - (6000u % cycleSec);
+      if (c.sc.ventOffsetSec >= cycleSec) c.sc.ventOffsetSec -= cycleSec;
+      c.sc.metricsFromS = 3600.0;
+      c.plant = pl.n; c.strength = ex.n; c.schedule = "after_stable_hold";
+      out.push_back(c);
+    }
   }
   return out;
 }
@@ -180,6 +223,9 @@ static const char *FHEADER =
 
 int main(int argc, char **argv) {
   std::string cmd = argc > 1 ? argv[1] : "one";
+  // "<suite>_smart" runs the same case generator with the Smart Thermal mode only (A/B joins on the case label).
+  bool smartOnly = false;
+  if (cmd.size() > 6 && cmd.compare(cmd.size() - 6, 6, "_smart") == 0) { smartOnly = true; cmd.resize(cmd.size() - 6); }
   std::cout << std::fixed << std::setprecision(4);
   if (cmd == "one") {
     Plant p; Scenario sc; bool csv = false;
@@ -218,24 +264,24 @@ int main(int argc, char **argv) {
     }
     return 0;
   }
-  if (cmd == "matrix" || cmd == "legacy788") {
+  if (cmd == "matrix" || cmd == "legacy788" || cmd == "holdout") {
     const int shard = argc > 2 ? std::atoi(argv[2]) : 0, shards = argc > 3 ? std::atoi(argv[3]) : 1;
     std::ostream *o = &std::cout; std::ofstream f;
     if (argc > 4) { f.open(argv[4]); o = &f; }
     *o << std::fixed << std::setprecision(4);
     if (shard == 0) *o << HEADER;
-    return shardRun(cmd == "matrix" ? matrixCases() : legacyCases(), shard, shards, *o, {Mode::Baseline, Mode::Adaptive});
+    return shardRun(cmd == "matrix" ? matrixCases() : cmd == "holdout" ? holdoutCases() : legacyCases(), shard, shards, *o, smartOnly ? std::vector<Mode>{Mode::Smart} : std::vector<Mode>{Mode::Baseline, Mode::Adaptive});
   }
-  if (cmd == "vent") {
+  if (cmd == "vent" || cmd == "ventx") {
     const int shard = argc > 2 ? std::atoi(argv[2]) : 0, shards = argc > 3 ? std::atoi(argv[3]) : 1;
     std::ostream *o = &std::cout; std::ofstream f;
     if (argc > 4) { f.open(argv[4]); o = &f; }
     *o << std::fixed << std::setprecision(4);
     if (shard == 0) *o << VHEADER;
-    const auto cases = ventCases();
+    const auto cases = ventCases(cmd == "ventx");
     for (size_t i = 0; i < cases.size(); ++i) {
       if (static_cast<int>(i % shards) != shard) continue;
-      for (Mode m : {Mode::Baseline, Mode::LearnNoVent, Mode::Adaptive}) {
+      for (Mode m : (smartOnly ? std::vector<Mode>{Mode::Smart} : std::vector<Mode>{Mode::Baseline, Mode::LearnNoVent, Mode::Adaptive})) {
         Scenario sc = cases[i].sc; sc.mode = m; sc.label = cases[i].plant + "/" + cases[i].strength + "/" + cases[i].schedule;
         const Result r = run(cases[i].p, sc);
         *o << cases[i].plant << ',' << cases[i].strength << ',' << cases[i].schedule << ',' << modeName(m) << ',' << r.ventEvents << ',' << r.ventDropEvents << ',' << r.ventDevMax << ','
@@ -255,7 +301,7 @@ int main(int argc, char **argv) {
     const auto cases = hwCases();
     for (size_t i = 0; i < cases.size(); ++i) {
       if (static_cast<int>(i % shards) != shard) continue;
-      for (Mode m : {Mode::Baseline, Mode::Adaptive}) {
+      for (Mode m : (smartOnly ? std::vector<Mode>{Mode::Smart} : std::vector<Mode>{Mode::Baseline, Mode::Adaptive})) {
         Scenario sc = cases[i].sc; sc.mode = m; sc.label = cases[i].label + "/" + cases[i].change;
         const Result r = run(cases[i].p, sc);
         *o << cases[i].label << ',' << cases[i].change << ',' << modeName(m) << ',' << r.high << ',' << r.emergency << ',' << r.mae << ',' << r.p95 << ',' << r.ripple << ','
@@ -275,7 +321,7 @@ int main(int argc, char **argv) {
     const auto cases = faultCases();
     for (size_t i = 0; i < cases.size(); ++i) {
       if (static_cast<int>(i % shards) != shard) continue;
-      for (Mode m : {Mode::Baseline, Mode::Adaptive}) {
+      for (Mode m : (smartOnly ? std::vector<Mode>{Mode::Smart} : std::vector<Mode>{Mode::Baseline, Mode::Adaptive})) {
         Scenario sc = cases[i].sc; sc.mode = m; sc.label = cases[i].label;
         const Result r = run(cases[i].p, sc);
         *o << cases[i].label << ',' << modeName(m) << ',' << r.high << ',' << r.emergency << ',' << r.overshoot << ',' << r.mae << ',' << r.ripple << ',' << r.confidence << ','
@@ -285,7 +331,97 @@ int main(int argc, char **argv) {
     }
     return 0;
   }
-  if (cmd == "count") { std::cout << "matrix=" << matrixCases().size() << " legacy788=" << legacyCases().size() << " vent=" << ventCases().size()
+  if (cmd == "case") {   // case <matrix|legacy788> <label#idx> <mode 0..3> [debugFrom]: one named case of a matrix, optionally with per-sample internals
+    const std::string suite = argc > 2 ? argv[2] : "", want = argc > 3 ? argv[3] : "";
+    if (suite == "hwchange") {   // label = "<plant>/<change>"
+      for (const HwCase &h : hwCases()) {
+        if (h.label + "/" + h.change != want) continue;
+        Scenario sc = h.sc; sc.mode = static_cast<Mode>(argc > 4 ? std::atoi(argv[4]) : 2); sc.label = want;
+        if (argc > 5 && std::atof(argv[5]) < 0) { sc.trace = true; sc.traceOut = &std::cerr;
+          std::cerr << "label,mode,t,temp,fed,sp,duty,vent,conf,state,gain,delay,hold,coast,ventGain,predErr,mismatch,ventPhase,ff,integral,gate,req,holdWin,info\n"; }
+        if (argc > 5 && std::atof(argv[5]) >= 0) { sc.debugOut = &std::cerr; sc.debugFrom = std::atof(argv[5]); sc.debugTo = sc.debugFrom + 600; }
+        const Result r = run(h.p, sc);
+        std::cout << want << " " << modeName(sc.mode) << " ov=" << r.overshoot << " mae=" << r.mae << " conf=" << r.confidence << " mism=" << r.mismatchEvents
+                  << " byKh=" << r.mismatchKh << " byHold=" << r.mismatchHold << " tMismatch=" << r.timeMismatchS << "\n";
+        return 0;
+      }
+      return 2;
+    }
+    const std::vector<Case> all = suite == "matrix" ? matrixCases() : suite == "holdout" ? holdoutCases() : legacyCases();
+    for (size_t i = 0; i < all.size(); ++i) {
+      if (all[i].label + "#" + std::to_string(i) != want) continue;
+      Scenario sc = all[i].sc; sc.mode = static_cast<Mode>(argc > 4 ? std::atoi(argv[4]) : 2); sc.label = all[i].label;
+      if (argc > 5 && std::atof(argv[5]) >= 0) { sc.debugOut = &std::cerr; sc.debugFrom = std::atof(argv[5]); sc.debugTo = sc.debugFrom + 600; }
+      if (argc > 5 && std::atof(argv[5]) < 0) { sc.trace = true; sc.traceOut = &std::cerr;   // trace every 60 s (learner state, gate, mismatch)
+        std::cerr << "label,mode,t,temp,fed,sp,duty,vent,conf,state,gain,delay,hold,coast,ventGain,predErr,mismatch,ventPhase,ff,integral,gate,req,holdWin,info\n"; }
+      const Result r = run(all[i].p, sc);
+      std::cout << want << " " << modeName(sc.mode) << " ov=" << r.overshoot << " mae=" << r.mae << " p95=" << r.p95 << " ripple=" << r.ripple
+                << " settle=" << r.settling << " high=" << r.high << " emerg=" << r.emergency << " pass=" << r.pass << " conf=" << r.confidence << " tQual=" << r.timeQualifiedS << " rise=" << r.riseS << " mism=" << r.mismatchEvents << " byKh=" << r.mismatchKh << " byHold=" << r.mismatchHold << " khErrPct=" << r.khEstErrPct << " holdErrPp=" << r.holdErrPp << " delayErrS=" << r.delayErrS << " guards=" << r.overshootGuards << " tMismatch=" << r.timeMismatchS << "\n";
+      return 0;
+    }
+    return 2;
+  }
+  if (cmd == "longrun") {   // 12 h steady and 72 h with parameter drift, vent profile and sensor noise; per-6h-block |PV-SP|
+    const int shard = argc > 2 ? std::atoi(argv[2]) : 0, shards = argc > 3 ? std::atoi(argv[3]) : 1;
+    std::ostream *o = &std::cout; std::ofstream f;
+    if (argc > 4) { f.open(argv[4]); o = &f; }
+    *o << std::fixed << std::setprecision(4);
+    if (shard == 0) *o << "plant,run,mode,hours,high,emergency,overshoot,mismatch_events,profile_saves,confidence,state,block_mae_6h_0..11,block_max_6h_0..11\n";
+    struct PL { const char *n; double cap, loss, dead; };
+    const PL plants[] = {{"light_d15", 180000, 120, 15}, {"medium_d15", 600000, 180, 15}, {"medium_d60", 600000, 180, 60}, {"heavy_d30", 1600000, 300, 30}};
+    struct RUN { const char *n; double hours; bool drift; };
+    const RUN runs[] = {{"steady_12h", 12, false}, {"drift_72h", 72, true}};
+    size_t idx = 0;
+    for (const PL &pl : plants) for (const RUN &rn : runs) {
+      if (static_cast<int>(idx++ % shards) != shard) continue;
+      for (Mode m : (smartOnly ? std::vector<Mode>{Mode::Smart} : std::vector<Mode>{Mode::Baseline, Mode::Adaptive})) {
+        Plant p; p.eff = 1.0; p.capacity = pl.cap; p.loss = pl.loss; p.dead = pl.dead; p.lag = 8; p.ambient = 20; p.resolution = 0.1; p.ventG = 120; p.noise = 0.03;
+        Scenario sc; sc.sp = 37.5f; sc.durationS = rn.hours * 3600; sc.mode = m; sc.ventProfile = true; sc.ventCycleMin = 40; sc.ventDutyPct = 10;
+        sc.ventOffsetSec = 0; sc.metricsFromS = 7200;
+        if (rn.drift) { sc.changeAtS = 36 * 3600; sc.effScale = 0.9; sc.lossScale = 1.15; }   // heater ages 10 %, heat loss +15 % at 36 h
+        sc.label = std::string(pl.n) + "/" + rn.n;
+        const Result r = run(p, sc);
+        *o << pl.n << ',' << rn.n << ',' << modeName(m) << ',' << rn.hours << ',' << r.high << ',' << r.emergency << ',' << r.overshoot << ',' << r.mismatchEvents << ','
+           << r.saves << ',' << r.confidence << ',' << MayapThermal::learnStateName(static_cast<MayapThermal::LearnState>(r.state));
+        for (size_t b = 0; b < 12; ++b) *o << ',' << (b < r.blockMae.size() ? r.blockMae[b] : -1.0);
+        for (size_t b = 0; b < 12; ++b) *o << ',' << (b < r.blockMax.size() ? r.blockMax[b] : -1.0);
+        *o << '\n';
+      }
+    }
+    return 0;
+  }
+  if (cmd == "fpscan") {   // fpscan <suite> <shard> <shards> <out> : candidate safety detectors in OBSERVATION mode over fault-free suites (false-positive scan)
+    const std::string suite = argc > 2 ? argv[2] : "legacy788";
+    const int shard = argc > 3 ? std::atoi(argv[3]) : 0, shards = argc > 4 ? std::atoi(argv[4]) : 1;
+    std::ostream *o = &std::cout; std::ofstream f;
+    if (argc > 5) { f.open(argv[5]); o = &f; }
+    *o << std::fixed << std::setprecision(1);
+    if (shard == 0) *o << "suite,label,mode,class,high,emergency,unexpl180,unexpl300,unexpl600,rep2,rep3,rep4,rep2uncmd,rep1uncmd,frozen600,frozen1200,energy600,energy1200\n";
+    struct Item { std::string label; Plant p; Scenario sc; };
+    std::vector<Item> items;
+    if (suite == "legacy788" || suite == "matrix" || suite == "holdout") {
+      for (const Case &c : (suite == "matrix" ? matrixCases() : suite == "holdout" ? holdoutCases() : legacyCases())) items.push_back({c.label, c.p, c.sc});
+    } else if (suite == "vent" || suite == "ventx") {
+      for (const VentCase &c : ventCases(suite == "ventx")) items.push_back({c.plant + "/" + c.strength + "/" + c.schedule, c.p, c.sc});
+    } else if (suite == "hwchange") {
+      for (const HwCase &c : hwCases()) items.push_back({c.label + "/" + c.change, c.p, c.sc});
+    }
+    for (size_t i = 0; i < items.size(); ++i) {
+      if (static_cast<int>(i % shards) != shard) continue;
+      for (Mode m : {Mode::Adaptive, Mode::Smart}) {
+        Scenario sc = items[i].sc; sc.mode = m; sc.label = items[i].label;
+        const Result r = run(items[i].p, sc);
+        *o << suite << ',' << items[i].label << '#' << i << ',' << modeName(m) << ',' << reachName(r.reach) << ',' << r.high << ',' << r.emergency;
+        for (int k = 0; k < NUnexpl; ++k) *o << ',' << r.propUnexpl[k];
+        for (int k = 0; k < NRepHigh; ++k) *o << ',' << r.propRep[k];
+        for (int k = 0; k < NFrozen; ++k) *o << ',' << r.propFrozen[k];
+        for (int k = 0; k < NEnergy; ++k) *o << ',' << r.propEnergy[k];
+        *o << '\n';
+      }
+    }
+    return 0;
+  }
+  if (cmd == "count") { std::cout << "holdout=" << holdoutCases().size() << " matrix=" << matrixCases().size() << " legacy788=" << legacyCases().size() << " vent=" << ventCases().size()
     << " hwchange=" << hwCases().size() << " faults=" << faultCases().size() << "\n"; return 0; }
   if (cmd == "mini") {  // quick development matrix: 54 representative plants, BASELINE vs ADAPTIVE
     int pass[2] = {0, 0}, n = 0, high[2] = {0, 0}, em[2] = {0, 0};

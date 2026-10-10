@@ -1,0 +1,19 @@
+variant,description,pass_2160,high,emergency,b_pass_to_c_fail,pass_788,high_788,emergency_788,pass_holdout,note
+B_adaptive_v1,frozen reference,1242,33,17,0,509,0,0,254,
+smart_full_current,Smart startup + Smart hold fast-track (code as committed),1397,18,3,48,546,0,0,282,
+hold_fasttrack_only,learner Smart hold only (startup legacy),1402,33,17,17,,,,,no High/Emergency benefit
+startup_only,Smart startup only (learner legacy),1227,18,3,52,,,,,all of the safety benefit but -15 PASS vs B
+no_prior_branch,startup without the unobserved-start prior,1404,30,16,32,,,,,prior branch = 12 High + 13 Emergency of the benefit
+no_observed_branch,startup without the observed-gain branch,1395,21,4,33,,,,,observed branch = 3 High + 1 Emergency
+slope_gated_observed,observed-gain coast only while slope>0.002,1394,21,4,46,,,,,rejected: less safe
+horizon_60s,smart coast horizon min 20 s -> 60 s,1397,18,3,47,,,,,no effect
+smart_window_600s,smart coast only first 600 s after first heat,1396,18,3,45,,,,,no effect on stalls
+smart_window_1200s,smart coast only first 1200 s after first heat,1398,18,3,47,,,,,no effect on stalls
+smart_window_2400s,smart coast only first 2400 s after first heat,1396,18,3,48,,,,,no effect on stalls
+prior_min_error_2.4,PriorMinError 3.5 -> 2.4,1387,8,3,61,,,,,
+prior_min_error_2.0,PriorMinError 3.5 -> 2.0,1391,8,3,57,542,0,0,282,candidate (PENDING APPROVAL)
+prior_2.0_window_240s,PriorMinError 2.0 and PriorWindow 150 s -> 240 s,1356,8,3,92,,,,,rejected: -41 PASS
+prior_2.0_gain_x1.3,PriorMinError 2.0 and prior gain x1.3,1392,5,1,69,538,1,1,287,rejected: creates a High and an Emergency in the 788 suite
+fix_stale_fast_gain_600s,hold/Kh fix as committed (fast gain counts only if refreshed within 600 s; Smart only),1442,18,3,41,548,0,0,288,adopted (077a423); same result with 300 s and 1200 s
+fix_variant_hold_step_suppression,suppress Kh evidence for 600 s after a hold fast-track step,1397,18,3,48,,,,,rejected: no effect
+fix_variant_confirm_2x,require 2x the consecutive evaluations before a Kh mismatch,1398,18,3,47,,,,,rejected: no effect
