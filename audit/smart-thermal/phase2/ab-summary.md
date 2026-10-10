@@ -64,4 +64,3 @@ C fail reasons (heuristic): LEARNER_LOW_CONFIDENCE=409, PHYSICAL_POWER_LIMIT=35,
 | BASELINE_V4 | 30 | 0 | 0 | 0.539 |
 | ADAPTIVE_V1 | 30 | 0 | 0 | 0.036 |
 | SMART_THERMAL | 30 | 0 | 0 | 0.036 |
-

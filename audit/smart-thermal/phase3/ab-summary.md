@@ -82,4 +82,3 @@ C fail reasons (heuristic): LEARNER_LOW_CONFIDENCE=42, SETTLING_TIMEOUT=11, STAR
 | BASELINE_V4 | 30 | 0 | 0 | 0.539 |
 | ADAPTIVE_V1 | 30 | 0 | 0 | 0.036 |
 | SMART_THERMAL | 30 | 0 | 0 | 0.033 |
-
