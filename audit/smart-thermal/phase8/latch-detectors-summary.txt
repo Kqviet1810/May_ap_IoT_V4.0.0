@@ -106,4 +106,3 @@ none                 frozen1200           latched  1/20  lat med   -1063 max   -
 none                 energy600            latched  1/20  lat med   -3968 max   -3968  peak   38.1  highS      0
 none                 energy1200           latched  1/20  lat med   -3442 max   -3442  peak   38.1  highS      0
 none                 unexpl300+rep2uncmd+energy600 latched  1/20  lat med   -3968 max   -3968  peak   38.1  highS      0
-
