@@ -361,6 +361,35 @@ int main(int argc, char **argv) {
     }
     return 2;
   }
+  if (cmd == "longrun") {   // 12 h steady and 72 h with parameter drift, vent profile and sensor noise; per-6h-block |PV-SP|
+    const int shard = argc > 2 ? std::atoi(argv[2]) : 0, shards = argc > 3 ? std::atoi(argv[3]) : 1;
+    std::ostream *o = &std::cout; std::ofstream f;
+    if (argc > 4) { f.open(argv[4]); o = &f; }
+    *o << std::fixed << std::setprecision(4);
+    if (shard == 0) *o << "plant,run,mode,hours,high,emergency,overshoot,mismatch_events,profile_saves,confidence,state,block_mae_6h_0..11,block_max_6h_0..11\n";
+    struct PL { const char *n; double cap, loss, dead; };
+    const PL plants[] = {{"light_d15", 180000, 120, 15}, {"medium_d15", 600000, 180, 15}, {"medium_d60", 600000, 180, 60}, {"heavy_d30", 1600000, 300, 30}};
+    struct RUN { const char *n; double hours; bool drift; };
+    const RUN runs[] = {{"steady_12h", 12, false}, {"drift_72h", 72, true}};
+    size_t idx = 0;
+    for (const PL &pl : plants) for (const RUN &rn : runs) {
+      if (static_cast<int>(idx++ % shards) != shard) continue;
+      for (Mode m : (smartOnly ? std::vector<Mode>{Mode::Smart} : std::vector<Mode>{Mode::Baseline, Mode::Adaptive})) {
+        Plant p; p.eff = 1.0; p.capacity = pl.cap; p.loss = pl.loss; p.dead = pl.dead; p.lag = 8; p.ambient = 20; p.resolution = 0.1; p.ventG = 120; p.noise = 0.03;
+        Scenario sc; sc.sp = 37.5f; sc.durationS = rn.hours * 3600; sc.mode = m; sc.ventProfile = true; sc.ventCycleMin = 40; sc.ventDutyPct = 10;
+        sc.ventOffsetSec = 0; sc.metricsFromS = 7200;
+        if (rn.drift) { sc.changeAtS = 36 * 3600; sc.effScale = 0.9; sc.lossScale = 1.15; }   // heater ages 10 %, heat loss +15 % at 36 h
+        sc.label = std::string(pl.n) + "/" + rn.n;
+        const Result r = run(p, sc);
+        *o << pl.n << ',' << rn.n << ',' << modeName(m) << ',' << rn.hours << ',' << r.high << ',' << r.emergency << ',' << r.overshoot << ',' << r.mismatchEvents << ','
+           << r.saves << ',' << r.confidence << ',' << MayapThermal::learnStateName(static_cast<MayapThermal::LearnState>(r.state));
+        for (size_t b = 0; b < 12; ++b) *o << ',' << (b < r.blockMae.size() ? r.blockMae[b] : -1.0);
+        for (size_t b = 0; b < 12; ++b) *o << ',' << (b < r.blockMax.size() ? r.blockMax[b] : -1.0);
+        *o << '\n';
+      }
+    }
+    return 0;
+  }
   if (cmd == "count") { std::cout << "holdout=" << holdoutCases().size() << " matrix=" << matrixCases().size() << " legacy788=" << legacyCases().size() << " vent=" << ventCases().size()
     << " hwchange=" << hwCases().size() << " faults=" << faultCases().size() << "\n"; return 0; }
   if (cmd == "mini") {  // quick development matrix: 54 representative plants, BASELINE vs ADAPTIVE

@@ -133,6 +133,27 @@ def main():
                 bb = agg.get('ADAPTIVE_V1', [])
                 if hh > sum(int(r['high']) > 0 for r in bb) or ee > sum(int(r['emergency']) > 0 for r in bb): problems.append('ventx: Smart has more High/Emergency than Adaptive V1')
         md.append('')
+    # --- long runs (12 h steady, 72 h with heater ageing and +15 % loss at 36 h; simulated time, not hardware time) ------------------
+    sharded(binary, 'longrun', args.jobs, out); sharded(binary, 'longrun_smart', args.jobs, out)
+    md += ['## Long runs (SIMULATED hours: 12 h steady and 72 h drift; vent profile 10 % / 40 min, sensor noise)', '',
+           '| mode | cases | High | Emergency | mean |PV-SP| after the first 6 h (°C) | worst 6 h block after the first 6 h | profile flash writes (72 h run, max) |', '|---|---|---|---|---|---|---|']
+    for m in ('BASELINE_V4', 'ADAPTIVE_V1', 'SMART_THERMAL'):
+        vals, worst = [], 0.0
+        # the 24 block columns are positional (the header carries them as two merged labels): read the raw lines
+        raw = []
+        for suite in ('longrun', 'longrun_smart'):
+            for line in (out / f'{suite}.csv').read_text().splitlines():
+                c = line.split(',')
+                if c[0] == 'plant' or c[2] != m: continue
+                raw.append(c)
+        for c in raw:
+            nb = int(float(c[3])) // 6
+            b = [float(x) for x in c[11:11 + nb]][1:]
+            vals += b; worst = max(worst, max(b))
+        saves = max((int(c[8]) for c in raw if int(float(c[3])) == 72), default=0)
+        md.append(f"| {m} | {len(raw)} | {sum(int(c[4]) > 0 for c in raw)} | {sum(int(c[5]) > 0 for c in raw)} | {sum(vals) / len(vals):.3f} | {worst:.3f} | {saves} |")
+        if m == 'SMART_THERMAL' and any(int(c[4]) or int(c[5]) for c in raw): problems.append('longrun: Smart High/Emergency')
+    md.append('')
     (out / 'summary.md').write_text('\n'.join(md) + '\n')
     print('\n'.join(md))
     if problems:

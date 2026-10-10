@@ -120,6 +120,8 @@ struct Result {
   int fwHigh = 0, fwEmergency = 0;
   uint32_t unsafeCommandTicks = 0;
   double heaterOnAfterFaultS = 0;
+  // long-run report: |PV - SP| per 6 h block (mean, max)
+  std::vector<double> blockMae, blockMax;
 };
 
 constexpr double HighC = 38.2, EmergencyC = 39.0;
@@ -204,6 +206,7 @@ inline Result run(const Plant &base, const Scenario &sc) {
   bool jumped = false;
   bool rebooted = false;
   unsigned sampleCounter = 0;
+  std::vector<double> blkSum, blkMax; std::vector<unsigned> blkN;
   double pathFrozenValue = 0;
   bool pathSpiked = false;
 
@@ -392,6 +395,12 @@ inline Result run(const Plant &base, const Scenario &sc) {
       sec_on.push_back(0);
     }
     if (on && !sec_on.empty()) sec_on.back() = 1;
+    if (tick % 10U == 0U) {
+      const size_t b = static_cast<size_t>(t / 21600.0);
+      if (b >= blkSum.size()) { blkSum.resize(b + 1, 0.0); blkN.resize(b + 1, 0U); blkMax.resize(b + 1, 0.0); }
+      const double e = std::fabs(temp - sp);
+      blkSum[b] += e; ++blkN[b]; blkMax[b] = std::max(blkMax[b], e);
+    }
     if (t >= sc.durationS - 1800 && tick % 10U == 0U) {
       const double e = temp - sp;
       tail.push_back(std::fabs(e));
@@ -460,6 +469,7 @@ inline Result run(const Plant &base, const Scenario &sc) {
     r.ripple = hi - lo;
   }
   r.settling = lastOut < static_cast<int>(sc.durationS - 1800) ? lastOut + 1 : -1;
+  for (size_t b = 0; b < blkSum.size(); ++b) { r.blockMae.push_back(blkN[b] ? blkSum[b] / blkN[b] : 0.0); r.blockMax.push_back(blkMax[b]); }
   r.energyJ = energy;
   r.pass = r.high == 0 && r.emergency == 0 && r.overshoot <= 0.3 && r.mae <= 0.1 && r.p95 <= 0.15 &&
            r.ripple <= 0.25 && r.settling >= 0;

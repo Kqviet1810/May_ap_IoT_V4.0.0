@@ -2,7 +2,7 @@
 
 SIMULATION ONLY. Flag `MAYAP_SMART_THERMAL` (umbrella, **default 0 = bit-identical Adaptive V1**; also `ThermalLearner::setSmartHold` /
 `AdaptiveV1::setSmartLearning` for A/B). Rollback = rebuild with 0. No threshold, GPIO, arbiter, fault or fail-safe was touched.
-Files: `thermal_learner.h` (hold tracking, +12 B RAM: 3 bools, 1 byte, 1 float), `thermal_adaptive_v1.h` (forwarding setter),
+Files: `thermal_learner.h` (hold tracking; +8 B RAM on the host layout, ThermalLearner 1544 → 1552 B), `thermal_adaptive_v1.h` (forwarding setter),
 `thermal_assist.h` (umbrella macro), `tests/thermal-adaptive-unit.cpp` (+8 checks, now 745), `tests/thermal-adaptive-v1.cpp` (`holdout`
 suite, `case` command incl. `hwchange`), `tools/ab_smart_thermal.py` (+holdout), artifacts in `phase3/`.
 
