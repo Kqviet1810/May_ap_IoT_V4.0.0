@@ -122,6 +122,9 @@ jobs:
       - name: Smart AutoTune V1 simulation gates (simulation only, physical commissioning required)
         run: python3 tools/test_smart_autotune.py --report-dir /tmp/mayap-smart-autotune-report
 
+      - name: Sensor-path integrity suite (alarms/E115/E104 fed by the REPORTED temperature; simulation only)
+        run: python3 tools/test_thermal_sensor_path.py --sanitize --report-dir /tmp/mayap-sensor-path-report
+
       - name: Technical PIN, Web permission, HMI-approved requests and old records (host tests of the real controller code)
         run: python3 tools/test_tech_access.py --sanitize
 

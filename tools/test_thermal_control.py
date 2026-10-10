@@ -80,6 +80,28 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
     evidence_start = machine.index('    const bool responseDemand = batchRunning_')
     evidence_end = machine.index('    const bool sensorGrace', evidence_start)
     (out / 'actual-heater-evidence.inc').write_text(machine[evidence_start:evidence_end])
+    # Phase 1 (sensor-path integrity): the REAL sensor-acceptance, High/Emergency alarm and frozen-sensor bodies,
+    # extracted by markers so the sensor-path harness cannot drift from production. Any marker miss fails loudly.
+    def between(text, first, last, include_last=False):
+        a = text.index(first); b = text.index(last, a)
+        return text[a:b + (len(last) if include_last else 0)]
+    (out / 'actual-sensor-accept.inc').write_text(
+        '{\n' + between(machine, '      bool acceptSample = frameValid;', '    // Fail-safe freshness is owned by SHT485Industrial'))
+    # The only textual substitution: the driver object `sensor_` is not part of the host harness; its dataValid() verdict is
+    # injected as a plain member. Everything else is production text, byte for byte.
+    (out / 'actual-sensor-usable.inc').write_text(
+        between(machine, '    const bool transportValid = sensor_.dataValid()', 'sensorUsable_ = transportValid && !sensorSuspect_ &&\n                    isfinite(temperature_) &&\n                    goodSensorStreak_ >= SENSOR_RECOVERY_GOOD_SAMPLES;', True)
+        .replace('sensor_.dataValid()', 'pathDataValid_'))
+    (out / 'actual-safety-alarm.inc').write_text(
+        between(machine, '    const float safetyTemp = isfinite(rawTemperature_)', '    if (emergencyActive_) highTemperatureActive_ = true;', True))
+    (out / 'actual-frozen.inc').write_text(
+        between(machine, '    const uint32_t frozenEvidenceOnMs = std::max<uint32_t>', '    faults_.set(FaultCode::SensorFrozen, sensorFrozenActive'))
+    cls_a = machine.index('class ConditionTimer {')
+    (out / 'actual-condition-timer.inc').write_text(machine[cls_a:body_end(machine, cls_a) + 1])
+    sensor_constants = ['SENSOR_MAX_DOWN_STEP_C','SENSOR_PLAUSIBILITY_MATCH_C','SENSOR_PLAUSIBILITY_CONFIRM_SAMPLES',
+        'SENSOR_FROZEN_EPSILON_C','SENSOR_FROZEN_TIMEOUT_MS','SENSOR_RECOVERY_GOOD_SAMPLES','HIGH_TEMP_CONFIRM_MS',
+        'HIGH_TEMP_CLEAR_HYSTERESIS_C','HIGH_TEMP_CLEAR_CONFIRM_MS','EMERGENCY_CLEAR_HYSTERESIS_C','EMERGENCY_CLEAR_CONFIRM_MS']
+    (out / 'actual-sensor-constants.inc').write_text('\n'.join(re.search(r'constexpr [^;\n]*\b'+n+r'\s*=[^;]*;', config)[0] for n in sensor_constants))
     initializer = re.search(r'HeaterBurstScheduler heaterBurst_\{[^;]+;', machine)[0]
     assert initializer == 'HeaterBurstScheduler heaterBurst_{HEATER_GROUP_COUNT, HEATER_BURST_QUANTUM_MS};'
     (out / 'actual-burst-member.inc').write_text(initializer)

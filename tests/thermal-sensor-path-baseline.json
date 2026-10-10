@@ -1,0 +1,12 @@
+{
+  "cases": 60,
+  "mode": "adaptive",
+  "ceilings": {
+    "UNDETECTED_TRUE_VIOLATION": 10,
+    "TRUE_VIOLATION_STOPPED_LATE_BY_E115_E104": 9,
+    "TRUE_VIOLATION_DETECTED_LATE": 4,
+    "FALSE_TRIP_NO_FAULT": 4,
+    "ACTUATOR_UNSTOPPABLE_BY_FIRMWARE": 4,
+    "UNSAFE_COMMAND": 0
+  }
+}
