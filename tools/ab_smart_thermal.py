@@ -113,9 +113,10 @@ def main():
             if hi(C) > 0 and title != '2160': problems.append(f'{title}: Smart has plant-true High/Emergency cases')
 
     # --- vent / hwchange / faults ---------------------------------------------------------------------
-    for suite, name in (('vent', 'adaptive-vent63x3.csv'), ('hwchange', 'adaptive-hwchange.csv'), ('faults', 'adaptive-faults30.csv')):
+    for suite, name in (('vent', 'adaptive-vent63x3.csv'), ('ventx', None), ('hwchange', 'adaptive-hwchange.csv'), ('faults', 'adaptive-faults30.csv')):
         smart = rows(sharded(binary, suite + '_smart', args.jobs, out))
-        base = rows(BASE / name)
+        # `ventx` (600 W/K exhaust and a chamber in a room hotter than the set point) has no frozen file yet: A/B come from the same source, Smart OFF
+        base = rows(BASE / name) if name else rows(sharded(binary, suite, args.jobs, out))
         agg = collections.defaultdict(list)
         for r in base + smart: agg[r['mode']].append(r)
         md += [f'## {suite}', '', '| mode | rows | High | Emergency |' + (' vent dev max mean | integral wind-up mean | tail MAE mean |' if suite == 'vent' else ' tail MAE mean |'),
@@ -127,7 +128,10 @@ def main():
             hh = sum(int(r['high']) > 0 for r in rs); ee = sum(int(r['emergency']) > 0 for r in rs)
             extra = f" {mean('vent_dev_max'):.3f} | {mean('integral_windup_max'):.1f} | {mean('mae_tail'):.3f} |" if suite == 'vent' else f" {mean('mae_tail'):.3f} |"
             md.append(f'| {m} | {len(rs)} | {hh} | {ee} |' + extra)
-            if m == 'SMART_THERMAL' and (hh or ee): problems.append(f'{suite}: Smart High/Emergency')
+            if m == 'SMART_THERMAL' and (hh or ee) and suite != 'ventx': problems.append(f'{suite}: Smart High/Emergency')
+            if m == 'SMART_THERMAL' and suite == 'ventx':
+                bb = agg.get('ADAPTIVE_V1', [])
+                if hh > sum(int(r['high']) > 0 for r in bb) or ee > sum(int(r['emergency']) > 0 for r in bb): problems.append('ventx: Smart has more High/Emergency than Adaptive V1')
         md.append('')
     (out / 'summary.md').write_text('\n'.join(md) + '\n')
     print('\n'.join(md))

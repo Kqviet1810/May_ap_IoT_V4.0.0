@@ -128,17 +128,21 @@ static int shardRun(const std::vector<Case> &cases, int shard, int shards, std::
 // Ventilation scenarios (the exhaust fan is owned by the real profile logic; thermal only coordinates)
 // ---------------------------------------------------------------------------------------------
 struct VentCase { Plant p; Scenario sc; std::string plant, strength, schedule; };
-static std::vector<VentCase> ventCases() {
+static std::vector<VentCase> ventCases(bool extended = false) {
   struct PL { const char *n; double cap, loss, dead, lag; };
   const PL plants[] = {{"light", 180000, 120, 5, 8}, {"medium", 600000, 180, 15, 8}, {"heavy", 1600000, 300, 30, 8}};
   struct EX { const char *n; double g; };
-  const EX exhaust[] = {{"weak", 40}, {"medium", 120}, {"strong", 300}};
+  const EX exhaustStd[] = {{"weak", 40}, {"medium", 120}, {"strong", 300}};
+  const EX exhaustX[] = {{"very_strong_600", 600}};
+  const EX *exhaust = extended ? exhaustX : exhaustStd;
+  const size_t nExhaust = extended ? 1 : 3;
   struct SC { const char *n; unsigned cycle, duty; double firstAtS; double changeAtS; double ventScale; };
   const SC scheds[] = {{"short_3min", 20, 15, 4000, -1, 1}, {"long_12min", 40, 30, 4000, -1, 1}, {"repeated_3min_12cycle", 12, 25, 4000, -1, 1},
                        {"during_heatup", 40, 10, 400, -1, 1}, {"near_sp", 40, 10, 2400, -1, 1}, {"after_stable_hold", 40, 10, 6000, -1, 1},
                        {"fan_effect_x2_midrun", 20, 15, 4000, 10800, 2.0}};
   std::vector<VentCase> out;
-  for (const PL &pl : plants) for (const EX &ex : exhaust) for (const SC &sch : scheds) {
+  for (const PL &pl : plants) for (size_t xi = 0; xi < nExhaust; ++xi) for (const SC &sch : scheds) {
+    const EX &ex = exhaust[xi];
     VentCase c; c.p.eff = 1.0; c.p.capacity = pl.cap; c.p.loss = pl.loss; c.p.dead = pl.dead; c.p.lag = pl.lag; c.p.ambient = 20;
     c.p.resolution = 0.1; c.p.ventG = ex.g;
     c.sc.sp = 37.5f; c.sc.durationS = 21600; c.sc.ventProfile = true; c.sc.ventCycleMin = sch.cycle; c.sc.ventDutyPct = sch.duty;
@@ -149,6 +153,21 @@ static std::vector<VentCase> ventCases() {
     c.sc.metricsFromS = (std::string(sch.n) == "during_heatup" || std::string(sch.n) == "near_sp") ? 0.0 : 3600.0;
     c.plant = pl.n; c.strength = ex.n; c.schedule = sch.n;
     out.push_back(c);
+  }
+  if (extended) {   // environment HOTTER than the set point: the exhaust fan brings heat in (cooling is not available)
+    const PL hotPlants[] = {{"medium", 600000, 180, 15, 8}, {"heavy", 1600000, 300, 30, 8}};
+    const EX hotEx[] = {{"hot_ambient_120", 120}, {"hot_ambient_300", 300}};
+    for (const PL &pl : hotPlants) for (const EX &ex : hotEx) {
+      VentCase c; c.p.eff = 1.0; c.p.capacity = pl.cap; c.p.loss = pl.loss; c.p.dead = pl.dead; c.p.lag = pl.lag; c.p.ambient = 40;
+      c.p.resolution = 0.1; c.p.ventG = ex.g;
+      c.sc.sp = 37.5f; c.sc.durationS = 21600; c.sc.ventProfile = true; c.sc.ventCycleMin = 40; c.sc.ventDutyPct = 10;
+      const unsigned cycleSec = 40 * 60;
+      c.sc.ventOffsetSec = cycleSec - (6000u % cycleSec);
+      if (c.sc.ventOffsetSec >= cycleSec) c.sc.ventOffsetSec -= cycleSec;
+      c.sc.metricsFromS = 3600.0;
+      c.plant = pl.n; c.strength = ex.n; c.schedule = "after_stable_hold";
+      out.push_back(c);
+    }
   }
   return out;
 }
@@ -253,13 +272,13 @@ int main(int argc, char **argv) {
     if (shard == 0) *o << HEADER;
     return shardRun(cmd == "matrix" ? matrixCases() : cmd == "holdout" ? holdoutCases() : legacyCases(), shard, shards, *o, smartOnly ? std::vector<Mode>{Mode::Smart} : std::vector<Mode>{Mode::Baseline, Mode::Adaptive});
   }
-  if (cmd == "vent") {
+  if (cmd == "vent" || cmd == "ventx") {
     const int shard = argc > 2 ? std::atoi(argv[2]) : 0, shards = argc > 3 ? std::atoi(argv[3]) : 1;
     std::ostream *o = &std::cout; std::ofstream f;
     if (argc > 4) { f.open(argv[4]); o = &f; }
     *o << std::fixed << std::setprecision(4);
     if (shard == 0) *o << VHEADER;
-    const auto cases = ventCases();
+    const auto cases = ventCases(cmd == "ventx");
     for (size_t i = 0; i < cases.size(); ++i) {
       if (static_cast<int>(i % shards) != shard) continue;
       for (Mode m : (smartOnly ? std::vector<Mode>{Mode::Smart} : std::vector<Mode>{Mode::Baseline, Mode::LearnNoVent, Mode::Adaptive})) {
