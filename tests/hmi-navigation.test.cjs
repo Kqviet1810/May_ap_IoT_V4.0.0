@@ -209,21 +209,29 @@ test('Thiet bi ket noi: list from Cloud, owner cannot be removed, removal needs 
   assert.match(cloud, /servicePinReset\(\);\s*serviceMembers\(\);/);                    // same Cloud owner/admission path as reset-PIN, no new task
 });
 
-test('Man hinh ngu: only the temperature, as large as fits and centred, small clock top-left, 2 min default, managed in HE THONG', () => {
+test('Man hinh ngu: framed header (time left, date right, rule) + only a large centred temperature with a small degree-C; 0 minutes switches the sleep screen off; 2 min default; managed in HE THONG', () => {
   assert.match(hmi, /SLEEP_MINUTES_DEFAULT = 2U/);
   const draw = bodyOf('void drawSleep()');
-  assert.match(draw, /lcd\.drawStr\(0, 8, currentRuntime\.timeText\)/);                // same small clock slot as the Home header
+  assert.match(draw, /lcd\.drawRFrame\(0, 0, 128, 64, 5\)/);                          // rounded frame, as in the reference picture
+  assert.match(draw, /lcd\.drawStr\(5, 8, currentRuntime\.timeText\)/);                // time, left of the header row
+  assert.match(draw, /currentRuntime\.dateText/);                                       // date, right of the header row
+  assert.match(draw, /lcd\.drawHLine\(4, 10, 120\)/);                                   // rule under the header
   assert.match(draw, /currentRuntime\.temperature/);
-  assert.match(draw, /u8g2_font_logisoso50_tn/);                                        // the biggest numeric font is tried first
+  assert.match(draw, /u8g2_font_logisoso38_tn/);                                        // the biggest numeric font that fits the band below the header
   assert.match(draw, /\(128 - \(w \+ UNIT_W\)\) \/ 2/);                               // horizontally centred
+  assert.match(draw, /drawCircle\([^)]*\)[\s\S]*"C"/);                                  // small degree sign + C
   assert.doesNotMatch(draw, /humidity|drawVLine/);                                       // temperature only: no humidity, no divider
   assert.doesNotMatch(draw, /targetTemp|currentDay|machineState/);                       // nothing else on the sleep screen
+  // 0 = the sleep screen is OFF: the screen never sleeps, and the editor says so
+  assert.match(hmi, /const bool canSleep = sleepMinutes > 0U && view == View::Home/);
+  assert.match(bodyOf('void drawSleepEdit()'), /"Man ngu \(0 = TAT\)"/);
+  assert.match(bodyOf('void drawSleepEdit()'), /sleepEditValue == 0U\) snprintf\(value, sizeof\(value\), "TAT"\)/);
   // the sleep-time editor uses the SAME layout as the parameter editor (drawEditSetting): header, label y=23, big value y=48, hint y=62
   const sleepEditDraw = bodyOf('void drawSleepEdit()');
   const param = bodyOf('void drawEditSetting()');
   assert.match(sleepEditDraw, /drawHeader\("SUA THONG SO", false\)/);
   assert.match(param, /drawHeader\("SUA THONG SO", false\)/);
-  assert.match(sleepEditDraw, /drawCenteredFit\(23, "Thoi gian ngu"/);
+  assert.match(sleepEditDraw, /drawCenteredFit\(23, "Man ngu \(0 = TAT\)"/);
   assert.match(sleepEditDraw, /drawCenteredFit\(48, value, u8g2_font_helvB14_tf, u8g2_font_helvB12_tf, u8g2_font_6x12_tf\)/);
   assert.match(param, /drawCenteredFit\(48, value, u8g2_font_helvB14_tf,\s*u8g2_font_helvB12_tf,\s*u8g2_font_6x12_tf\)/);
   assert.match(sleepEditDraw, /lcd\.drawStr\(11, 62, "NHAN: LUU   GIU: HUY"\)/);

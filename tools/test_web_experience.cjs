@@ -41,27 +41,41 @@ async function main() {
     assert.equal(await page.locator('#notesPanel').isVisible(), true);
     await page.locator('#notesPanel button[aria-label="Đóng ghi chú"]').click();   // close the notes panel again
     assert.equal(await page.locator('#notesPanel').isVisible(), false);
-    // Tall phone (390x844, height > XS 600 px): the bottom tab bar stays visible exactly as before; no hamburger.
-    assert.equal(await page.locator('#navToggle').isVisible(), false);
+    // No hamburger any more: the bottom tab bar is always there, full width and flush with the bottom edge of the screen.
+    assert.equal(await page.locator('#navToggle').count(), 0);
+    const geometry = () => page.evaluate(() => {
+      const nav = document.querySelector('#mainNav').getBoundingClientRect(), main = document.querySelector('.main');
+      const save = [...document.querySelectorAll('button')].find(b => /Lưu thông số/.test(b.textContent) && b.offsetParent);
+      return { vh: innerHeight, vw: innerWidth, navTop: nav.top, navBottom: nav.bottom, navLeft: nav.left, navRight: nav.right,
+        scrollable: main.scrollHeight > main.clientHeight + 1, saveBottom: save ? save.getBoundingClientRect().bottom : null };
+    });
+    // Tall phone (390x844): the bar is flush at the bottom, the page fits and does not scroll.
+    let g = await geometry();
     assert.equal(await page.locator('#mainNav').isVisible(), true);
-    assert.equal(await page.locator('.nav button[data-page="batch"]').isVisible(), true);
-    // Short screen (height <= XS 600 px): the tab list is hidden behind the hamburger button and never covers content until opened.
+    assert.equal(Math.round(g.navBottom), g.vh);
+    assert.equal(Math.round(g.navLeft), 0);
+    assert.equal(Math.round(g.navRight), g.vw);
+    assert.equal(g.scrollable, false);
+    // Short phone (390x560): the content cannot fit even fully compacted, so the page scrolls and the save button can be reached above the bar.
     await page.setViewportSize({ width: 390, height: 560 });
-    assert.equal(await page.locator('#navToggle').isVisible(), true);
-    assert.equal(await page.locator('#mainNav').isVisible(), false);
-    await page.locator('#navToggle').click();
     assert.equal(await page.locator('#mainNav').isVisible(), true);
-    assert.equal(await page.locator('#navToggle').getAttribute('aria-expanded'), 'true');
+    g = await geometry();
+    assert.equal(Math.round(g.navBottom), g.vh);
+    assert.equal(g.scrollable, true);
+    await page.locator('.main').evaluate(el => { el.scrollTop = el.scrollHeight; });
+    await page.waitForTimeout(150);
+    g = await geometry();
+    assert.ok(g.saveBottom !== null && g.saveBottom <= g.navTop, 'save button is reachable above the tab bar');
     await page.locator('.nav button[data-page="batch"]').click();
     assert.equal(await page.evaluate(() => document.body.dataset.page), 'batch');
-    assert.equal(await page.locator('#mainNav').isVisible(), false);  // choosing a tab closes the list
-    await page.locator('#navToggle').click();
     await page.locator('.nav button[data-page="settings"]').click();
     assert.equal(await page.evaluate(() => document.body.dataset.page), 'settings');
-    // Back to a tall screen: the bottom tab bar returns and the hamburger disappears.
+    // Back to a tall screen: still the same bar, no scrolling needed on the device page.
+    await page.locator('.nav button[data-page="device"]').click();
     await page.setViewportSize({ width: 390, height: 844 });
-    assert.equal(await page.locator('#navToggle').isVisible(), false);
-    assert.equal(await page.locator('#mainNav').isVisible(), true);
+    g = await geometry();
+    assert.equal(Math.round(g.navBottom), g.vh);
+    assert.equal(g.scrollable, false);
     await page.setViewportSize({ width: 390, height: 560 });
     // The notes bubble stays exactly where it is while the page scrolls.
     const bubbleTop = async () => page.locator('#notesBubble').evaluate(el => Math.round(el.getBoundingClientRect().top));

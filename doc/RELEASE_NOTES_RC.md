@@ -13,7 +13,7 @@ Không thay đổi so với baseline hiện hành: PID, Adaptive Thermal V1, b�
 ## Giao diện (sau RC)
 * HMI màn hình ngủ: chỉ nhiệt độ, chữ số lớn nhất vừa màn hình, nằm giữa; giờ giữ ở góc trái trên. Độ ẩm không còn hiện ở màn hình ngủ.
 * HMI chỉnh thời gian ngủ: cùng bố cục màn chỉnh thông số (tiêu đề, nhãn, giá trị lớn, dòng hướng dẫn).
-* Web 1.1.12: nút ba gạch thay thanh tab dưới **chỉ** khi màn thấp (chiều cao ≤ 600 px); màn cao hơn giữ thanh tab dưới như trước.
+* Web 1.1.13: **bỏ nút ba gạch**; thanh tab dưới luôn hiện, rộng hết chiều ngang, sát cạnh dưới điện thoại (vùng an toàn nằm trong thanh). Trang Thiết bị/Mẻ ấp chỉ cuộn khi nội dung không vừa dù đã co cụm hết cỡ (màn dài như iPhone XS giữ nguyên không cuộn); bong bóng ghi chú không nằm đè lên thanh tab. (Web 1.1.12 từng dùng nút ba gạch cho màn thấp; đã thay thế.)
 
 ## Không có trong RC
 D2–D6 (latch contactor, ngân sách đóng cắt, chương trình nhiệt, làm mát trứng, lưu chương trình) chỉ là module thiết kế, không được firmware include. `PriorMinError` giữ 3.5.
