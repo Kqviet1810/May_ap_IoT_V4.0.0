@@ -45,7 +45,10 @@
       const width = v?.width || root.innerWidth, height = v?.height || root.innerHeight;
       const bottom = top + height - 12;
       const safe = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safeBottom')) || 0;
-      return { left:left + 12, right:left + width - 12, top:top + 12, bottom:Math.max(top + 64, bottom - safe), width, height };
+      // The bottom tab bar (phones) is never a place for the bubble: its lowest position is just above the bar.
+      const bar = document.querySelector('.sidebar'); let barTop = Infinity;
+      if (bar && getComputedStyle(bar).position === 'fixed') { const r = bar.getBoundingClientRect(); if (r.height > 0 && r.top > top + height / 2) barTop = r.top - 8; }
+      return { left:left + 12, right:left + width - 12, top:top + 12, bottom:Math.max(top + 64, Math.min(bottom - safe, barTop)), width, height };
     }
     function position() {
       const b = bounds(), maxY = Math.max(b.top, b.bottom - 52);

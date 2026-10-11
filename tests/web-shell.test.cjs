@@ -124,25 +124,24 @@ test('UI/core scripts share one release-qualified asset set and cache',()=>{
  }
 });
 
-test('short screens (height <= XS 600px): tab bar is a hamburger-opened panel (no content hidden); taller screens keep the bottom tab bar; the notes bubble stays put on every tab', () => {
+test('phones: no hamburger - the bottom tab bar is always visible, full width, flush with the bottom edge; tall pages never scroll, short ones scroll', () => {
   const fs2 = require('node:fs');
   const html = fs2.readFileSync('index.html', 'utf8'), css = fs2.readFileSync('styles.css', 'utf8');
   const app = fs2.readFileSync('app.js', 'utf8'), notes = fs2.readFileSync('notes.js', 'utf8');
-  assert.match(html, /id="navToggle"[^>]*aria-controls="mainNav"|aria-controls="mainNav"[^>]*id="navToggle"/);
+  assert.doesNotMatch(html, /navToggle/);                                                 // the 3-line button is gone
+  assert.doesNotMatch(css, /navToggle/);
+  assert.doesNotMatch(app, /navToggle|setNavOpen/);
   assert.match(html, /<nav class="nav" id="mainNav">/);
-  const mobile = css.slice(css.lastIndexOf('@media(max-width:800px) and (max-height:600px),(max-height:500px){'));
-  assert.ok(mobile.length > 0 && css.includes('@media(max-width:800px) and (max-height:600px),(max-height:500px){'));   // hamburger only on short screens
-  // taller phones keep the always-visible 3-column bottom tab bar defined by the general bottom-bar block
-  const barBlock = css.slice(css.indexOf('@media(max-width:800px),(max-height:500px){\n  :root{--navH:84px}'));
-  assert.match(barBlock, /\.nav\{pointer-events:auto;[^}]*grid-template-columns:repeat\(3,1fr\)/);
-  assert.doesNotMatch(barBlock.slice(0, barBlock.indexOf('\n}\n')), /\.nav\{display:none/);
-  assert.match(mobile, /\.navToggle\{display:grid[^}]*position:fixed[^}]*left:/);          // fixed button on the left edge
-  assert.match(mobile, /\.nav\{display:none;position:fixed/);                              // hidden until opened
-  assert.match(mobile, /\.nav\.open\{display:grid\}/);
-  assert.match(css, /\.navToggle\{display:none\}/);                                        // desktop keeps the sidebar
-  assert.match(app, /navToggle\.addEventListener\('click'/);
-  assert.match(app, /event\.key === 'Escape' && navPanel\.classList\.contains\('open'\)/);
-  assert.match(app, /setNavOpen\(false\); showPage\(button\.dataset\.page\)/);              // choosing a tab closes the panel
+  const bar = css.slice(css.indexOf('@media(max-width:800px),(max-height:500px){\n  :root{--navH:'));
+  const barBlock = bar.slice(0, bar.indexOf('\n}\n'));
+  assert.match(barBlock, /\.sidebar\{position:fixed;inset:auto 0 0 0;[^}]*bottom:0;/);      // anchored to the very bottom edge
+  assert.match(barBlock, /\.nav\{[^}]*width:100%;[^}]*padding:6px 8px var\(--safeBottom\);[^}]*border-radius:18px 18px 0 0/);   // full width, safe area INSIDE the bar
+  assert.doesNotMatch(barBlock, /\.nav\{display:none/);
+  // device / batch pages: the content area scrolls only when the content really does not fit
+  assert.match(css, /body\[data-page="device"\] \.main,body\[data-page="batch"\] \.main\{height:100dvh;min-height:0;overflow-y:auto;overscroll-behavior-y:none/);
+  assert.match(css, /@media\(max-height:840px\)\{/);                                        // compaction ladder reaches XS-class phones (812 px)
+  assert.match(notes, /bar && getComputedStyle\(bar\)\.position === 'fixed'/);                // the notes bubble never sits on the bar
+  assert.match(app, /querySelectorAll\('\.nav button'\)\.forEach\(\(button\) => button\.addEventListener\('click', \(\) => showPage/);
   // notes bubble: no dodging of page content, no repositioning on scroll - only a drag moves it
   assert.doesNotMatch(notes, /obstacles|candidates|scrollFrame/);
   assert.match(notes, /bubble\.style\.top = `\$\{targetY\}px`/);
