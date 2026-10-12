@@ -209,13 +209,13 @@ test('Thiet bi ket noi: list from Cloud, owner cannot be removed, removal needs 
   assert.match(cloud, /servicePinReset\(\);\s*serviceMembers\(\);/);                    // same Cloud owner/admission path as reset-PIN, no new task
 });
 
-test('Man hinh ngu: framed header (time left, date right, rule) + only a large centred temperature with a small degree-C; 0 minutes switches the sleep screen off; 2 min default; managed in HE THONG', () => {
+test('Man hinh ngu: header (time left, date right, rule; NO border)  + only a large centred temperature with a small degree-C; 0 minutes switches the sleep screen off; 2 min default; managed in HE THONG', () => {
   assert.match(hmi, /SLEEP_MINUTES_DEFAULT = 2U/);
   const draw = bodyOf('void drawSleep()');
-  assert.match(draw, /lcd\.drawRFrame\(0, 0, 128, 64, 5\)/);                          // rounded frame, as in the reference picture
-  assert.match(draw, /lcd\.drawStr\(5, 8, currentRuntime\.timeText\)/);                // time, left of the header row
+  assert.doesNotMatch(draw, /drawRFrame|drawFrame/);                                       // no border around the screen
+  assert.match(draw, /lcd\.drawStr\(2, 8, currentRuntime\.timeText\)/);                // time, left of the header row
   assert.match(draw, /currentRuntime\.dateText/);                                       // date, right of the header row
-  assert.match(draw, /lcd\.drawHLine\(4, 10, 120\)/);                                   // rule under the header
+  assert.match(draw, /lcd\.drawHLine\(0, 10, 128\)/);                                   // rule under the header
   assert.match(draw, /currentRuntime\.temperature/);
   assert.match(draw, /u8g2_font_logisoso38_tn/);                                        // the biggest numeric font that fits the band below the header
   assert.match(draw, /\(128 - \(w \+ UNIT_W\)\) \/ 2/);                               // horizontally centred

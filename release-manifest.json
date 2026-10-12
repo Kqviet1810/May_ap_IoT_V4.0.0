@@ -1,8 +1,8 @@
 {
-  "release": "1.1.4",
-  "firmware": "1.1.4",
+  "release": "1.1.5",
+  "firmware": "1.1.5",
   "hmi": "1.0.0",
-  "web": "1.1.13",
+  "web": "1.1.14",
   "web_storage_schema": 10,
   "attiny_protocol": 4,
   "esp32_core": "3.3.11",

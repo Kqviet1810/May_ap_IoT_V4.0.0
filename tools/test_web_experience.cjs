@@ -85,6 +85,23 @@ async function main() {
     assert.equal(await bubbleTop(), before);
     await page.evaluate(() => window.scrollTo(0, 0));
     assert.deepEqual(errors, []);
+    // Fault manual deep link (the target of "Chi tiet" in the fault popup): the row of the code is on screen, highlighted, clear of the toolbar.
+    const manual = await context.newPage();
+    for (const [width, height] of [[390, 844], [1100, 800]]) {
+      await manual.setViewportSize({ width, height });
+      await manual.goto('http://127.0.0.1:8765/docs/MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.html#E115', { waitUntil: 'load' });
+      await manual.waitForTimeout(250);
+      const row = await manual.evaluate(() => {
+        const el = document.getElementById('E115'), box = el.getBoundingClientRect(), bar = document.querySelector('.toolbar').getBoundingClientRect();
+        return { top: box.top, bottom: box.bottom, barBottom: bar.bottom, vh: innerHeight, bg: getComputedStyle(el.querySelector('td')).backgroundColor };
+      });
+      assert.ok(row.top >= row.barBottom - 1 && row.top < row.vh, `E115 row is visible below the toolbar at ${width}px`);
+      assert.equal(row.bg, 'rgb(255, 241, 184)');
+    }
+    await manual.goto('http://127.0.0.1:8765/docs/MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.html#danh-sach-ma-loi', { waitUntil: 'load' });
+    assert.equal(await manual.locator('#danh-sach-ma-loi').count(), 1);
+    assert.equal(await manual.locator('tr[id^="E"]').count(), 41);
+    await manual.close();
     await page.screenshot({ path: path.join(out, 'v4-clean-web.png') });
     fs.writeFileSync(path.join(out, 'web-browser-qa.json'), JSON.stringify({
       passed: true, pages: ['device', 'batch', 'settings'], oldRealtimeRequests: 0,

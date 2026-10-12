@@ -19,9 +19,34 @@ a { color:var(--accent); text-decoration:none; }
 .toolbar { position:sticky; top:0; z-index:9; display:flex; gap:8px; justify-content:flex-end; padding:10px; background:#fff; border-bottom:1px solid var(--line); }
 .toolbar button { border:0; border-radius:8px; background:var(--accent); color:#fff; padding:8px 12px; font-weight:700; cursor:pointer; }
 .sheet { max-width:148mm; margin:0 auto; background:#fff; padding:10mm 10mm 14mm; }
+/* Deep link from the Web fault popup (#E115): scroll the row clear of the sticky toolbar and highlight it. */
+tr[id]{scroll-margin-top:64px}
+tr:target td{background:#fff1b8;box-shadow:inset 0 0 0 1.2pt #e0a800}
+tr:target td:first-child strong{color:#8a5a00}
+.toolbar{align-items:center;flex-wrap:wrap;gap:4px 8px}
+.toolbar .tb{margin-right:10px;color:var(--accent);font-weight:700;font-size:10pt}
+.toolbar button{margin-left:auto}
+@media screen and (max-width:700px) {
+  body { font-size:11pt; background:#fff; }
+  .sheet { max-width:none; padding:12px 12px 24px; box-shadow:none; min-height:0; }
+  h1 { font-size:17pt; } h2 { font-size:13pt; } h3 { font-size:12pt; }
+  table.codes, table.codes tbody, table.codes tr, table.codes td { display:block; width:100%; }
+  table.codes thead { display:none; }
+  table.codes tr { border:1px solid #b7d6d2; border-radius:10px; margin:0 0 10px; overflow:hidden; background:#fff; }
+  table.codes td { border:0; border-bottom:1px solid #e3f0ee; padding:7px 10px; font-size:10.5pt; }
+  table.codes td:last-child { border-bottom:0; }
+  table.codes td:nth-child(1) { background:var(--soft); font-size:12pt; }
+  table.codes tr:target { border-color:#e0a800; box-shadow:0 0 0 2px #e0a800; }
+  table.codes tr:target td { background:#fff1b8; box-shadow:none; }
+  table.codes td:nth-child(2)::before { content:"Tên firmware: "; color:#5b7b79; }
+  table.codes td:nth-child(3)::before { content:"Mức: "; color:#5b7b79; }
+  table.codes td:nth-child(4)::before { content:"Ý nghĩa / phản ứng: "; display:block; color:#5b7b79; font-size:9.5pt; }
+  table.codes td:nth-child(5)::before { content:"Xử lý: "; display:block; color:#5b7b79; font-size:9.5pt; }
+  tr[id]{scroll-margin-top:84px}
+}
 @media print { .toolbar { display:none; } .sheet { padding:0; max-width:none; } }
 @media screen { body { background:#e9efef; } .sheet { box-shadow:0 4px 18px rgba(0,0,0,.12); min-height:210mm; } }
-</style></head><body><div class="toolbar"><button onclick="window.print()">In / Lưu PDF</button></div><main class="sheet"><h1>MÁY ẤP TRỨNG MAYAP - HƯỚNG DẪN VẬN HÀNH VÀ MÃ LỖI</h1>
+</style></head><body><div class="toolbar"><a class="tb" href="../">&larr; Quay lại MAYAP</a><a class="tb" href="#danh-sach-ma-loi">Danh sách mã lỗi</a><a class="tb" href="./MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.pdf">Mở PDF</a><button onclick="window.print()">In / Lưu PDF</button></div><main class="sheet"><h1>MÁY ẤP TRỨNG MAYAP - HƯỚNG DẪN VẬN HÀNH VÀ MÃ LỖI</h1>
 <p><strong>Phiên bản tài liệu:</strong> v1.3<br />
 <strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - nhánh <code>main</code><br />
 <strong>Ngày cập nhật:</strong> 30/09/2026<br />
@@ -68,9 +93,9 @@ a { color:var(--accent); text-decoration:none; }
 <li>Nếu lỗi tái xuất hiện sau khi đã khắc phục, dừng máy và kiểm tra phần cứng tương ứng.</li>
 </ol>
 <hr />
-<h1>2. Danh sách 41 mã lỗi hiện hành</h1>
+<h1 id="danh-sach-ma-loi">2. Danh sách 41 mã lỗi hiện hành</h1>
 <h2>Nhóm E101-E104 - Cảm biến nhiệt</h2>
-<table>
+<table class="codes">
 <thead>
 <tr>
 <th>Mã</th>
@@ -81,28 +106,28 @@ a { color:var(--accent); text-decoration:none; }
 </tr>
 </thead>
 <tbody>
-<tr>
+<tr id="E101">
 <td><strong>E101</strong></td>
 <td><code>SensorLost</code></td>
 <td>STOP</td>
 <td>Mất dữ liệu cảm biến. Cấm SSR, cắt contactor nhiệt; duy trì tuần hoàn.</td>
 <td>Kiểm tra nguồn cảm biến, dây, đầu nối, bus giao tiếp. Không chạy heater khi chưa có nhiệt độ tin cậy.</td>
 </tr>
-<tr>
+<tr id="E102">
 <td><strong>E102</strong></td>
 <td><code>SensorInvalid</code></td>
 <td>STOP</td>
 <td>Dữ liệu cảm biến không hợp lệ. Cấm SSR và cắt contactor nhiệt.</td>
 <td>Kiểm tra giá trị đọc, dây tín hiệu, cấu hình cảm biến và nhiễu điện.</td>
 </tr>
-<tr>
+<tr id="E103">
 <td><strong>E103</strong></td>
 <td><code>SensorSuspect</code></td>
 <td>STOP</td>
 <td>Dữ liệu cảm biến đáng ngờ dù chưa mất hoàn toàn. Cấm gia nhiệt.</td>
 <td>Đối chiếu nhiệt độ bằng nhiệt kế độc lập; kiểm tra cảm biến và đường truyền.</td>
 </tr>
-<tr>
+<tr id="E104">
 <td><strong>E104</strong></td>
 <td><code>SensorFrozen</code></td>
 <td>STOP</td>
@@ -112,7 +137,7 @@ a { color:var(--accent); text-decoration:none; }
 </tbody>
 </table>
 <h2>Nhóm E110-E115 - Nhiệt độ và hệ thống gia nhiệt</h2>
-<table>
+<table class="codes">
 <thead>
 <tr>
 <th>Mã</th>
@@ -123,42 +148,42 @@ a { color:var(--accent); text-decoration:none; }
 </tr>
 </thead>
 <tbody>
-<tr>
+<tr id="E110">
 <td><strong>E110</strong></td>
 <td><code>LowTemperature</code></td>
 <td>WARNING</td>
 <td>Nhiệt độ thấp hơn ngưỡng cảnh báo.</td>
 <td>Kiểm tra heater, SSR, contactor, cửa máy, quạt và tải nhiệt.</td>
 </tr>
-<tr>
+<tr id="E111">
 <td><strong>E111</strong></td>
 <td><code>HighTemperature</code></td>
 <td>STOP</td>
 <td>Nhiệt độ cao. Cấm SSR, cắt contactor nhiệt, dừng đảo và bật thông gió/tuần hoàn bảo vệ.</td>
 <td>Kiểm tra SSR dính, contactor, cảm biến, luồng khí; xác nhận nhiệt giảm an toàn trước khi chạy lại.</td>
 </tr>
-<tr>
+<tr id="E112">
 <td><strong>E112</strong></td>
 <td><code>EmergencyTemperature</code></td>
 <td>EMERGENCY</td>
 <td>Quá nhiệt khẩn cấp. Cắt gia nhiệt ngay, dừng đảo, bật quạt bảo vệ và cảnh báo khẩn.</td>
 <td>Cắt nguồn gia nhiệt nếu cần, kiểm tra SSR/contactor và nhiệt độ thực tế. Không reset liên tục khi nhiệt còn cao.</td>
 </tr>
-<tr>
+<tr id="E113">
 <td><strong>E113</strong></td>
 <td><code>TemperatureRateExceeded</code></td>
 <td>WARNING</td>
 <td>Tốc độ tăng nhiệt bất thường.</td>
 <td>Theo dõi xu hướng nhiệt; kiểm tra PID, SSR, cảm biến và công suất heater.</td>
 </tr>
-<tr>
+<tr id="E114">
 <td><strong>E114</strong></td>
 <td><code>TemperatureUnstable</code></td>
 <td>WARNING</td>
 <td>Nhiệt dao động bất thường.</td>
 <td>Kiểm tra PID, vị trí cảm biến, tuần hoàn gió, relay/SSR và nhiễu cảm biến.</td>
 </tr>
-<tr>
+<tr id="E115">
 <td><strong>E115</strong></td>
 <td><code>HeaterNotHeating</code></td>
 <td>STOP</td>
@@ -168,7 +193,7 @@ a { color:var(--accent); text-decoration:none; }
 </tbody>
 </table>
 <h2>Nhóm E120-E121 - Độ ẩm</h2>
-<table>
+<table class="codes">
 <thead>
 <tr>
 <th>Mã</th>
@@ -179,14 +204,14 @@ a { color:var(--accent); text-decoration:none; }
 </tr>
 </thead>
 <tbody>
-<tr>
+<tr id="E120">
 <td><strong>E120</strong></td>
 <td><code>HumidityLow</code></td>
 <td>WARNING</td>
 <td>Độ ẩm thấp hơn ngưỡng cài đặt.</td>
 <td>Kiểm tra nước, bộ tạo ẩm, cảm biến ẩm và thông gió.</td>
 </tr>
-<tr>
+<tr id="E121">
 <td><strong>E121</strong></td>
 <td><code>HumidityHigh</code></td>
 <td>WARNING</td>
@@ -199,7 +224,7 @@ a { color:var(--accent); text-decoration:none; }
 <blockquote>
 <p><strong>E131 không còn sử dụng.</strong> Quạt tuần hoàn hiện được firmware ép chạy bắt buộc trong mẻ nên mã cũ liên quan công tắc quạt đã được loại bỏ.</p>
 </blockquote>
-<table>
+<table class="codes">
 <thead>
 <tr>
 <th>Mã</th>
@@ -210,56 +235,56 @@ a { color:var(--accent); text-decoration:none; }
 </tr>
 </thead>
 <tbody>
-<tr>
+<tr id="E130">
 <td><strong>E130</strong></td>
 <td><code>HeaterSwitchOffDuringBatch</code></td>
 <td>STOP</td>
 <td>Công tắc HEATER bị tắt trong khi mẻ đang chạy. Cấm SSR và cắt contactor nhiệt.</td>
 <td>Kiểm tra công tắc HEATER và chỉ bật lại khi bảo đảm an toàn.</td>
 </tr>
-<tr>
+<tr id="E132">
 <td><strong>E132</strong></td>
 <td><code>ResumeRequiresAuto</code></td>
 <td>WARNING</td>
 <td>Máy cần AUTO để tiếp tục quy trình phục hồi mẻ.</td>
 <td>Gạt AUTO đúng trạng thái rồi thực hiện xác nhận phục hồi theo HMI.</td>
 </tr>
-<tr>
+<tr id="E133">
 <td><strong>E133</strong></td>
 <td><code>AutoModeOffDuringBatch</code></td>
 <td>STOP</td>
 <td>AUTO bị tắt trong mẻ. Firmware vẫn giữ điều khiển nhiệt; mã dùng để cảnh báo mạnh người vận hành.</td>
 <td>Kiểm tra lý do AUTO bị tắt; đưa về AUTO nếu muốn máy tiếp tục chu trình tự động.</td>
 </tr>
-<tr>
+<tr id="E134">
 <td><strong>E134</strong></td>
 <td><code>AutoTurningDisabledDuringBatch</code></td>
 <td>STOP</td>
 <td>Chức năng đảo tự động bị vô hiệu khi mẻ đang chạy; khóa đảo tự động.</td>
 <td>Kiểm tra cài đặt đảo, công tắc và trạng thái cơ khí trước khi bật lại.</td>
 </tr>
-<tr>
+<tr id="E135">
 <td><strong>E135</strong></td>
 <td><code>ResumeConfirmationPending</code></td>
 <td>WARNING</td>
 <td>Sau mất điện máy chờ xác nhận “ấp lại mẻ cũ” quá lâu.</td>
 <td>Trên HMI chọn tiếp tục hoặc hủy mẻ theo tình trạng thực tế.</td>
 </tr>
-<tr>
+<tr id="E136">
 <td><strong>E136</strong></td>
 <td><code>BatchOverdue</code></td>
 <td>WARNING</td>
 <td>Mẻ đã vượt số ngày ấp dự kiến.</td>
 <td>Kiểm tra tuổi mẻ và tình trạng trứng; quyết định kết thúc hay tiếp tục theo quy trình.</td>
 </tr>
-<tr>
+<tr id="E137">
 <td><strong>E137</strong></td>
 <td><code>ResumeRtcWaitTooLong</code></td>
 <td>WARNING</td>
 <td>Phục hồi mẻ bị chờ lâu do RTC chưa hợp lệ.</td>
 <td>Kiểm tra DS3231, pin RTC, bus I2C và đồng bộ thời gian/NTP.</td>
 </tr>
-<tr>
+<tr id="E138">
 <td><strong>E138</strong></td>
 <td><code>BatchOverdueConfirmationPending</code></td>
 <td>STOP</td>
@@ -269,7 +294,7 @@ a { color:var(--accent); text-decoration:none; }
 </tbody>
 </table>
 <h2>Nhóm E201-E205 - Hệ thống đảo trứng</h2>
-<table>
+<table class="codes">
 <thead>
 <tr>
 <th>Mã</th>
@@ -280,35 +305,35 @@ a { color:var(--accent); text-decoration:none; }
 </tr>
 </thead>
 <tbody>
-<tr>
+<tr id="E201">
 <td><strong>E201</strong></td>
 <td><code>TurnLimitConflict</code></td>
 <td>STOP</td>
 <td>Hai công tắc hành trình có trạng thái xung đột. Lỗi giữ và khóa đảo.</td>
 <td>Kiểm tra 2 limit, dây ACTIVE-LOW, gá cơ khí và nhiễu đầu vào.</td>
 </tr>
-<tr>
+<tr id="E202">
 <td><strong>E202</strong></td>
 <td><code>TurnTimeout</code></td>
 <td>STOP</td>
 <td>Motor đảo chạy quá thời gian mà chưa tới hành trình. Lỗi giữ và khóa đảo.</td>
 <td>Kiểm tra motor, relay/contactor, kẹt cơ khí và công tắc hành trình.</td>
 </tr>
-<tr>
+<tr id="E203">
 <td><strong>E203</strong></td>
 <td><code>TurnLimitStuck</code></td>
 <td>STOP</td>
 <td>Công tắc hành trình bị kẹt/không nhả đúng logic. Lỗi giữ và khóa đảo.</td>
 <td>Kiểm tra công tắc, cơ cấu tác động và dây tín hiệu.</td>
 </tr>
-<tr>
+<tr id="E204">
 <td><strong>E204</strong></td>
 <td><code>TurnCommandConflict</code></td>
 <td>STOP</td>
 <td>Xuất hiện lệnh đảo trái/phải xung đột. Lỗi giữ và khóa đảo.</td>
 <td>Kiểm tra nút tay, input, relay và logic điều khiển ngoài.</td>
 </tr>
-<tr>
+<tr id="E205">
 <td><strong>E205</strong></td>
 <td><code>TurnMechanicalCheckRequired</code></td>
 <td>STOP</td>
@@ -318,7 +343,7 @@ a { color:var(--accent); text-decoration:none; }
 </tbody>
 </table>
 <h2>Nhóm E301-E306, E313-E315 - Lưu trữ / reset / output / RTC</h2>
-<table>
+<table class="codes">
 <thead>
 <tr>
 <th>Mã</th>
@@ -329,63 +354,63 @@ a { color:var(--accent); text-decoration:none; }
 </tr>
 </thead>
 <tbody>
-<tr>
+<tr id="E301">
 <td><strong>E301</strong></td>
 <td><code>StorageUnavailable</code></td>
 <td>STOP</td>
 <td>EEPROM ngoài không khả dụng. Cấm SSR để tránh vận hành với dữ liệu cấu hình/trạng thái không tin cậy.</td>
 <td>Kiểm tra AT24Cxx, nguồn, SDA/SCL, địa chỉ I2C và hàn nối.</td>
 </tr>
-<tr>
+<tr id="E302">
 <td><strong>E302</strong></td>
 <td><code>StorageDegraded</code></td>
 <td>WARNING</td>
 <td>EEPROM hoạt động nhưng có dấu hiệu suy giảm/retry.</td>
 <td>Kiểm tra bus I2C, nguồn, nhiễu; theo dõi tần suất lỗi.</td>
 </tr>
-<tr>
+<tr id="E303">
 <td><strong>E303</strong></td>
 <td><code>AbnormalReset</code></td>
 <td>STOP</td>
 <td>ESP32 vừa reset bất thường (WDT, panic...). Hệ thống yêu cầu xác nhận an toàn.</td>
 <td>Xem nhật ký reset, kiểm tra nguồn, watchdog và nguyên nhân treo trước khi tiếp tục.</td>
 </tr>
-<tr>
+<tr id="E304">
 <td><strong>E304</strong></td>
 <td><code>OutputConflict</code></td>
 <td>EMERGENCY</td>
 <td>Trạng thái output có xung đột nguy hiểm. Cấm SSR và khóa đảo.</td>
 <td>Dừng vận hành; kiểm tra GPIO, relay/contactor, short/chạm dây và logic output.</td>
 </tr>
-<tr>
+<tr id="E305">
 <td><strong>E305</strong></td>
 <td><code>RelayRateExceeded</code></td>
 <td>WARNING</td>
 <td>Relay đóng/cắt quá nhanh hoặc quá nhiều. Lỗi có tính giữ để tránh bỏ qua hiện tượng chatter.</td>
 <td>Kiểm tra hysteresis, input nhiễu, relay và thuật toán điều khiển tải.</td>
 </tr>
-<tr>
+<tr id="E306">
 <td><strong>E306</strong></td>
 <td><code>RtcFailure</code></td>
 <td>WARNING</td>
 <td>RTC không hợp lệ/offline/oscillator stop.</td>
 <td>Kiểm tra DS3231, pin RTC, SDA/SCL; cài/đồng bộ lại thời gian.</td>
 </tr>
-<tr>
+<tr id="E313">
 <td><strong>E313</strong></td>
 <td><code>BatchStateClearPending</code></td>
 <td>STOP</td>
 <td>Đã yêu cầu dừng/hủy nhưng trạng thái <code>wasRunning=0</code> chưa được EEPROM xác nhận. Cấm SSR.</td>
 <td>Không bắt đầu/phục hồi mẻ mới; kiểm tra EEPROM và cho hệ thống hoàn tất ghi trạng thái.</td>
 </tr>
-<tr>
+<tr id="E314">
 <td><strong>E314</strong></td>
 <td><code>SafetyJournalUnavailable</code></td>
 <td>STOP</td>
 <td>NVS safety journal không khả dụng; cấm SSR và chặn thao tác nguy hiểm liên quan phục hồi.</td>
 <td>Kiểm tra flash/NVS, firmware và nguyên nhân lỗi ghi; không bypass.</td>
 </tr>
-<tr>
+<tr id="E315">
 <td><strong>E315</strong></td>
 <td><code>BatchLogUnavailable</code></td>
 <td>WARNING</td>
@@ -395,7 +420,7 @@ a { color:var(--accent); text-decoration:none; }
 </tbody>
 </table>
 <h2>Nhóm E401-E404 - Giám sát sức khỏe hệ thống</h2>
-<table>
+<table class="codes">
 <thead>
 <tr>
 <th>Mã</th>
@@ -406,28 +431,28 @@ a { color:var(--accent); text-decoration:none; }
 </tr>
 </thead>
 <tbody>
-<tr>
+<tr id="E401">
 <td><strong>E401</strong></td>
 <td><code>HeapLow</code></td>
 <td>WARNING</td>
 <td>RAM heap xuống thấp bất thường.</td>
 <td>Theo dõi runtime, log, kết nối mạng và khả năng rò bộ nhớ.</td>
 </tr>
-<tr>
+<tr id="E402">
 <td><strong>E402</strong></td>
 <td><code>HeapCritical</code></td>
 <td>WARNING</td>
 <td>Heap xuống mức nguy cấp; firmware có thể yêu cầu restart chủ động để tự phục hồi.</td>
 <td>Kiểm tra log sau restart; nếu lặp lại cần audit memory/network task.</td>
 </tr>
-<tr>
+<tr id="E403">
 <td><strong>E403</strong></td>
 <td><code>TemperatureTrendWarning</code></td>
 <td>WARNING</td>
 <td>Xu hướng nhiệt cho thấy nguy cơ lệch dù chưa chạm ngưỡng lỗi cứng.</td>
 <td>Kiểm tra tải nhiệt, PID, cảm biến và thông gió trước khi lỗi nặng hơn.</td>
 </tr>
-<tr>
+<tr id="E404">
 <td><strong>E404</strong></td>
 <td><code>StorageRetryTrend</code></td>
 <td>WARNING</td>
@@ -437,7 +462,7 @@ a { color:var(--accent); text-decoration:none; }
 </tbody>
 </table>
 <h2>Nhóm E501-E503 - Bộ cảnh báo mất điện ATtiny13A</h2>
-<table>
+<table class="codes">
 <thead>
 <tr>
 <th>Mã</th>
@@ -448,21 +473,21 @@ a { color:var(--accent); text-decoration:none; }
 </tr>
 </thead>
 <tbody>
-<tr>
+<tr id="E501">
 <td><strong>E501</strong></td>
 <td><code>AttinyBusUnresponsive</code></td>
 <td>WARNING</td>
 <td>ESP32 không nhận ACK/status từ ATtiny. Không tác động trực tiếp tới điều khiển nhiệt/đảo.</td>
 <td>Kiểm tra nguồn ATtiny, pin dự phòng, dây BUS 1-wire và mức 3.3 V.</td>
 </tr>
-<tr>
+<tr id="E502">
 <td><strong>E502</strong></td>
 <td><code>SirenBatteryLow</code></td>
 <td>WARNING</td>
 <td>ATtiny báo nguồn/pin cấp còi thấp.</td>
 <td>Kiểm tra và thay/sạc nguồn dự phòng của còi; thử còi sau xử lý.</td>
 </tr>
-<tr>
+<tr id="E503">
 <td><strong>E503</strong></td>
 <td><code>AttinyStateUnsynced</code></td>
 <td>WARNING</td>

@@ -4104,17 +4104,16 @@ void drawSleepEdit() {
   lcd.drawStr(11, 62, "NHAN: LUU   GIU: HUY");
 }
 
-// Man hinh ngu (theo anh mau): khung bo goc, hang dau = gio:phut (trai) va ngay/thang/nam (phai) + vach ngang, phan con lai la NHIET DO
+// Man hinh ngu (theo anh mau, KHONG vien): hang dau = gio:phut (trai) va ngay/thang/nam (phai) + vach ngang, phan con lai la NHIET DO
 // chu so to nhat con vua, nam giua, "°C" nho o goc duoi phai cua so. Khong con do am, khong vach doc.
 void drawSleep() {
   char text[16];
   lcd.setDrawColor(1);
-  lcd.drawRFrame(0, 0, 128, 64, 5);
   lcd.setFont(u8g2_font_5x8_tf);
-  lcd.drawStr(5, 8, currentRuntime.timeText);
+  lcd.drawStr(2, 8, currentRuntime.timeText);
   const char *date = currentRuntime.dateText[0] ? currentRuntime.dateText : "--/--/----";
-  lcd.drawStr(static_cast<int16_t>(max(5, 123 - static_cast<int16_t>(lcd.getStrWidth(date)))), 8, date);
-  lcd.drawHLine(4, 10, 120);
+  lcd.drawStr(static_cast<int16_t>(max(2, 126 - static_cast<int16_t>(lcd.getStrWidth(date)))), 8, date);
+  lcd.drawHLine(0, 10, 128);
   snprintf(text, sizeof(text), currentRuntime.sensorOnline ? "%.1f" : "--.-", currentRuntime.temperature);
   // So lon nhat con vua be ngang (chua cho cho "°C"); cao toi da 38 px trong dai y=12..61.
   static const uint8_t *const FONTS[] = {u8g2_font_logisoso38_tn, u8g2_font_logisoso34_tn, u8g2_font_logisoso30_tn,
