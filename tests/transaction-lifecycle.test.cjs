@@ -29,7 +29,7 @@ function browser() {
     fetch: async () => ({ ok: false, status: 403,
       json: async () => ({ success: false, error: 'Phiên hết hạn' }) }),
     document: { getElementById: id => elements.get(id) || null, addEventListener() {},
-      createElement: () => ({ children: [], className: '', textContent: '',
+      createElement: () => ({ children: [], className: '', textContent: '', setAttribute() {},
         append(...items) { this.children.push(...items); },
         replaceChildren(...items) { this.children = items; } }) },
     setTimeout: fn => { const id = ++nextTimer; timers.set(id, fn); return id; },

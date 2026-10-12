@@ -1,17 +1,17 @@
 'use strict';
-const CACHE = 'mayap-web-v1.1.13';
+const CACHE = 'mayap-web-v1.1.14';
 
 // The canonical installed-app entry is the Service Worker scope root. Android
 // may keep an older /index.html start URL for a while after an app update, so
 // both forms are accepted, but only the canonical root is required for install.
 const REQUIRED_SHELL = [
-  './', './styles.css', './landing.css', './account.js?v=1.1.13', './config.js?v=1.1.13',
-  './app.js?v=1.1.13', './protocol_v2.js?v=1.1.13', './push.js?v=1.1.13',
-  './manifest.webmanifest', './vendor/jsQR.min.js', './vendor/mqtt.min.js', './mqtt_transport.js?v=1.1.13',
-  './notes.js?v=1.1.13', './notes.css', './icons/icon-192.png', './icons/icon-512.png'
+  './', './styles.css', './landing.css', './account.js?v=1.1.14', './config.js?v=1.1.14',
+  './app.js?v=1.1.14', './protocol_v2.js?v=1.1.14', './push.js?v=1.1.14',
+  './manifest.webmanifest', './vendor/jsQR.min.js', './vendor/mqtt.min.js', './mqtt_transport.js?v=1.1.14',
+  './notes.js?v=1.1.14', './notes.css', './icons/icon-192.png', './icons/icon-512.png'
 ];
 const OPTIONAL_SHELL = [
-  './index.html', './docs/MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.pdf', './icons/badge-72.png'
+  './index.html', './docs/MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.pdf', './docs/MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.html', './icons/badge-72.png'
 ];
 
 self.addEventListener('install', (event) => {
@@ -106,12 +106,31 @@ function networkFirstCore(event) {
   });
 }
 
+async function docsPageResponse(event) {
+  const cache = await caches.open(CACHE).catch(() => null);
+  try {
+    const response = await fetch(event.request);
+    if (response.ok && cache) { try { await cache.put(event.request, response.clone()); } catch (_) {} }
+    return response;
+  } catch (_) {
+    const cached = cache ? await cache.match(event.request, { ignoreSearch: true }) : undefined;
+    return cached || offlineDocument();
+  }
+}
+
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin ||
       url.pathname.startsWith('/api/') ||
       url.pathname.startsWith('/auth/')) return;
+
+  // The fault manual (docs/*.html, opened from the fault popup as .../MAYAP_..._E503.html#E115) is NOT the app shell:
+  // never answer it with, nor store it as, the shell. Fresh copy first, this release's cached copy when offline.
+  if (/\/docs\/[^/]+\.html$/.test(url.pathname)) {
+    event.respondWith(docsPageResponse(event));
+    return;
+  }
 
   const accept = event.request.headers?.get?.('accept') || '';
   const isNavigation = event.request.mode === 'navigate' ||

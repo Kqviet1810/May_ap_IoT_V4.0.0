@@ -84,3 +84,10 @@ html:not([data-auth="checking"]) .authLoading {display:none}
   .landingBenefits p{font-size:11px;line-height:1.45}
   .landingFooter{padding:10px 16px 14px}
 }
+
+/* Gioi thieu nhiet thong minh tren trang dang nhap */
+.smartIntro{margin-top:16px;padding:14px 16px;border:1px solid #cfe4e5;border-radius:16px;background:#ffffffc7;max-width:520px}
+.smartIntro h2{font-size:15px;margin:0 0 6px;color:var(--accent)}
+.smartIntro p{font-size:13px;line-height:1.5;color:var(--muted);margin:0 0 8px}
+.smartIntro ul{margin:0;padding-left:18px;font-size:12.5px;line-height:1.5;color:var(--ink)}
+@media(min-width:901px) and (max-height:820px){.smartIntro{margin-top:10px;padding:10px 14px}.smartIntro p{display:none}.smartIntro ul{font-size:12px;line-height:1.4}}

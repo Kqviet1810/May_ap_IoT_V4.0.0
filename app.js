@@ -614,6 +614,12 @@
     return value === true;
   }
 
+  // "Chi tiet" in the fault popup opens the operating manual at the row of that fault code (docs/...html#E115) in a NEW tab, so the
+  // live session stays connected. Only codes the manual lists get a row anchor; any other code lands on the list of codes.
+  const FAULT_MANUAL_URL = './docs/MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.html';
+  function faultManualHref(code) {
+    return `${FAULT_MANUAL_URL}${Object.prototype.hasOwnProperty.call(FAULT_TITLES, code) ? `#E${code}` : '#danh-sach-ma-loi'}`;
+  }
   let faultPopupTimer = null;
   function closeFaultPopup() {
     const popup = $('faultPopup');
@@ -645,7 +651,14 @@
       title.textContent = FAULT_TITLES[code] || `Mã lỗi ${code}`;
       const description = document.createElement('p');
       description.textContent = FAULT_DESCRIPTIONS[code] || FAULT_TITLES[code] || '';
-      head.append(codeElement, title);
+      const detail = document.createElement('a');
+      detail.className = 'faultPopupLink';
+      detail.textContent = 'Chi tiết';
+      detail.href = faultManualHref(code);
+      detail.target = '_blank';
+      detail.rel = 'noopener';
+      detail.setAttribute('aria-label', `Chi tiết lỗi E${code} trong tài liệu hướng dẫn`);
+      head.append(codeElement, title, detail);
       item.append(head, description);
       return item;
     }));
@@ -1370,7 +1383,7 @@
       $('liveTemp').textContent = '—';
       $('liveHumidity').textContent = '—';
       renderLiveState(device, null);
-      updateOutput('outputHeater', false);
+      updateOutput('outputHeater', false, 'RELAY BẬT', 'RELAY TẮT');
       updateOutput('outputCirculation', false);
       updateOutput('outputVent', false);
       updateOutput('outputHumidifier', false);
@@ -1392,13 +1405,11 @@
     $('liveTemp').textContent = `${numberVi(runtime.temperature)}°C`;
     $('liveHumidity').textContent = `${numberVi(runtime.humidity, 0)}%`;
     renderLiveState(device, runtime);
-    // Thanh nhiet dong cat theo burst PDM; cong suat la yeu cau trung binh, trang thai SSR
-    // tuc thoi (heaterOn) nhap nhay rat nhanh - snapshot 400ms-6s de bat trung
-    // luc OFF giua 2 xung, nguoi dung thay "may dang nong" nhung wed bao OFF.
-    // heaterPower > 0 phan anh dung y dinh dieu khien (PID dang can nhiet),
-    // on dinh hon nhieu cho hien thi cho nguoi dung.
+    // O "Thanh nhiet" hien trang thai relay nguon thanh nhiet (heat master/contactor,
+    // firmware gui qua heaterOn). Relay khong nhap nhay theo burst SSR nen on dinh.
+    // heaterActive (cong suat PID > 0) chi dung cho dong mo ta hoat dong ben duoi.
     const heaterActive = runtime.heaterPower == null ? bool(runtime.heaterOn) : Number(runtime.heaterPower) > 0;
-    updateOutput('outputHeater', heaterActive);
+    updateOutput('outputHeater', bool(runtime.heaterOn), 'RELAY BẬT', 'RELAY TẮT');
     updateOutput('outputCirculation', bool(runtime.circulationFanOn));
     updateOutput('outputVent', bool(runtime.ventFanOn));
     updateOutput('outputHumidifier', bool(runtime.humidifierOn));
@@ -2623,16 +2634,17 @@
 
   // event.code - 1000 = FaultCode, doi chieu bang loi faultDescriptor() trong
   // machine_control.h. CAP NHAT DONG BO khi firmware them ma loi moi vao
-  // FaultCode (danh sach nay khop dung 35 ma dang co trong enum FaultCode -
-  // xem audit/OPERATION_RECOVERY_MANUAL.md va audit/manual/manual.html).
+  // FaultCode (danh sach nay khop dung 41 ma trong enum FaultCode - moi ma
+  // cung la mot neo #E<ma> trong docs/MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.html; test tinh bat lech).
   const FAULT_TITLES = {
-    101: 'Mất cảm biến', 102: 'Cảm biến sai', 103: 'Cảm biến bất thường',
+    101: 'Mất cảm biến', 102: 'Cảm biến sai', 103: 'Cảm biến bất thường', 104: 'Cảm biến nhiệt bị đứng',
     110: 'Nhiệt độ thấp', 111: 'Nhiệt độ cao', 112: 'Quá nhiệt khẩn cấp',
     113: 'Nhiệt độ biến thiên nhanh', 114: 'Nhiệt độ không ổn định',
     115: 'Thanh nhiệt không nóng', 120: 'Độ ẩm thấp', 121: 'Độ ẩm cao',
     130: 'Tắt công tắc nhiệt', 132: 'Cần chuyển sang Tự động',
     133: 'Tự động bị tắt giữa mẻ', 134: 'Tự động đảo bị tắt',
     135: 'Chờ xác nhận áp lại quá lâu', 136: 'Mẻ ấp quá hạn',
+    137: 'Chờ đồng hồ RTC quá lâu khi phục hồi mẻ', 138: 'Mẻ quá hạn đang chờ xác nhận',
     201: 'Lỗi 2 hành trình', 202: 'Đảo quá thời gian', 203: 'Hành trình bị kẹt',
     204: 'Xung đột lệnh đảo', 205: 'Cần kiểm tra cơ khí đảo',
     301: 'Mất kết nối bộ nhớ máy', 302: 'Bộ nhớ máy suy giảm',
@@ -2641,7 +2653,8 @@
     314: 'Lỗi nhật ký an toàn', 315: 'Mất nhật ký mẻ',
     401: 'RAM thấp (cảnh báo sớm)', 402: 'RAM cạn - tự khởi động lại',
     403: 'Dự đoán sắp chạm ngưỡng nhiệt', 404: 'Bộ nhớ máy cần thử lại nhiều',
-    501: 'Mất liên lạc mạch báo mất điện (ATtiny)', 502: 'Pin còi sắp hết — hãy thay pin'
+    501: 'Mất liên lạc mạch báo mất điện (ATtiny)', 502: 'Pin còi sắp hết — hãy thay pin',
+    503: 'Trạng thái ESP32 - ATtiny chưa đồng bộ'
   };
 
   // Mô tả ngắn dùng cho popup chi tiết khi bấm vào ô Trạng thái (Phần "Ý
@@ -2651,6 +2664,7 @@
     101: 'Không nhận được tín hiệu hợp lệ từ đầu dò nhiệt/ẩm trong thời gian dài.',
     102: 'Có dữ liệu từ cảm biến nhưng giá trị vượt ngoài dải vật lý cho phép.',
     103: 'Nhiệt độ tụt đột ngột, đang chờ xác nhận có thật hay không.',
+    104: 'Giá trị nhiệt độ đứng bất thường trong khi thanh nhiệt đã chạy đáng kể — cảm biến có thể bị treo; đã cắt gia nhiệt.',
     110: 'Nhiệt độ đang dưới ngưỡng cấu hình.',
     111: 'Nhiệt độ vượt ngưỡng cao, đã cắt thanh nhiệt và ép quạt.',
     112: 'Nhiệt độ vượt ngưỡng khẩn cấp — mức nghiêm trọng nhất.',
@@ -2665,6 +2679,8 @@
     134: 'Cấu hình tự động đảo bị tắt trong lúc mẻ đang chạy.',
     135: 'Màn hình "Áp lại mẻ cũ?" đã hiện quá lâu chưa ai xác nhận.',
     136: 'Số ngày ấp thực tế đã vượt số ngày cấu hình.',
+    137: 'Phục hồi mẻ sau mất điện đang chờ quá lâu vì đồng hồ RTC chưa hợp lệ.',
+    138: 'Mẻ đã quá hạn, đang chờ bạn xác nhận tiếp tục ủ ấm hoặc kết thúc mẻ.',
     201: 'Cả 2 công tắc hành trình cùng báo tích cực — xung đột vật lý.',
     202: 'Động cơ đảo chạy quá thời gian tối đa mà chưa chạm công tắc hành trình.',
     203: 'Công tắc hành trình không nhả ra sau khi lệnh đảo đã dừng.',
@@ -2684,7 +2700,8 @@
     403: 'Theo tốc độ thay đổi nhiệt độ hiện tại, dự đoán sắp chạm ngưỡng cảnh báo trong ít phút tới - cảnh báo sớm, không phải đã vượt ngưỡng.',
     404: 'Bộ nhớ máy phải thử lại nhiều lần bất thường khi đọc/ghi - dấu hiệu suy giảm sớm của chip nhớ, nên theo dõi thêm.',
     501: 'Mạch báo mất điện độc lập (ATtiny13A) không phản hồi lệnh/ping từ máy - có thể mạch mất nguồn pin dự phòng hoặc dây tín hiệu bị đứt. Không ảnh hưởng nhiệt/đảo trứng, nhưng nếu mất điện lưới xảy ra lúc này, còi báo dự phòng có thể không kêu.',
-    502: 'ATtiny phát hiện pin 9V nuôi còi đã xuống dưới khoảng 7V. Đây là cảnh báo nhẹ, không khóa vận hành; hãy thay pin sớm để còi vẫn hoạt động khi mất điện. Hệ thống sẽ nhắc lại định kỳ cho tới khi ATtiny xác nhận nguồn 9V đã phục hồi.'
+    502: 'ATtiny phát hiện pin 9V nuôi còi đã xuống dưới khoảng 7V. Đây là cảnh báo nhẹ, không khóa vận hành; hãy thay pin sớm để còi vẫn hoạt động khi mất điện. Hệ thống sẽ nhắc lại định kỳ cho tới khi ATtiny xác nhận nguồn 9V đã phục hồi.',
+    503: 'Mạch ATtiny vẫn liên lạc nhưng trạng thái mẻ giữa ESP32 và ATtiny không khớp nhau.'
   };
 
   // severity: 0=Info,1=Warning,2=Stop,3=Emergency (khop enum FaultSeverity
@@ -3819,6 +3836,9 @@
       if (popup && !popup.hidden) closeFaultPopup();
       else openFaultPopup(device);
     });
+    // Touching the popup (reading it, tapping "Chi tiet") cancels the 6 s auto-close; only a tap outside or on the tile closes it.
+    $('faultPopup').addEventListener('pointerdown', () => { if (faultPopupTimer) { clearTimeout(faultPopupTimer); faultPopupTimer = null; } });
+    $('faultPopup').addEventListener('click', (event) => event.stopPropagation());
     document.addEventListener('click', () => closeFaultPopup());
 
     $('addDeviceBtn').addEventListener('click', () => {
