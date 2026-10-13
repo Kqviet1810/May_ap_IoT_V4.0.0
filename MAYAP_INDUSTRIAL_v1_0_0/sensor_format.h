@@ -28,24 +28,36 @@ class SensorFormatDecoder {
     return NAN;
   }
 
+  // HMI sensor-resolution choice: 0 = auto-detect (unchanged), 1 = 0.1 C (X10), 2 = 0.01 C (X100). A change forgets the locked format, so the
+  // sensor must be verified again with the new choice before it can be used.
+  void setRuntimeMode(uint8_t mode) {
+    const SensorProfile want = mode == 1U ? SensorProfile::X10RhX10 : mode == 2U ? SensorProfile::X100RhX10 : SensorProfile::Auto;
+    if (configured_ != SensorProfile::Auto || want == runtime_) return;
+    runtime_ = want;
+    profile_ = SensorProfile::Auto; candidateMask_ = 0U; consecutive_ = 0U; valid_ = false; hasLast_ = false;
+  }
   bool accept(uint16_t rawTemperature, uint16_t rawHumidity) {
     valid_ = false;
+    // A compile-time profile keeps its old behaviour. A chosen resolution drops the guessing (one candidate) and needs two matching samples;
+    // it keeps the 10..60 C start envelope, so a wrong choice (x10 error) is rejected instead of read as 3.75 C or 250 C.
+    const SensorProfile chosen = configured_ != SensorProfile::Auto ? configured_ : runtime_;
+    const bool runtimeChoice = configured_ == SensorProfile::Auto && runtime_ != SensorProfile::Auto;
     if (!locked()) {
       uint8_t candidates = 0U;
       for (uint8_t i = 1U; i <= 3U; ++i) {
         const auto profile = static_cast<SensorProfile>(i);
-        if (configured_ != SensorProfile::Auto && profile != configured_) continue;
+        if (chosen != SensorProfile::Auto && profile != chosen) continue;
         const float t = decodeTemperature(rawTemperature, profile);
         const float rh = decodeHumidity(rawHumidity, profile);
         // Raw-only autodetection is ambiguous outside this commissioning envelope.
         // Explicit verified module profiles can start anywhere in the old -40..60 C range.
-        const float minimum = configured_ == SensorProfile::Auto ? 10.0f : -40.0f;
+        const float minimum = configured_ == SensorProfile::Auto ? 10.0f : -40.0f;   // a runtime choice has configured_ == Auto: 10 C
         if (t >= minimum && t <= 60.0f && rh >= 0.0f && rh <= 100.0f)
           candidates |= static_cast<uint8_t>(1U << i);
       }
       if (!candidates || (candidates & (candidates - 1U))) { rejectSample(); return false; }
       if (candidates != candidateMask_) { candidateMask_ = candidates; consecutive_ = 0U; }
-      if (++consecutive_ < 6U) return false;
+      if (++consecutive_ < (runtimeChoice ? 2U : 6U)) return false;
       for (uint8_t i = 1U; i <= 3U; ++i)
         if (candidates == (1U << i)) profile_ = static_cast<SensorProfile>(i);
     }
@@ -74,6 +86,7 @@ class SensorFormatDecoder {
 
  private:
   const SensorProfile configured_;
+  SensorProfile runtime_ = SensorProfile::Auto;   // HMI choice (only used when no compile-time profile is set)
   SensorProfile profile_ = SensorProfile::Auto;
   uint8_t candidateMask_ = 0U;
   uint8_t consecutive_ = 0U;

@@ -62,12 +62,12 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "1b62c9567c2f01753250911f2a92c4eca3f930d141cdf8f56c1e07f731b802a6",
+      "sha256": "5472f8160a22adbeecd74f725c5f1d83ae434ac2a632b410009e6a2160b36341",
       "filter": "config"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "176f37eead030e6995eeb7e1109d77a6e11fc1594a36ee534b88fcf0641c608b",
+      "sha256": "3bb7125a8827afd26a010ecea823e0bfcd57ed74a4a26745041616bdd163a618",
       "signature": "class MachineController {"
     },
     {
@@ -364,7 +364,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/sensor_format.h",
-      "sha256": "3d35b9d650a1423c22547efeddba2065be0e30d31f47edc86c79f22cda610606"
+      "sha256": "0f8a2185d0add53ba314dbeab86522e660084f939c53d2b8e5c6debb685eec6e"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/heater_burst_scheduler.h",
@@ -448,6 +448,7 @@
   "pidSetpointReviewNote": "2026-10-03: reviewed PID config-save correction. Setpoint edits and unrelated MachineConfig saves no longer invoke bumpless I re-projection or reset derivative timing; only control mode, Kp/Ki/Kd and maxHeaterPower changes do. Gain/cap changes remain bumpless at the previous setpoint, and safety/PDM/sensor behavior is unchanged.",
   "notesUiOnlyResetReviewNote": "2026-10-03: removed the complete legacy Ghi chú persistence path (ESP32 EEPROM store/service/retry, realtime notes channels and persistence tests). notes.js/notes.css remain as UI only. Controller/safety/config/reminder/history storage semantics are unchanged.",
   "thermalFinalHardeningReviewNote": "2026-10-03: reviewed thermal safety hardening: Test Mode keeps High/Emergency protection, negative calibration cannot lower raw overheat safety, sensor timeout becomes fixed fail-safe legacy field, running-batch setpoint preserves the safety/vent envelope, E114 retains triggering crossing detail, and zero-authority PID is rejected. Physical thermal performance remains a commissioning item.",
+  "release116ReviewNote": "2026-10-13: reviewed 1.1.6 config.h change: MAYAP_FIRMWARE_VERSION plus one appended MachineConfig field, sensorResolutionMode (0 automatic = previous behaviour, 1 = 0.1 C, 2 = 0.01 C). It is persisted in bits 1-2 of the existing schema-13 adaptive byte (old records read as automatic; adaptive flag is bit 0), so layout, schema and size are unchanged. sensor_format.h: a chosen resolution removes format guessing (single candidate, two matching samples) but keeps the 10..60 C start envelope, so a wrong choice is rejected instead of read x10 off; the compile-time profile path and automatic detection are unchanged. Re-pinned entries: config.h, sensor_format.h, and class MachineController (only the SHT485Industrial::setResolutionMode member and one call before sensor_.update() in the control cycle). Control, thermal, output arbitration and safety logic are untouched. Evidence: tests/thermal-v2.cpp, tests/thermal-config.cpp, tests/hmi-navigation.test.cjs.",
   "release115ReviewNote": "2026-10-12: reviewed 1.1.5 version-only config.h change (MAYAP_FIRMWARE_VERSION 1.1.4 -> 1.1.5). Firmware change in this release is confined to hmi.h drawSleep() (sleep screen without the border frame; display only). MachineConfig layout, thermal control, SSR/output arbitration, turning, vent and safety logic are unchanged.",
   "release114ReviewNote": "2026-10-08: reviewed 1.1.4 config.h changes: MAYAP_FIRMWARE_VERSION and NETWORK_CONNECT_TIMEOUT_MS (20 s -> 12 s) with the new NETWORK_DRIVER_GAVE_UP_MS (4 s): the Wi-Fi association wait ends sooner when the driver itself reports the attempt over. MachineConfig layout, thermal control, SSR/output arbitration, turning, vent, HMI and safety logic are unchanged; the firmware change is confined to the network/MQTT path (mqtt_transport.h, transaction_bridge.h config report, firmware_check_policy.h, runtime_recovery_policy.h ServiceWatch silence arithmetic, network_service.h disconnect reason logging).",
   "release113ReviewNote": "2026-10-08: reviewed 1.1.3 version-only config.h change (MAYAP_FIRMWARE_VERSION). The firmware change in this release is confined to the network/alarm path (mqtt_uplink.h, alarm_fallback_policy.h, cloud_alert_link.h, mqtt_transport.h, transaction_bridge.h ACK retry); MachineConfig layout, thermal control, SSR/output arbitration, turning, vent, HMI and safety logic are unchanged.",

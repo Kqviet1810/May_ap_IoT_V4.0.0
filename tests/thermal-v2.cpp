@@ -63,6 +63,26 @@ static void sensorFormats() {
   for(unsigned n=0;n<6;++n) scaled.accept(375,600);
   assert(!scaled.accept(375,39321) && !scaled.valid());
   assert(scaled.profile()==SensorProfile::X10RhX10);
+  // HMI sensor resolution choice: no guessing, two matching samples, 10..60 C start envelope, a wrong choice never reads as a plausible value.
+  SensorFormatDecoder choose01;choose01.setRuntimeMode(1U);
+  assert(!choose01.accept(375,600) && choose01.accept(375,600) && choose01.profile()==SensorProfile::X10RhX10 && std::fabs(choose01.temperature()-37.5f)<0.001f);
+  SensorFormatDecoder choose001;choose001.setRuntimeMode(2U);
+  assert(!choose001.accept(3750,600) && choose001.accept(3750,600) && choose001.profile()==SensorProfile::X100RhX10 && std::fabs(choose001.temperature()-37.5f)<0.001f);
+  SensorFormatDecoder wrong001;wrong001.setRuntimeMode(2U);      // sensor really is 0.1 C: 37.5 C arrives as 375 -> 3.75 C, below the envelope
+  for(unsigned n=0;n<20;++n) assert(!wrong001.accept(375,600));
+  assert(!wrong001.locked());
+  SensorFormatDecoder wrong01;wrong01.setRuntimeMode(1U);        // sensor really is 0.01 C: 3750 -> 375 C
+  for(unsigned n=0;n<20;++n) assert(!wrong01.accept(3750,600));
+  assert(!wrong01.locked());
+  // Changing the choice forgets the lock, and 0 returns to automatic detection.
+  choose01.setRuntimeMode(2U);assert(!choose01.locked()&&!choose01.valid());
+  choose01.setRuntimeMode(0U);
+  for(unsigned n=0;n<5;++n) assert(!choose01.accept(375,600));
+  assert(choose01.accept(375,600));
+  // A compile-time profile cannot be overridden at run time.
+  SensorFormatDecoder fixed(SensorProfile::X100RhX10);fixed.setRuntimeMode(1U);
+  for(unsigned n=0;n<5;++n) assert(!fixed.accept(3750,600));
+  assert(fixed.accept(3750,600)&&fixed.profile()==SensorProfile::X100RhX10);
 }
 
 static void pidWeightsAndPermits() {

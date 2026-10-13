@@ -1403,6 +1403,7 @@ inline void sanitizeMachineConfig(MachineConfig &cfg) {
   cfg.humidifierHysteresisRh = static_cast<uint8_t>(constrain(
       static_cast<int>(cfg.humidifierHysteresisRh), 1, 10));
   if (!cfg.humidifierInstalled) cfg.humidifierEnabled = false;
+  if (cfg.sensorResolutionMode > 2U) cfg.sensorResolutionMode = 0U;
 
   cfg.ventScheduleCount = static_cast<uint8_t>(constrain(
       static_cast<int>(cfg.ventScheduleCount), 1, VENT_SCHEDULE_MAX_RUNS));
@@ -1833,7 +1834,8 @@ inline PackedMachineConfigV1 packConfig(const MachineConfig &c) {
   p.ventScheduleHour4 = c.ventScheduleHour4;
   p.ventScheduleHour5 = c.ventScheduleHour5;
   p.ventScheduleHour6 = c.ventScheduleHour6;
-  p.adaptiveThermalBalanceEnabled = c.adaptiveThermalBalanceEnabled ? 1U : 0U;
+  p.adaptiveThermalBalanceEnabled = static_cast<uint8_t>((c.adaptiveThermalBalanceEnabled ? 1U : 0U) |
+      ((c.sensorResolutionMode <= 2U ? c.sensorResolutionMode : 0U) << 1U));
   p.ventAutoEnabled = c.ventAutoEnabled ? 1U : 0U;
   p.ventProfileLevel = c.ventProfileLevel;
   p.ventCycleMinutes = c.ventCycleMinutes;
@@ -1901,7 +1903,8 @@ inline MachineConfig unpackConfig(const PackedMachineConfigV1 &p) {
   c.ventScheduleHour4 = p.ventScheduleHour4;
   c.ventScheduleHour5 = p.ventScheduleHour5;
   c.ventScheduleHour6 = p.ventScheduleHour6;
-  c.adaptiveThermalBalanceEnabled = p.adaptiveThermalBalanceEnabled != 0U;
+  c.adaptiveThermalBalanceEnabled = (p.adaptiveThermalBalanceEnabled & 1U) != 0U;
+  { const uint8_t mode = static_cast<uint8_t>((p.adaptiveThermalBalanceEnabled >> 1U) & 3U); c.sensorResolutionMode = mode <= 2U ? mode : 0U; }
   c.ventAutoEnabled = p.ventAutoEnabled != 0U;
   c.ventProfileLevel = p.ventProfileLevel;
   c.ventCycleMinutes = p.ventCycleMinutes;
@@ -2956,6 +2959,13 @@ class SHT485Industrial {
     }
   }
 
+  // Apply the HMI sensor-resolution choice (idempotent). A change restarts format verification and drops the filter history.
+  void setResolutionMode(uint8_t mode) {
+    if (mode == resolutionMode_) return;
+    resolutionMode_ = mode;
+    decoder_.setRuntimeMode(mode);
+    windowCount_ = 0U; windowIndex_ = 0U; filterInitialized_ = false; newData_ = false;
+  }
   bool takeNewData() { const bool r = newData_; newData_ = false; return r; }
   bool popEvent(SHT485Event &event) {
     if (pendingEvents_ == 0U) { event = SHT485Event::None; return false; }
@@ -3038,6 +3048,7 @@ class SHT485Industrial {
   uint8_t pendingEvents_ = 0;
   SensorFormatDecoder decoder_{static_cast<SensorProfile>(MAYAP_SENSOR_PROFILE)};
   uint16_t rawTempRegister_ = 0U;
+  uint8_t resolutionMode_ = 0U;
   float tempWindow_[3]{};
   float humWindow_[3]{};
   uint8_t windowCount_ = 0;
@@ -3875,6 +3886,7 @@ class MachineController {
     processInputEvents(now);
     serviceSerial(now);
     if (networkPollGate_.due(now, true)) processNetworkState(now);
+    sensor_.setResolutionMode(config_.sensorResolutionMode);
     sensor_.update();
     processSensor(now);
     rtc_.update(now);

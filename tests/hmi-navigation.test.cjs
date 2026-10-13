@@ -49,10 +49,10 @@ test('all settings remain reachable exactly once in shorter groups', () => {
     .replace(/\/\/[^\n]*/g, '').match(/\d+/g).map(Number);
   const groups = [...hmi.matchAll(/\{"([^"\n]+)",\s*(\d+),\s*(\d+)\}/g)]
     .map((match) => ({ name: match[1], first: Number(match[2]), count: Number(match[3]) }));
-  assert.equal(indexes.length, 34);
-  assert.equal(new Set(indexes).size, 34);
+  assert.equal(indexes.length, 35);
+  assert.equal(new Set(indexes).size, 35);
   assert.deepEqual([...indexes].sort((a, b) => a - b), [
-    ...Array.from({ length: 33 }, (_, i) => i).filter((i) => ![18, 33, 34, 35, 36, 37, 38, 39, 40, 41].includes(i)), 51, 52,
+    ...Array.from({ length: 33 }, (_, i) => i).filter((i) => ![18, 33, 34, 35, 36, 37, 38, 39, 40, 41].includes(i)), 51, 52, 53,
   ]);
   assert.equal(groups.length, 9);
   assert.equal(groups.at(-1).name, 'HIEU CHUAN');
@@ -96,7 +96,8 @@ test('PID, thermal protection and calibration live only under NANG CAO; operatin
   assert.deepEqual(of('NHIET DO'), [4, 5, 6, 8]);                 // low / high / emergency / out-of-batch: unchanged
   assert.deepEqual(of('PID/GIA NHIET'), [15, 16, 17, 19, 51]);
   assert.deepEqual(of('BAO VE NHIET'), [20, 21, 22, 23, 24, 25, 26, 27]);
-  assert.deepEqual(of('HIEU CHUAN'), [7, 52]);
+  assert.deepEqual(of('HIEU CHUAN'), [7, 52, 32, 53]);      // + Bo tao am (hardware) and DPG cam bien, both behind the technical PIN
+  assert.deepEqual(of('HE THONG'), [14, 29]);
   assert.match(hmi, /bool advGroup\(uint8_t group\) \{ return group == 4U \|\| group == 5U \|\| group == 8U; \}/);
   assert.match(hmi, /CHUNG_GROUP_IDS\[\] = \{1U, 2U, 3U, 6U, 7U\}/);
   assert.match(bodyOf('const char *chungItemLabel('), /"NANG CAO"/);
@@ -247,4 +248,14 @@ test('Man hinh ngu: header (time left, date right, rule; NO border)  + only a la
   const edit = input.slice(input.indexOf('case View::SleepTime:'));
   assert.match(edit, /constrain\(static_cast<int>\(sleepEditValue\) \+ rotary\.step, 0, SLEEP_MINUTES_MAX\)/);
   assert.match(edit, /saveSleepMinutes\(sleepEditValue\)/);
+});
+
+test('Bo tao am and DPG cam bien live under NANG CAO > HIEU CHUAN; the sensor resolution is a three-way choice', () => {
+  assert.match(hmi, /ITEM_BOOL_OPTIONS\("Bo tao am", humidifierInstalled/);
+  assert.doesNotMatch(hmi, /"Co bo tao am"/);
+  assert.match(hmi, /OPT_SENSOR_RES\[\] = \{"TU DONG", "0\.1 C", "0\.01 C"\}/);
+  assert.match(hmi, /ITEM_U8_OPTIONS\("DPG cam bien", sensorResolutionMode, OPT_SENSOR_RES, 3\)/);
+  assert.match(hmi, /sensorResolutionMode > 2U\) cfg\.sensorResolutionMode = 0U/);
+  const controller = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0/machine_control.h'), 'utf8');
+  assert.match(controller, /sensor_\.setResolutionMode\(config_\.sensorResolutionMode\);\s*sensor_\.update\(\);/);
 });
