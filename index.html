@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 
-<html lang="vi" data-auth="checking">
+<html lang="vi" data-auth="checking" data-ui="modern">
 <head>
 <meta charset="utf-8"/>
 <meta name="referrer" content="strict-origin-when-cross-origin"/>
@@ -112,6 +112,16 @@
 <button aria-checked="false" data-theme-choice="dark" role="radio" type="button">🌙 Tối</button>
 <button aria-checked="true" data-theme-choice="system" role="radio" type="button">⚙️ Hệ thống</button>
 </div>
+</div>
+</details>
+<details class="settingCard">
+<summary><span class="settingIcon"><svg fill="none" height="22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="22"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M12 4v16M3 12h18"/></svg></span><span class="settingSummary"><strong>Hiển thị</strong><small id="uiStyleSummary">Hiện đại</small></span><span aria-hidden="true" class="disclosure"></span></summary>
+<div class="settingBody">
+<div class="themeToggle uiStyleToggle" id="uiStyleToggle" role="radiogroup" aria-label="Kiểu hiển thị">
+<button aria-checked="false" data-ui-choice="basic" role="radio" type="button">Cơ bản</button>
+<button aria-checked="true" data-ui-choice="modern" role="radio" type="button">Hiện đại</button>
+</div>
+<p class="uiStyleHint">Cơ bản là giao diện cũ. Hiện đại có thanh tab nổi và các ô gộp thành một khung trên điện thoại.</p>
 </div>
 </details>
 <details class="settingCard" id="wifiSetting">
@@ -397,5 +407,5 @@
 </dialog>
 <div aria-live="polite" class="toast" id="toast" role="status"></div>
 
-<script defer src="./config.js?v=1.1.15"></script><script defer src="./account.js?v=1.1.15"></script><script defer src="./vendor/jsQR.min.js"></script><script defer src="./vendor/mqtt.min.js"></script><script defer src="./push.js?v=1.1.15"></script><script defer src="./protocol_v2.js?v=1.1.15"></script><script defer src="./notes.js?v=1.1.15"></script><script defer src="./mqtt_transport.js?v=1.1.15"></script><script defer src="./app.js?v=1.1.15"></script></body>
+<script defer src="./config.js?v=1.1.16"></script><script defer src="./account.js?v=1.1.16"></script><script defer src="./vendor/jsQR.min.js"></script><script defer src="./vendor/mqtt.min.js"></script><script defer src="./push.js?v=1.1.16"></script><script defer src="./protocol_v2.js?v=1.1.16"></script><script defer src="./notes.js?v=1.1.16"></script><script defer src="./mqtt_transport.js?v=1.1.16"></script><script defer src="./app.js?v=1.1.16"></script></body>
 </html>

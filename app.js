@@ -14,6 +14,7 @@
   let STORAGE = 'mayap.web.v10';
   let RUNTIME_CACHE = `${STORAGE}.runtime.v1`;
   const THEME_STORAGE = 'mayap.theme';
+  const UI_STYLE_STORAGE = 'mayap.ui';
   const PROTOCOL_VERSION = 1;
   const DEVICE_ID_RE = /^MAP-[A-F0-9]{12}$/;
   const VENT_PROFILE_KEYS = Object.freeze([
@@ -3751,6 +3752,21 @@
     return true;
   }
 
+  function getUiStylePreference() {
+    try { return localStorage.getItem(UI_STYLE_STORAGE) === 'basic' ? 'basic' : 'modern'; } catch (e) { return 'modern'; }
+  }
+
+  function applyUiStyle(choice) {
+    const style = choice === 'basic' ? 'basic' : 'modern';
+    document.documentElement.setAttribute('data-ui', style);
+    try { localStorage.setItem(UI_STYLE_STORAGE, style); } catch (e) { /* ignore */ }
+    $('uiStyleToggle')?.querySelectorAll('button').forEach((button) => {
+      button.setAttribute('aria-checked', button.dataset.uiChoice === style ? 'true' : 'false');
+    });
+    const summary = $('uiStyleSummary');
+    if (summary) summary.textContent = style === 'basic' ? 'Cơ bản' : 'Hiện đại';
+  }
+
   function getThemePreference() {
     try {
       const value = localStorage.getItem(THEME_STORAGE);
@@ -4154,6 +4170,9 @@
     $('themeToggle').querySelectorAll('button').forEach((button) => {
       button.addEventListener('click', () => applyTheme(button.dataset.themeChoice));
     });
+    $('uiStyleToggle')?.querySelectorAll('button').forEach((button) => {
+      button.addEventListener('click', () => applyUiStyle(button.dataset.uiChoice));
+    });
 
     $('enablePushBtn').addEventListener('click', onEnablePushClick);
     $('testPushBtn').addEventListener('click', onTestPushClick);
@@ -4362,6 +4381,7 @@
     // pageMeta ma quen sua index.html la nguoi dung van thay chuoi cu.
     showPage('device');
     applyTheme(getThemePreference());
+    applyUiStyle(getUiStylePreference());
     applyDeepLinkDevice();
     bindUi();
     notesUi = window.MayapNotes?.mount({
