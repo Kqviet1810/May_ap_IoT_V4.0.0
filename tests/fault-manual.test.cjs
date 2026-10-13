@@ -68,10 +68,10 @@ test('the manual page is published and cached as a document of its own, never as
   assert.match(sw, /async function docsPageResponse[\s\S]*cache\.put\(event\.request,/);              // cached under its own URL
 });
 
-test('Thanh nhiet tile shows the heater power relay state', () => {
+test('Thanh nhiet tile shows only ON/OFF of the heater power relay', () => {
   const app = read('app.js');
-  assert.match(app, /updateOutput\('outputHeater', bool\(runtime\.heaterOn\), 'RELAY BẬT', 'RELAY TẮT'\)/);
-  assert.match(read('index.html'), /id="outputHeater">RELAY TẮT</);
+  assert.match(app, /updateOutput\('outputHeater', bool\(runtime\.heaterOn\)\)/);
+  assert.match(read('index.html'), /id="outputHeater">TẮT</);
 });
 
 test('login page introduces the smart thermal feature', () => {

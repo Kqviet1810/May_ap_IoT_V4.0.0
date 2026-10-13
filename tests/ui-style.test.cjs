@@ -18,7 +18,20 @@ test('settings expose Co ban / Hien dai and the choice is persisted', () => {
 test('every modern-look rule is scoped to html[data-ui="modern"]', () => {
   const css = read('styles.css');
   const block = css.slice(css.indexOf('Web 1.1.16: kieu hien thi'));
-  const selectors = [...block.matchAll(/(?:^|\})\s*([^{}@]+)\{/g)].map((m) => m[1].trim()).filter((s) => !s.startsWith('/*') && !s.startsWith('.uiStyle'));
+  const selectors = [...block.matchAll(/(?:^|\})\s*([^{}@]+)\{/g)].map((m) => m[1].trim()).filter((s) => !s.startsWith('/*') && !s.startsWith('.uiStyle') && !/^\.(settingsTools,|searchHidden|srOnly)/.test(s));
   assert.ok(selectors.length > 10);
   for (const group of selectors) for (const sel of group.split(',')) assert.match(sel.trim(), /^html\[data-ui="modern"\]/, sel);
+});
+
+test('settings tools (search + group jump) exist and only show in the modern look', () => {
+  const html = read('index.html'), css = read('styles.css'), app = read('app.js');
+  assert.match(html, /id="settingsSearch"/);
+  for (const g of ['connection', 'alerts', 'batch', 'ventilation', 'temperature', 'advanced', 'support']) {
+    assert.match(html, new RegExp('data-jump="settings-' + g + '"'));
+    assert.match(html, new RegExp('id="settings-' + g + '"'));
+  }
+  assert.match(css, /\.settingsTools,\.settingsEmpty\{display:none\}/);
+  assert.match(css, /html\[data-ui="modern"\] \.settingsTools\{display:grid/);
+  assert.match(app, /function bindSettingsTools\(\)/);
+  assert.doesNotMatch(html, /uiStyleHint/);
 });
