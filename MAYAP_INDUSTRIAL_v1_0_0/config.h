@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "1.1.5";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "1.1.6";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -1039,6 +1039,9 @@ struct MachineConfig {
   uint16_t pidCycleSec = 10;
   uint8_t maxHeaterPower = 100;
   bool adaptiveThermalBalanceEnabled = false; // opt-in; old schema defaults OFF
+  // Sensor resolution (HMI NANG CAO): 0 = automatic format detection (default, as before), 1 = 0.1 C, 2 = 0.01 C. Stored in bits 1-2 of the
+  // schema-13 adaptive byte, so records and old firmware stay compatible.
+  uint8_t sensorResolutionMode = 0;
 
   // Nang cao (schema 8): nguong chan doan nhiet + tham so Auto Tune, truoc
   // day la hang so cung trong config.h (xem ghi chu cu o khu "HANG SO AN

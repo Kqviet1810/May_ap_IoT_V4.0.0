@@ -466,6 +466,7 @@ const char *const OPT_NO_YES[] = {"KHONG", "CO"};
 const char *const OPT_OFFLINE_ONLINE[] = {"OFFLINE", "ONLINE"};
 const char *const OPT_ON_OFF_HOI[] = {"HOI XN", "TU DONG"};
 const char *const OPT_VENT_LEVEL[] = {"THAP", "TIEU CHUAN", "CAO"};
+const char *const OPT_SENSOR_RES[] = {"TU DONG", "0.1 C", "0.01 C"};
 #define ITEM_FLOAT(lbl, member, mn, mx, st, dec, unitText) \
   {lbl, SettingType::Float, offsetof(MachineConfig, member), mn, mx, st, dec, unitText, nullptr, 0}
 #define ITEM_U8(lbl, member, mn, mx, st, unitText) \
@@ -560,7 +561,7 @@ const SettingItem SETTINGS[] = {
   ITEM_BOOL("Tao am", humidifierEnabled),                                      // 30
   ITEM_FLOAT("Do am dat", targetHumidity, 30.0f, 90.0f, 1.0f, 0, "%"),         // 31
   // ---- PHAN CUNG / THONG GIO DINH KY: them CUOI de giu index cu ----
-  ITEM_BOOL_OPTIONS("Co bo tao am", humidifierInstalled, OPT_NO_YES),           // 32
+  ITEM_BOOL_OPTIONS("Bo tao am", humidifierInstalled, OPT_NO_YES),              // 32 (NANG CAO > HIEU CHUAN)
   ITEM_BOOL("Thong gio dinh ky", ventScheduleEnabled),                         // 33
   ITEM_U8("So lan thong gio", ventScheduleCount, 1, VENT_SCHEDULE_MAX_RUNS, 1, "l"), // 34
   ITEM_U8("TG moi lan", ventScheduleDurationMin, 1, 60, 1, "ph"),             // 35
@@ -581,22 +582,24 @@ const SettingItem SETTINGS[] = {
   ITEM_U8("Ngay 19-21", ventDutyDay19To21, 5, 90, 1, "%"),                    // 50
   ITEM_BOOL("Tu can bang nhiet", adaptiveThermalBalanceEnabled),              // 51
   // Hieu chuan do am (nhom NANG CAO > HIEU CHUAN, di cung "Bu nhiet do").
-  ITEM_FLOAT("Bu do am", humidityOffset, -20.0f, 20.0f, 0.5f, 1, "%")          // 52
+  ITEM_FLOAT("Bu do am", humidityOffset, -20.0f, 20.0f, 0.5f, 1, "%"),         // 52
+  // Sensor resolution: choosing 0.1 / 0.01 skips the format guessing at start-up (NANG CAO > HIEU CHUAN).
+  ITEM_U8_OPTIONS("DPG cam bien", sensorResolutionMode, OPT_SENSOR_RES, 3)      // 53
 };
 
 constexpr uint8_t SETTING_COUNT = sizeof(SETTINGS) / sizeof(SETTINGS[0]);
-static_assert(SETTING_COUNT == 53, "Bang SETTINGS phai co 53 thong so");
+static_assert(SETTING_COUNT == 54, "Bang SETTINGS phai co 54 thong so");
 
 const uint8_t GROUP_SETTING_INDEXES[] = {
   0,1,2,3,                             // Cai dat me
   4,5,6,8,                             // Nhiet do (nguong van hanh; Bu nhiet do da chuyen sang HIEU CHUAN)
   11,12,13,28,                         // Dao trung
-  14,29,32,                            // He thong
+  14,29,                               // He thong
   15,16,17,19,51,                      // PID / GIA NHIET   (NANG CAO)
   20,21,22,23,24,25,26,27,             // Bao ve nhiet      (NANG CAO)
   9,10,                                // Quat hut; Thong gio la menu con
   30,31,                               // Tao am
-  7,52                                 // Hieu chuan        (NANG CAO)
+  7,52,32,53                           // Hieu chuan + Bo tao am + DPG cam bien (NANG CAO)
 };
 
 struct SettingGroup { const char *label; uint8_t first; uint8_t count; };
@@ -612,16 +615,16 @@ const SettingGroup GROUPS[] = {
   // Doi ten tu "KET NOI" thanh "HE THONG": nhom nay tu lau da khong chi con
   // la cai dat mang - gom ca ma QR, dat lai PIN, cap nhat firmware... nen
   // "He thong" mo ta dung hon la cai dat chung cua may.
-  {"HE THONG", 12, 3},
-  {"PID/GIA NHIET", 15, 5},
-  {"BAO VE NHIET", 20, 8},
-  {"QUAT HUT", 28, 2},
-  {"TAO AM", 30, 2},
-  {"HIEU CHUAN", 32, 2}
+  {"HE THONG", 12, 2},
+  {"PID/GIA NHIET", 14, 5},
+  {"BAO VE NHIET", 19, 8},
+  {"QUAT HUT", 27, 2},
+  {"TAO AM", 29, 2},
+  {"HIEU CHUAN", 31, 4}
 };
 constexpr uint8_t GROUP_COUNT = sizeof(GROUPS) / sizeof(GROUPS[0]);
 static_assert(GROUP_COUNT == 9, "Bang GROUPS phai co 9 nhom");
-static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) == 34U,
+static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) == 35U,
               "Sai so luong setting hien trong menu chinh");
 
 // Dong phu (khong phai setting gia tri) duoc gan them vao cuoi mot so nhom.
@@ -735,6 +738,7 @@ void sanitizeConfig(MachineConfig &cfg) {
     writeSetting(cfg, SETTINGS[i], value);
   }
   if (!cfg.humidifierInstalled) cfg.humidifierEnabled = false;
+  if (cfg.sensorResolutionMode > 2U) cfg.sensorResolutionMode = 0U;
 
   if (!isfinite(cfg.tempHysteresis)) cfg.tempHysteresis = defaults.tempHysteresis;
   cfg.tempHysteresis = constrain(cfg.tempHysteresis, 0.1f, 1.0f);

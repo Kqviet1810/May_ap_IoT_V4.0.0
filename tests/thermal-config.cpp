@@ -65,6 +65,19 @@ int main(){
     assert(reboot.loadConfig(readback));
     assert(readback.adaptiveThermalBalanceEnabled==enabled);
   }
+  // Sensor resolution choice shares the schema-13 adaptive byte without disturbing the adaptive flag.
+  for(uint8_t mode:{0U,1U,2U}) for(bool enabled:{false,true}) {
+    ConfigStore store;MachineConfig input,readback;
+    input.sensorResolutionMode=mode;input.adaptiveThermalBalanceEnabled=enabled;
+    assert(store.saveConfig(input,readback));
+    assert(readback.sensorResolutionMode==mode && readback.adaptiveThermalBalanceEnabled==enabled);
+  }
+  { // a pre-existing record (byte 0/1) means "automatic"
+    const MachineConfig d;assert(d.sensorResolutionMode==0U);
+    PackedMachineConfigV1 p=packConfig(d);p.adaptiveThermalBalanceEnabled=1U;
+    const MachineConfig u=unpackConfig(p);assert(u.adaptiveThermalBalanceEnabled&&u.sensorResolutionMode==0U);
+    p.adaptiveThermalBalanceEnabled=7U;assert(unpackConfig(p).sensorResolutionMode==0U);   // invalid mode 3 -> automatic
+  }
   for(uint16_t cycle:{1U,10U,60U}) {
     verifyLegacy<ConfigRecordV1>(13,cycle);
     verifyLegacy<ConfigRecordLegacyV12>(12,cycle);
