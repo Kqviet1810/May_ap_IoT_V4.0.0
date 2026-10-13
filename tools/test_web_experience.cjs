@@ -49,18 +49,25 @@ async function main() {
       return { vh: innerHeight, vw: innerWidth, navTop: nav.top, navBottom: nav.bottom, navLeft: nav.left, navRight: nav.right,
         scrollable: main.scrollHeight > main.clientHeight + 1, saveBottom: save ? save.getBoundingClientRect().bottom : null };
     });
-    // Tall phone (390x844): the bar is flush at the bottom, the page fits and does not scroll.
+    // "Hien dai" (default): floating pill as close to the bottom edge as possible (4 px, no safe area here); "Co ban": flush, full width.
     let g = await geometry();
     assert.equal(await page.locator('#mainNav').isVisible(), true);
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.ui), 'modern');
+    assert.ok(g.vh - g.navBottom >= 3 && g.vh - g.navBottom <= 6, 'modern bar sits 4 px above the bottom edge: ' + (g.vh - g.navBottom));
+    assert.ok(g.navLeft >= 4 && g.navRight <= g.vw - 4, 'modern bar floats inside the side gutters');
+    assert.equal(g.scrollable, false);
+    await page.evaluate(() => document.documentElement.setAttribute('data-ui', 'basic'));
+    g = await geometry();
     assert.equal(Math.round(g.navBottom), g.vh);
     assert.equal(Math.round(g.navLeft), 0);
     assert.equal(Math.round(g.navRight), g.vw);
     assert.equal(g.scrollable, false);
+    await page.evaluate(() => document.documentElement.setAttribute('data-ui', 'modern'));
     // Short phone (390x560): the content cannot fit even fully compacted, so the page scrolls and the save button can be reached above the bar.
     await page.setViewportSize({ width: 390, height: 560 });
     assert.equal(await page.locator('#mainNav').isVisible(), true);
     g = await geometry();
-    assert.equal(Math.round(g.navBottom), g.vh);
+    assert.ok(g.vh - g.navBottom >= 3 && g.vh - g.navBottom <= 6);
     assert.equal(g.scrollable, true);
     await page.locator('.main').evaluate(el => { el.scrollTop = el.scrollHeight; });
     await page.waitForTimeout(150);
@@ -74,7 +81,7 @@ async function main() {
     await page.locator('.nav button[data-page="device"]').click();
     await page.setViewportSize({ width: 390, height: 844 });
     g = await geometry();
-    assert.equal(Math.round(g.navBottom), g.vh);
+    assert.ok(g.vh - g.navBottom >= 3 && g.vh - g.navBottom <= 6);
     assert.equal(g.scrollable, false);
     await page.setViewportSize({ width: 390, height: 560 });
     // The notes bubble stays exactly where it is while the page scrolls.

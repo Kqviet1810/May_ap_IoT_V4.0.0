@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 
-<html lang="vi" data-auth="checking">
+<html lang="vi" data-auth="checking" data-ui="modern">
 <head>
 <meta charset="utf-8"/>
 <meta name="referrer" content="strict-origin-when-cross-origin"/>
@@ -68,7 +68,7 @@
 <label class="quickField"><span>Chu kỳ đảo</span><div><input id="quickTurn" max="720" min="15" type="number" value="120"/><b>Phút</b></div></label>
 </div>
 <div class="outputStrip" id="outputStrip">
-<div><span>Thanh nhiệt</span><strong id="outputHeater">RELAY TẮT</strong></div>
+<div><span>Thanh nhiệt</span><strong id="outputHeater">TẮT</strong></div>
 <div><span>Tuần hoàn</span><strong class="on" id="outputCirculation">BẬT</strong></div>
 <div><span>Thông gió</span><strong id="outputVent">TẮT</strong></div>
 <div hidden id="outputHumidifierTile"><span>Tạo ẩm</span><strong id="outputHumidifier">TẮT</strong></div>
@@ -102,6 +102,13 @@
 </section>
 </section>
 <section class="page" id="page-settings">
+<div class="settingsTools" id="settingsTools">
+<label class="settingsSearch"><span class="srOnly">Tìm cài đặt</span><input autocomplete="off" id="settingsSearch" placeholder="Tìm cài đặt…" type="search"/></label>
+<nav aria-label="Đi tới nhóm cài đặt" class="settingsJump" id="settingsJump">
+<button data-jump="settings-connection" type="button">Giao diện</button><button data-jump="settings-alerts" type="button">Cảnh báo</button><button data-jump="settings-batch" type="button">Mẻ ấp</button><button data-jump="settings-ventilation" type="button">Quạt hút</button><button data-jump="settings-temperature" type="button">Nhiệt độ</button><button data-jump="settings-advanced" type="button">Nâng cao</button><button data-jump="settings-support" type="button">Hỗ trợ</button>
+</nav>
+</div>
+<p class="settingsEmpty" hidden id="settingsEmpty">Không tìm thấy cài đặt phù hợp.</p>
 <div class="settingsStack">
 <section class="settingGroup" aria-labelledby="settings-connection"><h2 class="settingGroupLabel" id="settings-connection">Giao diện &amp; kết nối</h2>
 <details class="settingCard">
@@ -111,6 +118,15 @@
 <button aria-checked="false" data-theme-choice="light" role="radio" type="button">☀️ Sáng</button>
 <button aria-checked="false" data-theme-choice="dark" role="radio" type="button">🌙 Tối</button>
 <button aria-checked="true" data-theme-choice="system" role="radio" type="button">⚙️ Hệ thống</button>
+</div>
+</div>
+</details>
+<details class="settingCard">
+<summary><span class="settingIcon"><svg fill="none" height="22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="22"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M12 4v16M3 12h18"/></svg></span><span class="settingSummary"><strong>Hiển thị</strong><small id="uiStyleSummary">Hiện đại</small></span><span aria-hidden="true" class="disclosure"></span></summary>
+<div class="settingBody">
+<div class="themeToggle uiStyleToggle" id="uiStyleToggle" role="radiogroup" aria-label="Kiểu hiển thị">
+<button aria-checked="false" data-ui-choice="basic" role="radio" type="button">Cơ bản</button>
+<button aria-checked="true" data-ui-choice="modern" role="radio" type="button">Hiện đại</button>
 </div>
 </div>
 </details>
@@ -397,5 +413,5 @@
 </dialog>
 <div aria-live="polite" class="toast" id="toast" role="status"></div>
 
-<script defer src="./config.js?v=1.1.14"></script><script defer src="./account.js?v=1.1.14"></script><script defer src="./vendor/jsQR.min.js"></script><script defer src="./vendor/mqtt.min.js"></script><script defer src="./push.js?v=1.1.14"></script><script defer src="./protocol_v2.js?v=1.1.14"></script><script defer src="./notes.js?v=1.1.14"></script><script defer src="./mqtt_transport.js?v=1.1.14"></script><script defer src="./app.js?v=1.1.14"></script></body>
+<script defer src="./config.js?v=1.1.17"></script><script defer src="./account.js?v=1.1.17"></script><script defer src="./vendor/jsQR.min.js"></script><script defer src="./vendor/mqtt.min.js"></script><script defer src="./push.js?v=1.1.17"></script><script defer src="./protocol_v2.js?v=1.1.17"></script><script defer src="./notes.js?v=1.1.17"></script><script defer src="./mqtt_transport.js?v=1.1.17"></script><script defer src="./app.js?v=1.1.17"></script></body>
 </html>

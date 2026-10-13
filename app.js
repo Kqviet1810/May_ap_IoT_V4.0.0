@@ -14,6 +14,7 @@
   let STORAGE = 'mayap.web.v10';
   let RUNTIME_CACHE = `${STORAGE}.runtime.v1`;
   const THEME_STORAGE = 'mayap.theme';
+  const UI_STYLE_STORAGE = 'mayap.ui';
   const PROTOCOL_VERSION = 1;
   const DEVICE_ID_RE = /^MAP-[A-F0-9]{12}$/;
   const VENT_PROFILE_KEYS = Object.freeze([
@@ -1383,7 +1384,7 @@
       $('liveTemp').textContent = '—';
       $('liveHumidity').textContent = '—';
       renderLiveState(device, null);
-      updateOutput('outputHeater', false, 'RELAY BẬT', 'RELAY TẮT');
+      updateOutput('outputHeater', false);
       updateOutput('outputCirculation', false);
       updateOutput('outputVent', false);
       updateOutput('outputHumidifier', false);
@@ -1405,11 +1406,11 @@
     $('liveTemp').textContent = `${numberVi(runtime.temperature)}°C`;
     $('liveHumidity').textContent = `${numberVi(runtime.humidity, 0)}%`;
     renderLiveState(device, runtime);
-    // O "Thanh nhiet" hien trang thai relay nguon thanh nhiet (heat master/contactor,
+    // O "Thanh nhiet" chi hien BAT/TAT theo relay nguon thanh nhiet (heat master/contactor,
     // firmware gui qua heaterOn). Relay khong nhap nhay theo burst SSR nen on dinh.
     // heaterActive (cong suat PID > 0) chi dung cho dong mo ta hoat dong ben duoi.
     const heaterActive = runtime.heaterPower == null ? bool(runtime.heaterOn) : Number(runtime.heaterPower) > 0;
-    updateOutput('outputHeater', bool(runtime.heaterOn), 'RELAY BẬT', 'RELAY TẮT');
+    updateOutput('outputHeater', bool(runtime.heaterOn));
     updateOutput('outputCirculation', bool(runtime.circulationFanOn));
     updateOutput('outputVent', bool(runtime.ventFanOn));
     updateOutput('outputHumidifier', bool(runtime.humidifierOn));
@@ -3751,6 +3752,52 @@
     return true;
   }
 
+  function bindSettingsTools() {
+    const search = $('settingsSearch');
+    const empty = $('settingsEmpty');
+    const stack = document.querySelector('#page-settings .settingsStack');
+    if (!search || !stack) return;
+    const runFilter = () => {
+      const query = search.value.trim().toLowerCase();
+      let shown = 0;
+      stack.querySelectorAll('.settingGroup').forEach((group) => {
+        let groupShown = 0;
+        group.querySelectorAll(':scope > .settingCard').forEach((card) => {
+          const head = card.querySelector('summary');
+          const match = !query || (head?.textContent || '').toLowerCase().includes(query);
+          card.classList.toggle('searchHidden', !match);
+          if (match && !card.hidden) groupShown += 1;
+        });
+        group.classList.toggle('searchHidden', Boolean(query) && groupShown === 0);
+        shown += groupShown;
+      });
+      if (empty) empty.hidden = !query || shown > 0;
+    };
+    search.addEventListener('input', runFilter);
+    document.querySelectorAll('#settingsJump [data-jump]').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        search.value = '';
+        runFilter();
+        document.getElementById(chip.dataset.jump)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      });
+    });
+  }
+
+  function getUiStylePreference() {
+    try { return localStorage.getItem(UI_STYLE_STORAGE) === 'basic' ? 'basic' : 'modern'; } catch (e) { return 'modern'; }
+  }
+
+  function applyUiStyle(choice) {
+    const style = choice === 'basic' ? 'basic' : 'modern';
+    document.documentElement.setAttribute('data-ui', style);
+    try { localStorage.setItem(UI_STYLE_STORAGE, style); } catch (e) { /* ignore */ }
+    $('uiStyleToggle')?.querySelectorAll('button').forEach((button) => {
+      button.setAttribute('aria-checked', button.dataset.uiChoice === style ? 'true' : 'false');
+    });
+    const summary = $('uiStyleSummary');
+    if (summary) summary.textContent = style === 'basic' ? 'Cơ bản' : 'Hiện đại';
+  }
+
   function getThemePreference() {
     try {
       const value = localStorage.getItem(THEME_STORAGE);
@@ -4154,6 +4201,10 @@
     $('themeToggle').querySelectorAll('button').forEach((button) => {
       button.addEventListener('click', () => applyTheme(button.dataset.themeChoice));
     });
+    $('uiStyleToggle')?.querySelectorAll('button').forEach((button) => {
+      button.addEventListener('click', () => applyUiStyle(button.dataset.uiChoice));
+    });
+    bindSettingsTools();
 
     $('enablePushBtn').addEventListener('click', onEnablePushClick);
     $('testPushBtn').addEventListener('click', onTestPushClick);
@@ -4362,6 +4413,7 @@
     // pageMeta ma quen sua index.html la nguoi dung van thay chuoi cu.
     showPage('device');
     applyTheme(getThemePreference());
+    applyUiStyle(getUiStylePreference());
     applyDeepLinkDevice();
     bindUi();
     notesUi = window.MayapNotes?.mount({
