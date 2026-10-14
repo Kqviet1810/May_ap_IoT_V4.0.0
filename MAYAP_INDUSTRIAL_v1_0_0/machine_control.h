@@ -30,6 +30,7 @@
 #include <algorithm>
 
 #include "serial_diagnostics.h"
+#include "system_health.h"
 
 namespace Mayap {
 
@@ -7797,6 +7798,7 @@ class MachineController {
         mayapSerialPrintf(false, "[SER] DONG QUA DAI\n");
       }
     }
+    MayapHealth::service();   // finishes the 2 s CPU sample started by HEALTH (no-op otherwise)
 #else
     (void)now;
 #endif
@@ -7925,6 +7927,9 @@ class MachineController {
           static_cast<unsigned long>(healthHeapBaseline_),
           static_cast<unsigned long>(healthHeapLastBest_),
           static_cast<unsigned long>(healthHeapLastWorst_));
+    } else if (cmd && !strcmp(cmd, "HEALTH")) {
+      if (arg1 && !strcmp(arg1, "RESET")) { MayapHealth::resetPeaks(); mayapSerialPrintf(false, "[HEALTH] cycle peaks cleared\n"); }
+      else MayapHealth::print(now);
     } else if (cmd && !strcmp(cmd, "STATUS")) {
       printStatus(now);
     } else if (cmd && !strcmp(cmd, "CONFIG")) {
@@ -7961,7 +7966,7 @@ class MachineController {
     mayapSerialPrintf(false, "SIM RESET\n");
 #endif
     mayapSerialPrintf(false, "TIME SET YYYY-MM-DD HH:MM:SS\n");
-    mayapSerialPrintf(false, "BATCH START|STOP   ACK   FAULT LIST|CLEAR   STATUS   CONFIG   POWER   HEAP\n");
+    mayapSerialPrintf(false, "BATCH START|STOP   ACK   FAULT LIST|CLEAR   STATUS   CONFIG   POWER   HEAP   HEALTH [RESET]\n");
     mayapSerialPrintf(false, "Nhap SERIAL de tat/bat toan bo debug. DIAG ON|OFF doi toc do STATUS.\n");
     mayapSerialPrintf(false, "LOG = BAT debug Serial ngay. EXIT = TAT debug Serial ngay.\n");
     mayapSerialPrintf(false, "CONFIG = dump debug DAY DU (thong so + Wi-Fi/MQTT/Cloud Push + STATUS).\n");
