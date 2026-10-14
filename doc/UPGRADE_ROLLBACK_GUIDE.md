@@ -34,3 +34,9 @@ Giữ lại cho mỗi RC: `.bin`, `.merged.bin`, `.elf`, `BUILD_INFO.txt`, `SHA2
 
 ## 6. Ký OTA (cho người phát hành)
 Khóa ký riêng nằm **chỉ** trong GitHub secret `MAYAP_OTA_SIGNING_PRIVATE_KEY`; workflow ghi ra tệp tạm, ký bằng `openssl dgst -sha256 -sign`, rồi xóa; kiểm tra CI cấm khóa riêng trong mã (`BEGIN … PRIVATE KEY`). Chữ ký (`.sig`) và `.bin` được đính vào GitHub Release **chỉ khi có tag `v*.*.*`**. Chưa tạo tag, chưa ký, chưa phát hành cho đến khi được chấp thuận.
+
+## 7. Phát hành bằng một nút (tab Actions)
+Điều kiện một lần: repo có secret `MAYAP_OTA_SIGNING_PRIVATE_KEY` (khóa riêng khớp khóa công khai nhúng trong firmware).
+Mỗi bản mới: merge PR đã tăng `MAYAP_FIRMWARE_VERSION` trong `config.h` vào `main`, chờ CI xanh, rồi vào **Actions > Release firmware (one click) > Run workflow** (nhánh `main`).
+Workflow tự: đọc số phiên bản, từ chối nếu tag đã có hoặc CI (`build`, `reliability`) của commit chưa xanh, tạo tag `vX.Y.Z`, chạy "Build & release firmware" trên tag (build PROD, ký, tạo Release có `.bin`, `.sig`, `.elf`, `.hex`).
+Máy vẫn chỉ cập nhật khi không có mẻ và người vận hành xác nhận trên HMI.
