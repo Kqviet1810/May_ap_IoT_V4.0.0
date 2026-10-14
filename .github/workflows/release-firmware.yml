@@ -1,0 +1,80 @@
+name: Release firmware (one click)
+
+# Nut "Run workflow" trong tab Actions: tu doc so phien ban trong config.h, tao tag vX.Y.Z tren main, roi goi workflow
+# "Build & release firmware" tren tag do (build PROD, ky bang secret MAYAP_OTA_SIGNING_PRIVATE_KEY, tao GitHub Release).
+# Chi chay tren nhanh main, chi khi CI cua dung commit do da xanh, va khong ghi de tag da co.
+# Luu y: tag tao bang GITHUB_TOKEN khong tu kich hoat workflow khac, nen buoc build duoc goi ro rang bang workflow_dispatch tren tag.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+  checks: read
+
+concurrency:
+  group: release-firmware
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tao tag va phat hanh
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Doc so phien ban firmware
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/.*MAYAP_FIRMWARE_VERSION\[\].*"\([^"]*\)".*/\1/p' MAYAP_INDUSTRIAL_v1_0_0/config.h)
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::So phien ban khong hop le: '$VERSION'"; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Phien ban trong ma nguon: $VERSION (tag v$VERSION, commit $(git rev-parse --short HEAD))"
+
+      - name: Kiem tra tag chua ton tai
+        shell: bash
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "::error::Tag ${{ steps.version.outputs.tag }} da ton tai. Tang so phien ban trong config.h (PR moi) roi chay lai, hoac dung 'Re-run' tren lan chay cua tag neu chi can build lai."
+            exit 1
+          fi
+
+      - name: Kiem tra CI cua commit nay da xanh
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHA=$(git rev-parse HEAD)
+          for name in build reliability; do
+            concl=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?per_page=100" \
+              --jq "[.check_runs[] | select(.name==\"${name}\")] | sort_by(.started_at) | last | .conclusion // \"none\"")
+            echo "check '${name}' tren ${SHA:0:7}: ${concl}"
+            [[ "$concl" == "success" ]] || { echo "::error::CI '${name}' cua commit ${SHA:0:7} chua xanh (${concl}). Cho CI xanh roi chay lai."; exit 1; }
+          done
+
+      - name: Tao tag tren main
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "MAYAP firmware ${{ steps.version.outputs.version }}"
+          git push origin "refs/tags/${{ steps.version.outputs.tag }}"
+
+      - name: Chay build + ky + tao Release tren tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run build-firmware.yml --repo "${GITHUB_REPOSITORY}" --ref "${{ steps.version.outputs.tag }}"
+          {
+            echo "### Da tao tag ${{ steps.version.outputs.tag }} va bat dau build phat hanh"
+            echo "Theo doi tai tab Actions > Build & release firmware (khoang 25 phut). Neu buoc ky do: thieu secret MAYAP_OTA_SIGNING_PRIVATE_KEY."
+          } >> "$GITHUB_STEP_SUMMARY"
