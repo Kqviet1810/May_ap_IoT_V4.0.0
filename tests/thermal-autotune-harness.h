@@ -87,7 +87,7 @@ constexpr uint8_t HEATER_GROUP_COUNT=1;
 struct TuneHarness {
   FakeInputs inputs_;FakeRtc rtc_;FakeFaults faults_;MachineConfig config_;
   TuneStore store_;EventLog eventLog_;OutputArbiter outputs_;
-  ThermalController pid_;ThermalStartupController startupHeat_;AutoTuneEngine autotune_;
+  ThermalController pid_;ThermalStartupController startupHeat_;bool smartThermalApplied_=false,smartThermalInit_=false;AutoTuneEngine autotune_;
   void recordAdvancedHistory(const MachineConfig &){}   // the HMI keeps the replaced advanced values; the tune harness has no history ring
 #include "actual-burst-member.inc"
   struct{float heaterPower=0;bool adaptiveEnabled=false,adaptiveSelfHeating=false;
