@@ -318,6 +318,7 @@ input:disabled,select:disabled,textarea:disabled,.customSelectTrigger:disabled{o
    tro tay + trang thai nhan/focus de bao hieu co the bam. */
 .outputStrip>button{color:var(--ink);font:inherit;text-align:inherit;width:100%;cursor:pointer;-webkit-tap-highlight-color:transparent}
 .outputStrip>button:active{transform:scale(.97)}
+.outputStrip>button.pending{opacity:.75;cursor:progress}
 .outputStrip>button:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 .outputStrip span,.outputStrip strong{display:block}
 .outputStrip span{color:var(--muted);font-size:var(--fs-2xs);font-weight:700;letter-spacing:.4px;text-transform:uppercase}

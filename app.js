@@ -2,8 +2,13 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
-  const WEB = Object.freeze({ staleAfterMs: 8000, offlineAfterMs: 30000,
-    commandTimeoutMs: 10000, configTimeoutMs: 15000, ...window.MAYAP_WEB_CONFIG });
+  // staleAfterMs is the silence after which the Web calls the data slow. It must sit above what a healthy but congested uplink
+  // produces (the device stretches its snapshot gap to 4 s and an ack/snapshot can wait several seconds for the TCP wire, measured up to
+  // ~25 s on a poor path), otherwise a working machine is shown as "DỮ LIỆU CHẬM" and the Web asks it to replay its state (sync).
+  // slowNoteAfterMs only adds an age note ("cập nhật N s trước") while the status stays ONLINE. Command/config timeouts are above the
+  // longest measured wait for the wire so a slow ack is not reported as an uncertain result.
+  const WEB = Object.freeze({ staleAfterMs: 20000, offlineAfterMs: 30000, slowNoteAfterMs: 6000,
+    commandTimeoutMs: 20000, configTimeoutMs: 30000, ...window.MAYAP_WEB_CONFIG });
 
   // Without a realtime link the Web asks the Worker (plain HTTPS, same account session) what the machine last reported. The first
   // poll waits `firstDelayMs` so a reconnect that takes a second or two never changes the screen; then every `pollMs`, and only while
@@ -882,6 +887,15 @@
     window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
   }
 
+  // Age of the freshest proof that the machine is talking on THIS connection: the last snapshot, or any frame the machine itself sent
+  // (ack, log, config/history chunk). A snapshot can be late on a congested uplink while acks and chunks still arrive.
+  function deviceDataAgeMs(device) {
+    const now = Date.now();
+    let age = now - device.snapshotAt;
+    if (device.lastHeardEpoch === state.subscriptionEpoch && device.lastHeardAt) age = Math.min(age, now - device.lastHeardAt);
+    return age;
+  }
+
   function connectionStatus(device) {
     if (!device) return 'none';
     if (!state.realtimeConnected) return serverConnectionView(device) || (device.snapshot ? 'cache' : 'connecting');
@@ -892,7 +906,7 @@
     if (device.presenceEpoch === state.subscriptionEpoch && device.presence?.online === false) return 'offline';
     if (!device.snapshot || !device.snapshotAt) return 'waiting';
     if (device.dataSource !== 'live' || device.liveEpoch !== state.subscriptionEpoch) return 'cache';
-    if (Date.now() - device.snapshotAt > WEB.staleAfterMs || device.presence?.online !== true) return 'degraded';
+    if (deviceDataAgeMs(device) > WEB.staleAfterMs || device.presence?.online !== true) return 'degraded';
     return 'online';
   }
 
@@ -1003,7 +1017,7 @@
     const connection = connectionStatus(device);
     // Long telemetry gaps disable control without inventing an offline presence.
     return (connection === 'online' || connection === 'degraded') &&
-      Date.now() - device.snapshotAt <= Math.max(WEB.staleAfterMs, WEB.offlineAfterMs);
+      deviceDataAgeMs(device) <= Math.max(WEB.staleAfterMs, WEB.offlineAfterMs);
   }
 
   function freshnessText(device) {
@@ -1096,6 +1110,12 @@
     });
   }
 
+  function slowNote(device) {
+    if (!device?.snapshotAt) return '';
+    const age = deviceDataAgeMs(device);
+    return age > WEB.slowNoteAfterMs ? `cập nhật ${Math.round(age / 1000)} s trước` : '';
+  }
+
   function renderDevice() {
     notesUi?.contextChanged();
     const device = currentDevice();
@@ -1111,7 +1131,7 @@
     refreshDeviceNameIfNeeded(device);
 
     const labels = {
-      online: ['TRỰC TUYẾN', 'online', 'Wi‑Fi đã kết nối'],
+      online: ['TRỰC TUYẾN', 'online', slowNote(device) ? `Wi‑Fi đã kết nối · ${slowNote(device)}` : 'Wi‑Fi đã kết nối'],
       degraded: ['DỮ LIỆU CHẬM', 'soft', 'Chờ dữ liệu mới từ máy'],
       cache: ['ĐANG ĐỒNG BỘ', 'soft', state.realtimeConnected ? 'Đã nối máy chủ · chờ máy' : 'Đang nối máy chủ…'],
       connecting: ['ĐANG KẾT NỐI', 'soft', 'Đang nối máy chủ…'],
@@ -1420,7 +1440,13 @@
       ? 'Chạm để tạm tắt' : 'Chỉ khi còi đang kêu';
     // Nut Den bam duoc bat cu luc nao thiet bi online; nut Coi CHI bam duoc
     // khi coi dang thuc su keu (giong het dieu kien mo man Alarm tren HMI).
-    if ($('outputLightBtn')) $('outputLightBtn').disabled = !(controlReady(device) || canHoldCommand(device));
+    if ($('outputLightBtn')) {
+      const lightBusy = lightCommandPending(device);
+      $('outputLightBtn').disabled = lightBusy || !(controlReady(device) || canHoldCommand(device));
+      $('outputLightBtn').setAttribute('aria-busy', lightBusy ? 'true' : 'false');
+      $('outputLightBtn').classList.toggle('pending', lightBusy);
+      if (lightBusy && $('outputLight')) $('outputLight').textContent = 'ĐANG GỬI…';   // the tile itself only follows the next snapshot
+    }
     if ($('outputSirenBtn')) {
       $('outputSirenBtn').disabled = !controlReady(device) || !bool(runtime.sirenOn);
     }
@@ -2017,6 +2043,11 @@
     if (pending) { pending.phase = 'PUBLISHED'; pending.tPublished = performance.now(); }
   }
 
+  // Every retry is one more QoS1 packet the machine must PUBACK and answer while its uplink may already be waiting for the wire, so the
+  // delay doubles (5, 10, 20, 30 s) instead of repeating every 3.5 s. A command is signed with an 8 s expiry, so only its first retry
+  // can ever matter.
+  const retryDelayMs = (attempts) => Math.min(30000, 5000 * 2 ** Math.max(0, attempts));
+
   function retrySameRequest(id, route, envelope) {
     const pending = state.pending.get(id) || state.uncertain.get(id);
     if (!pending) return;
@@ -2042,10 +2073,10 @@
           console.warn('[TX retry]', pending.operation, error);
         });
       }
-      pending.retryTimer = setTimeout(retry, 3500);
+      pending.retryTimer = setTimeout(retry, retryDelayMs(pending.retryAttempts));
     };
     pending.retry = retry;
-    pending.retryTimer = setTimeout(retry, 3500);
+    pending.retryTimer = setTimeout(retry, retryDelayMs(0));
   }
 
   function resumeExactRetries() {
@@ -2112,6 +2143,10 @@
     }
   }
 
+  function lightCommandPending(device) {
+    return Boolean(device?.lightPendingId) && state.pending.has(device.lightPendingId);
+  }
+
   async function sendCommand(action, options = {}) {
     const device = options.device || currentDevice();
     if (!device) return false;
@@ -2122,6 +2157,10 @@
     if (!device.bootId) {
       toast('Đang nhận dữ liệu từ máy. Vui lòng chờ một chút.');
       return false;
+    }
+    if (action === 'light_toggle') {
+      // The light command is a relative flip: a second press while the first is still unconfirmed would flip it back.
+      if (lightCommandPending(device)) { toast('Đang gửi lệnh đèn · chờ máy xác nhận'); return false; }
     }
 
     device.commandSequence = Math.max(device.commandSequence + 1, Math.floor(Date.now() / 1000));
@@ -2156,6 +2195,7 @@
     }
     startTransaction(id, { kind: 'command', operation: action.replaceAll('_', '.'),
       deviceId: device.id, action }, WEB.commandTimeoutMs);
+    if (action === 'light_toggle') { device.lightPendingId = id; if (device.id === state.selectedId) renderDevice(); }
 
     try {
       const envelope = await signRealtimeWrite(device, 'command', payload);
@@ -3314,7 +3354,7 @@
 
   function selectedNeedsSync() {
     const device = currentDevice();
-    return !device?.snapshotAt || Date.now() - device.snapshotAt > WEB.staleAfterMs ||
+    return !device?.snapshotAt || deviceDataAgeMs(device) > WEB.staleAfterMs ||
       !device.config || !validateFullConfig(device.config) ||
       Number(device.snapshot?.revision || 0) > Number(device.revision || 0);
   }
@@ -3410,7 +3450,7 @@
     const device = currentDevice();
     if (!device || !state.realtime?.connected || state.realtime.deviceId !== device.id || document.hidden) return;
     sendSession(device.id, true, sync);
-    if (sync) state.syncRetryTimers = [700, 1600].map((ms) => setTimeout(() => {
+    if (sync) state.syncRetryTimers = [2500, 6000].map((ms) => setTimeout(() => {
       if (device.id === state.selectedId && !document.hidden && selectedNeedsSync()) sendSession(device.id, true, true);
     }, ms));
     // session is QoS 0: keep asking for sync until a complete config and a fresh
@@ -3450,6 +3490,11 @@
   }
 
   function dispatchRealtimeMessage(device, channel, payload) {
+    // Presence and uplink status come from the broker; everything else is a frame the machine itself sent.
+    if (channel === 'snapshot' || channel === 'config/reported' || channel === 'log' || channel === 'history/reported' || channel === 'ack') {
+      device.lastHeardAt = Date.now();
+      device.lastHeardEpoch = state.subscriptionEpoch;
+    }
     if (channel === 'presence') handlePresence(device, payload);
     else if (channel === 'snapshot') handleSnapshot(device, payload);
     else if (channel === 'config/reported') handleConfigReport(device, payload);

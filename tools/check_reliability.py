@@ -94,7 +94,8 @@ require(ino, "heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)", "largest alloc
 require(ino, '"[TASK] stack ctrl=%u hmi=%u sup=%u net=%u mqtt=%u cloud=%u ota=%u', "all task stack diagnostics")
 require(ino, "constexpr size_t MQTT_TASK_STACK_BYTES = 12288U", "MQTT owner task stack (V2 budget)")
 require(app, "device.presenceEpoch === state.subscriptionEpoch && device.presence?.online === false", "device offline requires current presence")
-require(app, "Date.now() - device.snapshotAt > WEB.staleAfterMs", "snapshot freshness independent of presence/config")
+require(app, "let age = now - device.snapshotAt;", "data age starts from the last snapshot")
+require(app, "deviceDataAgeMs(device) > WEB.staleAfterMs || device.presence?.online !== true", "slow-data label from data age (snapshot or any device frame), never from presence/config alone")
 
 
 # Wi-Fi portal must quiesce cross-task network I/O before changing radio mode.

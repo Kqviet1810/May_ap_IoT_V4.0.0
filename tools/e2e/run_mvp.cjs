@@ -168,7 +168,8 @@ async function main() {
     await until('light button enabled', async () => !(await page.locator('#outputLightBtn').isDisabled()), 10000);
     const lightBefore = (await text('#outputLight')).trim();
     await page.locator('#outputLightBtn').click();
-    await until('light on', async () => (await text('#outputLight')).trim() !== lightBefore, 8000);
+    // While the command is unconfirmed the tile reads "ĐANG GỬI…" (Web 1.1.18): wait for the settled state that differs from the one before.
+    await until('light on', async () => { const value = (await text('#outputLight')).trim(); return /^(BẬT|TẮT)$/.test(value) && value !== lightBefore; }, 8000);
     const lightAfter = (await text('#outputLight')).trim();
     const phases = emulator.stats.acks.filter((ack) => /light/.test(ack.requestId || '') || true)
       .map((ack) => `${ack.phase}:${ack.code}`);
@@ -208,7 +209,9 @@ async function main() {
     const uncertain = await until('uncertain toast', async () => {
       const value = (await text('#toast')) || '';
       return /chưa chắc chắn/i.test(value) ? value : '';
-    }, 16000, 200);
+    }, 26000, 200);                                          // commandTimeoutMs is 20 s since Web 1.1.18
+    // After the timeout the pending mark is released and the tile shows the real (unflipped) state again at the next render.
+    await until('tile settled', async () => /^(BẬT|TẮT)$/.test((await text('#outputLight')).trim()), 8000, 200);
     const lightHeld = (await text('#outputLight')).trim();
     record('W5b PUBACK is not APPLIED: with no device ACK the Web ends UNCERTAIN and the UI does not flip',
       lightHeld === lightMid && emulator.stats.commandsExecuted === 1, `toast="${uncertain}", light=${lightHeld}`);

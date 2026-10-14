@@ -84,6 +84,9 @@ async function main() {
     assert.ok(g.vh - g.navBottom >= 3 && g.vh - g.navBottom <= 6);
     assert.equal(g.scrollable, false);
     await page.setViewportSize({ width: 390, height: 560 });
+    // The bubble repositions itself on the (asynchronous) resize event: measure only after it is inside the new viewport, otherwise a slow
+    // runner reads the position left over from the 844 px viewport.
+    await page.waitForFunction(() => { const b = document.getElementById('notesBubble'); return !b || b.getBoundingClientRect().bottom <= window.innerHeight; });
     // The notes bubble stays exactly where it is while the page scrolls.
     const bubbleTop = async () => page.locator('#notesBubble').evaluate(el => Math.round(el.getBoundingClientRect().top));
     const before = await bubbleTop();
