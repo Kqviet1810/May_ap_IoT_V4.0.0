@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "1.1.8";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "1.1.9";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -1053,7 +1053,9 @@ struct MachineConfig {
   // dinh giu nguyen y het hang so cu.
   float heaterStuckMinRiseC = 0.3f;
   uint16_t heaterStuckDurationSec = 900;   // 15 phut
-  float tempRateLimitC = 1.0f;
+  // 2.0 C per 120 s (was 1.0): a slow oven (~0.5 C/min at full power) reached 1.0 C per window during a normal warm-up and raised a false TEMP RATE
+  // HIGH. This is a Warning only (no heater action); High/Emergency/E115 are independent and unchanged.
+  float tempRateLimitC = 2.0f;
   uint16_t tempRateWindowSec = 120;        // 2 phut
   uint8_t tempOscillationCrossLimit = 6;
   uint16_t tempOscillationWindowSec = 600; // 10 phut

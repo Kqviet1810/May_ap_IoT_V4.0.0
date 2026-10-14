@@ -2519,7 +2519,7 @@ class PersistentStore {
       memcpy(&configPayload_, best7.payload, sizeof(best7.payload));
       configPayload_.heaterStuckMinRiseC = 0.3f;
       configPayload_.heaterStuckDurationSec = 900;
-      configPayload_.tempRateLimitC = 1.0f;
+      configPayload_.tempRateLimitC = 2.0f;
       configPayload_.tempRateWindowSec = 120;
       configPayload_.tempOscillationCrossLimit = 6;
       configPayload_.tempOscillationWindowSec = 600;
