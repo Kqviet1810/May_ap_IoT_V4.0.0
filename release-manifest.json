@@ -2,7 +2,7 @@
   "release": "1.1.9",
   "firmware": "1.1.9",
   "hmi": "1.0.0",
-  "web": "1.1.17",
+  "web": "1.1.18",
   "web_storage_schema": 10,
   "attiny_protocol": 4,
   "esp32_core": "3.3.11",

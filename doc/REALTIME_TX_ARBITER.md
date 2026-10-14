@@ -91,3 +91,33 @@ Nạp firmware, deploy broker (tùy chọn nhưng khuyến nghị), mở Web, đ
 | T5 | Chạy 24 h, Web mở 8 h | `closes lost` chỉ do tác động bên ngoài; không `1013` trong log broker; `qos1 expired` không tăng đều |
 
 Nếu T1 vẫn chậm với `wait ack` M thấp ⇒ độ trễ không nằm ở đường lên của thiết bị (nhìn RTT broker/Worker, xử lý ở Web). Nếu M cao ⇒ socket thật sự nghẽn: bước tiếp theo là xem `TCP_SND_BUF` và kênh delta ở mục 5.
+
+## 8. Đo thực địa 2026-10-14 và Web 1.1.18
+
+Hai lần bắt log trên máy thật (firmware 1.1.9, bản diagnostic): A = Wi-Fi router (RSSI −44 dBm), B = hotspot do PC tạo đặt cạnh máy (RSSI −31…−38 dBm). `curl` từ PC tới Worker: `time_connect` 0,209 s, `time_appconnect` 0,805 s. RTT MQTT của máy (`rttEwma`) 0,39–0,64 s.
+
+| Quan sát | A | B |
+|---|---|---|
+| Rảnh (Web đóng) | — | socket mở, không chờ, tim đập 60 s |
+| Chờ ack lâu nhất / telemetry lâu nhất khi có thao tác Web | 19,7 s / 24,6 s | 4,9 s (còn ≥ 11 s cho một lần lưu cấu hình) / 7,4 s |
+| Socket mở lại (`edges`) | ~1 lần / 3 s | ~1 lần / 1 s khi thao tác |
+| Báo động qua MQTT (`detect→ack`) | — | 0,5–0,8 s (bình thường) |
+
+Kết luận đã được phản biện bằng đọc code:
+* Máy xử lý lệnh ngay; độ trễ nằm ở **đường gửi lên**. Cửa sổ gửi 5,7 KB không giải thích được (đủ cho 4,5–19 KB/s so với nhu cầu ~1 KB/s). Các lần chờ 5–25 s khớp với một **đợt mất/nghẽn đường truyền kéo dài nhiều giây** (nhiều lần gửi lại liên tiếp thất bại của TCP), nguyên nhân chưa chứng minh được từ code. Wi‑Fi mạnh không loại trừ được (RSSI không phản ánh mất gói).
+* Broker không thêm độ trễ đáng kể ở đường nóng (PUBACK trước fan-out, không chờ lưu trữ); chưa loại trừ vị trí Durable Object (không đặt `locationHint`).
+* Ảnh chụp snapshot sau lệnh là snapshot *ép* nên không bị nhịp 1–4 s kéo dài; nó chờ cổng socket mở.
+* Web 1.1.17 coi dữ liệu là "chậm" sau 8 s không có snapshot, và gửi `sync` (~6,5 KB phát lại cấu hình + log) mỗi 3 s khi quá 8 s; thử lại lệnh mỗi 3,5 s; hết hạn lệnh 10 s / cấu hình 15 s. Không phải vòng phản hồi vô hạn (các yêu cầu gộp lại và snapshot ép kết thúc nó), nhưng thêm tải đúng lúc đường lên đang nghẽn.
+
+### Thay đổi ở Web 1.1.18 (không đổi firmware)
+* "DỮ LIỆU CHẬM" chỉ sau **20 s** không nhận bất kỳ khung nào từ máy (snapshot, ack, log, cấu hình, lịch sử; không tính tin của broker); từ 6 s trở đi hiện "cập nhật N s trước" nhưng vẫn TRỰC TUYẾN. Điều khiển vẫn mở đến 30 s như cũ.
+* Yêu cầu `sync` do snapshot cũ dùng cùng ngưỡng 20 s; lần đồng bộ đầu sau khi kết nối cách nhau 0 / 2,5 / 6 s (trước 0 / 0,7 / 1,6 s).
+* Thử lại giãn dần 5 → 10 → 20 → 30 s (trước 3,5 s cố định); hết hạn lệnh 20 s, cấu hình 30 s.
+* Nút Đèn hiện "ĐANG GỬI…" và bị khóa đến khi có xác nhận (hoặc hết hạn): đèn là lệnh lật tương đối, ấn lần hai khi chưa xác nhận sẽ lật ngược lại.
+
+### Việc còn lại để chốt nguyên nhân (cần đo, không đoán)
+1. **Bắt gói trên PC đang phát hotspot** (Wireshark, giao diện hotspot, lọc `ip.addr == <IP máy>`) trong lúc bấm Web 2 phút: xem `tcp.analysis.retransmission`, khoảng cách các lần gửi lại (1/3/7/15 s?), `tcp.analysis.zero_window`, RTT. Đây là phép đo quyết định.
+2. Lặp lại thử nghiệm bằng hotspot điện thoại (4G) và bằng một mạng ISP khác.
+3. `curl` tới Worker lặp nhiều lần và `https://<worker>/cdn-cgi/trace` (xem `colo=`); so với thời gian một đường qua Durable Object.
+4. Ghi các dòng `[MQTT] link lost reason=` và `[MQTT] closed on purpose ... why=` suốt vài giờ.
+5. Đối tượng chưa làm (đổi hợp đồng firmware↔Web): terminal ack mang luôn trạng thái đèn để Web cập nhật ngay khi ack về; broker giữ snapshot cuối để màn hình đầu tiên không phải chờ máy; `sync` chỉ yêu cầu phần còn thiếu (log từ số thứ tự đã có); đặt `locationHint` cho Durable Object nếu đo cho thấy nó ở xa.
