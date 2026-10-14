@@ -678,6 +678,17 @@ static void stagedStartupUpdate(uint32_t now) {
         }
         break;
       case Stage::Running:
+#if MAYAP_DIAGNOSTIC_SERIAL
+        // Serial HEALTH command (diagnostic read-only): tell it which stacks and cycle counters to report.
+        MayapHealth::addTask("ctrl", controlTaskHandle, CONTROL_TASK_STACK_BYTES);
+        MayapHealth::addTask("hmi", hmiTaskHandle, HMI_TASK_STACK_BYTES);
+        MayapHealth::addTask("sup", supervisorTaskHandle, SUPERVISOR_TASK_STACK_BYTES);
+        MayapHealth::addTask("net", networkTaskHandle, NETWORK_TASK_STACK_BYTES);
+        MayapHealth::addTask("mqtt", mqttTaskHandle, MQTT_TASK_STACK_BYTES);
+        MayapHealth::addTask("cloud", cloudTaskHandle, CLOUD_TASK_STACK_BYTES);
+        MayapHealth::addTask("ota", otaTaskHandle, OTA_TASK_STACK_BYTES);
+        MayapHealth::setCycleCounters(&controlLastCycleUs, &controlMaxCycleUs, &hmiLastCycleUs, &hmiMaxCycleUs);
+#endif
         // Preserve the runtime WDT membership (control + Supervisor). The
         // coordinator is watched only while staged startup is still in flight.
         if (bootCoordinatorWdt) {
