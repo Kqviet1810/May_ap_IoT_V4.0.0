@@ -1,0 +1,15 @@
+{
+  "ghi_chu": "VI DU - thay bang so DO THAT cua lo. kh_c_per_min: toc do tang nhiet khi heater chay 100% (do bang thu that). cool_tau_min: hang so nguoi (phut) khi tat heater.",
+  "setpoint_c": 37.5,
+  "ambient_c": 25,
+  "kh_c_per_min": 0.5,
+  "cool_tau_min": 90,
+  "dead_s": 15,
+  "lag_s": 8,
+  "resolution_c": 0.1,
+  "noise_c": 0.0,
+  "hours": 6,
+  "door_drop_c": 2.0,
+  "door_at_hour": 4,
+  "uncertainty": { "kh_pct": 30, "tau_pct": 50, "dead_pct": 100, "ambient_c": [15, 25, 32] }
+}
