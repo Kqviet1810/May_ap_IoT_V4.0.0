@@ -33,7 +33,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
     end = network.index('inline void mayapSetWifiPortalOtaQuiesced', start)
     (out / 'actual-network.inc').write_text(network[start:end], encoding='utf-8')
     realtime = (root / 'MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h').read_text(encoding='utf-8')
-    for name in ('attiny_bus', 'gpio_interrupts', 'serial_diagnostics', 'network_io_guard', 'bounded_http', 'cloud_fault_events', 'cloud_alarm_receipt',
+    for name in ('attiny_bus', 'gpio_interrupts', 'serial_diagnostics', 'serial_log', 'network_io_guard', 'bounded_http', 'cloud_fault_events', 'cloud_alarm_receipt',
                  'mqtt_uplink', 'alarm_fallback_policy', 'wifi_power_policy'):
         source = (root / ('MAYAP_INDUSTRIAL_v1_0_0/' + name + '.h')).read_text(encoding='utf-8')
         source = '\n'.join(line for line in source.splitlines() if not line.startswith('#include'))
@@ -135,7 +135,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-runtime-') as temporary:
                  'mayapBootAcknowledgeHomeFrame'):
         mailbox += re.search(r'inline (?:bool|void) ' + name + r'\(\) \{[^}]*\}', boot)[0] + '\n'
     (out / 'actual-boot-mailbox.inc').write_text(mailbox, encoding='utf-8')
-    for test in ('runtime-buses', 'runtime-network', 'wifi-fsm', 'runtime-attiny', 'runtime-attiny-state', 'runtime-stability', 'runtime-cloud-alert', 'runtime-alarm-fallback', 'runtime-web-connect', 'runtime-transactions', 'runtime-online-isolation', 'realtime-arbiter'):
+    for test in ('runtime-buses', 'runtime-network', 'wifi-fsm', 'runtime-attiny', 'runtime-attiny-state', 'runtime-stability', 'serial-log', 'serial-log-diag', 'runtime-cloud-alert', 'runtime-alarm-fallback', 'runtime-web-connect', 'runtime-transactions', 'runtime-online-isolation', 'realtime-arbiter'):
         executable = out / (test + ('.exe' if __import__('os').name == 'nt' else ''))
         command = [args.cxx, '-std=c++11', '-Wall', '-Wextra', '-Werror', '-I', str(out),
                    str(root / ('tests/' + test + '.cpp')), '-o', str(executable)]

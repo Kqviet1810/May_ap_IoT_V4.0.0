@@ -31,6 +31,7 @@
 
 #include "serial_diagnostics.h"
 #include "system_health.h"
+#include "serial_log.h"
 
 namespace Mayap {
 
@@ -5042,6 +5043,7 @@ class MachineController {
     pidMonAt_ = now;
     const bool on = outputs_.state().heaterSsr && outputs_.state().heatMaster;
     pidMonActual_ += ((on ? 100.0f : 0.0f) - pidMonActual_) * std::min(1.0f, static_cast<float>(dtMs) / 60000.0f);
+    if (on) pidMonSsrOnMs_ += dtMs;   // cumulative heater-on time (read by the LOG AI snapshot only)
     PidMonitorData &m = runtime_.pidMon;
     m.valid = sensorUsable_ && isfinite(temperature_);
     m.error = m.valid ? config_.targetTemp - temperature_ : 0.0f;
@@ -7741,6 +7743,7 @@ class MachineController {
     hmiSetRuntime(runtime_);
     mayapRealtimeSetRuntime(runtime_);
     mayapCloudSetRuntime(runtime_);
+    publishSerialLog(now);
     if (lastHmiEventSequence_ != eventLog_.sequence() ||
         elapsedMs(now, lastHmiEventPushAt_) >= 30000UL) {
       HmiEventSnapshot snapshot{};
@@ -7750,6 +7753,35 @@ class MachineController {
       lastHmiEventSequence_ = eventLog_.sequence();
       lastHmiEventPushAt_ = now;
     }
+  }
+
+  // LOG AI snapshot: a plain copy of values this cycle already computed, built only while that log mode is active (one atomic load otherwise).
+  // The text is formatted later by the supervisor task, never here.
+  void publishSerialLog(uint32_t now) {
+    if (!MayapSerialLog::aiActive()) return;
+    using namespace MayapSerialLog;
+    AiSample a;
+    const OutputState &o = outputs_.state();
+    a.stampMs = now;
+    a.day = runtime_.currentDay;
+    a.sp = config_.targetTemp; a.pv = temperature_; a.raw = sensor_.rawTemperatureC(); a.rh = humidity_;
+    a.req = runtime_.pidMon.requestPct; a.avg60 = runtime_.pidMon.actualAvgPct; a.ssrOnMs = pidMonSsrOnMs_;
+    a.pidCorr = runtime_.pidMon.pidCorrection; a.holdFf = runtime_.pidMon.holdFf; a.ventFf = runtime_.pidMon.ventFf;
+    a.limLo = runtime_.pidMon.limitLo; a.limHi = runtime_.pidMon.limitHi;
+    a.learnState = runtime_.thermalLearnState; a.confidence = runtime_.thermalConfidence; a.ventPhase = runtime_.thermalVentPhase;
+    a.gain = runtime_.thermalGain; a.delaySec = runtime_.thermalDelaySec; a.holdPct = runtime_.thermalHoldPct;
+    a.coastC = runtime_.thermalCoastC; a.ventGain = runtime_.thermalVentGain; a.predErr = runtime_.thermalPredictionError;
+    a.alarmMask = runtime_.alarmMask; a.faultCode = runtime_.primaryFaultCode; a.stateCode = static_cast<uint8_t>(runtime_.stateCode);
+    a.tuneState = static_cast<uint8_t>(runtime_.autoTuneState); a.tuneProgress = runtime_.autoTuneProgress;
+    a.kp = config_.kp; a.ki = config_.ki; a.kd = config_.kd;
+    a.flags = static_cast<uint16_t>(
+        (runtime_.batchRunning ? FlBatch : 0U) | (runtime_.autoMode ? FlAuto : 0U) | (sensorUsable_ ? FlSensorOk : 0U) |
+        (o.heaterSsr ? FlSsrNow : 0U) | (runtime_.heaterOn ? FlMaster : 0U) | (runtime_.circulationFanOn ? FlCircFan : 0U) |
+        (runtime_.ventFanOn ? FlVentFan : 0U) | (runtime_.humidifierOn ? FlHumidifier : 0U) | (runtime_.lightOn ? FlLight : 0U) |
+        (runtime_.adaptiveEnabled ? FlAdaptive : 0U) | ((smartThermalApplied_ && config_.adaptiveThermalBalanceEnabled) ? FlSmart : 0U) |
+        (runtime_.sirenOn ? FlSiren : 0U) | (runtime_.turnState != TurnState::Stopped ? FlTurning : 0U) |
+        (runtime_.autoTuneState == AutoTuneState::Running ? FlTuning : 0U));
+    publishAi(a);
   }
 
   void updateLed(uint32_t now) {
@@ -7807,7 +7839,10 @@ class MachineController {
         mayapSerialPrintf(false, "[SER] DONG QUA DAI\n");
       }
     }
-    MayapHealth::service();   // finishes the 2 s CPU sample started by HEALTH (no-op otherwise)
+    MayapHealth::service(MayapSerialLog::mode() == MayapSerialLog::Mode::Cpu);   // finishes the 2 s CPU sample started by HEALTH (no-op otherwise)
+#elif MAYAP_SERIAL_LOG_PORT
+    (void)now;
+    MayapSerialLog::pollInput();   // production: only LOG CPU / LOG AI / LOG OFF / EXIT are understood
 #else
     (void)now;
 #endif
@@ -7827,8 +7862,8 @@ class MachineController {
     char *arg3 = strtok_r(nullptr, " ", &save);
 
     if (cmd && !strcmp(cmd, "SERIAL")) {
-      const bool enabled = !mayapSerialDebugEnabled();
-      mayapSetSerialDebugEnabled(enabled);
+      const bool enabled = MayapSerialLog::mode() != MayapSerialLog::Mode::Machine;
+      MayapSerialLog::setMode(enabled ? MayapSerialLog::Mode::Machine : MayapSerialLog::Mode::Off);
       mayapSerialPrintf(true, "[SERIAL] %s\n", enabled ? "ON" : "OFF");
       if (enabled) {
         printSerialHelp();
@@ -7906,10 +7941,16 @@ class MachineController {
       // ngay ben duoi) - de nguoi dung chi can go 2 lenh don gian LOG/EXIT
       // thay vi phai nho lenh SERIAL (toggle) hay cac lenh con LOG SHOW/FILES/
       // CLEAR khac.
-      mayapSetSerialDebugEnabled(true);
+      MayapSerialLog::setMode(MayapSerialLog::Mode::Machine);   // one log at a time: ends LOG CPU / LOG AI
       mayapSerialPrintf(true, "[SERIAL] ON (LOG)\n");
       printSerialHelp();
       printStatus(now);
+    } else if (cmd && !strcmp(cmd, "LOG") && arg1 && !arg2 && !strcmp(arg1, "CPU")) {
+      MayapSerialLog::apply(MayapSerialLog::Command::Cpu);
+    } else if (cmd && !strcmp(cmd, "LOG") && arg1 && !arg2 && !strcmp(arg1, "AI")) {
+      MayapSerialLog::apply(MayapSerialLog::Command::Ai);
+    } else if (cmd && !strcmp(cmd, "LOG") && arg1 && !arg2 && !strcmp(arg1, "OFF")) {
+      MayapSerialLog::apply(MayapSerialLog::Command::Off);   // acknowledges with "[LOG] OFF" on the log channel
     } else if (cmd && !strcmp(cmd, "LOG") && arg1 && !strcmp(arg1, "SHOW")) {
       eventLog_.print(arg2 ? static_cast<uint8_t>(constrain(atoi(arg2), 1, 96)) : 20U);
     } else if (cmd && !strcmp(cmd, "LOG") && arg1 && !strcmp(arg1, "FILES")) {
@@ -7957,7 +7998,7 @@ class MachineController {
       // hien "dong cong Serial" o muc firmware (DTR/RTS va hanh vi USB-CDC
       // khac nhau tuy board/driver may tinh) nen chi ho tro lenh go tay nay,
       // khong tu dong theo trang thai cong that.
-      mayapSetSerialDebugEnabled(false);
+      MayapSerialLog::apply(MayapSerialLog::Command::Off);
       mayapSerialPrintf(true, "[SERIAL] OFF (EXIT)\n");
     } else if (cmd && !strcmp(cmd, "HELP")) {
       printSerialHelp();
@@ -7980,6 +8021,7 @@ class MachineController {
     mayapSerialPrintf(false, "LOG = BAT debug Serial ngay. EXIT = TAT debug Serial ngay.\n");
     mayapSerialPrintf(false, "CONFIG = dump debug DAY DU (thong so + Wi-Fi/MQTT/Cloud Push + STATUS).\n");
     mayapSerialPrintf(false, "LOG SHOW [N]|FILES|CLEAR(RAM)   DIAG ON|OFF\n");
+    mayapSerialPrintf(false, "LOG CPU = CPU/RAM/stack log. LOG AI = CSV log for thermal-model training. LOG OFF = off. One log at a time.\n");
     mayapSerialPrintf(false, "PIN OUT: LEFT=D%u RIGHT=D%u LIGHT=D%u VENT=D%u MASTER=D%u SSR=D%u\n",
         PIN_OUT_TURN_LEFT, PIN_OUT_TURN_RIGHT, PIN_OUT_LIGHT,
         PIN_OUT_VENT_FAN, PIN_OUT_HEAT_MASTER, PIN_OUT_HEATER_SSR);
@@ -8170,6 +8212,7 @@ class MachineController {
   uint32_t techRetryAt_ = 0;
   uint32_t pidMonAt_ = 0;
   float pidMonActual_ = 0.0f;
+  uint32_t pidMonSsrOnMs_ = 0U;
   InputManager inputs_{};
   SHT485Industrial sensor_{};
   ThermalController pid_{};

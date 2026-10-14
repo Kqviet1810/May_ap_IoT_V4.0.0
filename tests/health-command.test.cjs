@@ -16,14 +16,14 @@ test('HEALTH reports heap, static RAM regions, stacks, cycle times, CPU per core
   assert.match(h, /#else  \/\/ host build/);                                          // empty stubs off target
 });
 
-test('the CPU sampler exists only for the 2 s after the command and is wired to the diagnostic serial path only', () => {
+test('the CPU sampler exists only for 2 s windows and is started only by HEALTH (diagnostic) or LOG CPU', () => {
   const m = read('machine_control.h');
   assert.match(m, /strcmp\(cmd, "HEALTH"\)/);
   assert.match(m, /MayapHealth::resetPeaks\(\)/);
   const service = m.slice(m.indexOf('void serviceSerial('), m.indexOf('void handleSerialLine('));
-  assert.match(service, /#if MAYAP_SERIAL_INPUT_SIM \|\| MAYAP_DIAGNOSTIC_SERIAL[\s\S]*MayapHealth::service\(\);[\s\S]*#else/);
+  assert.match(service, /#if MAYAP_SERIAL_INPUT_SIM \|\| MAYAP_DIAGNOSTIC_SERIAL[\s\S]*MayapHealth::service\(MayapSerialLog::mode\(\) == MayapSerialLog::Mode::Cpu\);[\s\S]*#elif MAYAP_SERIAL_LOG_PORT/);
   const ino = read('MAYAP_INDUSTRIAL_v1_0_0.ino');
-  assert.match(ino, /#if MAYAP_DIAGNOSTIC_SERIAL\n\s*\/\/ Serial HEALTH command[\s\S]*MayapHealth::setCycleCounters[\s\S]*#endif/);
+  assert.match(ino, /#if MAYAP_SERIAL_WRITER\n\s*\/\/ Serial HEALTH command and LOG CPU[\s\S]*MayapHealth::setCycleCounters[\s\S]*#endif/);
   for (const task of ['ctrl', 'hmi', 'sup', 'net', 'mqtt', 'cloud', 'ota']) assert.match(ino, new RegExp('MayapHealth::addTask\\("' + task + '"'));
 });
 
