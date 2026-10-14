@@ -49,10 +49,10 @@ test('all settings remain reachable exactly once in shorter groups', () => {
     .replace(/\/\/[^\n]*/g, '').match(/\d+/g).map(Number);
   const groups = [...hmi.matchAll(/\{"([^"\n]+)",\s*(\d+),\s*(\d+)\}/g)]
     .map((match) => ({ name: match[1], first: Number(match[2]), count: Number(match[3]) }));
-  assert.equal(indexes.length, 35);
-  assert.equal(new Set(indexes).size, 35);
+  assert.equal(indexes.length, 36);
+  assert.equal(new Set(indexes).size, 36);
   assert.deepEqual([...indexes].sort((a, b) => a - b), [
-    ...Array.from({ length: 33 }, (_, i) => i).filter((i) => ![18, 33, 34, 35, 36, 37, 38, 39, 40, 41].includes(i)), 51, 52, 53,
+    ...Array.from({ length: 33 }, (_, i) => i).filter((i) => ![18, 33, 34, 35, 36, 37, 38, 39, 40, 41].includes(i)), 51, 52, 53, 54,
   ]);
   assert.equal(groups.length, 9);
   assert.equal(groups.at(-1).name, 'HIEU CHUAN');
@@ -94,7 +94,7 @@ test('PID, thermal protection and calibration live only under NANG CAO; operatin
     .map((m) => ({ name: m[1], first: Number(m[2]), count: Number(m[3]) }));
   const of = (name) => { const g = groups.find((x) => x.name === name); return idx.slice(g.first, g.first + g.count); };
   assert.deepEqual(of('NHIET DO'), [4, 5, 6, 8]);                 // low / high / emergency / out-of-batch: unchanged
-  assert.deepEqual(of('PID/GIA NHIET'), [15, 16, 17, 19, 51]);
+  assert.deepEqual(of('PID/GIA NHIET'), [15, 16, 17, 19, 51, 54]);   // + Smart Thermal switch (behind the technical PIN)
   assert.deepEqual(of('BAO VE NHIET'), [20, 21, 22, 23, 24, 25, 26, 27]);
   assert.deepEqual(of('HIEU CHUAN'), [7, 52, 32, 53]);      // + Bo tao am (hardware) and DPG cam bien, both behind the technical PIN
   assert.deepEqual(of('HE THONG'), [14, 29]);
@@ -258,4 +258,19 @@ test('Bo tao am and DPG cam bien live under NANG CAO > HIEU CHUAN; the sensor re
   assert.match(hmi, /sensorResolutionMode > 2U\) cfg\.sensorResolutionMode = 0U/);
   const controller = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0/machine_control.h'), 'utf8');
   assert.match(controller, /sensor_\.setResolutionMode\(config_\.sensorResolutionMode\);\s*sensor_\.update\(\);/);
+});
+
+test('Smart Thermal is a run-time switch in NANG CAO, off by default, locked during a batch, and only acts with the adaptive balance', () => {
+  assert.match(hmi, /ITEM_BOOL\("Smart Thermal", smartThermalEnabled\)/);
+  assert.match(config, /bool smartThermalEnabled = false;/);
+  const controller = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0/machine_control.h'), 'utf8');
+  assert.match(controller, /!smartThermalInit_ \|\| \(!batchRunning_ && !resumePending_\)\) \{ smartThermalApplied_ = config_\.smartThermalEnabled/);
+  assert.match(controller, /smartThermalApplied_ && config_\.adaptiveThermalBalanceEnabled\) \|\| \(MAYAP_SMART_THERMAL != 0\)/);
+  assert.match(controller, /thermalV1_\.setSmartLearning\(smart\);\s*startupHeat_\.setSmart\(smart\);/);
+  assert.match(controller, /c\.smartThermalEnabled \? 8U : 0U/);
+  // not in the list of settings that may change during a batch
+  assert.doesNotMatch(bodyOf('bool settingLockedDuringBatch('), /smartThermalEnabled/);
+  // the Web can never change it: it is not part of the Web config schema
+  const bridge = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h'), 'utf8');
+  assert.doesNotMatch(bridge, /smartThermalEnabled/);
 });

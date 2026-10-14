@@ -1836,7 +1836,7 @@ inline PackedMachineConfigV1 packConfig(const MachineConfig &c) {
   p.ventScheduleHour5 = c.ventScheduleHour5;
   p.ventScheduleHour6 = c.ventScheduleHour6;
   p.adaptiveThermalBalanceEnabled = static_cast<uint8_t>((c.adaptiveThermalBalanceEnabled ? 1U : 0U) |
-      ((c.sensorResolutionMode <= 2U ? c.sensorResolutionMode : 0U) << 1U));
+      ((c.sensorResolutionMode <= 2U ? c.sensorResolutionMode : 0U) << 1U) | (c.smartThermalEnabled ? 8U : 0U));
   p.ventAutoEnabled = c.ventAutoEnabled ? 1U : 0U;
   p.ventProfileLevel = c.ventProfileLevel;
   p.ventCycleMinutes = c.ventCycleMinutes;
@@ -1906,6 +1906,7 @@ inline MachineConfig unpackConfig(const PackedMachineConfigV1 &p) {
   c.ventScheduleHour6 = p.ventScheduleHour6;
   c.adaptiveThermalBalanceEnabled = (p.adaptiveThermalBalanceEnabled & 1U) != 0U;
   { const uint8_t mode = static_cast<uint8_t>((p.adaptiveThermalBalanceEnabled >> 1U) & 3U); c.sensorResolutionMode = mode <= 2U ? mode : 0U; }
+  c.smartThermalEnabled = (p.adaptiveThermalBalanceEnabled & 8U) != 0U;
   c.ventAutoEnabled = p.ventAutoEnabled != 0U;
   c.ventProfileLevel = p.ventProfileLevel;
   c.ventCycleMinutes = p.ventCycleMinutes;
@@ -6415,6 +6416,14 @@ class MachineController {
     }
     // ---- Adaptive Thermal V1: learn the effective thermal profile (consumed below by the PID) ----
     thermalV1_.setEnabled(config_.adaptiveThermalBalanceEnabled);
+    // Smart Thermal run-time switch: follows the setting only while no batch is running (and once at start-up), and only together with the
+    // adaptive balance it extends. Off (default) is exactly the previous behaviour; the test-only build flag still forces it on.
+    if (!smartThermalInit_ || (!batchRunning_ && !resumePending_)) { smartThermalApplied_ = config_.smartThermalEnabled; smartThermalInit_ = true; }
+    {
+      const bool smart = (smartThermalApplied_ && config_.adaptiveThermalBalanceEnabled) || (MAYAP_SMART_THERMAL != 0);
+      thermalV1_.setSmartLearning(smart);
+      startupHeat_.setSmart(smart);
+    }
     if(config_.adaptiveThermalBalanceEnabled && newSensorSample_){
       MayapThermal::LearnInput li;
       li.pv=temperature_;li.raw=rawTemperature_;li.sp=config_.targetTemp;li.high=config_.highTempAlarm;
@@ -8165,6 +8174,8 @@ class MachineController {
   SHT485Industrial sensor_{};
   ThermalController pid_{};
   ThermalStartupController startupHeat_{};
+  bool smartThermalApplied_ = false;
+  bool smartThermalInit_ = false;
   AutoTuneEngine autotune_{};
   OutputArbiter outputs_{};
   StatusLed led_{};

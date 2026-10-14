@@ -584,18 +584,20 @@ const SettingItem SETTINGS[] = {
   // Hieu chuan do am (nhom NANG CAO > HIEU CHUAN, di cung "Bu nhiet do").
   ITEM_FLOAT("Bu do am", humidityOffset, -20.0f, 20.0f, 0.5f, 1, "%"),         // 52
   // Sensor resolution: choosing 0.1 / 0.01 skips the format guessing at start-up (NANG CAO > HIEU CHUAN).
-  ITEM_U8_OPTIONS("DPG cam bien", sensorResolutionMode, OPT_SENSOR_RES, 3)      // 53
+  ITEM_U8_OPTIONS("DPG cam bien", sensorResolutionMode, OPT_SENSOR_RES, 3),     // 53
+  // Smart Thermal (NANG CAO > PID/GIA NHIET): works only with "Tu can bang nhiet" ON; locked while a batch runs.
+  ITEM_BOOL("Smart Thermal", smartThermalEnabled)                               // 54
 };
 
 constexpr uint8_t SETTING_COUNT = sizeof(SETTINGS) / sizeof(SETTINGS[0]);
-static_assert(SETTING_COUNT == 54, "Bang SETTINGS phai co 54 thong so");
+static_assert(SETTING_COUNT == 55, "Bang SETTINGS phai co 55 thong so");
 
 const uint8_t GROUP_SETTING_INDEXES[] = {
   0,1,2,3,                             // Cai dat me
   4,5,6,8,                             // Nhiet do (nguong van hanh; Bu nhiet do da chuyen sang HIEU CHUAN)
   11,12,13,28,                         // Dao trung
   14,29,                               // He thong
-  15,16,17,19,51,                      // PID / GIA NHIET   (NANG CAO)
+  15,16,17,19,51,54,                   // PID / GIA NHIET + Smart Thermal (NANG CAO)
   20,21,22,23,24,25,26,27,             // Bao ve nhiet      (NANG CAO)
   9,10,                                // Quat hut; Thong gio la menu con
   30,31,                               // Tao am
@@ -616,15 +618,15 @@ const SettingGroup GROUPS[] = {
   // la cai dat mang - gom ca ma QR, dat lai PIN, cap nhat firmware... nen
   // "He thong" mo ta dung hon la cai dat chung cua may.
   {"HE THONG", 12, 2},
-  {"PID/GIA NHIET", 14, 5},
-  {"BAO VE NHIET", 19, 8},
-  {"QUAT HUT", 27, 2},
-  {"TAO AM", 29, 2},
-  {"HIEU CHUAN", 31, 4}
+  {"PID/GIA NHIET", 14, 6},
+  {"BAO VE NHIET", 20, 8},
+  {"QUAT HUT", 28, 2},
+  {"TAO AM", 30, 2},
+  {"HIEU CHUAN", 32, 4}
 };
 constexpr uint8_t GROUP_COUNT = sizeof(GROUPS) / sizeof(GROUPS[0]);
 static_assert(GROUP_COUNT == 9, "Bang GROUPS phai co 9 nhom");
-static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) == 35U,
+static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) == 36U,
               "Sai so luong setting hien trong menu chinh");
 
 // Dong phu (khong phai setting gia tri) duoc gan them vao cuoi mot so nhom.

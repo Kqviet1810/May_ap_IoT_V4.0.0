@@ -20,7 +20,7 @@ Không có phép đo nào trên chip hay trên lò thật đã được thực h
 * Cờ 0 và tường minh `=0` có kích thước giống hệt bản mặc định (CI so từng byte Flash/RAM).
 
 ## 3. Còn tắt / chưa tích hợp
-* `MAYAP_SMART_THERMAL=1` điều khiển heater: **tắt**, chặn bởi mục 7.
+* `MAYAP_SMART_THERMAL=1` điều khiển heater: **tắt**, chặn bởi mục 7. Từ firmware 1.1.8 Smart Thermal còn có **công tắc lúc chạy** (HMI NANG CAO > PID/GIA NHIET > "Smart Thermal", mặc định TẮT, cần mã kỹ thuật, khóa khi đang có mẻ, chỉ có tác dụng khi "Tu can bang nhiet" BẬT, Web không đổi được). Công tắc TẮT cho kết quả giống hệt bản trước (A/B tái lập từng dòng); BẬT là quyết định của người vận hành sau khi có số đo thật (Bước 8 của quy trình nghiệm thu).
 * D2–D6 (`heat_latch.h`, `output_budget.h`, `thermal_program.h`, `egg_cooling.h`, `program_store.h`): module thiết kế, **không được include bởi firmware**, chưa duyệt safety contract.
 * Làm mát trứng và chương trình nhiệt theo ngày: tắt, không có đường kích hoạt.
 * `PriorMinError` = 3.5 giữ nguyên (ứng viên 2.0 chỉ ở thử nghiệm mô phỏng; chưa có phê duyệt).

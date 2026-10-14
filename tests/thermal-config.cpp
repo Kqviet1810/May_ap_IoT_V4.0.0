@@ -72,10 +72,18 @@ int main(){
     assert(store.saveConfig(input,readback));
     assert(readback.sensorResolutionMode==mode && readback.adaptiveThermalBalanceEnabled==enabled);
   }
+  // Smart Thermal switch (bit 3) is independent of the adaptive flag and the resolution choice.
+  for(bool smart:{false,true}) for(bool adaptive:{false,true}) for(uint8_t mode:{0U,2U}) {
+    ConfigStore store;MachineConfig input,readback;
+    input.smartThermalEnabled=smart;input.adaptiveThermalBalanceEnabled=adaptive;input.sensorResolutionMode=mode;
+    assert(store.saveConfig(input,readback));
+    assert(readback.smartThermalEnabled==smart && readback.adaptiveThermalBalanceEnabled==adaptive && readback.sensorResolutionMode==mode);
+  }
   { // a pre-existing record (byte 0/1) means "automatic"
     const MachineConfig d;assert(d.sensorResolutionMode==0U);
     PackedMachineConfigV1 p=packConfig(d);p.adaptiveThermalBalanceEnabled=1U;
     const MachineConfig u=unpackConfig(p);assert(u.adaptiveThermalBalanceEnabled&&u.sensorResolutionMode==0U);
+    assert(!u.smartThermalEnabled);                                                          // old records: Smart Thermal OFF
     p.adaptiveThermalBalanceEnabled=7U;assert(unpackConfig(p).sensorResolutionMode==0U);   // invalid mode 3 -> automatic
   }
   for(uint16_t cycle:{1U,10U,60U}) {
