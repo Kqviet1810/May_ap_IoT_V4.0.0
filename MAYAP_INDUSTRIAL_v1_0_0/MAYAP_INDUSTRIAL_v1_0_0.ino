@@ -433,6 +433,7 @@ void supervisorTask(void *parameter) {
     const uint32_t now = millis();
     const uint32_t ctrlBeat = __atomic_load_n(&controlHeartbeatMs, __ATOMIC_ACQUIRE);
     mayapSerialDrain(); // bounded partial writes; never block controlTask for logging
+    MayapSerialLog::service(now); // LOG CPU / LOG AI: at most one queued line per pass, formatted here and never in controlTask
     const uint32_t hmiBeat = __atomic_load_n(&hmiHeartbeatMs, __ATOMIC_ACQUIRE);
 
     // Do not supervise a task before staged startup has admitted it. Once
@@ -678,8 +679,8 @@ static void stagedStartupUpdate(uint32_t now) {
         }
         break;
       case Stage::Running:
-#if MAYAP_DIAGNOSTIC_SERIAL
-        // Serial HEALTH command (diagnostic read-only): tell it which stacks and cycle counters to report.
+#if MAYAP_SERIAL_WRITER
+        // Serial HEALTH command and LOG CPU (read-only): tell them which stacks and cycle counters to report.
         MayapHealth::addTask("ctrl", controlTaskHandle, CONTROL_TASK_STACK_BYTES);
         MayapHealth::addTask("hmi", hmiTaskHandle, HMI_TASK_STACK_BYTES);
         MayapHealth::addTask("sup", supervisorTaskHandle, SUPERVISOR_TASK_STACK_BYTES);
@@ -688,6 +689,7 @@ static void stagedStartupUpdate(uint32_t now) {
         MayapHealth::addTask("cloud", cloudTaskHandle, CLOUD_TASK_STACK_BYTES);
         MayapHealth::addTask("ota", otaTaskHandle, OTA_TASK_STACK_BYTES);
         MayapHealth::setCycleCounters(&controlLastCycleUs, &controlMaxCycleUs, &hmiLastCycleUs, &hmiMaxCycleUs);
+        MayapSerialLog::setIdentity(MAYAP_FIRMWARE_VERSION, &controlLastCycleUs, supervisorTaskStack);   // self-protection: the log switches off on a slow control cycle or a low supervisor stack
 #endif
         // Preserve the runtime WDT membership (control + Supervisor). The
         // coordinator is watched only while staged startup is still in flight.

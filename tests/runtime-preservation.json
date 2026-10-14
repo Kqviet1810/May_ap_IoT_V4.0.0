@@ -67,7 +67,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "072ecb8ff2bb216cab8c911019bc1dcc3cc6871812801efbb9a2e3449ca15e7d",
+      "sha256": "70774c098adaae9dcf7b124d3c3ac5f5b3d5e5ab00d4a044d9cd5815e8e0e8a0",
       "signature": "class MachineController {"
     },
     {
@@ -123,7 +123,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino",
-      "sha256": "2379c33fea80e5d131503c8b4bbae0c8f2297388b4e11786a271eed1bb59ac1e",
+      "sha256": "ce3b399f8bf101a29522625a2fada19d07f4f48b47a4b9c23a385a8e0d3e2121",
       "signature": "static void stagedStartupUpdate("
     },
     {
@@ -143,7 +143,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino",
-      "sha256": "47515bcdb1ec1bf80dd907814b760977140447755b859cc72ca99c4438a688e3",
+      "sha256": "a199529ebdec611397dee23facc3fc5f19967695d01afd44501bc1409583f259",
       "signature": "void supervisorTask(",
       "filter": "supervisor"
     },
@@ -449,6 +449,7 @@
   "notesUiOnlyResetReviewNote": "2026-10-03: removed the complete legacy Ghi chú persistence path (ESP32 EEPROM store/service/retry, realtime notes channels and persistence tests). notes.js/notes.css remain as UI only. Controller/safety/config/reminder/history storage semantics are unchanged.",
   "thermalFinalHardeningReviewNote": "2026-10-03: reviewed thermal safety hardening: Test Mode keeps High/Emergency protection, negative calibration cannot lower raw overheat safety, sensor timeout becomes fixed fail-safe legacy field, running-batch setpoint preserves the safety/vent envelope, E114 retains triggering crossing detail, and zero-authority PID is rejected. Physical thermal performance remains a commissioning item.",
   "release119ReviewNote": "2026-10-14: reviewed 1.1.9: MAYAP_FIRMWARE_VERSION (config.h) and the OTA signing PUBLIC key in build_public.h replaced with a new ECDSA P-256 key (the matching private key of the previous one was lost; the new private key is held only by the owner and the repository secret). No thermal, output, safety or storage logic is touched. Devices running firmware <= 1.1.8 trust the old key, so 1.1.9 must be flashed once over USB; later updates are signed with the new key.",
+  "serialLogReviewNote": "2026-10-14: reviewed serial log modes (firmware 1.1.9, before release): new serial_log.h (single Mode variable Off/Machine/Cpu/Ai, production whitelist LOG CPU / LOG AI / LOG OFF / EXIT, AI CSV formatter, supervisor-side service with slow-cycle and low-stack self-protection); serial_diagnostics.h now compiles the output queue/drain and a log channel in every build (generic mayapSerialPrintf and drainFor remain MAYAP_DIAGNOSTIC_SERIAL only; production queue 4 lines); system_health.h gains the LOG CPU log-channel output. Protected entries re-pinned: class MachineController (include, SSR on-time counter read only by the snapshot, publishSerialLog() = plain copy built only while LOG AI is active, serviceSerial() production branch calling pollInput(), SERIAL/LOG/EXIT/LOG CPU/LOG AI/LOG OFF branches of handleSerialLine, one help line), stagedStartupUpdate (task registry under MAYAP_SERIAL_WRITER + setIdentity) and supervisorTask (one MayapSerialLog::service(now) call after mayapSerialDrain()). No output, thermal, safety, storage, OTA or protocol path is touched; controlTask never formats or writes log text. Evidence: tests/serial-log.cpp and serial-log-diag.cpp (real queue + real serial_log.h, no-reader and slow-cycle cases), tests/serial-log.test.cjs, tests/health-command.test.cjs.",
   "release118ReviewNote": "2026-10-14: reviewed 1.1.8: Smart Thermal becomes a run-time switch (HMI NANG CAO > PID/GIA NHIET, default OFF, locked during a batch, technical PIN, not reachable from the Web). config.h: MAYAP_FIRMWARE_VERSION and MachineConfig::smartThermalEnabled (bit 3 of the schema-13 adaptive byte; old records read OFF). machine_control.h class MachineController: one block after thermalV1_.setEnabled() that latches the setting while no batch runs and calls the EXISTING setters thermalV1_.setSmartLearning() / startupHeat_.setSmart() (smart = switch AND adaptive balance ON, or the test-only build flag). Smart code paths themselves are unchanged. Evidence: tools/ab_smart_thermal.py with the switch OFF reproduces the frozen baseline CSVs byte for byte for modes A and B (788/2160/holdout); with it ON mode C gives 1442/2160, High 18, Emergency 3 as before; tests/thermal-config.cpp, tests/hmi-navigation.test.cjs. Control, output arbitration and safety logic are untouched.",
   "release117ReviewNote": "2026-10-14: reviewed 1.1.7: version string in config.h; new system_health.h (read-only Serial HEALTH report: heap, static RAM regions, stack peaks, cycle times, CPU per core via idle hook sampled only for 2 s after the command, chip temperature); machine_control.h class MachineController: only the HEALTH/HEALTH RESET branch in handleSerialLine, the help line, and one MayapHealth::service() call at the end of the diagnostic serviceSerial(); the .ino stagedStartupUpdate() registers task handles at Stage::Running inside #if MAYAP_DIAGNOSTIC_SERIAL (re-pinned: config.h, class MachineController, stagedStartupUpdate). No output, thermal, safety or storage path is touched; Production profile (DIAGNOSTIC_SERIAL=0) compiles none of the registration.",
   "release116ReviewNote": "2026-10-13: reviewed 1.1.6 config.h change: MAYAP_FIRMWARE_VERSION plus one appended MachineConfig field, sensorResolutionMode (0 automatic = previous behaviour, 1 = 0.1 C, 2 = 0.01 C). It is persisted in bits 1-2 of the existing schema-13 adaptive byte (old records read as automatic; adaptive flag is bit 0), so layout, schema and size are unchanged. sensor_format.h: a chosen resolution removes format guessing (single candidate, two matching samples) but keeps the 10..60 C start envelope, so a wrong choice is rejected instead of read x10 off; the compile-time profile path and automatic detection are unchanged. Re-pinned entries: config.h, sensor_format.h, and class MachineController (only the SHT485Industrial::setResolutionMode member and one call before sensor_.update() in the control cycle). Control, thermal, output arbitration and safety logic are untouched. Evidence: tests/thermal-v2.cpp, tests/thermal-config.cpp, tests/hmi-navigation.test.cjs.",

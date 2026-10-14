@@ -4,17 +4,29 @@
 #include <stdio.h>
 #include <string.h>
 
+// Serial log port: the output queue, drain and the log channel used by the "LOG CPU" / "LOG AI" commands exist in EVERY build (the commands are
+// the only input a production build accepts, see serial_log.h). The generic mayapSerialPrintf() text logs still exist only when
+// MAYAP_DIAGNOSTIC_SERIAL is 1.
+#ifndef MAYAP_SERIAL_LOG_PORT
+#define MAYAP_SERIAL_LOG_PORT 1
+#endif
+#define MAYAP_SERIAL_WRITER (MAYAP_DIAGNOSTIC_SERIAL || MAYAP_SERIAL_LOG_PORT)
 static volatile bool gMayapSerialDebugEnabled = SERIAL_DEBUG_DEFAULT_ON;
 inline bool mayapSerialDebugEnabled() {
   return __atomic_load_n(&gMayapSerialDebugEnabled, __ATOMIC_ACQUIRE);
 }
-#if MAYAP_DIAGNOSTIC_SERIAL
+#if MAYAP_SERIAL_WRITER
 namespace MayapSerialInternal {
+#if MAYAP_DIAGNOSTIC_SERIAL
 constexpr uint8_t CAPACITY = 8U;
+#else
+constexpr uint8_t CAPACITY = 4U;   // production: only the LOG CPU / LOG AI channel (one line per second), keeps ~0.9 KB of static RAM free
+#endif
 struct Entry {
   char text[224];
   uint16_t length = 0U, offset = 0U;
   bool priority = false, force = false;
+  bool logChannel = false;   // LOG CPU / LOG AI line: independent of the machine debug flag, dropped when the mode changes
 };
 static Entry entries[CAPACITY];
 static uint8_t count = 0U;
@@ -84,9 +96,60 @@ inline void mayapSerialPrintf(bool force, const char *format, ...) {
   (void)force; (void)format;
 #endif
 }
+// ---- log channel (LOG CPU / LOG AI) ---------------------------------------------------------------------------------------
+// Never blocks and never grows: a full queue drops the line and counts it. The caller owns the text; at most 223 bytes are kept.
+inline bool mayapSerialLogHasRoom(uint8_t lines) {
+#if MAYAP_SERIAL_WRITER
+  using namespace MayapSerialInternal;
+  portENTER_CRITICAL(&mux);
+  const bool room = static_cast<uint8_t>(CAPACITY - count) >= lines;
+  portEXIT_CRITICAL(&mux);
+  return room;
+#else
+  (void)lines; return false;
+#endif
+}
+inline bool mayapSerialLogEnqueue(const char *text, size_t length) {
+#if MAYAP_SERIAL_WRITER
+  using namespace MayapSerialInternal;
+  if (!text || !length) return false;
+  Entry item;
+  if (length > sizeof(item.text) - 1U) length = sizeof(item.text) - 1U;
+  memcpy(item.text, text, length);
+  item.text[length] = '\0';
+  item.length = static_cast<uint16_t>(length);
+  item.logChannel = true;
+  portENTER_CRITICAL(&mux);
+  if (count == CAPACITY) { ++dropped; portEXIT_CRITICAL(&mux); return false; }
+  entries[count++] = item;
+  portEXIT_CRITICAL(&mux);
+  return true;
+#else
+  (void)text; (void)length; return false;
+#endif
+}
+// Mode change: lines of the previous log mode are discarded (the one being written is finished so no line is cut in half).
+inline void mayapSerialLogDrop() {
+#if MAYAP_SERIAL_WRITER
+  using namespace MayapSerialInternal;
+  portENTER_CRITICAL(&mux);
+  for (uint8_t i = 0U; i < count;) {
+    if (entries[i].logChannel && !(i == 0U && (draining || entries[i].offset))) removeEntry(i);
+    else ++i;
+  }
+  portEXIT_CRITICAL(&mux);
+#endif
+}
+inline uint32_t mayapSerialDroppedCount() {
+#if MAYAP_SERIAL_WRITER
+  return MayapSerialInternal::dropped;
+#else
+  return 0U;
+#endif
+}
 // Sole Serial writer, called by supervisorTask. No heap, waits or flush.
 inline void mayapSerialDrain() {
-#if MAYAP_DIAGNOSTIC_SERIAL
+#if MAYAP_SERIAL_WRITER
   using namespace MayapSerialInternal;
   for (uint8_t burst = 0U; burst < 3U; ++burst) {
     const int room = Serial.availableForWrite();

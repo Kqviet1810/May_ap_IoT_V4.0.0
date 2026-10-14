@@ -6,9 +6,12 @@
 //  * control and HMI cycle time (last / max), reset with "HEALTH RESET"
 //  * CPU load per core, ESTIMATED over a 2 s window (idle-hook timing, see below)
 //  * chip temperature (die sensor: trend only, not the incubator temperature)
-// Everything here is read-only diagnostics. The CPU sampler is only registered for the 2 s after the command and removed again, so normal
+// Two front ends share the same measurements: the one-shot "HEALTH" command (diagnostic builds, machine text channel) and the periodic
+// "LOG CPU" mode (every build, log channel, see serial_log.h). Everything here is read-only diagnostics. The CPU sampler is only registered for the 2 s after the command and removed again, so normal
 // operation pays nothing. Off-target (host tests) every function is an empty stub.
 #include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
 
 #if defined(ESP_PLATFORM)
 #include <Arduino.h>
@@ -44,8 +47,21 @@ struct State {
   volatile int64_t lastCallUs[2] = {0, 0};
   int64_t windowStartUs = 0;
   bool sampling = false;
+  bool logChannel = false;    // where the result of the running CPU sample is written
+  bool hooksOk = false;       // both idle hooks registered: otherwise the load is reported as n/a
 };
 inline State &state() { static State s; return s; }
+
+// One text line to the log channel (LOG CPU). The HEALTH command keeps writing through mayapSerialPrintf() on the machine channel.
+inline void emit(bool logChannel, const char *format, ...) {
+  if (!logChannel) return;
+  char line[200];
+  va_list args; va_start(args, format);
+  const int length = vsnprintf(line, sizeof(line), format, args);
+  va_end(args);
+  if (length <= 0) return;
+  (void)mayapSerialLogEnqueue(line, static_cast<size_t>(length) < sizeof(line) ? static_cast<size_t>(length) : sizeof(line) - 1U);
+}
 
 // Runs inside the idle task of each core while sampling. Returning true keeps the core from sleeping between ticks, so the loop spins
 // and the gaps are measurable (only during the 2 s window).
@@ -75,18 +91,20 @@ inline void resetPeaks() {
   if (s.hmiMax) *s.hmiMax = 0U;
 }
 
-inline void startCpuSample() {
+inline void startCpuSample(bool logChannel = false) {
   State &s = state();
   if (s.sampling) return;
   s.idleUs[0] = 0; s.idleUs[1] = 0; s.lastCallUs[0] = 0; s.lastCallUs[1] = 0;
   s.windowStartUs = esp_timer_get_time();
+  s.logChannel = logChannel;
+  const bool ok0 = esp_register_freertos_idle_hook_for_cpu(idleHook, 0) == ESP_OK;
+  const bool ok1 = esp_register_freertos_idle_hook_for_cpu(idleHook, 1) == ESP_OK;
+  s.hooksOk = ok0 && ok1;
   s.sampling = true;
-  (void)esp_register_freertos_idle_hook_for_cpu(idleHook, 0);
-  (void)esp_register_freertos_idle_hook_for_cpu(idleHook, 1);
 }
 
-// Called from the control loop's serial service (diagnostic builds only): finishes the 2 s CPU window.
-inline void service() {
+// Finishes the 2 s CPU window (control loop serial service for HEALTH, supervisor task for LOG CPU).
+inline void service(bool logAllowed = true) {
   State &s = state();
   if (!s.sampling) return;
   const int64_t elapsed = esp_timer_get_time() - s.windowStartUs;
@@ -101,6 +119,14 @@ inline void service() {
     if (idle > 100.0f) idle = 100.0f;
     busy[c] = 100.0f - idle;
   }
+  if (s.logChannel) {
+    if (!logAllowed) return;   // the LOG CPU mode ended meanwhile: the hooks are removed above, the result is not printed
+    if (!s.hooksOk) emit(true, "[CPU] load n/a (idle hooks unavailable)\n");
+    else emit(true, "[CPU] load core0=%.0f%% core1=%.0f%% (estimate over %lu ms; core1 = control + HMI + supervisor, core0 = network/MQTT/cloud/OTA)\n",
+              static_cast<double>(busy[0]), static_cast<double>(busy[1]), static_cast<unsigned long>(elapsed / 1000));
+    return;
+  }
+  if (!s.hooksOk) { mayapSerialPrintf(false, "[HEALTH] cpu load n/a (idle hooks unavailable)\n"); return; }
   mayapSerialPrintf(false, "[HEALTH] cpu core0=%.0f%% core1=%.0f%% (estimate over %lu ms; core1 = control + HMI + supervisor, core0 = network/MQTT/cloud/OTA)\n",
                     static_cast<double>(busy[0]), static_cast<double>(busy[1]), static_cast<unsigned long>(elapsed / 1000));
 }
@@ -142,6 +168,37 @@ inline void print(uint32_t nowMs) {
                       static_cast<unsigned long>(*s.hmiLast), static_cast<unsigned long>(*s.hmiMax));
   mayapSerialPrintf(false, "[HEALTH] sampling CPU for 2 s...\n");
   startCpuSample();
+}
+
+// ---- LOG CPU (log channel) ------------------------------------------------------------------------------------------------
+// Constant per build: printed once when the mode starts.
+inline void emitStaticRegions() {
+  esp_chip_info_t chip;
+  esp_chip_info(&chip);
+  auto size = [](const char *b, const char *e) -> long { return (b && e && e >= b) ? static_cast<long>(e - b) : -1L; };
+  emit(true, "[CPU] static RAM: data=%ld bss=%ld iram=%ld B (-1 = n/a); cores=%u cpu=%luMHz\n", size(&_data_start, &_data_end), size(&_bss_start, &_bss_end),
+       size(&_iram_start, &_iram_end), static_cast<unsigned>(chip.cores), static_cast<unsigned long>(getCpuFrequencyMhz()));
+}
+// Three lines (the caller checked the queue has room): heap + chip temperature, stack peaks, cycle times.
+inline void emitBlock(uint32_t nowMs, uint32_t dropped) {
+  State &s = state();
+  emit(true, "[CPU] t=%lu heap free=%lu min=%lu largest=%lu total=%lu chip=%.1fC drop=%lu\n", static_cast<unsigned long>(nowMs),
+       static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)), static_cast<unsigned long>(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)),
+       static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)), static_cast<unsigned long>(heap_caps_get_total_size(MALLOC_CAP_INTERNAL)),
+       static_cast<double>(temperatureRead()), static_cast<unsigned long>(dropped));
+  char text[160]; size_t used = 0;
+  used += static_cast<size_t>(snprintf(text, sizeof(text), "[CPU] stack peak/size B:"));
+  for (uint8_t i = 0; i < s.taskCount && used + 24U < sizeof(text); ++i) {
+    const uint32_t freeMin = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(s.tasks[i].handle));
+    const uint32_t size = s.tasks[i].stackBytes;
+    used += static_cast<size_t>(snprintf(text + used, sizeof(text) - used, " %s=%lu/%lu", s.tasks[i].name,
+                                         static_cast<unsigned long>(size > freeMin ? size - freeMin : 0U), static_cast<unsigned long>(size)));
+  }
+  text[used < sizeof(text) ? used : sizeof(text) - 1U] = '\0';
+  emit(true, "%s\n", text);
+  if (s.ctrlLast && s.ctrlMax && s.hmiLast && s.hmiMax)
+    emit(true, "[CPU] cycle us: control last=%lu max=%lu | hmi last=%lu max=%lu\n", static_cast<unsigned long>(*s.ctrlLast), static_cast<unsigned long>(*s.ctrlMax),
+         static_cast<unsigned long>(*s.hmiLast), static_cast<unsigned long>(*s.hmiMax));
 }
 }  // namespace MayapHealth
 
