@@ -1,6 +1,6 @@
 {
-  "note": "Regression ceilings for tools/test_smart_autotune.py (SIMULATION ONLY). Lower acceptance or any ACCEPTED_BAD fails CI. 2026-10-09 final hardening: fullAcceptedBadMax 2 -> 0 and fullAcceptedMin 240 -> 225 on purpose (the verification now rejects what it cannot prove: horizon from the identified loop, worst-case probe-resolution margin, steady-regime evidence; 20 of the 251 old accepts - 2 bad, 18 good - became safe rejects). Improve the numbers, never relax them without a review note.",
-  "miniAcceptedMin": 16,
-  "fullAcceptedMin": 225,
+  "note": "Regression ceilings for tools/test_smart_autotune.py (SIMULATION ONLY). Lower acceptance or any ACCEPTED_BAD fails CI. 2026-10-09 final hardening: fullAcceptedBadMax 2 -> 0 and fullAcceptedMin 240 -> 225 on purpose (the verification now rejects what it cannot prove: horizon from the identified loop, worst-case probe-resolution margin, steady-regime evidence; 20 of the 251 old accepts - 2 bad, 18 good - became safe rejects). Improve the numbers, never relax them without a review note. 2026-10-15 slow ovens: miniAcceptedMin 16 -> 19 and fullAcceptedMin 225 -> 285 on purpose (a measured 20 / 293 with ACCEPTED_BAD 0 after the delay grid to 360 s, dynamic excitation limits, relay skip, long-window hold measurement and the 480 min budget; the floors sit a little below the measurement so a different compiler's float rounding cannot flip a knife-edge case). The acceptance targets themselves are unchanged.",
+  "miniAcceptedMin": 19,
+  "fullAcceptedMin": 285,
   "fullAcceptedBadMax": 0
 }

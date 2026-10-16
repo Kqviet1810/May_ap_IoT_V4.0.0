@@ -24,8 +24,14 @@ constexpr uint32_t BaselineMs = 90000UL;
 constexpr uint32_t ExciteMinMs = 60000UL;
 constexpr uint32_t ExciteMaxMs = 720000UL;
 constexpr uint32_t CoastMaxMs = 480000UL;
+// A slow oven (apparent delay above SlowDelaySec) needs a longer ramp before the fit means anything (delay + ~1000 s to show 2 C with a
+// weak heater) and a longer coast: only then are the limits extended, so every faster oven is identified exactly as before.
+constexpr float SlowDelaySec = 150.0f;
+constexpr uint32_t ExciteMaxSlowMs = 1500000UL;
+constexpr uint32_t CoastMaxSlowMs = 900000UL;
 constexpr uint32_t CoastPlateauMs = 60000UL;       // no new PV maximum for this long = the peak is behind us
 constexpr uint32_t ApproachMaxMs = 5400000UL;
+constexpr uint32_t ApproachMaxLongMs = 7200000UL;  // ... when the hold needs the long window below (weak heater)
 constexpr uint32_t NearSpMaxMs = 5000000UL;        // the reused relay also keeps its own 45 min / 15 min limits
 constexpr uint32_t SettleMaxMs = 900000UL;
 constexpr uint32_t SettleCoolMs = 600000UL;      // wait this long at most for PV to fall SettleBelowC under the setpoint
@@ -42,13 +48,13 @@ constexpr float ValidateWarmTauI = 3.0f;           // warm-up >= 3 integral time
 constexpr float ValidateTailTauI = 2.0f;           // scored tail >= 2 integral times
 constexpr float CoarseResC = 0.05f;                // a probe step this coarse needs a longer tail (x1.5): fewer levels per minute
 constexpr float CoarseTailFactor = 1.5f;
-constexpr uint32_t ValidateHardMaxMs = 9000000UL;  // 150 min: above this the candidate is rejected, never shortened
+constexpr uint32_t ValidateHardMaxMs = 18000000UL; // 300 min: above this the candidate is rejected, never shortened
 constexpr float ValidHoldFrac = 0.90f;             // share of the scored tail the controller must be in its steady HOLD regime
 // Sensor resolution is read off the raw probe steps that were really seen (nothing is configured, nothing comes from the simulator).
 constexpr float ResEpsC = 0.003f;                  // smaller PV steps are float dust / ADC noise, not quantisation
 constexpr uint8_t ResMinSteps = 4;                 // steps needed before the estimate is trusted
 constexpr float ResUnknownC = 0.5f;                // fewer steps than that: the probe is too coarse to prove anything
-constexpr uint32_t TotalMaxMs = 16200000UL;        // 270 min hard cap (a cold, heavy, weak oven needs > 80 min just to heat)
+constexpr uint32_t TotalMaxMs = 28800000UL;        // 480 min hard cap (a cold, heavy, weak oven needs > 80 min just to heat; a 200 s delay needs ~3 h of verification)
 
 // ---- safety / quality limits ------------------------------------------------------------------------------
 constexpr float MinHeadroomC = 2.5f;       // SP - PV needed to start: the first excitation needs room to coast
@@ -72,13 +78,26 @@ constexpr float ValidMae = 0.12f, ValidP95 = 0.18f, ValidRipple = 0.30f;   // ta
 constexpr float ValidSatFrac = 0.30f;
 constexpr float HoldMaxPct = 30.0f;        // a plant that needs more than 30 % duty just to stand still has < 3.3x authority margin: not accepted in V1
 constexpr float ApproachArriveC = 0.15f;   // PV moved less than this over the last 200 s = equilibrium
+// The equilibrium duty is mean(ON) - drift/gain over the window, and the drift is only known to one probe step: 100 x res / (window x gain)
+// duty points. A weak heater (gain 0.013 C/s, 0.1 C probe, 200 s) makes that +-4 points - bigger than the hold of a well insulated oven
+// (1.5-3 %), so the measured hold came out 0. When the 200 s value is not at least HoldSignifFactor x that noise the equilibrium is
+// measured again over a window long enough for one probe step to be worth HoldTolPct points (capped), from a least-squares slope.
+constexpr float HoldSignifFactor = 2.5f;   // largest value with ACCEPTED_BAD = 0 on the 540-plant matrix (3.0 admits one 28 % hold plant that cannot settle in 3 h)
+constexpr float HoldTolPct = 0.25f;
+constexpr float HoldWinMaxSec = 2400.0f;
+constexpr float RelayMaxCoolSec = 900.0f;  // the relay needs the plant to cool 2 bands within about this time; a slower one cannot give 4 cycles in its 80 min
+// The relay is skipped up front only on a hold that can be trusted: the drift correction inside the equilibrium duty (mean ON - drift/gain)
+// must be small. A heavy plant still creeping toward the set point reads a hold far too low (7 % against a true 14 %), would be judged "too
+// slow to cycle" from that number, and must run the relay, which measures the hold itself, exactly as before.
+constexpr float HoldDriftTrustPct = 1.0f;     // drift correction (duty points) that is always accepted
+constexpr float HoldDriftTrustFrac = 0.25f;   // ... or this share of the measured equilibrium duty
 constexpr float KpMax = 60.0f, KpMin = 1.0f, KiMax = 3.0f, KiMin = 0.002f;
 constexpr float TauCFactor = 1.5f;       // closed-loop time constant = 1.5 x apparent delay (SIMC "smooth"; 1.0 = aggressive)
 constexpr float ConfBase = 60.0f, ConfSpan = 10.0f;   // measured-profile confidence 60..70: above the aged-seed cap (40) and the 60 qualification line, well under the 100 a long-run profile can earn
 constexpr float KuMargin = 2.2f;           // Kp <= Ku / 2.2 (gain margin >= 2.2)
 
-constexpr uint8_t GridN = 13;
-constexpr float Grid[GridN] = {4, 8, 14, 20, 28, 38, 50, 65, 82, 102, 126, 155, 190};
+constexpr uint8_t GridN = 16;
+constexpr float Grid[GridN] = {4, 8, 14, 20, 28, 38, 50, 65, 82, 102, 126, 155, 190, 235, 290, 360};
 
 // Fixed-memory identification of  dPV/dt = Kh * u(t - theta)  during a CONSTANT-power excitation: PV rise against the ideal
 // delayed ON-seconds  x_j(t) = d * max(0, t - theta_j)  (d = commanded duty), one running (Welford) regression per delay candidate.
@@ -198,6 +217,23 @@ inline bool verificationPlan(float tauISec, float periodSec, float resolutionC, 
   return true;
 }
 
+// The closed-loop verdict (pure; unit-tested). The probe only says the true value is within half a step of what it reports, so every
+// scored quantity is judged at its worst case: |true error| <= |measured error| + res/2 for each sample (overshoot, MAE, P95),
+// peak-to-peak + res. The targets are NOT relaxed. Returns the first failed check, "" when everything passed.
+inline const char *judge(uint32_t samples, float overshoot, float mae, float p95, float ripple, float satFrac, float integralPeak,
+                         float holdFrac, float resolution, float maxOut) {
+  const float half = 0.5f * resolution;
+  if (samples < 100U) return "samples";
+  if (overshoot + half > ValidOvershootC) return "overshoot";
+  if (mae + half > ValidMae) return "mae";
+  if (p95 + half > ValidP95) return "p95";
+  if (ripple + resolution > ValidRipple) return "ripple";
+  if (satFrac > ValidSatFrac) return "saturation";
+  if (integralPeak >= 0.95f * maxOut) return "integral";
+  if (holdFrac < ValidHoldFrac) return "not-steady";
+  return "";
+}
+
 struct Model {
   float gain = 0;          // degC per ON-second == degC/s at 100 % ACTUAL duty (effective plant gain)
   float delaySec = 0;      // apparent delay, SSR on -> reliable sensor response
@@ -220,6 +256,10 @@ class SmartAutoTune {
   explicit SmartAutoTune(uint8_t /*legacy preheat percent, unused*/ = 0) {}
   using Cycle = RelayAutoTune::Cycle;
   using Result = RelayAutoTune::Result;
+  struct CoastCheck {   // what the identification looked like when COAST judged it (diagnostics only; nothing reads it back)
+    float gain = 0, delay = 0, relSe = 1, separation = 1, rise = 0, ratioDuty = 0, coastRise = 0, predicted = 0, ratio = 0;
+    bool fitValid = false, good = false, consistent = false, second = false;
+  };
   struct Eval {   // closed-loop validation scores (MEASURED on the PV the controller sees; the resolution margin is applied when judging)
     float overshoot = 0, mae = 0, p95 = 0, ripple = 0, satFrac = 0, integralPeak = 0;
     float resolution = 0, holdFrac = 0;
@@ -244,11 +284,12 @@ class SmartAutoTune {
     power_ = 0; progress_ = 1; used2_ = false; validationSerial_ = modelSerial_ = 0;
     model_ = SmartTune::Model(); eval_ = Eval();
     onMs_ = 0; tickAt_ = now; tickOn_ = false; tickSeen_ = false;
-    slopeCount_ = 0; slopeHead_ = 0; nearAt_ = 0;
+    slopeCount_ = 0; slopeHead_ = 0; nearAt_ = 0; slopeStepSec_ = SlopeStepSec; holdLong_ = false;
     baseN_ = 0; baseSum_ = baseSq_ = 0; basePrev_ = input; baseFirst_ = input; baseFirstAt_ = now; baseMaxJump_ = 0;
     pvOff_ = pvPeak_ = input; validationStartPending_ = false;
     rawPrev_ = NAN; resMin_ = 1e9f; resSteps_ = 0; holdRegime_ = false;
     relayRunning_ = false; relayHigh_ = 0; candidateValid_ = false; cand_ = Candidate();
+    coastCheck_ = CoastCheck(); coastCheckSerial_ = 0; relaySkipped_ = false;
     if (!std::isfinite(input) || !std::isfinite(target_)) abort(AutoTuneReason::SensorAbort);
   }
   void abort(AutoTuneReason reason = AutoTuneReason::SafetyAbort) {
@@ -270,9 +311,9 @@ class SmartAutoTune {
     uint32_t limit = 0;
     switch (phase_) {
       case AutoTunePhase::Baseline: limit = SmartTune::BaselineMs + 30000UL; break;
-      case AutoTunePhase::Excite: case AutoTunePhase::Excite2: limit = SmartTune::ExciteMaxMs + 30000UL; break;
-      case AutoTunePhase::Coast: limit = SmartTune::CoastMaxMs + 30000UL; break;
-      case AutoTunePhase::Approach: limit = SmartTune::ApproachMaxMs; break;
+      case AutoTunePhase::Excite: case AutoTunePhase::Excite2: limit = SmartTune::ExciteMaxSlowMs + 30000UL; break;
+      case AutoTunePhase::Coast: limit = SmartTune::CoastMaxSlowMs + 30000UL; break;
+      case AutoTunePhase::Approach: limit = holdLong_ ? SmartTune::ApproachMaxLongMs : SmartTune::ApproachMaxMs; break;
       case AutoTunePhase::NearSp: limit = SmartTune::NearSpMaxMs; break;
       case AutoTunePhase::Settle: limit = SmartTune::SettleMaxMs; break;
       case AutoTunePhase::Validating: limit = validateMs_ + 60000UL; break;
@@ -282,8 +323,13 @@ class SmartAutoTune {
     if (phase_ == AutoTunePhase::NearSp && relayRunning_) {
       relay_.checkTimeout(now);
       if (relay_.state() == AutoTuneState::Failed) {
-        rejection_ = relay_.reason();
-        abort(relay_.reason() == AutoTuneReason::SafetyAbort ? AutoTuneReason::SafetyAbort : AutoTuneReason::RelayFailed);
+        const AutoTuneReason why = relay_.reason();
+        if (why == AutoTuneReason::PreheatTimeout || why == AutoTuneReason::PhaseTimeout || why == AutoTuneReason::TotalTimeout) {
+          skipRelay(now);   // too slow for the relay: carry on with the step-response model (see nearSp())
+          return;
+        }
+        rejection_ = why;
+        abort(why == AutoTuneReason::SafetyAbort ? AutoTuneReason::SafetyAbort : AutoTuneReason::RelayFailed);
       }
     }
   }
@@ -362,6 +408,9 @@ class SmartAutoTune {
     return v;
   }
   const SmartTune::Model &fullModel() const { return model_; }
+  const CoastCheck &coastCheck() const { return coastCheck_; }
+  uint32_t coastCheckSerial() const { return coastCheckSerial_; }
+  bool relaySkipped() const { return relaySkipped_; }
   const Eval &evalFull() const { return eval_; }
   AutoTuneEvalView eval() const {
     AutoTuneEvalView v; v.overshoot = eval_.overshoot; v.mae = eval_.mae; v.p95 = eval_.p95; v.ripple = eval_.ripple;
@@ -392,7 +441,7 @@ class SmartAutoTune {
       const uint8_t newest = static_cast<uint8_t>((slopeHead_ + SlopeN - 1U) % SlopeN);
       const uint8_t older = static_cast<uint8_t>((slopeHead_ + SlopeN - 5U) % SlopeN);   // 4 steps = 80 s back
       h.slopeValid = true;
-      h.slopePerSec = (scratch_.v.slopePv[newest] - scratch_.v.slopePv[older]) / (4.0f * SlopeStepSec);
+      h.slopePerSec = (scratch_.v.slopePv[newest] - scratch_.v.slopePv[older]) / (4.0f * slopeStepSec_);
     }
     return h;
   }
@@ -405,7 +454,7 @@ class SmartAutoTune {
     auto ramp = [](float x, float lo, float hi) { return x <= lo ? 0.0f : x >= hi ? 1.0f : (x - lo) / (hi - lo); };
     const float conf = static_cast<float>(model_.confidence);
     float hold = 0.0f;
-    if (model_.holdPct >= 3.0f /* Policy::HoldFfMinPct */) hold = model_.holdPct * 0.95f * ramp(conf, 30.0f, 60.0f);
+    if (model_.holdPct >= MayapThermal::HoldFfMeasuredMinPct) hold = model_.holdPct * 0.95f * ramp(conf, 30.0f, 60.0f);
     a.feedForward = hold;
     const float theta = std::max(3.0f, model_.delaySec);
     if (hold > 0.0f) {
@@ -474,7 +523,12 @@ class SmartAutoTune {
     const float headroom = target_ - pvExciteStart_;
     const float cap = std::min(SmartTune::RiseCapC, SmartTune::RiseCapHeadroom * headroom);
     if (target_ - pv < 1.0f) { abort(AutoTuneReason::NoHeadroom); return false; }
-    bool stop = rise >= cap || el >= SmartTune::ExciteMaxMs;
+    uint32_t maxMs = SmartTune::ExciteMaxMs;
+    if (el >= maxMs) {
+      const SmartTune::StepEstimator::Fit slow = scratch_.est.fit();
+      if (slow.valid && slow.delay > SmartTune::SlowDelaySec) maxMs = SmartTune::ExciteMaxSlowMs;
+    }
+    bool stop = rise >= cap || el >= maxMs;
     if (!stop && el >= SmartTune::ExciteMinMs && rise >= SmartTune::MinRiseC) {
       const SmartTune::StepEstimator::Fit f = scratch_.est.fit();
       // The ramp is only a ramp after the lag has died out (~3 time constants after the dead time): keep exciting until the
@@ -501,7 +555,7 @@ class SmartAutoTune {
     const float theta = exFit_.valid ? exFit_.delay : 60.0f;
     const uint32_t minMs = static_cast<uint32_t>((1.2f * theta + 30.0f) * 1000.0f);
     const bool plateau = el >= minMs && elapsedMs(now, peakAt_) >= SmartTune::CoastPlateauMs;
-    if (!plateau && el < SmartTune::CoastMaxMs) return false;
+    if (!plateau && el < (theta > SmartTune::SlowDelaySec ? SmartTune::CoastMaxSlowMs : SmartTune::CoastMaxMs)) return false;
     // ---- evaluate the identification
     // The regression used the COMMANDED duty; the gain is rescaled by the ACTUAL / commanded ratio measured over the excitation.
     const float actualDuty = exDurSec_ > 1.0f ? exOnSec_ / exDurSec_ : 0.0f;
@@ -517,6 +571,11 @@ class SmartAutoTune {
     const float predicted = f.gain * duty * theta1;
     const float ratio = predicted > 1e-4f ? coastRise / predicted : 0.0f;
     const bool consistent = predicted > 0.05f ? (ratio >= SmartTune::CoastRatioMin && ratio <= SmartTune::CoastRatioMax) : true;
+    coastCheck_.fitValid = f.valid; coastCheck_.gain = f.gain; coastCheck_.delay = f.delay; coastCheck_.relSe = f.relSe;
+    coastCheck_.separation = f.separation; coastCheck_.rise = f.rise; coastCheck_.ratioDuty = ratioDuty; coastCheck_.coastRise = coastRise;
+    coastCheck_.predicted = predicted; coastCheck_.ratio = ratio; coastCheck_.good = good; coastCheck_.consistent = consistent;
+    coastCheck_.second = used2_;
+    ++coastCheckSerial_;
     if (!(good && consistent)) {
       if (!used2_ && f.valid && f.gain > 0.0f && target_ - pv >= 2.0f &&
           static_cast<float>(cfg.maxHeaterPower) > SmartTune::ExcitePct + 5.0f) {
@@ -534,7 +593,7 @@ class SmartAutoTune {
     model_.coastSec = std::min(MayapThermal::Limits::CoastTimeMax, elapsedMs(peakAt_, phaseAt_) * 0.001f);
     ++modelSerial_;
     std::memset(&scratch_.v, 0, sizeof(scratch_.v));
-    slopeCount_ = 0; slopeHead_ = 0; nearAt_ = 0;
+    slopeCount_ = 0; slopeHead_ = 0; nearAt_ = 0; slopeStepSec_ = SlopeStepSec; holdLong_ = false;
     enter(AutoTunePhase::Approach, now);
     progress_ = 40;
     return false;
@@ -559,10 +618,29 @@ class SmartAutoTune {
     const uint8_t newest = static_cast<uint8_t>((slopeHead_ + SlopeN - 1U) % SlopeN), oldest = slopeHead_;
     if (std::fabs(scratch_.v.slopePv[newest] - scratch_.v.slopePv[oldest]) > SmartTune::ApproachArriveC) return false;
     // equilibrium: mean actual duty over the window, minus the residual drift expressed as duty
-    const float winSec = (SlopeN - 1U) * SlopeStepSec;
+    const float winSec = (SlopeN - 1U) * slopeStepSec_;
     const float onSec = (scratch_.v.slopeOn[newest] - scratch_.v.slopeOn[oldest]) * 0.001f;
-    float holdEq = 100.0f * onSec / winSec - 100.0f * ((scratch_.v.slopePv[newest] - scratch_.v.slopePv[oldest]) / winSec) / std::max(1e-4f, model_.gain);
+    float drift = scratch_.v.slopePv[newest] - scratch_.v.slopePv[oldest];
+    if (holdLong_) {   // least-squares slope over the 11 points: a 0.1 C probe makes the two end points alone good to +-0.1 C only
+      float sxy = 0.0f;
+      for (uint8_t k = 0; k < SlopeN; ++k) sxy += (static_cast<float>(k) - 5.0f) * scratch_.v.slopePv[(slopeHead_ + k) % SlopeN];
+      drift = sxy / 110.0f * static_cast<float>(SlopeN - 1U);
+    }
+    const float driftPct = std::fabs(100.0f * (drift / winSec) / std::max(1e-4f, model_.gain));   // the drift correction, in duty points
+    float holdEq = 100.0f * onSec / winSec - 100.0f * (drift / winSec) / std::max(1e-4f, model_.gain);
     holdEq = std::max(0.0f, std::min(100.0f, holdEq));
+    if (!holdLong_) {
+      const float resC = resSteps_ >= SmartTune::ResMinSteps ? std::min(0.5f, std::max(0.01f, resMin_)) : 0.1f;
+      const float noisePct = 100.0f * resC / (winSec * std::max(1e-4f, model_.gain));
+      if (holdEq < SmartTune::HoldSignifFactor * noisePct) {
+        const float longSec = std::min(SmartTune::HoldWinMaxSec, 100.0f * resC / (SmartTune::HoldTolPct * std::max(1e-4f, model_.gain)));
+        if (longSec > 1.5f * winSec) {
+          holdLong_ = true; slopeStepSec_ = longSec / static_cast<float>(SlopeN - 1U);
+          slopeCount_ = 0; slopeHead_ = 0; nearAt_ = now ? now : 1U;
+          return false;
+        }
+      }
+    }
     model_.holdEqPct = holdEq;
     // The hold grows with (T - ambient): scale the equilibrium duty to the setpoint, taking the cold baseline as ambient
     // (capped at x1.6; the unscaled value stays the SAFE lower bound that limits the relay's overshoot).
@@ -577,8 +655,25 @@ class SmartAutoTune {
     high = std::min(std::min(60.0f, static_cast<float>(cfg.maxHeaterPower)), high);
     if (!(high >= 5.0f) || high < holdSp * 1.1f + 2.0f) { abort(AutoTuneReason::PowerLimited); return false; }
     relayHigh_ = std::floor(high);
+    holdSpMeasured_ = holdSp;
+    // A well insulated oven (small hold) cools far too slowly for a relay: two bands take about 2 x band / (gain x hold) with the heater
+    // off, and the relay needs four such cycles inside its 80 min. Such a plant is identified by the step response alone (gain, delay,
+    // measured hold); the relay would only add the Ku margin check, and the candidate still has to pass the closed-loop verification.
+    const bool holdTrusted = driftPct <= std::max(SmartTune::HoldDriftTrustPct, SmartTune::HoldDriftTrustFrac * holdEq);
+    const float coolSec = 2.0f * bandC_ / std::max(1e-6f, model_.gain * holdSp * 0.01f);
+    if (holdTrusted && coolSec > SmartTune::RelayMaxCoolSec) { skipRelay(now); return false; }
     startRelay(now, pv, cfg);
     return false;
+  }
+
+  // No relay: Ku/Pu stay unknown (0 = "no gain-margin clamp"), the hold is the measured approach equilibrium.
+  void skipRelay(uint32_t now) {
+    relaySkipped_ = true; relayRunning_ = false;
+    model_.ku = 0.0f; model_.periodSec = 0.0f;
+    model_.holdPct = std::min(100.0f, std::max(0.0f, holdSpMeasured_));
+    power_ = 0;
+    enter(AutoTunePhase::Settle, now);
+    progress_ = 86;
   }
 
   void startRelay(uint32_t now, float pv, const MachineConfig &cfg) {
@@ -603,7 +698,15 @@ class SmartAutoTune {
     progress_ = static_cast<uint8_t>(60 + std::min<uint32_t>(25U, relay_.cycleCount() * 8U));
     if (relay_.state() == AutoTuneState::Failed) {
       rejection_ = relay_.reason();   // why the relay gave up (kept for diagnostics)
-      abort(relay_.reason() == AutoTuneReason::SafetyAbort ? AutoTuneReason::SafetyAbort : AutoTuneReason::RelayFailed);
+      const AutoTuneReason why = relay_.reason();
+      if (why == AutoTuneReason::PreheatTimeout || why == AutoTuneReason::PhaseTimeout || why == AutoTuneReason::TotalTimeout) {
+        // The oven is too slow for the relay inside its limits. The identification (gain, delay, measured hold) is intact: continue
+        // without the relay's Ku; the closed-loop verification below is still the judge.
+        rejection_ = AutoTuneReason::None;
+        skipRelay(now);
+        return false;
+      }
+      abort(why == AutoTuneReason::SafetyAbort ? AutoTuneReason::SafetyAbort : AutoTuneReason::RelayFailed);
       return false;
     }
     if (relay_.state() != AutoTuneState::Success) return false;
@@ -665,7 +768,7 @@ class SmartAutoTune {
     ++validationSerial_;
     validationStartPending_ = true;
     enter(AutoTunePhase::Validating, now);
-    integralPeak_ = 0; tailHold_ = 0; holdFirstMs_ = 0xFFFFFFFFUL; slopeCount_ = 0; slopeHead_ = 0; for (uint8_t k = 0; k < HistN; ++k) scratch_.v.bins[k] = 0;
+    integralPeak_ = 0; tailHold_ = 0; holdFirstMs_ = 0xFFFFFFFFUL; slopeCount_ = 0; slopeHead_ = 0; slopeStepSec_ = SlopeStepSec; for (uint8_t k = 0; k < HistN; ++k) scratch_.v.bins[k] = 0;
     tailMin_ = 1e9f; tailMax_ = -1e9f; tailSat_ = 0; tailN_ = 0; tailAbs_ = 0;
     maxOver_ = -1e9f;
     progress_ = 88;
@@ -710,18 +813,8 @@ class SmartAutoTune {
     eval_.holdFrac = tailN_ ? static_cast<float>(tailHold_) / static_cast<float>(tailN_) : 0.0f;
     eval_.holdAfterMs = holdFirstMs_;
     const float maxOut = static_cast<float>(cfg.maxHeaterPower);
-    // The probe only says the true value is within half a step of what it reports, so every scored quantity is judged at its worst
-    // case: |true error| <= |measured error| + res/2 for each sample (overshoot, MAE, P95), peak-to-peak + res. Targets are NOT relaxed.
-    const float half = 0.5f * eval_.resolution;
-    const char *why = "";
-    if (tailN_ < 100U) why = "samples";
-    else if (eval_.overshoot + half > SmartTune::ValidOvershootC) why = "overshoot";
-    else if (eval_.mae + half > SmartTune::ValidMae) why = "mae";
-    else if (eval_.p95 + half > SmartTune::ValidP95) why = "p95";
-    else if (eval_.ripple + eval_.resolution > SmartTune::ValidRipple) why = "ripple";
-    else if (eval_.satFrac > SmartTune::ValidSatFrac) why = "saturation";
-    else if (eval_.integralPeak >= 0.95f * maxOut) why = "integral";
-    else if (eval_.holdFrac < SmartTune::ValidHoldFrac) why = "not-steady";
+    const char *why = SmartTune::judge(tailN_, eval_.overshoot, eval_.mae, eval_.p95, eval_.ripple, eval_.satFrac, eval_.integralPeak,
+                                       eval_.holdFrac, eval_.resolution, maxOut);
     eval_.why = why;
     eval_.pass = why[0] == '\0';
     if (!eval_.pass) return failValidation(AutoTuneReason::ValidationFailed, false);
@@ -747,11 +840,18 @@ class SmartAutoTune {
   } scratch_;
   static constexpr uint8_t HistN = 25;   // 0.01 C bins up to 0.24 C (the P95 limit is 0.18)
   static constexpr uint8_t SlopeN = 11;   // 11 entries every 20 s = a 200 s window
+  static_assert(SlopeN == 11, "the least-squares slope in approach() (centre 5, divisor 110) is written for 11 points");
   static constexpr float SlopeStepSec = 20.0f;
   uint8_t slopeHead_ = 0, slopeCount_ = 0;
   uint32_t slopeAt_ = 0, nearAt_ = 0;
+  float slopeStepSec_ = SlopeStepSec;   // 20 s; the approach stretches it when the hold needs a longer window
+  bool holdLong_ = false;
+  CoastCheck coastCheck_;
+  float holdSpMeasured_ = 0;
+  uint32_t coastCheckSerial_ = 0;
+  bool relaySkipped_ = false;
   void pushSlope(uint32_t now, float pv) {
-    if (slopeCount_ != 0U && elapsedMs(now, slopeAt_) < static_cast<uint32_t>(SlopeStepSec * 1000.0f)) return;
+    if (slopeCount_ != 0U && elapsedMs(now, slopeAt_) < static_cast<uint32_t>(slopeStepSec_ * 1000.0f)) return;
     slopeAt_ = now; scratch_.v.slopePv[slopeHead_] = pv; scratch_.v.slopeOn[slopeHead_] = onMs_;
     slopeHead_ = static_cast<uint8_t>((slopeHead_ + 1U) % SlopeN);
     if (slopeCount_ < SlopeN) ++slopeCount_;

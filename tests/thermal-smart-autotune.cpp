@@ -73,10 +73,10 @@ int main(int argc, char **argv) {
   const unsigned shard = argc > 3 ? static_cast<unsigned>(std::atoi(argv[3])) : 0U;
   const unsigned shards = argc > 4 ? static_cast<unsigned>(std::atoi(argv[4])) : 1U;
   std::vector<Case> cases = mode == "full" ? fullCases() : miniCases();
-  if (mode.compare(0, 4, "one:") == 0) {   // one:eff,capacity,loss,dead,ambient,resolution[,lag]
-    Case c; double lag = 8;
-    if (std::sscanf(mode.c_str() + 4, "%lf,%lf,%lf,%lf,%lf,%lf,%lf", &c.p.eff, &c.p.capacity, &c.p.loss, &c.p.dead, &c.p.ambient, &c.p.resolution, &lag) < 6) return 2;
-    c.p.lag = lag; c.label = "one"; cases.assign(1, c);
+  if (mode.compare(0, 4, "one:") == 0) {   // one:eff,capacity,loss,dead,ambient,resolution[,lag[,setpoint]]
+    Case c; double lag = 8, setpoint = c.sp;
+    if (std::sscanf(mode.c_str() + 4, "%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf", &c.p.eff, &c.p.capacity, &c.p.loss, &c.p.dead, &c.p.ambient, &c.p.resolution, &lag, &setpoint) < 6) return 2;
+    c.p.lag = lag; c.sp = static_cast<float>(setpoint); c.label = "one"; cases.assign(1, c);
   }
   if (std::getenv("TUNE_TRACE")) serialEnabled = true;
   csv << std::fixed << std::setprecision(5);

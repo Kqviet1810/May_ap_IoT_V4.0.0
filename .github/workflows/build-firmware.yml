@@ -103,6 +103,9 @@ jobs:
       - name: Kiem tra dong bo release
         run: python3 tools/check_release_sync.py
 
+      - name: Cong cu mo phong lo (tu kiem tra so voi ket qua chuan)
+        run: python3 tools/oven_sim.py --out /tmp/oven-report --jobs 2 --strict
+
       - name: Kiem tra reliability truoc build/release
         run: python3 tools/check_reliability.py
 

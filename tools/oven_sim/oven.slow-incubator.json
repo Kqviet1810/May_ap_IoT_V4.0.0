@@ -1,0 +1,15 @@
+{
+  "ghi_chu": "LO SO cua lo cham, cach nhiet tot (suy ra tu nhat ky PID chieu 2026-10-15, CHUA do truc tiep): Kh 0.8 C/phut (0.0133 C/s) o 100%, tre bieu kien ~200 s (dead 150 + lag 50), cong suat giu ~1.9%, dau do 0.1 C. Hang so nguoi suy ra tu: tau = (SP - phong) / (cong suat giu x Kh) = 9.5 / (0.019 x 0.0133) s = ~626 phut. Thay bang so DO THAT khi co.",
+  "setpoint_c": 37.5,
+  "ambient_c": 28,
+  "kh_c_per_min": 0.8,
+  "cool_tau_min": 626,
+  "dead_s": 150,
+  "lag_s": 50,
+  "resolution_c": 0.1,
+  "noise_c": 0.0,
+  "hours": 8,
+  "door_drop_c": 1.5,
+  "door_at_hour": 5,
+  "uncertainty": { "kh_pct": 25, "tau_pct": 50, "dead_pct": 40, "ambient_c": [25, 28, 32] }
+}

@@ -12,6 +12,7 @@ Start with `FINAL_REPORT.md`, then `COMMISSIONING_TEST_PLAN.md`.
 | `PHASE5_AUTOTUNE_REJECTIONS.md`, `phase5/` | what happens after each of the 309 AutoTune refusals |
 | `PHASE6_INCUBATION_PROGRAM.md` | design-only set-point programme and egg-cooling modules (not in the firmware) |
 | `final/` | final A/B/C per case id, sensor-path results, qualification manifest |
+| `baseline-slow-oven/` | 2026-10-15: the reference A/B rows that `tools/ab_smart_thermal.py` reproduces after the slow-oven change (`../../doc/SLOW_OVEN_STUDY.md`); `baseline/` above is left untouched; README there lists what changed, incl. the 8 PASS→FAIL rows |
 
-Switch: `MAYAP_SMART_THERMAL` (default 0 = byte-identical Adaptive V1 behaviour). Tools: `tools/ab_smart_thermal.py`, `tools/test_thermal_sensor_path.py`,
+Switch: `MAYAP_SMART_THERMAL` (default 0 = Adaptive V1 behaviour as before the Smart Thermal program, EXCEPT the slow-oven fixes of 2026-10-15, which are in the default build). Tools: `tools/ab_smart_thermal.py`, `tools/test_thermal_sensor_path.py`,
 `tools/autotune_reject_study.py`; unit/property tests `tests/thermal-smart-startup.cpp`, `tests/thermal-adaptive-unit.cpp`, `tests/thermal-program.cpp`.
