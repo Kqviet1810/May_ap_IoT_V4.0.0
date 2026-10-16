@@ -121,7 +121,19 @@ Kết quả trên 24 lò kiểu người dùng không đổi (24/24, cùng thờ
 
 ### 5.6 Các cổng mô phỏng của dự án
 
-@@GATES@@
+Chạy cục bộ trên mã cuối của nhánh, cùng chuỗi lệnh với `reliability-checks.yml` (g++ trên Linux, `--sanitize` ở các bộ có cờ này). Tất cả pass:
+
+| Cổng | Kết quả |
+|---|---|
+| `tools/test_thermal_control.py --sanitize` | pass (kể cả `thermal-slow-oven`: 47 lần chạy, 139 kiểm tra; `thermal-smart-autotune-unit`: 503 kiểm tra; `thermal-adaptive-unit`: 755 kiểm tra) |
+| `tools/test_thermal_adaptive.py` (788 ca) | pass; Adaptive V1 **519/788** (main 509), baseline V4 186/788, High 0 và Emergency 0 ở cả hai; thông gió/đổi phần cứng/lỗi cảm biến: V1 High/Emergency = 0 |
+| `tools/test_smart_autotune.py` cờ 0 và `--smart-thermal` | pass; mini 20/36, đầy đủ 293/540, ACCEPTED_BAD = 0, High/Emergency khi tune và sau tune = 0 |
+| `tools/ab_smart_thermal.py` | "no safety regression": hàng A/B tái tạo đúng từng byte theo `baseline-slow-oven`; Smart Thermal High/Emergency = 0 ở thông gió, đổi phần cứng, lỗi, chạy dài |
+| `tools/test_thermal_sensor_path.py --sanitize`, `tools/test_tech_access.py --sanitize` | pass |
+| `tools/oven_sim.py --strict`, `check_release_sync.py`, `check_attiny_protocol.py`, `check_reliability.py` | pass |
+| `node --test tests/*.test.cjs` | 284/284 pass (gồm `runtime-recovery`: 0 mục ghim lệch sau khi re-pin có ghi chú review `slowOvenThermalReviewNote`) |
+
+Đây là mô phỏng trên PC; chưa có số đo RAM/Flash/CPU của ESP32 (CI `build-firmware.yml` trên nhánh sẽ cho).
 
 ## 6. Giới hạn còn lại (đọc trước khi tin)
 
