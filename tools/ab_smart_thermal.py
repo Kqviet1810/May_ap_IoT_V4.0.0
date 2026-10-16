@@ -18,6 +18,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = ROOT / 'audit/smart-thermal/baseline'
+# A (legacy PID) and B (Adaptive V1) rows are reproduced against REF when it exists: audit/smart-thermal/baseline is immutable ("later
+# phases must add new files, never overwrite these"), so the 2026-10-15 slow-oven change (a deliberate behaviour change of A and B on
+# long-delay ovens, see doc/SLOW_OVEN_STUDY.md) adds baseline-slow-oven next to it, with the old-versus-new delta written down in its README.
+REF = ROOT / 'audit/smart-thermal/baseline-slow-oven'
+FROZEN_AB = {'legacy788': 'adaptive-788.csv', 'matrix': 'adaptive-2160.csv', 'holdout': 'adaptive-holdout360.csv'}
+def ref_path(name): return (REF / name) if (REF / name).exists() else (BASE / name)
 
 def run(cmd, **kw):
     return subprocess.run(cmd, check=True, **kw)
@@ -54,6 +60,7 @@ def main():
     ap.add_argument('--report-dir', type=Path, default=Path(tempfile.gettempdir()) / 'mayap-ab-smart')
     ap.add_argument('--jobs', type=int, default=min(4, os.cpu_count() or 1))
     ap.add_argument('--skip-reproduce', action='store_true', help='do not re-run A/B (use the frozen baseline CSVs)')
+    ap.add_argument('--write-reference', action='store_true', help='re-run A and B and write them as the reference files in audit/smart-thermal/baseline-slow-oven (a reviewed, deliberate step), then exit')
     args = ap.parse_args()
     out = args.report_dir; out.mkdir(parents=True, exist_ok=True)
     inc = out / 'include'
@@ -63,22 +70,29 @@ def main():
     md, problems = ['# Smart Thermal A/B/C (simulation only)', ''], []
 
     # --- reproducibility of A and B -----------------------------------------------------------------
-    frozen = {'legacy788': 'adaptive-788.csv', 'matrix': 'adaptive-2160.csv', 'holdout': 'adaptive-holdout360.csv'}
+    frozen = FROZEN_AB
+    if args.write_reference:
+        REF.mkdir(parents=True, exist_ok=True)
+        for suite, name in frozen.items():
+            got = sharded(binary, suite, args.jobs, out)
+            (REF / name).write_text(got.read_text())
+            print(f'wrote {REF / name} ({sha(REF / name)})')
+        return
     if not args.skip_reproduce:
         for suite, name in frozen.items():
             got = sharded(binary, suite, args.jobs, out)
-            same = sha(got) == sha(BASE / name)
+            same = sha(got) == sha(ref_path(name))
             if not same:
                 # shard order differs from the frozen merge only by concatenation order; compare as sets of rows
-                same = sorted(got.read_text().splitlines()) == sorted((BASE / name).read_text().splitlines())
-            md.append(f'* reproducibility {suite}: A and B rows identical to frozen baseline `{name}`: **{same}**')
-            if not same: problems.append(f'{suite}: A/B no longer reproduce the frozen baseline')
+                same = sorted(got.read_text().splitlines()) == sorted(ref_path(name).read_text().splitlines())
+            md.append(f'* reproducibility {suite}: A and B rows identical to the reference `{ref_path(name).relative_to(ROOT)}`: **{same}**')
+            if not same: problems.append(f'{suite}: A/B no longer reproduce the reference baseline')
         md.append('')
 
     # --- matrices ------------------------------------------------------------------------------------
     for suite, name, title in (('legacy788', 'adaptive-788.csv', '788'), ('matrix', 'adaptive-2160.csv', '2160'), ('holdout', 'adaptive-holdout360.csv', 'holdout-360')):
         smart = rows(sharded(binary, suite + '_smart', args.jobs, out))
-        base = rows(BASE / name)
+        base = rows(ref_path(name))
         A = {r['label']: r for r in base if r['mode'] == 'BASELINE_V4'}
         B = {r['label']: r for r in base if r['mode'] == 'ADAPTIVE_V1'}
         C = {r['label']: r for r in smart}

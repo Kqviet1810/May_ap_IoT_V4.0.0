@@ -32,6 +32,30 @@ Chỉ cần Kh và τ là suy ra được công suất giữ nhiệt: `hold = (S
 Không chạm High 38,2 / Emergency 39,0; vọt lố ≤ 0,30 °C; MAE ≤ 0,10 °C; P95 ≤ 0,15 °C; dao động ≤ 0,25 °C (30 phút cuối); ổn định trong hạn.
 Lớp `HEAT_LIMITED` = lò vật lý không đủ công suất tới setpoint, không tính là lỗi bộ điều khiển (có cột riêng).
 
+## Lò chậm, cách nhiệt tốt (cấu hình mẫu của lò người dùng)
+`tools/oven_sim/oven.slow-incubator.json` mô tả lò "kẹt dưới SP" ngày 15/10: Kh 0,8 °C/phút (0,0133 °C/s), trễ chết 150 s + trễ bậc 1 50 s, hold ≈ 1,9 %, τ nguội ≈ 626 phút, phòng 28 °C, đầu dò 0,1 °C
+(suy ra từ nhật ký PID, chưa đo trực tiếp — thay bằng số đo thật khi có). Báo cáo sẽ cảnh báo "Công suất giữ quá nhỏ (<2%)": đúng, đó chính là đặc điểm của lò này.
+```
+python tools\oven_sim.py --config tools\oven_sim\oven.slow-incubator.json --out oven-report-cham
+```
+Kết quả hiện tại và nguyên nhân: `doc/SLOW_OVEN_STUDY.md`.
+
+## Chạy AutoTune thật trên lò ảo của bạn
+`tools/oven_sim/autotune_family.py` chạy **Smart AutoTune của firmware** (cùng mã, cùng bộ chia xung, cùng bộ kiểm chứng) trên một họ lò ảo mô tả bằng các số đo được, rồi báo: chấp nhận hay từ chối (và vì sao),
+thời gian tune, độ lợi/trễ/hold đo được so với mô hình, PID sẽ lưu, và kết quả của lần chạy 3 giờ độc lập sau tune (ACCEPTED_BAD nếu trượt).
+```
+python3 tools/oven_sim/autotune_family.py --kh 0.0133,0.0144 --dead 120,150,180,210 --lag 50 --hold 0.015,0.019,0.03 --res 0.1
+```
+`--kh` °C/s ở 100 % (độ dốc đầu của lần chạy full công suất, chia 60 nếu đo °C/phút), `--dead` giây từ lúc bật đến lúc cảm biến nhúc nhích, `--lag` thêm trễ bậc 1, `--hold` tỷ lệ duty giữ SP
+(0,019 = 1,9 %), `--cap` J/K, `--amb`, `--sp`, `--res`. Mỗi danh sách được lấy tích Descartes. Chỉ là mô phỏng.
+
+## Chạy một ca lẻ và theo dõi bên trong bộ điều khiển
+Tệp nhị phân `tools/oven_sim/.build/oven_sim` (tạo sau lần chạy `oven_sim.py` đầu tiên) nhận các cặp `khóa giá_trị`:
+`--eff --cap --loss --dead --lag --amb --res --noise --sp --hours --mode (0 PID cũ, 2 Adaptive, 3 Smart)`,
+`--start <°C>` (lò đã ấm khi bắt đầu), `--kp --ki --kd` (PID của người dùng), `--seedGain --seedDelay --seedHold --seedCoast --seedConf` (hồ sơ đã lưu từ trước, ví dụ hồ sơ AutoTune),
+`--event door|setpoint_step --eventAt <giờ> --eventValue --spBefore`, `--trace file.csv` (nhiệt độ, duty… theo thời gian), `--debug file.txt --debugFrom <s> --debugTo <s>`
+(trạng thái bên trong phanh khởi động và PID: `req`, `I`, `cap`, `peak`, `holdL`, `phase`…). Dòng kết quả: `lớp,chế độ,đạt,high,emergency,vọt,mae,p95,dao_động,ổn_định_s,đạt_SP_s,năng_lượng,confidence`.
+
 ## Độ tin cậy của kết quả
 * Bước tự kiểm: 3 ca chuẩn so với kết quả đã chạy trên Linux (`tools/oven_sim/reference.json`); báo `OK` hoặc `LECH`.
   Windows/Linux có thể lệch rất nhỏ ở chữ số cuối do thư viện toán; dung sai MAE 0,002 °C.

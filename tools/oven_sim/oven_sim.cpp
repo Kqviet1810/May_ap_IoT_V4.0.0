@@ -12,7 +12,8 @@ int main(int argc, char **argv) {
     std::cout << "class,mode,pass,high,emergency,overshoot,mae,p95,ripple,settling_s,rise_s,energy_j,confidence\n";
     return 0;
   }
-  Plant p; Scenario sc; std::string tracePath;
+  Plant p; Scenario sc; std::string tracePath, debugPath;
+  float seedGain = 0.03f, seedDelay = 45.0f, seedHold = 0.0f, seedCoast = 0.5f; int seedConf = 33;
   for (int i = 1; i + 1 < argc; i += 2) {
     const std::string k = argv[i]; const double v = std::atof(argv[i + 1]);
     if (k == "--trace") tracePath = argv[i + 1];
@@ -29,6 +30,24 @@ int main(int argc, char **argv) {
     else if (k == "--changeAt") sc.changeAtS = v * 3600;
     else if (k == "--effScale") sc.effScale = v; else if (k == "--lossScale") sc.lossScale = v; else if (k == "--capScale") sc.capScale = v;
     else if (k == "--ambDelta") sc.ambientDelta = v;
+    else if (k == "--start") sc.startTemp = v;                                   // chamber already warm (a running incubator)
+    else if (k == "--debug") debugPath = argv[i + 1];                            // per-sample controller internals (development)
+    else if (k == "--debugFrom") sc.debugFrom = v;
+    else if (k == "--debugTo") sc.debugTo = v;
+    else if (k == "--kp") { sc.gainsSet = true; sc.kp = static_cast<float>(v); }
+    else if (k == "--ki") { sc.gainsSet = true; sc.ki = static_cast<float>(v); }
+    else if (k == "--kd") { sc.gainsSet = true; sc.kd = static_cast<float>(v); }
+    else if (k == "--seedGain") { sc.seedSet = true; seedGain = static_cast<float>(v); }
+    else if (k == "--seedDelay") { sc.seedSet = true; seedDelay = static_cast<float>(v); }
+    else if (k == "--seedHold") { sc.seedSet = true; seedHold = static_cast<float>(v); }
+    else if (k == "--seedCoast") { sc.seedSet = true; seedCoast = static_cast<float>(v); }
+    else if (k == "--seedConf") { sc.seedSet = true; seedConf = static_cast<int>(v); }
+  }
+  if (sc.seedSet) {   // a stale / seed profile that is already stored when the controller starts
+    sc.seed = MayapThermal::defaultProfile();
+    sc.seed.heaterGain = seedGain; sc.seed.heaterDelaySec = seedDelay; sc.seed.holdPowerPct = seedHold; sc.seed.coastRiseC = seedCoast;
+    sc.seed.confidence = static_cast<uint8_t>(seedConf);
+    MayapThermal::sanitizeProfile(sc.seed);
   }
   sc.label = "oven";
   std::ofstream trace;
@@ -37,6 +56,8 @@ int main(int argc, char **argv) {
     trace << "label,mode,t,temp,fed,sp,duty,vent,conf,state,gain,delay,hold,coast,ventGain,predErr,mismatch,ventPhase,ff,integral,gate,req,holdWin,info\n";
     sc.trace = true; sc.traceOut = &trace;
   }
+  std::ofstream debug;
+  if (!debugPath.empty()) { debug.open(debugPath); sc.debugOut = &debug; }
   const Result r = run(p, sc);
   std::cout << std::fixed << std::setprecision(5) << reachName(r.reach) << ',' << modeName(sc.mode) << ',' << (r.pass ? 1 : 0) << ',' << r.high << ','
             << r.emergency << ',' << r.overshoot << ',' << r.mae << ',' << r.p95 << ',' << r.ripple << ',' << r.settling << ',' << r.riseS << ','

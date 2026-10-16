@@ -123,3 +123,15 @@ History is 6 B/sample (interval, 0.005 °C PV, on-time) in a 176-sample ring (35
 * Strong exhaust on a light plant is limited by the heater, not the algorithm.
 * On-target CPU time, stack headroom and flash size must be measured with the CI build (not done here).
 * Active plant identification is left as an interface only.
+
+## 7. Update 2026-10-15: slow, well insulated ovens (see `doc/SLOW_OVEN_STUDY.md`)
+
+Field case: Kh ≈ 0.0133 °C/s, apparent delay 200–240 s, hold ≈ 1.9 %, 0.1 °C probe. Three changes touch Adaptive V1 (all simulation-qualified only):
+
+* **False plant-change detection.** `staleFast` in `ThermalLearner::detectMismatch()` is now unconditional (it was Smart Thermal only): "fast accumulators not refreshed" against "slow accumulators drifting upward" is no longer evidence of a plant change in any mode. A change that matters disturbs PV and refreshes the fast accumulators; the hold detector still covers equilibrium shifts. Before, such a plant dropped to `LEARNING` for ~30 min at random (known since AutoTune case `full165`).
+* **Hold feed-forward from 1 %, only for a hold that Smart AutoTune MEASURED.** `Policy::HoldFfMinPct` (3 %) still applies to online estimates; `HoldFfMeasuredMinPct` (1 %, `thermal_assist.h`) applies while `ThermalLearner::holdMeasured()` is true (set when the profile is seeded with a measured hold, cleared on any mismatch, `degrade()`, `suspendCritical()` or reset). Applying 1 % to online estimates was tried and rejected: it lifted the confidence of a profile whose self-learned gain is biased low on this kind of oven (0.0046 vs 0.0133 °C/s, delay clamped at 160 s) and a door-open recovery in Smart mode then overshot to 38.4 °C.
+* **Slow-oven hold learning in the startup controller** (not Adaptive code, but it is what Adaptive falls back on): `ThermalStartupController::decide()` measures the hold from the actual duty while PV is flat, with a slow integrator (0.2 %/min) bounded by 1.5 × the measured duty + 2 points. This part is NOT behind `MAYAP_SMART_THERMAL` (see the header of `thermal_control.h`): the default build needs it on a plant whose delay exceeds 80 s.
+
+Results on the same simulator (`tools/test_thermal_adaptive.py`, 788 cases): @@ADAPTIVE788@@
+
+Known limits that remain: the learner's delay grid ends at 160 s and its self-learned gain is biased low on lag-dominated ovens (the reason a measured AutoTune profile is preferred); a clean fix needs a longer history ring (RAM) and its own regression proof.

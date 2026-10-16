@@ -29,6 +29,8 @@ struct TuneOut {
   unsigned saves = 0;
   uint32_t profileSaves = 0;
   bool oldKept = true;
+  bool relaySkipped = false, coastGood = false, coastConsistent = false;   // diagnostics of the identification (never used by the controller)
+  uint32_t coastChecks = 0;
 };
 
 // A disturbance injected into the tune (immediate-abort qualification).
@@ -37,7 +39,7 @@ enum class Fault { None, SensorLost, SensorInvalid, SensorFrozen, AutoOff, Heate
 struct TuneOpts {
   Fault fault = Fault::None;
   double faultAtS = 0;          // seconds after the tune started
-  double maxS = 17000;
+  double maxS = 30000;          // a slow oven (200 s delay) needs ~55 min of identification + ~3.5 h of closed-loop verification
   int saveBudget = -1;          // >= 0: every EEPROM write is truncated to this many bytes (power cut / write failure)
   double rebootAtS = -1;        // >= 0: controller RAM is lost here; the new boot must see the OLD config/profile, heater off, tune idle
   double phaseFirstS[16];
@@ -217,6 +219,8 @@ static TuneOut tune(const Plant &base, float sp, TuneOpts &opt) {
   out.ku = m.ku; out.pu = m.periodSec; out.confidence = m.confidence;
   out.evOver = h->autotune_.eval().overshoot; out.evMae = h->autotune_.eval().mae;
   out.evP95 = h->autotune_.eval().p95; out.evRipple = h->autotune_.eval().ripple;
+  out.relaySkipped = h->autotune_.relaySkipped(); out.coastChecks = h->autotune_.coastCheckSerial();
+  out.coastGood = h->autotune_.coastCheck().good; out.coastConsistent = h->autotune_.coastCheck().consistent;
   out.why = h->autotune_.evalFull().why; out.valRes = h->autotune_.evalFull().resolution; out.valHold = h->autotune_.evalFull().holdFrac;
   out.valHorizonS = h->autotune_.evalFull().horizonMs / 1000U; out.valTailS = h->autotune_.evalFull().tailMs / 1000U;
 #else

@@ -5796,6 +5796,9 @@ class MachineController {
     const uint32_t previousCycle = autotune_.cycleSerial();
     const uint32_t previousValidation = autotune_.validationSerial();
     const uint32_t previousModel = autotune_.modelSerial();
+#ifndef MAYAP_AUTOTUNE_LEGACY
+    const uint32_t previousCoastCheck = autotune_.coastCheckSerial();
+#endif
     AutoTuneReason abortReason = AutoTuneReason::None;
     if (!sensorUsable_ || !isfinite(temperature_) || !isfinite(rawTemperature_))
       abortReason = AutoTuneReason::SensorAbort;
@@ -5837,6 +5840,16 @@ class MachineController {
           static_cast<double>(ev.holdFrac), static_cast<unsigned long>(ev.holdAfterMs == 0xFFFFFFFFUL ? 0UL : ev.holdAfterMs / 1000UL),
           static_cast<double>(ev.overshoot), static_cast<double>(ev.mae), static_cast<double>(ev.p95), static_cast<double>(ev.ripple),
           ev.why[0] ? ev.why : (autotune_.state() == AutoTuneState::Success ? "ok" : "abort"), autotune_.state() == AutoTuneState::Success ? "PASS" : "FAIL");
+    }
+#endif
+#ifndef MAYAP_AUTOTUNE_LEGACY
+    // Why an identification was accepted or refused: the numbers COAST judged (once per excitation, never per cycle).
+    if (autotune_.coastCheckSerial() != previousCoastCheck) {
+      const auto &cc = autotune_.coastCheck();
+      mayapSerialPrintf(false, "[TUNE] COAST-CHECK%s fit=%u gain=%.5f delay=%.0fs relSe=%.3f sep=%.2f rise=%.2fC duty=%.2f coast=%.2fC predicted=%.2fC ratio=%.2f good=%u consistent=%u\n",
+          cc.second ? "(2nd)" : "", cc.fitValid ? 1U : 0U, static_cast<double>(cc.gain), static_cast<double>(cc.delay), static_cast<double>(cc.relSe),
+          static_cast<double>(cc.separation), static_cast<double>(cc.rise), static_cast<double>(cc.ratioDuty), static_cast<double>(cc.coastRise),
+          static_cast<double>(cc.predicted), static_cast<double>(cc.ratio), cc.good ? 1U : 0U, cc.consistent ? 1U : 0U);
     }
 #endif
     if (autotune_.phase() != previousPhase && autotune_.running())

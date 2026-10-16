@@ -56,6 +56,7 @@ struct Scenario {
   float sp = 37.5f;
   Mode mode = Mode::Adaptive;
   double durationS = 10800;
+  double startTemp = NAN;        // NaN = start at ambient; otherwise the chamber starts here (a running incubator, not a cold start)
   // ventilation owned by the real profile logic (ventAutoEnabled)
   bool ventProfile = false;
   unsigned ventCycleMin = 40;
@@ -186,7 +187,8 @@ inline Result run(const Plant &base, const Scenario &sc) {
   const unsigned lagTicks = static_cast<unsigned>(p.dead * 1000 / stepMs);
   std::vector<double> pipe(lagTicks + 1U, 0.0);
   size_t cursor = 0;
-  double temp = p.ambient, heater = 0, ventAir = 0, sensPhys = p.ambient;
+  const double temp0 = std::isfinite(sc.startTemp) ? sc.startTemp : p.ambient;
+  double temp = temp0, heater = 0, ventAir = 0, sensPhys = temp0;
   bool prevFwHigh = false, prevFwEmergency = false;
   double energy = 0;
   bool prevHigh = false, prevEmergency = false, ventPrev = false, reached = false;
@@ -329,7 +331,7 @@ inline Result run(const Plant &base, const Scenario &sc) {
       (*sc.debugOut) << static_cast<int>(t) << " pv=" << temp << " fed=" << fed << " err=" << (sp - fed) << " req=" << h->pidPower_
                      << " I=" << h->pid_.integral() << " ff=" << h->pid_.feedForwardApplied() << " cap=" << h->startupHeat_.lastCeiling()
                      << " peak=" << h->startupHeat_.predictedPeak() << " slope=" << h->startupHeat_.slope()
-                     << " khObs=" << h->startupHeat_.observedGain() << " phase=" << static_cast<int>(h->startupHeat_.phase()) << " eff=" << h->adaptiveThermal_.decision().effective
+                     << " khObs=" << h->startupHeat_.observedGain() << " holdL=" << h->startupHeat_.learnedHold() << " rise=" << h->startupHeat_.riseSeen() << " clr=" << h->startupHeat_.coastClear() << " phase=" << static_cast<int>(h->startupHeat_.phase()) << " eff=" << h->adaptiveThermal_.decision().effective
                      << " vent=" << st0.ventFan << ' ' << MayapThermal::ventPhaseName(h->thermalV1_.plan().ventPhase) << " vff=" << h->thermalV1_.plan().ventFF
                      << " hff=" << h->thermalV1_.plan().holdFF << " ventPct=" << h->thermalV1_.plan().hint.ventPct
                      << " ventConf=" << static_cast<int>(h->thermalV1_.learner().profile().ventConfidence)

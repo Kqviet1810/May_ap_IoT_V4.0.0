@@ -3,8 +3,10 @@
 #include "thermal_profile.h"
 
 // Smart Thermal startup (self-calibrated heat-in-flight brake, see ThermalStartupController::setSmart).
-// Follows MAYAP_SMART_THERMAL (default 0 = bit-identical legacy behaviour; see thermal_assist.h); can be forced alone with
-// -DMAYAP_SMART_STARTUP=1. Rollback is the same switch.
+// Follows MAYAP_SMART_THERMAL (default 0 = legacy behaviour; see thermal_assist.h); can be forced alone with
+// -DMAYAP_SMART_STARTUP=1. Rollback is the same switch. EXCEPTION (2026-10-15, doc/SLOW_OVEN_STUDY.md): the slow-oven hold learner in
+// ThermalStartupController::decide() (delay > 80 s, PV flat just under SP) is NOT behind the flag: the default build needs it, the field
+// oven sat under SP without it. A plant with a short delay (<= 80 s) takes the unchanged legacy branch.
 #ifndef MAYAP_SMART_STARTUP
 #define MAYAP_SMART_STARTUP MAYAP_SMART_THERMAL
 #endif
@@ -215,7 +217,7 @@ class ThermalStartupController {
     bucket_ = 0; firstHeatAt_ = 0; firstRiseAt_ = 0;
     lastHeatOffAt_ = 0; energyWindowStartedAt_ = 0; coastCleared_ = false;
     stableAt_ = 0; lastRequested_ = 0; holdPower_ = 0;
-    slope_ = 0; lastSampleAt_ = 0; lastPeak_ = 0; khObs_ = 0;
+    slope_ = 0; lastSampleAt_ = 0; lastPeak_ = 0; khObs_ = 0; pvSlow_ = 0; flatMs_ = 0; holdMeasured_ = -1.0f;
     hint_ = MayapThermal::StartupHint{};
   }
   void observe(uint32_t now, bool heaterOn) {
@@ -255,12 +257,13 @@ class ThermalStartupController {
     historyGap_ = false; // only a fresh real sensor sample can resume heat
     if (!initialized_) {
       initialized_ = true; lastPv_ = pv; lastSp_ = sp;
-      lastSampleAt_ = now;
+      lastSampleAt_ = now; pvSlow_ = pv;
     }
     const float dt = clampFloat(static_cast<float>(static_cast<uint32_t>(now-lastSampleAt_))*0.001f, 0.25f, 10.0f);
     const float measuredRate = (pv-lastPv_)/dt;
     slope_ += dt/(10.0f+dt)*(measuredRate-slope_);
     lastPv_ = pv; lastSampleAt_ = now;
+    pvSlow_ += dt/(SlowPvTauSec+dt)*(pv-pvSlow_);   // slow average: the robust "is PV really flat" reference (immune to 0.1 C steps)
     if (smart_) observeGain(now);
     if (sp != lastSp_) { stableAt_ = 0U; phase_ = Phase::Approach; lastSp_ = sp; }
     if (firstRiseAt_ == 0U && firstHeatAt_ != 0U && slope_ > 0.003f &&
@@ -289,13 +292,52 @@ class ThermalStartupController {
     // be learned until after the first delayed heat response. It removes the
     // permanent offset of proportional-only braking without banking pulse
     // energy for a later burst.
-    if (firstRiseAt_ != 0U && (!longDelay || coastCleared_ || sp-pv > 1.0f) &&
+    if (firstRiseAt_ != 0U &&
         static_cast<uint32_t>(now-firstRiseAt_) >= (longDelay ? 240000U : 180000U)) {
-      if (sp-pv > 0.08f && slope_ <= 0.003f)
-        holdPower_ += dt/60.0f;
-      else if (sp-pv < -0.05f || slope_ > 0.006f)
-        holdPower_ -= 3.0f*dt/60.0f;
-      holdPower_ = clampFloat(holdPower_,0.0f,maxPower);
+      if (!longDelay || coastCleared_ || sp-pv > 1.0f) {
+        if (sp-pv > 0.08f && slope_ <= 0.003f)
+          holdPower_ += dt/60.0f;
+        else if (sp-pv < -0.05f || slope_ > 0.006f)
+          holdPower_ -= 3.0f*dt/60.0f;
+        holdPower_ = clampFloat(holdPower_,0.0f,maxPower);
+      } else {
+        // Long-delay plant just under the setpoint, heater not "cleared". A trickle of pulses keeps the heater from ever being OFF for
+        // the whole coast time, so the gate above never opens there: the energy brake (sized for a 16 kW bank on a light chamber) then
+        // holds a permanent offset below SP of about  hold x horizon x 0.13 C/s  and the hold is never learned (PV sits just under SP).
+        // The hold IS measurable there, without waiting for a cleared heater: when PV has been flat (not rising) on a slow average for
+        // SlowHoldFlatMs, the heat in flight is stationary and the mean ACTUAL duty equals the duty needed to stand still. That value
+        // is taken as the hold (95 %, up only). PV not rising means the duty cannot exceed the hold by more than the allowed drift, so
+        // this cannot teach a hold above the truth. The brake then permits the surplus that closes the remaining error; the last
+        // offset is closed by a slow integrator (a few tenths of a percent per minute: the heat of such a step is still in flight for a
+        // whole delay, so a wrong step cannot overshoot) that runs only while PV is flat. It is bounded by the duty measured while flat
+        // (x1.5 + 2 points: "flat" still hides about 1.5 points of duty on a weak heater), because without a bound the integrator keeps
+        // winding up while the PID, not the brake, is what limits the duty (a 1.9 % oven reached a 40 % hold in a few hours, which
+        // switches the brake off for every duty below it).
+        // Lowering the hold stays fast (more braking is the safe direction).
+        const float dev = pv-pvSlow_;   // > 0 rising, < 0 falling (slow average: immune to 0.1 C probe steps)
+        const bool flat = sp-pv > 0.08f && dev <= SlowHoldRiseC && dev >= -SlowHoldFallC;
+        if (flat) flatMs_ += static_cast<uint32_t>(dt*1000.0f);
+        else flatMs_ = 0U;
+        if (flatMs_ >= SlowHoldFlatMs) {
+          flatMs_ = 0U;
+          const uint32_t windowMs = std::min<uint32_t>(240000U, static_cast<uint32_t>(now-energyWindowStartedAt_));
+          if (windowMs >= 120000U) {
+            const float dutyPct = 100.0f*static_cast<float>(recentOnMsOf(240000U))/static_cast<float>(windowMs);
+            holdMeasured_ = fminf(maxPower, SlowHoldMeasuredFrac*dutyPct);
+            holdPower_ = fmaxf(holdPower_, holdMeasured_);
+          }
+        }
+        if (flat) {
+          if (holdMeasured_ >= 0.0f && holdPower_ < SlowHoldCeilFactor*holdMeasured_ + SlowHoldCeilPct)
+            holdPower_ += SlowHoldPctPerMin*dt/60.0f;
+        } else {
+          // lowering follows the size of the overshoot: a probe step above SP (0.05..0.3 C) must not wipe a hold that took half an hour
+          // to build, a real overshoot or a fast rise cuts at the full 3 %/min
+          const float cut = slope_ > 0.006f ? 1.0f : clampFloat((pv-sp-0.05f)/SlowHoldCutSpanC, 0.0f, 1.0f);
+          holdPower_ -= 3.0f*cut*dt/60.0f;
+        }
+        holdPower_ = clampFloat(holdPower_,0.0f,maxPower);
+      }
     }
     uint32_t horizonMs = longDelay ? 240000U : 160000U;
     if (hs >= 0.5f)  // only energy still IN FLIGHT can coast: window = learned delay + margin
@@ -405,6 +447,10 @@ class ThermalStartupController {
   float predictedPeak() const { return lastPeak_; }
   float lastCeiling() const { return lastCap_; }
   float slope() const { return slope_; }
+  // read-only telemetry (host simulation / diagnostics)
+  float learnedHold() const { return holdPower_; }
+  bool riseSeen() const { return firstRiseAt_ != 0U; }
+  bool coastClear() const { return coastCleared_; }
  private:
   static constexpr uint8_t Buckets = 120U;
   static constexpr float MinimumCapacity = 180000.0f;
@@ -417,6 +463,15 @@ class ThermalStartupController {
   static constexpr float PriorMinError = 3.5f;
   static constexpr float GainMargin = 1.15f;     // slope lags the heat and the loss subtracts from it: bias the estimate up
   static constexpr float GainCeiling = 0.5f;     // sanity bound, degC/s
+  static constexpr float SlowPvTauSec = 150.0f;  // time constant of the slow PV average (flatness reference)
+  static constexpr float SlowHoldRiseC = 0.03f;   // PV - slow average above this = rising (slope ~ 0.0002 C/s): not flat
+  static constexpr float SlowHoldFallC = 0.06f;   // ... below minus this = falling
+  static constexpr uint32_t SlowHoldFlatMs = 360000U;   // flat for this long = the heat in flight is stationary
+  static constexpr float SlowHoldMeasuredFrac = 0.95f;  // share of the measured equilibrium duty taken as the hold
+  static constexpr float SlowHoldPctPerMin = 0.2f;      // slow integrator that closes the last offset
+  static constexpr float SlowHoldCeilFactor = 1.5f;     // ... which stops at  1.5 x the measured flat-PV duty + SlowHoldCeilPct
+  static constexpr float SlowHoldCeilPct = 2.0f;
+  static constexpr float SlowHoldCutSpanC = 0.25f;      // overshoot above SP + 0.05 C at which the hold is lowered at the full rate
   uint32_t recentOnMsOf(uint32_t horizonMs) const {
     uint8_t n = static_cast<uint8_t>(std::min<uint32_t>(horizonMs / 2000U, Buckets));
     uint32_t sum = 0;
@@ -463,7 +518,9 @@ class ThermalStartupController {
   uint8_t bucket_ = 0;
   bool initialized_ = false, observed_ = false, lastOn_ = false, coastCleared_ = false;
   bool historyGap_ = false;
-  float lastPv_ = 0, lastSp_ = 0, slope_ = 0;
+  float lastPv_ = 0, lastSp_ = 0, slope_ = 0, pvSlow_ = 0;
+  float holdMeasured_ = -1.0f;   // duty measured while PV was flat below SP (-1 = none yet)
+  uint32_t flatMs_ = 0;
   float lastRequested_ = 0, holdPower_ = 0, lastPeak_ = 0, lastCap_ = 0;
   MayapThermal::StartupHint hint_{};
   Phase phase_ = Phase::FullHeat;

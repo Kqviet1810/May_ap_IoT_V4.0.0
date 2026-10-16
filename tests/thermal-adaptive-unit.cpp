@@ -227,6 +227,28 @@ static void plannerTests() {
     AdaptiveV1 a; a.learner().seed(p, 40); a.setEnabled(true);
     const Plan &pl = a.update(100000, true, false, VentInfo{}, 37.0f, 37.5f, 0);
     CHECK(pl.assist.feedForward == 0 && pl.assist.addForward == 0 && !pl.hint.valid); }
+  // The "measured hold" status (seeded by an accepted Smart AutoTune) lets a hold below 3 % be fed forward (from 1 %, thermal_assist.h); it is
+  // withdrawn by any doubt: degrade, suspend, reset. An unmeasured seed grants nothing, and nothing below 1 %. The learner is TRAINED first
+  // (hold trust >= 0.5, as a running oven has) and then given the low-hold profile: a fresh seed alone has no hold trust, so it would grant
+  // nothing whatever the gate says and the checks below would pass vacuously.
+  { ThermalProfile p = defaultProfile(); p.heaterGain = 0.0128f; p.heaterDelaySec = 120; p.holdPowerPct = 1.9f; p.coastRiseC = 2.4f;
+    p.coastTimeSec = 300; p.confidence = 70; sealProfile(p);
+    ThermalProfile q = p; q.holdPowerPct = 0.8f; sealProfile(q);
+    AdaptiveV1 m; train(m, 4.0, false); CHECK(m.learner().holdTrust() >= 0.5f);
+    m.learner().seed(p, 75, true);
+    CHECK(m.learner().holdMeasured() && m.learner().holdTrust() >= 0.5f);
+    const float ffMeasured = m.update(trainedNow, true, false, VentInfo{}, 37.5f, 37.5f, 0.0f).assist.feedForward;
+    CHECK(ffMeasured > 1.5f && ffMeasured <= 1.9f * 0.95f + 1e-3f);   // measured 1.9 %: fed forward
+    AdaptiveV1 u; train(u, 4.0, false); u.learner().seed(p, 75, false);
+    CHECK(!u.learner().holdMeasured() && u.learner().holdTrust() >= 0.5f);
+    CHECK(u.update(trainedNow, true, false, VentInfo{}, 37.5f, 37.5f, 0.0f).assist.feedForward == 0.0f);   // the same value, not measured: below 3 %, nothing
+    AdaptiveV1 low; train(low, 4.0, false); low.learner().seed(q, 75, true);
+    CHECK(low.learner().holdMeasured() && low.learner().holdTrust() >= 0.5f);
+    CHECK(low.update(trainedNow, true, false, VentInfo{}, 37.5f, 37.5f, 0.0f).assist.feedForward == 0.0f);   // measured but below 1 %: nothing
+    m.learner().degrade();
+    CHECK(!m.learner().holdMeasured());
+    AdaptiveV1 s; s.learner().seed(p, 75, true); s.learner().suspendCritical(); CHECK(!s.learner().holdMeasured());
+    AdaptiveV1 r; r.learner().seed(p, 75, true); r.learner().reset(); CHECK(!r.learner().holdMeasured()); }
   // Trained planner: hold feed-forward bounded by the learned hold, gated by permit/tune/NaN/disable.
   { AdaptiveV1 a; train(a, 4.0, false);
     const float hold = a.learner().profile().holdPowerPct;

@@ -123,7 +123,7 @@ struct Authority {
 namespace Policy {
 constexpr float GuardOvershootC = 0.35f;       // PV above SP by this while V1 is in control: fall back
 constexpr uint32_t GuardLockoutMs = 1800000UL; // 30 min, doubled per repeat (max x8)
-constexpr float HoldFfMinPct = 3.0f;           // no hold feed-forward for a hold below the output resolution
+constexpr float HoldFfMinPct = 3.0f;           // no hold feed-forward for an ONLINE hold below the output resolution (a MEASURED one: HoldFfMeasuredMinPct)
 }  // namespace Policy
 constexpr float VentCapPct = 35.0f;           // vent feed-forward is bounded
 constexpr float VentIntegralRisePct = 12.0f;  // integral growth allowed during a vent with no knowledge
@@ -176,8 +176,10 @@ class AdaptiveV1 {
     // --- hold feed-forward: 30..60 ramps in, never above the learned duty, trimmed 5 % ---
     float hold = 0;
     // Below ~3 % duty the hold is smaller than what the burst scheduler and a 0.1 C probe can
-    // resolve: the estimate wanders and a feed-forward there only perturbs a limit cycle.
-    if (usable && learner_.holdTrust() >= 0.5f && p.holdPowerPct >= Policy::HoldFfMinPct)
+    // resolve: the estimate wanders and a feed-forward there only perturbs a limit cycle. A hold that Smart AutoTune
+    // MEASURED (long window, ~0.2 point) is fed forward from 1 % (see thermal_assist.h); it stops being "measured" at any mismatch.
+    if (usable && learner_.holdTrust() >= 0.5f &&
+        p.holdPowerPct >= (learner_.holdMeasured() ? HoldFfMeasuredMinPct : Policy::HoldFfMinPct))
       hold = p.holdPowerPct * 0.95f * Authority::ramp(conf, 30.0f, 60.0f);
     // --- startup hint: 45..75 ramps in, margin shrinks with confidence ---
     if (usable) {

@@ -13,6 +13,14 @@
 
 namespace MayapThermal {
 
+// Smallest hold (% of the bank) that is fed forward when the hold was MEASURED by an accepted Smart AutoTune (an ONLINE estimate keeps the
+// larger Policy::HoldFfMinPct, because a 0.1 C probe hides 100 x 0.1 / (gain x window) duty points and a feed-forward inside that noise only
+// perturbs a limit cycle). On a well insulated oven (hold 1-3 %) the feed-forward matters: without it the integral alone carries the hold, and
+// every time the startup brake closes for a minute after a probe step the integral limit (which follows that transient ceiling) wipes it, so
+// the loop runs proportional-only and parks about hold / Kp (~0.15 C) under the set point. A measured hold is good to ~0.2 point, and the
+// feed-forward is bounded (95 % of the hold, ramped in with the confidence).
+constexpr float HoldFfMeasuredMinPct = 1.0f;
+
 struct Assist {  // what the PID receives
   float feedForward = 0;             // % duty (hold): bumpless, the integral gives way as this moves
   float addForward = 0;              // % duty (known disturbance, e.g. vent): ADDED, not traded with the integral

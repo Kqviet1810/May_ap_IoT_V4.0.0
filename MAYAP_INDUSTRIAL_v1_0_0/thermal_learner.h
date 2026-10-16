@@ -159,6 +159,7 @@ class ThermalLearner {
     syyS_ = pseudo * profile_.heaterGain * profile_.heaterGain * 1.2f;
     seeded_ = true;
     holdWindows_ = measuredHold ? Policy::HoldFormingWindows : 0U;  // a stored hold is a seed (no authority until re-measured); a freshly measured one is not
+    holdMeasured_ = measuredHold;   // until the next mismatch / degrade / reset
     // A stored vent estimate is a seed: no compensation until a live vent event has requalified it.
     profile_.ventConfidence = 0;
     ventEvents_ = 0;
@@ -252,15 +253,18 @@ class ThermalLearner {
   float gainTrust() const { return gainScore_ * fitScore(); }
   float delayTrust() const { return delayScore_; }
   float holdTrust() const { return holdScore_; }
+  bool holdMeasured() const { return holdMeasured_; }   // the profile hold came from an accepted Smart AutoTune and nothing has doubted it since
   float ventTrust() const { return profile_.ventConfidence * 0.01f; }
   // Take over a degraded decision from outside (e.g. configuration changed).
   void degrade() {
+    holdMeasured_ = false;
     profile_.confidence = static_cast<uint8_t>(profile_.confidence / 2);
     profile_.ventConfidence = static_cast<uint8_t>(profile_.ventConfidence / 2);
     clearWindows();
     updateState();
   }
   void suspendCritical() {
+    holdMeasured_ = false;
     profile_.confidence = 0; profile_.ventConfidence = 0;
     clearWindows();
     updateState();
@@ -497,11 +501,12 @@ class ThermalLearner {
     // (and is simply raised again if the evidence persists).
     if (mismatch_ && lastMismatchAt_ != 0U && sampleAt_ - lastMismatchAt_ > Policy::MismatchMaxMs) mismatch_ = false;
     const float slow = sxxS_[best_] >= Policy::SxxMin ? sxyS_[best_] / (sxxS_[best_] + 0.05f) : 0.0f;
-    // Smart: the fast accumulators take only full-weight windows (PV away from the set point). While PV is regulated at SP they
-    // are not refreshed, but the slow ones keep taking the closed-loop-biased reduced-weight windows and drift upward, so
-    // "stale fast" against "drifting slow" is not evidence of a plant change (it made the assist drop for ~30 min in AutoTune
-    // case full165). A change that matters disturbs PV and refreshes the fast accumulators; the hold detector covers equilibrium shifts.
-    const bool staleFast = smartHold_ && (fastUpdateAt_ == 0U || sampleAt_ - fastUpdateAt_ > Policy::FastFreshMs);
+    // The fast accumulators take only full-weight windows (PV away from the set point). While PV is regulated at SP they are not
+    // refreshed, but the slow ones keep taking the closed-loop-biased reduced-weight windows and drift upward, so "stale fast"
+    // against "drifting slow" is not evidence of a plant change (it made the assist drop for ~30 min in AutoTune case full165, and
+    // it flipped several slow-oven post-tune runs from good to bad). A change that matters disturbs PV and refreshes the fast
+    // accumulators; the hold detector covers equilibrium shifts. This holds in every mode (it used to be Smart Thermal only).
+    const bool staleFast = fastUpdateAt_ == 0U || sampleAt_ - fastUpdateAt_ > Policy::FastFreshMs;
     if (slow <= 0 || gainFast_ <= 0 || sxxF_[best_] < Policy::FastSxxMin || staleFast) {
       if (mismatchRun_ > 0) --mismatchRun_;            // no evidence: decay slowly
       if (recoverRun_ > 0) --recoverRun_;
@@ -556,6 +561,7 @@ class ThermalLearner {
     if (lastMismatchAt_ != 0U && sampleAt_ - lastMismatchAt_ < Policy::MismatchRefractoryMs) return;
     lastMismatchAt_ = sampleAt_ ? sampleAt_ : 1U;
     mismatch_ = true; recoverRun_ = 0; holdAgreeRun_ = 0; ++mismatchEvents_;
+    holdMeasured_ = false;
     holdSettled_ = false; holdAgreeStreak_ = 0;   // re-learning: the hold is "catching up" again
     mismatchCause_ = reason == 2 ? 2 : 1;
     // Make the slow accumulators forget the old plant quickly.
@@ -853,6 +859,7 @@ class ThermalLearner {
   bool holdDevSeen_ = false, holdObsSeen_ = false;
   uint32_t fastUpdateAt_ = 0;   // sampleAt_ of the last full-weight (open-loop-like) update of the fast accumulators
   bool smartHold_ = (MAYAP_SMART_THERMAL != 0), holdPrevFlat_ = false, holdConverging_ = false, holdSettled_ = false;
+  bool holdMeasured_ = false;
   uint8_t holdAgreeStreak_ = 0;
   float holdPrevObs_ = NAN;
   uint32_t updates_ = 0, outliers_ = 0, mismatchEvents_ = 0, ventEvents_ = 0;
