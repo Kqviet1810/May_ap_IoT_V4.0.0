@@ -1920,9 +1920,18 @@ void openFirmwareWebConfirm() {
     showToast("CHI DUNG DUOC KHI ONLINE", true);
     return;
   }
-  if (!mayapFirmwareWebStatus().available) {
-    if (queueCommand(HmiCommandType::FirmwareWebCheckNow))
-      showToast("DANG KIEM TRA BAN MOI");
+  const FirmwareWebStatus fwStatus = mayapFirmwareWebStatus();
+  if (!fwStatus.available) {
+    // Bao KET QUA lan kiem tra truoc thay vi luon noi "dang kiem tra" (nguoi dung khong phan biet duoc
+    // dang cho, da la ban moi nhat hay bi loi mang/may chu).
+    if (fwStatus.checkPhase == 1U || fwStatus.checkPhase == 2U) {
+      showToast(fwStatus.lastError[0] ? fwStatus.lastError : "DANG KIEM TRA...", fwStatus.lastError[0] != '\0');
+      return;
+    }
+    if (fwStatus.checkPhase == 4U && fwStatus.lastError[0]) showToast(fwStatus.lastError, true);
+    else if (fwStatus.checkPhase == 3U) showToast("DA LA BAN MOI NHAT");
+    else showToast("DANG KIEM TRA BAN MOI");
+    queueCommand(HmiCommandType::FirmwareWebCheckNow);
     return;
   }
   confirmAction = ConfirmAction::FirmwareWebApply;

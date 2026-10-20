@@ -47,6 +47,9 @@ namespace MayapFirmwareWebInternal {
 static uint32_t lastCheckAt = 0U;
 static volatile uint8_t applyRequestFlag = 0U;
 static volatile uint8_t checkNowRequestFlag = 0U;
+// Ket qua lan kiem tra gan nhat de HMI bao dung thuc te (truoc day chi co toast "dang kiem tra"
+// va khong bao gio biet ket qua): 0=chua, 1=da yeu cau/cho mang, 2=dang chay, 3=da la ban moi nhat, 4=loi (lastError), 5=co ban moi.
+static volatile uint8_t checkPhase = 0U;
 static volatile uint8_t applyPhase = 0U;  // 0=khong lam gi, 1=dang tai, 2=loi, 3=thanh cong (truoc khi restart)
 // Phan tram tai ve (0..100), CHI co y nghia khi applyPhase==1 - HMI doc gia
 // tri nay moi khung hinh de ve thanh % tren man hinh "Dang cap nhat..."
@@ -106,6 +109,7 @@ struct FirmwareWebStatus {
   char signature[128] = "";
   uint32_t size = 0U;
   uint8_t applyPhase = 0U;
+  uint8_t checkPhase = 0U;
   uint8_t downloadPercent = 0U;
   char lastError[48] = "";
 };
@@ -122,6 +126,7 @@ inline FirmwareWebStatus mayapFirmwareWebStatus() {
   snprintf(status.lastError, sizeof(status.lastError), "%s", lastErrorText);
   portEXIT_CRITICAL(&stateMux);
   status.applyPhase = __atomic_load_n(&applyPhase, __ATOMIC_ACQUIRE);
+  status.checkPhase = __atomic_load_n(&checkPhase, __ATOMIC_ACQUIRE);
   status.downloadPercent = __atomic_load_n(&downloadPercent, __ATOMIC_ACQUIRE);
   return status;
 }
@@ -138,6 +143,7 @@ inline void mayapRequestFirmwareWebApply() {
 // ca. Neu co ban moi se hien tren HMI nhu binh thuong, van can xac nhan tai
 // may - khong bypass buoc do.
 inline void mayapRequestFirmwareWebCheckNow() {
+  __atomic_store_n(&MayapFirmwareWebInternal::checkPhase, 1U, __ATOMIC_RELEASE);
   __atomic_store_n(&MayapFirmwareWebInternal::checkNowRequestFlag, 1U, __ATOMIC_RELEASE);
 }
 
@@ -180,6 +186,8 @@ inline bool mayapFirmwareMetadataValid(const char *version, const char *hash,
 // xuyen (chi 1 request JSON nho).
 inline bool mayapFirmwareWebCheck() {
   using namespace MayapFirmwareWebInternal;
+  __atomic_store_n(&checkPhase, 2U, __ATOMIC_RELEASE);
+  setError("");
   JsonDocument doc;
   doc["device_id"] = mayapDeviceIdText();
   doc["device_key"] = mayapDeviceSecret();
@@ -191,6 +199,7 @@ inline bool mayapFirmwareWebCheck() {
   HTTPClient http;
   if (!beginRequest(http, client, "/api/firmware/check")) {
     mayapSerialPrintf(false, "[FWWEB] check -> http.begin() THAT BAI\n");
+    __atomic_store_n(&checkPhase, 4U, __ATOMIC_RELEASE);
     return false;
   }
   http.addHeader("Content-Type", "application/json");
@@ -201,10 +210,13 @@ inline bool mayapFirmwareWebCheck() {
     if (!mayapReadBoundedHttpBody(http, resp, sizeof(resp))) {
       http.end(); client.stop();
       setError("Firmware metadata qua lon/khong day du");
+      __atomic_store_n(&checkPhase, 4U, __ATOMIC_RELEASE);
       return false;
     }
     JsonDocument respDoc;
+    bool parsed = false;
     if (deserializeJson(respDoc, resp) == DeserializationError::Ok) {
+      parsed = true;
       available = respDoc["update_available"] | false;
       if (available) {
         const char *version = respDoc["version"] | "";
@@ -218,14 +230,27 @@ inline bool mayapFirmwareWebCheck() {
                             version, static_cast<unsigned long>(size));
         } else {
           available = false;
+          setError("METADATA BAN MOI KHONG HOP LE");
+          mayapSerialPrintf(false, "[FWWEB] metadata v%s khong hop le (size=%lu)\n", version,
+                            static_cast<unsigned long>(size));
         }
       }
     }
+    if (!parsed) setError("PHAN HOI MAY CHU LOI");
   } else {
     mayapSerialPrintf(false, "[FWWEB] check -> HTTP %d\n", code);
+    char text[32];
+    if (code > 0) snprintf(text, sizeof(text), "MAY CHU TRA LOI HTTP %d", code);
+    else snprintf(text, sizeof(text), "KHONG KET NOI DUOC MAY CHU");
+    setError(text);
   }
   http.end();
   if (!available) publishPending(false, "", "", "", 0U);
+  bool failed;
+  portENTER_CRITICAL(&stateMux);
+  failed = lastErrorText[0] != '\0';
+  portEXIT_CRITICAL(&stateMux);
+  __atomic_store_n(&checkPhase, available ? 5U : (failed ? 4U : 3U), __ATOMIC_RELEASE);
   return available;
 }
 
@@ -431,7 +456,11 @@ inline void mayapFirmwareWebUpdate(uint32_t now) {
   if (!MayapFirmwareCheck::due(now, lastCheckAt, checkNow, FIRMWARE_FIRST_CHECK_DELAY_MS,
                                FIRMWARE_CHECK_INTERVAL_MS, jitterMs)) return;
   MayapTlsOperation tlsOperation(MayapTlsKind::Ota);
-  if (!tlsOperation) { admissionRetryAt = now + 3000U; return; } // retry in seconds, not a whole interval later
+  if (!tlsOperation) {   // retry in seconds, not a whole interval later
+    admissionRetryAt = now + 3000U;
+    if (checkNow) setError("MANG/RAM DANG BAN, THU LAI");
+    return;
+  }
   if (checkNow) __atomic_store_n(&checkNowRequestFlag, 0U, __ATOMIC_RELEASE);
   lastCheckAt = now;
   mayapFirmwareWebCheck();
