@@ -691,7 +691,11 @@ async function getFirmwareCache(env) {
   if (!stale) return cached;
 
   const release = await fetchGithubJson(env, `/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`);
-  if (!release || !release.tag_name) return cached;  // GitHub loi tam thoi - giu cache cu neu co
+  if (!release || !release.tag_name) {
+    // GitHub loi tam thoi (hay gap: API khong token bi gioi han theo IP) - giu cache cu neu co, nhung de lai dau vet trong log cua Worker
+    console.warn('firmware: GitHub releases/latest unavailable, serving the cached release', cached ? cached.version : 'none');
+    return cached;
+  }
 
   const latestVersion = String(release.tag_name).replace(/^v/, '');
   if (cached && cached.version === latestVersion) {

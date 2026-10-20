@@ -7,6 +7,7 @@
 #include "bounded_http.h"
 #include "firmware_update_guard.h"
 #include "firmware_check_policy.h"
+#include "firmware_check_parse.h"
 #include <Arduino.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
@@ -147,47 +148,31 @@ inline void mayapRequestFirmwareWebCheckNow() {
   __atomic_store_n(&MayapFirmwareWebInternal::checkNowRequestFlag, 1U, __ATOMIC_RELEASE);
 }
 
-// So sanh 2 chuoi phien ban dang "X.Y.Z" (giong MAYAP_FIRMWARE_VERSION) -
-// tra ve dung neu 'a' MOI HON 'b'. Khong dung so sanh chuoi truc tiep vi
-// "3.10.0" phai MOI HON "3.9.0" (chuoi thi "3.10.0" < "3.9.0").
-inline bool mayapFirmwareVersionNewer(const char *a, const char *b) {
-  int pa[3] = {0, 0, 0};
-  int pb[3] = {0, 0, 0};
-  sscanf(a, "%d.%d.%d", &pa[0], &pa[1], &pa[2]);
-  sscanf(b, "%d.%d.%d", &pb[0], &pb[1], &pb[2]);
-  for (uint8_t i = 0; i < 3U; ++i) {
-    if (pa[i] != pb[i]) return pa[i] > pb[i];
-  }
-  return false;
-}
+// Phan tich/so sanh nam trong firmware_check_parse.h (kiem thu duoc tren may tinh). Giu ten cu cho phan con lai.
+inline bool mayapFirmwareVersionNewer(const char *a, const char *b) { return MayapFirmwareCheckParse::versionNewer(a, b); }
 
 inline bool mayapFirmwareMetadataValid(const char *version, const char *hash,
                                       const char *signature, uint32_t size) {
-  if (!version || !hash || !signature || strlen(version) >= 16U ||
-      strlen(hash) != 64U || strlen(signature) < 40U || strlen(signature) >= 128U)
-    return false;
-  uint8_t dots = 0U, digits = 0U;
-  for (const char *p = version; *p; ++p) {
-    if (*p >= '0' && *p <= '9') { if (++digits > 4U) return false; }
-    else if (*p == '.' && digits && dots < 2U) { ++dots; digits = 0U; }
-    else return false;
-  }
-  if (dots != 2U || !digits) return false;
-  for (uint8_t i = 0U; i < 64U; ++i) {
-    const char c = hash[i];
-    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
-          (c >= 'A' && c <= 'F'))) return false;
-  }
+  if (!MayapFirmwareCheckParse::metadataSyntaxValid(version, hash, signature, size)) return false;
   const esp_partition_t *target = esp_ota_get_next_update_partition(nullptr);
-  return target && size > 0U && size <= target->size;
+  return target && size <= target->size;
 }
 
 // Chi HOI Worker "co ban moi khong" - KHONG tai ve. An toan goi thuong
-// xuyen (chi 1 request JSON nho).
+// xuyen (chi 1 request JSON nho). MOI ket cuc deu de lai mot ket qua doc duoc (checkPhase + lastError + dong [FWWEB]):
+// khong con truong hop "khong thay gi ca".
 inline bool mayapFirmwareWebCheck() {
   using namespace MayapFirmwareWebInternal;
+  namespace P = MayapFirmwareCheckParse;
   __atomic_store_n(&checkPhase, 2U, __ATOMIC_RELEASE);
   setError("");
+  auto fail = [](const char *screen, const char *log) {
+    setError(screen);
+    mayapSerialPrintf(false, "[FWWEB] check THAT BAI: %s\n", log);
+    publishPending(false, "", "", "", 0U);
+    __atomic_store_n(&checkPhase, 4U, __ATOMIC_RELEASE);
+    return false;
+  };
   JsonDocument doc;
   doc["device_id"] = mayapDeviceIdText();
   doc["device_key"] = mayapDeviceSecret();
@@ -197,61 +182,56 @@ inline bool mayapFirmwareWebCheck() {
 
   WiFiClientSecure client;
   HTTPClient http;
-  if (!beginRequest(http, client, "/api/firmware/check")) {
-    mayapSerialPrintf(false, "[FWWEB] check -> http.begin() THAT BAI\n");
-    __atomic_store_n(&checkPhase, 4U, __ATOMIC_RELEASE);
-    return false;
-  }
+  if (!beginRequest(http, client, "/api/firmware/check")) return fail("KHONG MO DUOC KET NOI", "http.begin()");
   http.addHeader("Content-Type", "application/json");
   const int code = http.POST(body);
-  bool available = false;
-  if (code == 200) {
-    char resp[1024];
-    if (!mayapReadBoundedHttpBody(http, resp, sizeof(resp))) {
-      http.end(); client.stop();
-      setError("Firmware metadata qua lon/khong day du");
-      __atomic_store_n(&checkPhase, 4U, __ATOMIC_RELEASE);
-      return false;
-    }
-    JsonDocument respDoc;
-    bool parsed = false;
-    if (deserializeJson(respDoc, resp) == DeserializationError::Ok) {
-      parsed = true;
-      available = respDoc["update_available"] | false;
-      if (available) {
-        const char *version = respDoc["version"] | "";
-        const char *sha256 = respDoc["sha256"] | "";
-        const char *signature = respDoc["signature"] | "";
-        const uint32_t size = respDoc["size"] | 0U;
-        if (mayapFirmwareMetadataValid(version, sha256, signature, size) &&
-            mayapFirmwareVersionNewer(version, MAYAP_FIRMWARE_VERSION)) {
-          publishPending(true, version, sha256, signature, size);
-          mayapSerialPrintf(false, "[FWWEB] Co ban moi: v%s (%lu bytes)\n",
-                            version, static_cast<unsigned long>(size));
-        } else {
-          available = false;
-          setError("METADATA BAN MOI KHONG HOP LE");
-          mayapSerialPrintf(false, "[FWWEB] metadata v%s khong hop le (size=%lu)\n", version,
-                            static_cast<unsigned long>(size));
-        }
-      }
-    }
-    if (!parsed) setError("PHAN HOI MAY CHU LOI");
-  } else {
-    mayapSerialPrintf(false, "[FWWEB] check -> HTTP %d\n", code);
-    char text[32];
-    if (code > 0) snprintf(text, sizeof(text), "MAY CHU TRA LOI HTTP %d", code);
-    else snprintf(text, sizeof(text), "KHONG KET NOI DUOC MAY CHU");
-    setError(text);
+  if (code != 200) {
+    http.end();
+    char text[32], log[64];
+    if (code == 401) snprintf(text, sizeof(text), "SAI KHOA THIET BI 401");
+    else if (code == 404) snprintf(text, sizeof(text), "MAY CHUA DANG KY 404");
+    else if (code > 0) snprintf(text, sizeof(text), "MAY CHU TRA LOI %d", code);
+    else snprintf(text, sizeof(text), "KHONG KET NOI MAY CHU");
+    snprintf(log, sizeof(log), "HTTP %d (%s)", code, code > 0 ? "may chu tu choi" : HTTPClient::errorToString(code).c_str());
+    return fail(text, log);
   }
+  const int announced = http.getSize();
+  char *resp = static_cast<char *>(malloc(P::MaxBodyBytes));
+  if (!resp) { http.end(); return fail("HET RAM DE DOC", "malloc"); }
+  const bool bodyOk = mayapReadBoundedHttpBody(http, resp, P::MaxBodyBytes);
   http.end();
-  if (!available) publishPending(false, "", "", "", 0U);
-  bool failed;
-  portENTER_CRITICAL(&stateMux);
-  failed = lastErrorText[0] != '\0';
-  portEXIT_CRITICAL(&stateMux);
-  __atomic_store_n(&checkPhase, available ? 5U : (failed ? 4U : 3U), __ATOMIC_RELEASE);
-  return available;
+  if (!bodyOk) {
+    free(resp);
+    char log[64];
+    snprintf(log, sizeof(log), "tra loi %d byte (toi da %u) hoac bi cat", announced, static_cast<unsigned>(P::MaxBodyBytes - 1U));
+    return fail(announced >= static_cast<int>(P::MaxBodyBytes) ? "TRA LOI QUA DAI" : "DOC TRA LOI BI CAT", log);
+  }
+  P::Info info;
+  const P::Result result = P::parse(resp, MAYAP_FIRMWARE_VERSION, info);
+  free(resp);
+  switch (result) {
+    case P::Result::UpdateAvailable:
+      if (!mayapFirmwareMetadataValid(info.version, info.sha256, info.signature, info.size))
+        return fail("BAN MOI VUOT PHAN VUNG", "kich thuoc lon hon phan vung OTA");
+      publishPending(true, info.version, info.sha256, info.signature, info.size);
+      mayapSerialPrintf(false, "[FWWEB] Co ban moi: v%s (%lu bytes)\n", info.version, static_cast<unsigned long>(info.size));
+      __atomic_store_n(&checkPhase, 5U, __ATOMIC_RELEASE);
+      return true;
+    case P::Result::UpToDate:
+      mayapSerialPrintf(false, "[FWWEB] check OK: dang chay v%s la ban moi nhat\n", MAYAP_FIRMWARE_VERSION);
+      publishPending(false, "", "", "", 0U);
+      __atomic_store_n(&checkPhase, 3U, __ATOMIC_RELEASE);
+      return false;
+    case P::Result::NotNewer:
+      mayapSerialPrintf(false, "[FWWEB] check OK: may chu bao ban khong moi hon v%s\n", MAYAP_FIRMWARE_VERSION);
+      publishPending(false, "", "", "", 0U);
+      __atomic_store_n(&checkPhase, 3U, __ATOMIC_RELEASE);
+      return false;
+    case P::Result::BadMetadata: return fail("THONG TIN BAN MOI SAI", "version/sha256/chu ky/kich thuoc sai dinh dang");
+    case P::Result::ServerError: return fail("MAY CHU BAO LOI", "success=false");
+    case P::Result::BadJson: default: break;
+  }
+  return fail("TRA LOI KHONG DOC DUOC", "JSON hong");
 }
 
 // Tai ve + flash THUC SU - CHI goi sau khi nguoi van hanh da xac nhan tren
@@ -449,7 +429,15 @@ inline void mayapFirmwareWebUpdate(uint32_t now) {
   }
 
   const NetworkStatus netStatus = mayapGetRawNetworkStatus();
-  if (netStatus.requestedMode != ConnectivityMode::Online || !netStatus.connected) return;
+  const bool online = netStatus.requestedMode == ConnectivityMode::Online && netStatus.connected;
+  if (!online) {
+    // A manual check must not wait in silence: say why nothing happens (once per request).
+    static bool told = false;
+    if (__atomic_load_n(&checkNowRequestFlag, __ATOMIC_ACQUIRE) != 0U) {
+      if (!told) { setError("CHUA ONLINE/MAT MANG"); told = true; }
+    } else told = false;
+    return;
+  }
 
   const bool checkNow = __atomic_load_n(&checkNowRequestFlag, __ATOMIC_ACQUIRE) != 0U;
   static const uint32_t jitterMs = esp_random() % (FIRMWARE_CHECK_JITTER_MS + 1U);   // per boot

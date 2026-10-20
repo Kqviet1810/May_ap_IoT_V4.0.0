@@ -242,6 +242,11 @@ jobs:
           python3 tools/test_wifi_state.py --sanitize --check-regression
           python3 tools/test_runtime_buses.py --sanitize
 
+      - name: Firmware check answer parser (every shape of the /api/firmware/check answer)
+        env:
+          MAYAP_ARDUINOJSON: ${{ github.workspace }}/.qa-libs/ArduinoJson/src
+        run: node --test tests/firmware-check-parse.test.cjs
+
       - name: Reject unsafe firmware shortcuts
         run: |
           if grep -R "setInsecure()" MAYAP_INDUSTRIAL_v1_0_0 --include='*.h' --include='*.ino'; then
