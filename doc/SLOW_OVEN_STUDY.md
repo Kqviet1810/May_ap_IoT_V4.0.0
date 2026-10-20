@@ -168,3 +168,13 @@ python3 tools/test_thermal_control.py --only thermal-slow-oven,thermal-smart-aut
 python3 tools/test_smart_autotune.py        # 36 + 540 lò, cổng ACCEPTED_BAD = 0
 python3 tools/test_thermal_adaptive.py      # 788 ca
 ```
+
+## 2026-10-20 addendum: hold measured over a window
+
+A field log (strong heater, delay ~60-90 s, hold 4-6 %, 0.1 C probe) showed PV 0.5 C under SP for ~1000 s and a hold of 0.3 %. Cause: the
+brake counted the heat that merely replaces the losses (the real hold) as surplus "in flight" (about +1 C of coming overshoot) because the
+hold was never learned. The flat-PV measurement required six minutes of uninterrupted per-sample flatness, which a 0.1 C probe never
+allows. It is now a window test: the slow PV average moved less than 0.02 C over one six minute window.
+
+Simulation (tests/thermal-slow-oven.cpp, 6 new runs; same plant before the fix: MAE 0.72 C, never reached SP): MAE 0.04-0.09 C, SP reached.
+788-case matrix: 186 -> 185 PASS (one borderline cold-start row), total MAE slightly better, High/Emergency 0. Not validated on a real oven.

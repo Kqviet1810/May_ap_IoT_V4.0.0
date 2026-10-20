@@ -217,7 +217,7 @@ class ThermalStartupController {
     bucket_ = 0; firstHeatAt_ = 0; firstRiseAt_ = 0;
     lastHeatOffAt_ = 0; energyWindowStartedAt_ = 0; coastCleared_ = false;
     stableAt_ = 0; lastRequested_ = 0; holdPower_ = 0;
-    slope_ = 0; lastSampleAt_ = 0; lastPeak_ = 0; khObs_ = 0; pvSlow_ = 0; flatMs_ = 0; holdMeasured_ = -1.0f;
+    slope_ = 0; lastSampleAt_ = 0; lastPeak_ = 0; khObs_ = 0; pvSlow_ = 0; flatMs_ = 0; flatMarkAt_ = 0U; flatMarkPv_ = 0.0f; holdMeasured_ = -1.0f;
     hint_ = MayapThermal::StartupHint{};
   }
   void observe(uint32_t now, bool heaterOn) {
@@ -316,15 +316,23 @@ class ThermalStartupController {
         // Lowering the hold stays fast (more braking is the safe direction).
         const float dev = pv-pvSlow_;   // > 0 rising, < 0 falling (slow average: immune to 0.1 C probe steps)
         const bool flat = sp-pv > 0.08f && dev <= SlowHoldRiseC && dev >= -SlowHoldFallC;
-        if (flat) flatMs_ += static_cast<uint32_t>(dt*1000.0f);
-        else flatMs_ = 0U;
-        if (flatMs_ >= SlowHoldFlatMs) {
-          flatMs_ = 0U;
-          const uint32_t windowMs = std::min<uint32_t>(240000U, static_cast<uint32_t>(now-energyWindowStartedAt_));
-          if (windowMs >= 120000U) {
-            const float dutyPct = 100.0f*static_cast<float>(recentOnMsOf(240000U))/static_cast<float>(windowMs);
-            holdMeasured_ = fminf(maxPower, SlowHoldMeasuredFrac*dutyPct);
-            holdPower_ = fmaxf(holdPower_, holdMeasured_);
+        // Flat is judged over a whole window, not sample by sample: with a 0.1 C probe every step breaks a per-sample test for minutes
+        // (the slow average needs ~3 time constants to forget a step), so a weak oven with a few percent of hold never stayed "flat" for
+        // six minutes in a row and its hold was never measured. The slow average must have moved less than SlowHoldDriftC over the window.
+        if (sp-pv <= 0.08f || slope_ > 0.006f) {
+          flatMarkAt_ = 0U;
+        } else if (flatMarkAt_ == 0U) {
+          flatMarkAt_ = now; flatMarkPv_ = pvSlow_;
+        } else if (static_cast<uint32_t>(now-flatMarkAt_) >= SlowHoldFlatMs) {
+          const float drift = pvSlow_ - flatMarkPv_;
+          flatMarkAt_ = now; flatMarkPv_ = pvSlow_;
+          if (drift <= SlowHoldDriftC && drift >= -SlowHoldDriftC) {
+            const uint32_t windowMs = std::min<uint32_t>(240000U, static_cast<uint32_t>(now-energyWindowStartedAt_));
+            if (windowMs >= 120000U) {
+              const float dutyPct = 100.0f*static_cast<float>(recentOnMsOf(240000U))/static_cast<float>(windowMs);
+              holdMeasured_ = fminf(maxPower, SlowHoldMeasuredFrac*dutyPct);
+              holdPower_ = fmaxf(holdPower_, holdMeasured_);
+            }
           }
         }
         if (flat) {
@@ -465,6 +473,7 @@ class ThermalStartupController {
   static constexpr float GainCeiling = 0.5f;     // sanity bound, degC/s
   static constexpr float SlowPvTauSec = 150.0f;  // time constant of the slow PV average (flatness reference)
   static constexpr float SlowHoldRiseC = 0.03f;   // PV - slow average above this = rising (slope ~ 0.0002 C/s): not flat
+  static constexpr float SlowHoldDriftC = 0.02f;  // slow average moved less than this over one SlowHoldFlatMs window = flat
   static constexpr float SlowHoldFallC = 0.06f;   // ... below minus this = falling
   static constexpr uint32_t SlowHoldFlatMs = 360000U;   // flat for this long = the heat in flight is stationary
   static constexpr float SlowHoldMeasuredFrac = 0.95f;  // share of the measured equilibrium duty taken as the hold
@@ -521,6 +530,8 @@ class ThermalStartupController {
   float lastPv_ = 0, lastSp_ = 0, slope_ = 0, pvSlow_ = 0;
   float holdMeasured_ = -1.0f;   // duty measured while PV was flat below SP (-1 = none yet)
   uint32_t flatMs_ = 0;
+  uint32_t flatMarkAt_ = 0U;     // start of the current hold-measurement window (0 = none)
+  float flatMarkPv_ = 0.0f;      // slow PV average at the start of that window
   float lastRequested_ = 0, holdPower_ = 0, lastPeak_ = 0, lastCap_ = 0;
   MayapThermal::StartupHint hint_{};
   Phase phase_ = Phase::FullHeat;

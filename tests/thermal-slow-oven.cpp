@@ -76,6 +76,20 @@ int main() {
     CHECK(r.high == 0 && r.emergency == 0 && r.overshoot <= 0.15);
     CHECK(r.mae <= 0.08 && r.p95 <= 0.12);
   }
+  // Medium-delay oven with a few percent of hold and a strong heater (field log of 2026-10-20: PV sat 0.5 C under SP for ~1000 s, hold
+  // learned 0.3 percent instead of ~4 percent, then ripple around SP - 0.06 C). The hold used to be measured only after six minutes in a
+  // row of flat samples, which a 0.1 C probe never allows; the window drift test measures it. The run must reach SP and hold it.
+  for (double hold : {0.04, 0.05}) for (Mode mode : modes) {
+    Plant p; p.eff = 1.0; p.capacity = 600000; p.dead = 60; p.lag = 30; p.ambient = 28; p.resolution = 0.1; p.ventG = 40;
+    p.loss = hold * 16000.0 * p.eff / (37.5 - p.ambient);
+    Scenario sc = scenario(mode, 37.0, true);
+    sc.kp = 30.0f; sc.ventProfile = true; sc.metricsFromS = 5400;
+    const Result r = run(p, sc);
+    ++runs;
+    CHECK(r.high == 0 && r.emergency == 0 && r.overshoot <= 0.15);
+    CHECK(r.riseS >= 0 && r.riseS <= 2.0 * 3600.0);
+    CHECK(r.mae <= 0.12 && r.p95 <= 0.20);
+  }
   std::printf("Slow oven (Kh 0.014, delay 200 s, hold 1.5-3 %%, 0.1 C probe): %u closed-loop runs, warm and cold start, legacy/Adaptive/Smart: reach SP, hold it, High=0 Emergency=0 (%u checks) PASS\n", runs, checks);
   return 0;
 }
