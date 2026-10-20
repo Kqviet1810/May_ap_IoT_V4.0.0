@@ -736,7 +736,8 @@ async function handleFirmwareCheck(request, env) {
     sha256: latest.sha256,
     signature: latest.signature,
     size: latest.size,
-    notes: latest.notes,
+    // No release notes here: the device reads this answer into a 1023-byte buffer (ota_web_update.h) and rejects anything longer, and the
+    // notes are the GitHub release body (up to 2000 chars, ~1100 bytes of JSON for v1.1.10). The Web gets them from /api/firmware/latest.
   });
 }
 

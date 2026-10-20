@@ -26,3 +26,14 @@ test('the release endpoint is built from the pinned owner/repo only', () => {
   assert.match(source, /`\/repos\/\$\{GITHUB_OWNER\}\/\$\{GITHUB_REPO\}\/releases\/latest`/);
   assert.equal((source.match(/\/releases\/latest/g) || []).length, 1);
 });
+
+test('the device firmware check answer carries no release notes (the device buffer is 1023 bytes)', () => {
+  const i = source.indexOf('async function handleFirmwareCheck');
+  const body = source.slice(i, source.indexOf('\n}\n', i));
+  assert.doesNotMatch(body, /\bnotes\s*:/);
+  // worst case of the remaining fields: 15-char version, 64-char sha256, 127-char signature, 8-digit size
+  const worst = JSON.stringify({ success: true, update_available: true, version: '9999.9999.9999', sha256: 'a'.repeat(64), signature: 'b'.repeat(127), size: 99999999 });
+  assert.ok(Buffer.byteLength(worst) < 1000, String(Buffer.byteLength(worst)));
+  const device = fs.readFileSync(path.join(__dirname, '..', 'MAYAP_INDUSTRIAL_v1_0_0', 'ota_web_update.h'), 'utf8');
+  assert.match(device, /char resp\[1024\];/);
+});
