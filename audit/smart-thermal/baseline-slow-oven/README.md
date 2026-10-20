@@ -72,4 +72,3 @@ Against the reference of the section above (same case ids, same oracle; rows are
 
 A first attempt with a 2 x reserve on the measured gain gave 3 holdout rows with High (dead time 90 s, room 31 C, overshoot 0.77-0.88 C) and was
 rejected; the 4 x reserve has no extra High / Emergency row in any suite. Not validated on a real oven.
-
