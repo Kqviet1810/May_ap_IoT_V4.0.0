@@ -132,7 +132,7 @@ function corsHeaders(env) {
 // Release moi khi day tag "vX.Y.Z"). Day la NGUON DUY NHAT cho tinh nang
 // cap nhat firmware tu xa - khong con trang admin/upload thu cong.
 const GITHUB_OWNER = 'Kqviet1810';
-const GITHUB_REPO = 'May_ap_trung_V2.1.1';
+const GITHUB_REPO = 'May_ap_IoT_V4.0.0';
 // Bao lau thi coi cache la "cu", can hoi lai GitHub xem tag co doi khong
 // (hoi nhe, khong tai file - chi tai+bam lai file khi THAT SU co tag moi).
 const FIRMWARE_CACHE_MAX_AGE_MS = 10 * 60 * 1000;
