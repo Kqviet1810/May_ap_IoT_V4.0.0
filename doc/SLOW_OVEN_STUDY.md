@@ -178,3 +178,31 @@ allows. It is now a window test: the slow PV average moved less than 0.02 C over
 
 Simulation (tests/thermal-slow-oven.cpp, 6 new runs; same plant before the fix: MAE 0.72 C, never reached SP): MAE 0.04-0.09 C, SP reached.
 788-case matrix: 186 -> 185 PASS (one borderline cold-start row), total MAE slightly better, High/Emergency 0. Not validated on a real oven.
+
+## 2026-10-20 second addendum (firmware 1.1.12): why the last degrees were so slow, and what changed
+
+Field report: from 32 C the climb to 37.5 C was very slow, PV crept up and finally stopped 0.2-0.5 C under the set point, with a hold learned at 0.3 percent.
+A 4608-case grid (heater 0.25-2.0 x, capacity 300-1200 kJ/C, dead time 10-120 s, lag 10-30 s, hold 3-10 percent, probe 0.01/0.1 C, start 25/32/36 C, legacy and
+Adaptive) reproduced it (315 / 154 cases never reached SP in 3 h) and found four causes, all in `ThermalStartupController`:
+
+1. **Energy brake sized for the strongest plant.** Every ON second was assumed to add 0.12 C of coming overshoot (16 kW bank on 180 kJ/C). On a 4 kW bank
+   on 600 kJ/C the real figure is 0.007 C/s, so the brake held back heat that never arrives. Now the heater gain is measured (PV rise per second of ON-time older
+   than the apparent delay, running maximum, trusted after a 0.8 C rise) and scales the coast by 4 x measured / assumed (floor 0.2, never above 1; withdrawn for good if PV
+   passes SP + 0.15 C). The answer to "why not accelerate and then brake": the loop does, but it braked too early and too hard because it could not tell how strong
+   the heater was; it can now. The reserve is 4 x because with 2 x a wrong learned hold feed-forward removed the braking of a 90 s dead-time oven (0.8 C over SP, High).
+2. **"First rise" never detected on a weak or heavy oven** (slope above 0.003 C/s is never reached), so the delay estimate, the hold learner and the gain measurement stayed
+   off for good. A PV rise of 0.25 C since the first heat counts as well.
+3. **The hold measurement read the wrong minutes.** It averaged the last 4 minutes of duty while PV had been flat for 6; with a dead time the last minutes are heat in
+   flight. It now reads the duty over the flat window shifted back by the apparent delay.
+4. **A 0.1 C probe never reached HOLD**, so the integral stayed frozen as soon as PV was within 0.15 C of SP (every probe step makes the 10 s IIR slope jump to 0.005-0.01 C/s).
+   Stability is now judged against the 150 s slow average too (a step is at most one probe step, a real climb of 0.002 C/s is 0.3 C away from it).
+
+Results (simulation only, not validated on a real oven; `audit/smart-thermal/baseline-slow-oven/README.md`): grid never-reached-SP 315 -> 162 (legacy) and 154 -> 62 (Adaptive),
+median rise 2484 -> 2229 s / 2016 -> 1831 s, MAE 0.223 -> 0.165 / 0.089 -> 0.067, High/Emergency 0 -> 0; 788 / 2160 / holdout A/B: no extra High or Emergency row, PASS +22 / +69 / +22.
+`tests/thermal-slow-oven.cpp` gained eight runs (weak heater started under SP; 90 s dead time in a hot room); mutation checks: removing the 0.25 C rule or lowering the reserve to 2 x fails them.
+
+Known limits (honest list):
+* 162 / 62 grid cases still never reach SP: 10 percent hold with a weak heater started at 36 C. There no PV rise ever surfaces, so the gain stays unmeasured and the legacy brake
+  keeps the heater at a few percent. A stall-based relief was tried and turned the 788 commissioning gate red (High crossing), so it was left out.
+* With a probe lag of 60 s the loop now cycles +-0.3 C around SP - 0.2 C instead of sitting 0.5 C under SP, and the unchanged HeaterNotHeating (E115) detector trips in one such
+  no-fault case (`tests/thermal-sensor-path-baseline.json`, FALSE_TRIP_NO_FAULT 4 -> 5). Four other no-fault cases with 30-60 s lag already tripped before.

@@ -325,13 +325,23 @@ static void verificationRegressionTests() {
     CHECK(std::strcmp(SmartTune::judge(99U, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.1f, 100.0f), "samples") == 0);
     CHECK(std::strcmp(SmartTune::judge(300U, 0.0f, 0.02f, 0.10f, 0.10f, 0.0f, 10.0f, 0.5f, 0.1f, 100.0f), "not-steady") == 0);
   }
-  // (2) the former full400: 0.1 C probe, the controller only reached its steady HOLD regime late in the window. Not enough evidence.
+  // (2) the former full400: 0.1 C probe, the controller only reached its steady HOLD regime late in the window -> refused as not-steady.
+  //     The startup controller now measures the heater gain and learns the hold early, so the regime is reached inside the window; the tune is
+  //     then accepted, but only on its own numbers AND when the independent post-tune run agrees. A refusal stays legitimate and must be clean.
   {
     Plant p; p.eff = 1.5; p.capacity = 600000; p.loss = 180; p.dead = 0; p.lag = 8; p.ambient = 20; p.resolution = 0.1;
     TuneOpts o; const TuneOut r = tune(p, 37.5f, o);
-    CHECK(r.started && !r.accepted && r.oldKept && r.saves == 0 && !r.high && !r.emergency);
-    CHECK(std::strcmp(r.why, "not-steady") == 0 && r.valHold < SmartTune::ValidHoldFrac);
-    CHECK(r.evMae + 0.5f * r.valRes <= 0.12f);                          // every numeric target looked fine: the refusal is the missing regime evidence
+    CHECK(r.started && r.oldKept && !r.high && !r.emergency);
+    if (r.accepted) {
+      CHECK(r.saves == 1 && r.valHold >= SmartTune::ValidHoldFrac && r.evMae + 0.5f * r.valRes <= 0.12f);
+      Scenario sc; sc.sp = 37.5f; sc.durationS = 10800; sc.mode = Mode::Adaptive; sc.gainsSet = true; sc.kp = r.kp; sc.ki = r.ki; sc.kd = r.kd;
+      sc.seedSet = true; sc.seed = r.seed;
+      const Result post = run(p, sc);
+      CHECK(post.high == 0 && post.emergency == 0 && post.overshoot <= 0.30 && post.mae <= 0.12 && post.p95 <= 0.18 && post.ripple <= 0.30 && post.settling >= 0);
+    } else {
+      CHECK(r.saves == 0 && r.profileSaves == 0 && r.validated);
+      CHECK(r.evMae + 0.5f * r.valRes <= 0.12f);
+    }
   }
   // (2b) the former full165 / full64 escapes of the 540 matrix: the tune is accepted, then the Adaptive learner (fast gain refreshed only by
   //      full-weight windows, i.e. PV away from SP) declared a plant change while PV was regulated at the setpoint, the hint dropped

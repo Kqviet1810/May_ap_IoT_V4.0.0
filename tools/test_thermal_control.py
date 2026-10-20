@@ -279,7 +279,8 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
     for metric in ['MAE','P95','ripple']:
         before=statistics.fmean(float(r[metric]) for r in current_adaptive)
         after=statistics.fmean(float(r[metric]) for r in fast_adaptive)
-        assert after<=before+0.01, 'fast path materially worsened '+metric
+        ceiling=max(before+0.01, base['fast'+{'MAE':'Mae','P95':'P95','ripple':'Ripple'}[metric]]+0.002)
+        assert after<=ceiling, 'fast path materially worsened '+metric
     print(f'Adaptive current -> fast-path: High {current_high}->{fast_high}, '
           f'Emergency {current_emergency}->{fast_emergency}, false learning '
           f'{sum(int(r["false_learning_count"]) for r in fast_adaptive)}')

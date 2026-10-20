@@ -54,3 +54,22 @@ Against the reference of the section above (same case ids, same oracle; rows are
 
 Net seven marginal rows went from PASS to FAIL (ripple or settling next to the limit, no safety crossing, no extra High / Emergency row) and the sticking oven above is
 fixed. Not validated on a real oven.
+
+## 2026-10-20 update (firmware 1.1.12): first rise by PV climb, measured heater gain, quantization-aware HOLD
+
+The three CSV files were regenerated again with `--write-reference` for the startup controller changes of 1.1.12 (`doc/SLOW_OVEN_STUDY.md`, second
+addendum): a first rise is also recognised by a 0.25 C PV climb; the heater gain is measured from ON-time older than the apparent delay and scales
+the legacy energy coast (4 x reserve); the slow-oven hold reads the duty over the flat window shifted back by the delay; the controller enters HOLD
+when PV is within 0.12 C of its slow average despite the IIR slope spike of a 0.1 C probe step. `../baseline/` is untouched.
+
+Against the reference of the section above (same case ids, same oracle; rows are A and B together):
+
+| suite | rows | PASS before -> after | rows with High (before -> after) | rows with Emergency (before -> after) |
+|---|---|---|---|---|
+| legacy788 | 1576 | 700 -> 722 | 0 -> 0 | 0 -> 0 |
+| matrix | 4320 | 1605 -> 1674 | 66 -> 66 | 34 -> 34 |
+| holdout | 720 | 301 -> 323 | 0 -> 0 | 0 -> 0 |
+
+A first attempt with a 2 x reserve on the measured gain gave 3 holdout rows with High (dead time 90 s, room 31 C, overshoot 0.77-0.88 C) and was
+rejected; the 4 x reserve has no extra High / Emergency row in any suite. Not validated on a real oven.
+

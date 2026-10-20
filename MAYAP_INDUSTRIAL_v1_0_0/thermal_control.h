@@ -217,7 +217,7 @@ class ThermalStartupController {
     bucket_ = 0; firstHeatAt_ = 0; firstRiseAt_ = 0;
     lastHeatOffAt_ = 0; energyWindowStartedAt_ = 0; coastCleared_ = false;
     stableAt_ = 0; lastRequested_ = 0; holdPower_ = 0;
-    slope_ = 0; lastSampleAt_ = 0; lastPeak_ = 0; khObs_ = 0; pvSlow_ = 0; flatMs_ = 0; flatMarkAt_ = 0U; flatMarkPv_ = 0.0f; holdMeasured_ = -1.0f;
+    slope_ = 0; lastSampleAt_ = 0; lastPeak_ = 0; khObs_ = 0; pvSlow_ = 0; flatMs_ = 0; flatMarkAt_ = 0U; flatMarkPv_ = 0.0f; holdMeasured_ = -1.0f; onTotalMs_ = 0U; pvStart_ = 0.0f; pvStartSet_ = false; gainEst_ = 0.0f; gainRevoked_ = false; gainHistBid_ = 0U; gainHistInit_ = false; for (uint8_t i = 0; i < GainHistLen; ++i) gainHist_[i] = 0U;
     hint_ = MayapThermal::StartupHint{};
   }
   void observe(uint32_t now, bool heaterOn) {
@@ -231,7 +231,7 @@ class ThermalStartupController {
     while (dt) {
       const uint32_t left = 2000U - static_cast<uint32_t>(observedAt_ - dt - bucketAt_);
       const uint32_t part = dt < left ? dt : left;
-      if (lastOn_) onMs_[bucket_] += part;
+      if (lastOn_) { onMs_[bucket_] += part; onTotalMs_ += part; }
       dt -= part;
       if (part == left) {
         bucketAt_ += 2000U;
@@ -266,7 +266,12 @@ class ThermalStartupController {
     pvSlow_ += dt/(SlowPvTauSec+dt)*(pv-pvSlow_);   // slow average: the robust "is PV really flat" reference (immune to 0.1 C steps)
     if (smart_) observeGain(now);
     if (sp != lastSp_) { stableAt_ = 0U; phase_ = Phase::Approach; lastSp_ = sp; }
-    if (firstRiseAt_ == 0U && firstHeatAt_ != 0U && slope_ > 0.003f &&
+    if (!pvStartSet_ && firstHeatAt_ != 0U) { pvStartSet_ = true; pvStart_ = pv; }
+    // First rise = the heat has surfaced. A strong oven shows it as a slope above 0.003 C/s; a weak or heavy one never reaches that slope (its
+    // whole climb is 0.0005 C/s), and with no "first rise" the hold learner, the delay estimate and the measured gain below stay switched off for
+    // good: the oven then sits under the set point forever (grid test: 0.5 C under SP for 3 h). A rise of FirstRiseC since the first heat (two
+    // probe steps) counts as well.
+    if (firstRiseAt_ == 0U && firstHeatAt_ != 0U && (slope_ > 0.003f || (pvStartSet_ && pv - pvStart_ >= FirstRiseC)) &&
         static_cast<uint32_t>(now-firstHeatAt_) >= 15000U) firstRiseAt_ = now;
     const uint32_t riseDelayMs = firstRiseAt_ == 0U ? 0U :
         static_cast<uint32_t>(firstRiseAt_-firstHeatAt_);
@@ -325,11 +330,19 @@ class ThermalStartupController {
           flatMarkAt_ = now; flatMarkPv_ = pvSlow_;
         } else if (static_cast<uint32_t>(now-flatMarkAt_) >= SlowHoldFlatMs) {
           const float drift = pvSlow_ - flatMarkPv_;
+          const uint32_t markAt = flatMarkAt_;
           flatMarkAt_ = now; flatMarkPv_ = pvSlow_;
           if (drift <= SlowHoldDriftC && drift >= -SlowHoldDriftC) {
-            const uint32_t windowMs = std::min<uint32_t>(240000U, static_cast<uint32_t>(now-energyWindowStartedAt_));
-            if (windowMs >= 120000U) {
-              const float dutyPct = 100.0f*static_cast<float>(recentOnMsOf(240000U))/static_cast<float>(windowMs);
+            // The duty is read over the flat window shifted back by the delay: PV that stood still over [mark, now] was fed by the heater
+            // over [mark-lag, now-lag]. The last minutes of duty are still in flight (a brake that kept the heater OFF for a dead time also
+            // leaves PV flat, and the ON burst that follows it must not be mistaken for the hold: a 90 s dead-time oven learned 70 %
+            // instead of 7 % and overshot by 0.9 C).
+            const uint32_t lagMs = std::min<uint32_t>(riseDelayMs + 30000U, 300000U);
+            const uint32_t spanMs = static_cast<uint32_t>(now-markAt);
+            const uint32_t newBid = (now - lagMs) / GainHistStepMs, oldBid = (now - spanMs - lagMs) / GainHistStepMs;
+            if (spanMs >= 240000U && gainHistBid_ - oldBid < GainHistLen && newBid > oldBid) {
+              const uint32_t onMs = gainHist_[newBid % GainHistLen] - gainHist_[oldBid % GainHistLen];
+              const float dutyPct = 100.0f*static_cast<float>(onMs)/static_cast<float>((newBid - oldBid)*GainHistStepMs);
               holdMeasured_ = fminf(maxPower, SlowHoldMeasuredFrac*dutyPct);
               holdPower_ = fmaxf(holdPower_, holdMeasured_);
             }
@@ -368,7 +381,41 @@ class ThermalStartupController {
     // and delayed heat before trusting a first-rise estimate.
     // Do not subtract PV rise over this ring: with transport delay, that rise
     // can be caused by an older pulse which already aged out of the ring.
-    const float legacyEnergyCoast = excessOnMs*16.0f*1.35f/MinimumCapacity;
+    // Measured heater strength (cold start). The legacy energy model above assumes the strongest plant of the design envelope (a 16 kW bank on
+    // 180 kJ/C: 0.12 C per second of ON), so a weaker or heavier oven is braked for heat that can never arrive and the last degrees take an hour.
+    // The real figure is measurable as soon as the first burst has surfaced: C of PV rise since the first heat per second of heater ON-time that
+    // is OLDER than the apparent delay (younger ON-time is still in flight and must not be counted against the rise). The delay is taken
+    // generously (2 x the observed first-rise delay + 40 s: a long one only OVERestimates the gain, which only brakes more). Loss only lowers the
+    // figure, the running maximum is kept, and it is trusted only after a rise of GainMinRiseC (the 0.1 C probe step is then <= 12 %). The braking
+    // scale is GainSafety (4) times the measured figure over the legacy one (floor GainScaleFloor): a 4x reserve, because a 2x one let a wrong learned hold feed-forward remove the braking of a 90 s dead-time oven (holdout rows h107/h119/h215: 0.8 C over SP). PV above SP + GainRevokeOverC withdraws the trust
+    // until the next reset().
+    {
+      const uint32_t bid = now / GainHistStepMs;
+      if (!gainHistInit_) {
+        for (uint32_t k = 0; k < GainHistLen; ++k) gainHist_[k] = onTotalMs_;
+        gainHistBid_ = bid; gainHistInit_ = true;
+      } else if (bid != gainHistBid_) {   // snapshot the ON-time total every GainHistStepMs (a gap fills with the same value)
+        uint32_t steps = bid - gainHistBid_;
+        if (steps > GainHistLen) steps = GainHistLen;
+        for (uint32_t k = 1; k <= steps; ++k) gainHist_[(gainHistBid_ + k) % GainHistLen] = onTotalMs_;
+        gainHistBid_ = bid;
+      }
+    }
+    if (pv > sp + GainRevokeOverC) gainRevoked_ = true;
+    if (pvStartSet_ && !gainRevoked_ && firstRiseAt_ != 0U && riseDelayMs <= GainMaxDelayMs && pvSlow_ - pvStart_ >= GainMinRiseC) {
+      const uint32_t lagMs = 2U * riseDelayMs + 40000U;
+      if (lagMs < (GainHistLen - 1U) * GainHistStepMs) {
+        const uint32_t oldBid = (now - lagMs) / GainHistStepMs;
+        const uint32_t onOld = gainHist_[oldBid % GainHistLen];
+        if (onOld >= GainMinOnMs && gainHistBid_ - oldBid < GainHistLen) {
+          const float r = (pvSlow_ - pvStart_) / (static_cast<float>(onOld) * 0.001f);
+          if (r > gainEst_) gainEst_ = r;
+        }
+      }
+    }
+    const float gainScale = (gainEst_ > 0.0f && !gainRevoked_)
+        ? clampFloat(GainSafety * gainEst_ / (16.0f*1.35f/MinimumCapacity*1000.0f), GainScaleFloor, 1.0f) : 1.0f;
+    const float legacyEnergyCoast = excessOnMs*16.0f*1.35f/MinimumCapacity*gainScale;
     const float energyCoast = hs > 0.0f && hint_.coastPerOnMs > 0.0f
         ? legacyEnergyCoast + hs*(excessOnMs*hint_.coastPerOnMs - legacyEnergyCoast)
         : legacyEnergyCoast;
@@ -379,11 +426,16 @@ class ThermalStartupController {
     const float error = sp-pv;
     const float peak = pv+expectedCoast;
     lastPeak_ = peak;
-    if (fabsf(error) <= 0.45f && fabsf(slope_) <= 0.002f) {
+    // The 10 s IIR slope jumps to 0.005..0.01 C/s at every 0.1 C probe step although PV is not moving, so with a coarse probe the
+    // controller never became "stable", never reached Hold and kept the integral frozen below SP - 0.15 C for good (post-tune run of the
+    // 0.1 C unit plant: 0.14 C under SP for three hours). Against the slow average a step is at most one probe step, a real climb of
+    // 0.002 C/s is 0.3 C: the slope only counts when PV is also away from its slow average.
+    const bool pvMoving = fabsf(pv-pvSlow_) > StableDevC;
+    if (fabsf(error) <= 0.45f && (fabsf(slope_) <= 0.002f || (!pvMoving && fabsf(slope_) <= StableStepSlope))) {
       if (stableAt_ == 0U) stableAt_ = now;
       if (static_cast<uint32_t>(now-stableAt_) >= 60000U) phase_ = Phase::Hold;
     } else stableAt_ = 0U;
-    if (phase_ == Phase::Hold && (error > 0.7f || error < -0.25f || slope_ > 0.006f))
+    if (phase_ == Phase::Hold && (error > 0.7f || error < -0.25f || (slope_ > 0.006f && pvMoving)))
       phase_ = Phase::Approach;
     if (phase_ != Phase::Hold) {
       if (error > 2.0f && peak < sp-1.0f) phase_ = Phase::FullHeat;
@@ -471,6 +523,8 @@ class ThermalStartupController {
   static constexpr float PriorMinError = 3.5f;
   static constexpr float GainMargin = 1.15f;     // slope lags the heat and the loss subtracts from it: bias the estimate up
   static constexpr float GainCeiling = 0.5f;     // sanity bound, degC/s
+  static constexpr float StableDevC = 0.12f;      // PV within this of its slow average = not moving (one 0.1 C probe step)
+  static constexpr float StableStepSlope = 0.012f; // ... and the IIR slope below this = a probe step, not a climb
   static constexpr float SlowPvTauSec = 150.0f;  // time constant of the slow PV average (flatness reference)
   static constexpr float SlowHoldRiseC = 0.03f;   // PV - slow average above this = rising (slope ~ 0.0002 C/s): not flat
   static constexpr float SlowHoldDriftC = 0.02f;  // slow average moved less than this over one SlowHoldFlatMs window = flat
@@ -480,6 +534,15 @@ class ThermalStartupController {
   static constexpr float SlowHoldPctPerMin = 0.2f;      // slow integrator that closes the last offset
   static constexpr float SlowHoldCeilFactor = 1.5f;     // ... which stops at  1.5 x the measured flat-PV duty + SlowHoldCeilPct
   static constexpr float SlowHoldCeilPct = 2.0f;
+  static constexpr float FirstRiseC = 0.25f;            // PV rise since the first heat that counts as 'the heat has surfaced' for a weak oven
+  static constexpr uint32_t GainMinOnMs = 20000U;       // measured gain: at least this much heater ON-time since the first heat
+  static constexpr uint32_t GainHistStepMs = 10000U;    // ON-time snapshots for the delayed accounting
+  static constexpr uint32_t GainHistLen = 80U;          // ... 800 s of history (gain lag and the hold window)
+  static constexpr uint32_t GainMaxDelayMs = 120000U;   // measured only for plants whose first rise came within this
+  static constexpr float GainMinRiseC = 0.8f;           // ... and at least this much PV rise
+  static constexpr float GainSafety = 4.0f;             // reserve against loss, probe noise and a wrong learned hold
+  static constexpr float GainScaleFloor = 0.2f;         // never trust the legacy model less than 1/5
+  static constexpr float GainRevokeOverC = 0.15f;       // PV this far above SP withdraws the measured gain
   static constexpr float SlowHoldCutSpanC = 0.25f;      // overshoot above SP + 0.05 C at which the hold is lowered at the full rate
   uint32_t recentOnMsOf(uint32_t horizonMs) const {
     uint8_t n = static_cast<uint8_t>(std::min<uint32_t>(horizonMs / 2000U, Buckets));
@@ -530,6 +593,14 @@ class ThermalStartupController {
   float lastPv_ = 0, lastSp_ = 0, slope_ = 0, pvSlow_ = 0;
   float holdMeasured_ = -1.0f;   // duty measured while PV was flat below SP (-1 = none yet)
   uint32_t flatMs_ = 0;
+  uint32_t onTotalMs_ = 0U;      // heater ON-time since the first heat (measured gain)
+  float pvStart_ = 0.0f;
+  bool pvStartSet_ = false;
+  float gainEst_ = 0.0f;         // C of rise per ON-second, running maximum
+  bool gainRevoked_ = false;
+  uint32_t gainHist_[80]{};
+  uint32_t gainHistBid_ = 0U;
+  bool gainHistInit_ = false;
   uint32_t flatMarkAt_ = 0U;     // start of the current hold-measurement window (0 = none)
   float flatMarkPv_ = 0.0f;      // slow PV average at the start of that window
   float lastRequested_ = 0, holdPower_ = 0, lastPeak_ = 0, lastCap_ = 0;

@@ -90,6 +90,28 @@ int main() {
     CHECK(r.riseS >= 0 && r.riseS <= 2.0 * 3600.0);
     CHECK(r.mae <= 0.12 && r.p95 <= 0.20);
   }
+  // Weak heater on a light, fine-probe chamber started just under the set point (grid test of 2026-10-20): the heat surfaces as a climb of
+  // 0.0005 C/s, never the 0.003 C/s "first rise" slope, so the hold learner, the delay estimate and the measured heater gain stayed switched
+  // off and PV sat 0.5 C under SP for the whole run. A rise of 0.25 C since the first heat counts as the first rise as well.
+  for (double start : {36.0, 32.0}) for (Mode mode : {Mode::Baseline, Mode::Adaptive}) {
+    Plant p; p.eff = 0.25; p.capacity = 300000; p.dead = 10; p.lag = 10; p.ambient = 25; p.resolution = 0.01; p.ventG = 0;
+    p.loss = 0.03 * 16000.0 * p.eff / (37.5 - 25.0);
+    Scenario sc; sc.sp = 37.5f; sc.durationS = 3 * 3600.0; sc.mode = mode; sc.startTemp = start; sc.metricsFromS = 5400;
+    const Result r = run(p, sc);
+    ++runs;
+    CHECK(r.high == 0 && r.emergency == 0 && r.overshoot <= 0.30);
+    CHECK(r.riseS >= 0 && r.riseS <= 1.5 * 3600.0);
+    CHECK(r.mae <= (mode == Mode::Baseline ? 0.20 : 0.10));
+  }
+  // 90 s dead time, hot room, 0.1 C probe (holdout rows h107 / h119 / h215): a wrong learned hold feed-forward during the climb removed the
+  // braking when the measured-gain relief used a 2x reserve; the 4x reserve keeps the overshoot below the High threshold.
+  for (double loss : {150.0, 240.0}) {
+    Plant p; p.eff = 0.85; p.capacity = 900000; p.loss = loss; p.dead = 90; p.lag = 20; p.ambient = 31; p.resolution = 0.1;
+    Scenario sc; sc.sp = 37.5f; sc.durationS = 4 * 3600.0; sc.mode = Mode::Adaptive;
+    const Result r = run(p, sc);
+    ++runs;
+    CHECK(r.high == 0 && r.emergency == 0 && r.overshoot <= 0.60);
+  }
   std::printf("Slow oven (Kh 0.014, delay 200 s, hold 1.5-3 %%, 0.1 C probe): %u closed-loop runs, warm and cold start, legacy/Adaptive/Smart: reach SP, hold it, High=0 Emergency=0 (%u checks) PASS\n", runs, checks);
   return 0;
 }

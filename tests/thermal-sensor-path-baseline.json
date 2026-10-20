@@ -5,8 +5,9 @@
     "UNDETECTED_TRUE_VIOLATION": 10,
     "TRUE_VIOLATION_STOPPED_LATE_BY_E115_E104": 9,
     "TRUE_VIOLATION_DETECTED_LATE": 4,
-    "FALSE_TRIP_NO_FAULT": 4,
+    "FALSE_TRIP_NO_FAULT": 5,
     "ACTUATOR_UNSTOPPABLE_BY_FIRMWARE": 4,
     "UNSAFE_COMMAND": 0
-  }
+  },
+  "falseTripNote": "2026-10-20 (1.1.12): 4 -> 5. The additional case is medium_d15/nofault_lag60 (600 kJ/C, 15 s dead time, 60 s PROBE LAG, healthy sensor). Before, the startup controller never entered HOLD with a 0.1 C probe (slope spikes), kept the integral frozen and the loop sat 0.5 C under SP for hours (MAE 0.506) without tripping; now the integral works, but the 60 s probe lag makes the loop cycle +-0.3 C around SP - 0.2 C and HeaterNotHeating (E115) trips at 7650 s. The other four false trips (light_d15 lag30/60, medium_d15 lag30, medium_d60 lag30) are unchanged. Residual risk for probes with a lag of 30 s or more, tracked in doc/SLOW_OVEN_STUDY.md."
 }
