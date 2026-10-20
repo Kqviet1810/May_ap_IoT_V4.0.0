@@ -37,3 +37,20 @@ Why the change is still wanted: the field oven (weak heater, ~200 s delay, 1.9 %
 identified it, while the same code turns 66 rows (A and B together) from FAIL to PASS, with no extra High / Emergency row. Isolating the pieces (`doc/SLOW_OVEN_STUDY.md`, §4):
 the Adaptive false-mismatch guard alone gives +4 / +1 / +35 rows and no loss; every loss comes from the hold learner of the startup controller, and removing any single part of it
 (measured-duty step, slow integrator, proportional decrement) only trades some losses for others.
+
+## 2026-10-20 update (firmware 1.1.11): hold measured over a window
+
+The hold measurement of the startup controller (slow-oven branch) now judges "PV is flat" over a six minute window (the slow PV average moved less than
+0.02 C) instead of six uninterrupted minutes of per-sample flatness, which a 0.1 C probe never allowed (a 4 % hold oven with a 60 s dead time sat 0.5 C under
+the set point, see `doc/SLOW_OVEN_STUDY.md`). The three CSV files were regenerated with `--write-reference`; `../baseline/` is untouched.
+
+Against the reference of the section above (same case ids, same oracle; rows are A and B together):
+
+| suite | rows | changed | PASS before → after | rows with High (before → after) | rows with Emergency (before → after) |
+|---|---|---|---|---|---|
+| legacy788 | 1576 | 80 | 705 → 700 | 0 → 0 | 0 → 0 |
+| matrix | 4320 | 208 | 1606 → 1605 | 66 → 66 | 34 → 34 |
+| holdout | 720 | 37 | 302 → 301 | 0 → 0 | 0 → 0 |
+
+Net seven marginal rows went from PASS to FAIL (ripple or settling next to the limit, no safety crossing, no extra High / Emergency row) and the sticking oven above is
+fixed. Not validated on a real oven.

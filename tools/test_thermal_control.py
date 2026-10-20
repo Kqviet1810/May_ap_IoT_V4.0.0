@@ -197,7 +197,10 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
         return subprocess.run([str(executable)], capture_output=True, text=True)
     def matrix_job(name, flags, source, run_args, stdout_path):
         executable = out / name
-        subprocess.run(common + ['-O2'] + flags + [str(ROOT / source), '-o', str(executable)], check=True)
+        # The matrices are pure closed-loop simulations that were already sanitized as unit tests; ASan/UBSan makes them ~4x slower,
+        # so they are built plain here (the unit tests above keep the sanitizers).
+        plain = [f for f in common if not f.startswith('-fsanitize') and f not in ('-fno-omit-frame-pointer', '-fno-pie', '-no-pie')]
+        subprocess.run(plain + ['-O2'] + flags + [str(ROOT / source), '-o', str(executable)], check=True)
         with stdout_path.open('w') as report:
             subprocess.run([str(executable)] + [str(a) for a in run_args], stdout=report, check=True)
     matrix = {}

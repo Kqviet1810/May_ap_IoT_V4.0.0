@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  checks: read
 
 env:
   MAYAP_FQBN: esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,PartitionScheme=default_8MB,FlashSize=8M,PSRAM=disabled
@@ -109,37 +110,18 @@ jobs:
       - name: Kiem tra reliability truoc build/release
         run: python3 tools/check_reliability.py
 
-      - name: Protocol V2 transaction and packet regression
-        run: node --test tests/*.test.cjs
-
-      - name: Install pinned Chromium for browser regressions
-        working-directory: cloudflare
-        run: npx pnpm@11.19.0 exec playwright install --with-deps chromium
-
-      - name: Browser UX regression
+      - name: Tag build - require the reliability gate to be green on this exact commit
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 -m http.server 8765 --bind 127.0.0.1 > /tmp/mayap-qa-http.log 2>&1 &
-          qa_server_pid=$!
-          trap 'kill "$qa_server_pid"' EXIT
-          node tools/test_web_experience.cjs /tmp/mayap-web-qa
-
-
-      - name: Actual PID and autotune host tests
-        run: python3 tools/test_thermal_control.py --sanitize
-
-      - name: Adaptive staged boot policy host tests
-        run: |
-          g++ -std=c++11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/boot-policy.cpp -o /tmp/mayap-boot-test
-          /tmp/mayap-boot-test
-          g++ -std=c++11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/boot-safety.cpp -o /tmp/mayap-boot-safety
-          /tmp/mayap-boot-safety
-
-      - name: Runtime recovery fault injection
-        run: |
-          g++ -std=c++11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/runtime-recovery.cpp -o /tmp/mayap-runtime-test
-          /tmp/mayap-runtime-test
-          python3 tools/test_runtime_buses.py --sanitize --check-regression
-          python3 tools/test_single_eeprom.py --sanitize
+          # The host, protocol, browser and simulation regressions run in "Reliability regression checks" on every push, in parallel with this
+          # build; repeating them here only made every release wait for them twice. A release tag must still sit on a commit where that gate passed.
+          concl=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100" \
+            --jq '[.check_runs[] | select(.name=="reliability")] | sort_by(.started_at) | last | .conclusion // "none"')
+          echo "reliability on ${GITHUB_SHA:0:7}: ${concl}"
+          [[ "$concl" == "success" ]] || { echo "::error::reliability is not green on this commit (${concl})"; exit 1; }
 
       - name: Kiem tra JavaScript
         run: |

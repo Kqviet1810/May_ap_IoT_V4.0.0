@@ -16,7 +16,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  reliability:
+  web:
+    name: web
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -95,6 +96,37 @@ jobs:
       - name: End-to-end Web (Chromium) - real broker Durable Object - device emulator, incl. make-before-break token renewal
         run: node tools/e2e/run_mvp.cjs /tmp/mayap-e2e-mvp
 
+      - name: Keep end-to-end logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-realtime-web-logs
+          path: |
+            /tmp/mayap-e2e-mvp
+            /tmp/mayap-fw-wss
+          if-no-files-found: ignore
+
+  uplink:
+    name: uplink
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install pinned account dependencies
+        run: |
+          npx --yes pnpm@11.19.0 --dir cloudflare install --frozen-lockfile --ignore-scripts
+          node --check account.js
+          node --check cloudflare/src/account-worker.js
+
       - name: Alarm uplink resilience on the real broker Durable Object (slow/down/throttling Worker, queue overflow, broker restart, 20 devices)
         run: node tools/e2e/uplink_resilience.cjs /tmp/mayap-e2e-uplink
 
@@ -109,24 +141,20 @@ jobs:
             /tmp/mayap-fw-wss
           if-no-files-found: ignore
 
+  thermal:
+    name: thermal
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
       - name: AT24C512 driver regression
         run: python3 tools/test_single_eeprom.py --sanitize --check-regression
 
-
       - name: Actual PID and autotune host tests
         run: python3 tools/test_thermal_control.py --sanitize --report-dir /tmp/mayap-thermal-report
-
-      - name: Adaptive Thermal V1 simulation gates (simulation only, physical validation required)
-        run: python3 tools/test_thermal_adaptive.py --report-dir /tmp/mayap-thermal-adaptive-report
-
-      - name: Smart AutoTune V1 simulation gates (simulation only, physical commissioning required)
-        run: python3 tools/test_smart_autotune.py --report-dir /tmp/mayap-smart-autotune-report
-
-      - name: Smart AutoTune V1 with MAYAP_SMART_THERMAL=1 and the post-tune oracle in Smart mode (ACCEPTED_BAD must stay 0; simulation only)
-        run: python3 tools/test_smart_autotune.py --smart-thermal --report-dir /tmp/mayap-smart-autotune-on-report
-
-      - name: Smart Thermal A/B/C against the frozen baseline (simulation only; fails on more High/Emergency or a drifting baseline)
-        run: python3 tools/ab_smart_thermal.py --report-dir /tmp/mayap-ab-smart-report
 
       - name: Sensor-path integrity suite (alarms/E115/E104 fed by the REPORTED temperature; simulation only)
         run: python3 tools/test_thermal_sensor_path.py --sanitize --report-dir /tmp/mayap-sensor-path-report
@@ -138,10 +166,54 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: thermal-old-new-metrics
+          path: /tmp/mayap-thermal-report
+
+  sim-gates:
+    name: sim-gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Adaptive Thermal V1 simulation gates (simulation only, physical validation required)
+        run: python3 tools/test_thermal_adaptive.py --report-dir /tmp/mayap-thermal-adaptive-report
+
+      - name: Smart AutoTune V1 simulation gates (simulation only, physical commissioning required)
+        run: python3 tools/test_smart_autotune.py --report-dir /tmp/mayap-smart-autotune-report
+
+      - name: Smart AutoTune V1 with MAYAP_SMART_THERMAL=1 and the post-tune oracle in Smart mode (ACCEPTED_BAD must stay 0; simulation only)
+        run: python3 tools/test_smart_autotune.py --smart-thermal --report-dir /tmp/mayap-smart-autotune-on-report
+
+      - name: Simulation summaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: thermal-simulation-summaries
           path: |
-            /tmp/mayap-thermal-report
             /tmp/mayap-thermal-adaptive-report/summary.md
             /tmp/mayap-smart-autotune-report/summary.md
+
+  sim-ab:
+    name: sim-ab
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Smart Thermal A/B/C against the frozen baseline (simulation only; fails on more High/Emergency or a drifting baseline)
+        run: python3 tools/ab_smart_thermal.py --report-dir /tmp/mayap-ab-smart-report
+
+  host:
+    name: host
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Adaptive staged boot policy host tests
         run: |
@@ -183,3 +255,17 @@ jobs:
 
       - name: Verify formatting
         run: git diff --check HEAD^ HEAD --
+
+  reliability:
+    name: reliability
+    if: always()
+    needs: [web, uplink, thermal, sim-gates, sim-ab, host]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All reliability jobs must be green
+        shell: bash
+        run: |
+          echo '${{ toJSON(needs) }}'
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" == "true" ]]; then
+            echo "::error::at least one reliability job did not succeed"; exit 1
+          fi
