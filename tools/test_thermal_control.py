@@ -187,42 +187,60 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
         raise SystemExit(0)
     unit_tests = ['adaptive-observer','adaptive-thermal','thermal-autotune','thermal-control','thermal-startup','thermal-smart-startup','thermal-program','heat-latch','program-store','output-budget','thermal-v2','thermal-output','thermal-heating','thermal-e115','thermal-config','thermal-filter','thermal-adaptive-unit','thermal-smart-autotune-unit','thermal-slow-oven']
     if args.only: unit_tests = [t for t in args.only.split(',') if t]
+    # Everything below is independent (own executable, own output file): compile and run on all cores. The sanitized CI run used to take
+    # ~17 minutes sequentially; results are collected and printed in the original order.
+    from concurrent.futures import ThreadPoolExecutor
+    pool = ThreadPoolExecutor(max_workers=max(2, os.cpu_count() or 2))
+    def unit_job(test, groups):
+        executable = out / (test + str(groups))
+        subprocess.run(common + [str(ROOT / ('tests/' + test + '.cpp')), '-o', str(executable)], check=True)
+        return subprocess.run([str(executable)], capture_output=True, text=True)
+    def matrix_job(name, flags, source, run_args, stdout_path):
+        executable = out / name
+        subprocess.run(common + ['-O2'] + flags + [str(ROOT / source), '-o', str(executable)], check=True)
+        with stdout_path.open('w') as report:
+            subprocess.run([str(executable)] + [str(a) for a in run_args], stdout=report, check=True)
+    matrix = {}
+    if not args.quick:
+        rd = args.report_dir
+        matrix['current'] = pool.submit(matrix_job, 'adaptive-plant-current', ['-DMAYAP_ADAPTIVE_FAST_PATH=0'], 'tests/adaptive-plant.cpp',
+            [rd / 'adaptive-current-observer.csv', rd / 'adaptive-current-control.csv'], rd / 'adaptive-current-summary.csv')
+        matrix['adaptive'] = pool.submit(matrix_job, 'adaptive-plant', [], 'tests/adaptive-plant.cpp',
+            [rd / 'adaptive-observer.csv', rd / 'adaptive-control.csv'], rd / 'adaptive-summary.csv')
+        matrix['autotune'] = pool.submit(matrix_job, 'thermal-autotune-plant', [], 'tests/thermal-autotune-plant.cpp',
+            [rd / 'autotune-cycles.csv'], rd / 'autotune-plant.csv')
+        matrix['plant'] = pool.submit(matrix_job, 'thermal-plant', [], 'tests/thermal-plant.cpp', [], rd / 'plant.csv')
+        for label, flags in [('baseline', ['-DTHERMAL_V3_BASELINE']), ('phase1', [])]:
+            matrix['orch-' + label] = pool.submit(matrix_job, 'thermal-orchestration-' + label, flags, 'tests/thermal-orchestration-plant.cpp',
+                [], rd / ('orchestration-' + label + '.csv'))
+    unit_futures = []
     for test in unit_tests:
         variants = [1] if test in ('thermal-output','thermal-heating') else [0]
         for groups in variants:
-            executable = out / (test + str(groups))
-            command = common + [str(ROOT / ('tests/' + test + '.cpp')), '-o', str(executable)]
-            subprocess.run(command, check=True)
-            result = subprocess.run([str(executable)], capture_output=True, text=True)
-            if result.returncode:
-                print(result.stdout + result.stderr, flush=True)
-                result.check_returncode()
-            (args.report_dir / (test + str(groups) + '.log')).write_text(result.stdout)
-            print(result.stdout.splitlines()[-1])
-            if test == 'thermal-filter':
-                (args.report_dir / 'filter-compatibility.csv').write_text(
-                    'samples,max_abs_delta_c,mean_abs_delta_c,rms_delta_c\n'
-                    +next(line[7:] for line in result.stdout.splitlines() if line.startswith('FILTER,'))+'\n')
-            if test == 'thermal-v2':
-                with (args.report_dir / 'low-duty.csv').open('w') as bank_report:
-                    bank_report.write('quantum_ms,power_percent,horizon_s,requested_pct,delivered_pct,absolute_energy_error_j,max_no_heat_ms,transitions_per_hour\n')
-                    bank_report.writelines(line[5:]+'\n' for line in result.stdout.splitlines() if line.startswith('BANK,'))
+            unit_futures.append((test, groups, pool.submit(unit_job, test, groups)))
+    for test, groups, future in unit_futures:
+        result = future.result()
+        if result.returncode:
+            print(result.stdout + result.stderr, flush=True)
+            result.check_returncode()
+        (args.report_dir / (test + str(groups) + '.log')).write_text(result.stdout)
+        print(result.stdout.splitlines()[-1])
+        if test == 'thermal-filter':
+            (args.report_dir / 'filter-compatibility.csv').write_text(
+                'samples,max_abs_delta_c,mean_abs_delta_c,rms_delta_c\n'
+                +next(line[7:] for line in result.stdout.splitlines() if line.startswith('FILTER,'))+'\n')
+        if test == 'thermal-v2':
+            with (args.report_dir / 'low-duty.csv').open('w') as bank_report:
+                bank_report.write('quantum_ms,power_percent,horizon_s,requested_pct,delivered_pct,absolute_energy_error_j,max_no_heat_ms,transitions_per_hour\n')
+                bank_report.writelines(line[5:]+'\n' for line in result.stdout.splitlines() if line.startswith('BANK,'))
     if args.quick:
         print('QUICK: unit tests passed; simulation matrices skipped')
         raise SystemExit(0)
-    current_executable = out / 'adaptive-plant-current'
-    subprocess.run(common + ['-O2', '-DMAYAP_ADAPTIVE_FAST_PATH=0',
-        str(ROOT / 'tests/adaptive-plant.cpp'), '-o', str(current_executable)], check=True)
-    with (args.report_dir / 'adaptive-current-summary.csv').open('w') as report:
-        subprocess.run([str(current_executable), str(args.report_dir / 'adaptive-current-observer.csv'),
-            str(args.report_dir / 'adaptive-current-control.csv')], stdout=report, check=True)
+    matrix['current'].result()
     current_rows=list(csv.DictReader((args.report_dir / 'adaptive-current-summary.csv').open()))
     assert len(current_rows)==1248
 
-    executable = out / 'adaptive-plant'
-    subprocess.run(common + ['-O2', str(ROOT / 'tests/adaptive-plant.cpp'), '-o', str(executable)], check=True)
-    with (args.report_dir / 'adaptive-summary.csv').open('w') as report:
-        subprocess.run([str(executable), str(args.report_dir / 'adaptive-observer.csv'), str(args.report_dir / 'adaptive-control.csv')], stdout=report, check=True)
+    matrix['adaptive'].result()
     adaptive_rows=list(csv.DictReader((args.report_dir / 'adaptive-summary.csv').open()))
     assert len(adaptive_rows)==1248
     assert all(int(r['false_learning_count'])==0 for r in adaptive_rows)
@@ -264,10 +282,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
           f'{sum(int(r["false_learning_count"]) for r in fast_adaptive)}')
 
     print('Adaptive actual plant matrix: '+str(len(adaptive_rows))+' baseline/adaptive rows; cooling capacity unknown (zero watts credited)')
-    executable = out / 'thermal-autotune-plant'
-    subprocess.run(common + ['-O2', str(ROOT / 'tests/thermal-autotune-plant.cpp'), '-o', str(executable)], check=True)
-    with (args.report_dir / 'autotune-plant.csv').open('w') as report:
-        subprocess.run([str(executable), str(args.report_dir / 'autotune-cycles.csv')], stdout=report, check=True)
+    matrix['autotune'].result()
     tune_rows=list(csv.DictReader((args.report_dir / 'autotune-plant.csv').open()))
     assert len(tune_rows)==864
     for preheat in [30,40,50]:
@@ -276,10 +291,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
     for relay in [20,30,40]:
         subset=[r for r in tune_rows if float(r['preheat_power'])==30 and float(r['relay_power'])==relay and r['start_condition']=='COLD']
         print(f'AUTOTUNE candidate preheat30/relay{relay}: '+str(sum(r['success']=='1' for r in subset))+'/72 SUCCESS')
-    executable = out / 'thermal-plant'
-    subprocess.run(common + ['-O2', str(ROOT / 'tests/thermal-plant.cpp'), '-o', str(executable)], check=True)
-    with (args.report_dir / 'plant.csv').open('w') as report:
-        subprocess.run([str(executable)], stdout=report, check=True)
+    matrix['plant'].result()
     print('Thermal model metrics: ' + str(args.report_dir / 'plant.csv'))
     with (args.report_dir / 'plant.csv').open() as report: rows=list(csv.DictReader(report))
     qualification = ['plant','scenario','setpoint','ambient','dead_s','resolution','algorithm','quantum_ms',
@@ -307,12 +319,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
     if failures and os.getenv('GITHUB_ACTIONS'):
         print(f'::warning::Thermal simulation: {failures}/{len(rows)} miss acceptance targets; review OLD/NEW CSV before commissioning.')
     if failures and args.require_targets: raise SystemExit(1)
-    source=str(ROOT / 'tests/thermal-orchestration-plant.cpp')
-    for label, flags in [('baseline',['-DTHERMAL_V3_BASELINE']),('phase1',[])]:
-        executable=out / ('thermal-orchestration-'+label)
-        subprocess.run(common + ['-O2'] + flags + [source,'-o',str(executable)],check=True)
-        with (args.report_dir / ('orchestration-'+label+'.csv')).open('w') as report:
-            subprocess.run([str(executable)],stdout=report,check=True)
+    matrix['orch-baseline'].result(); matrix['orch-phase1'].result()
     before=list(csv.DictReader((args.report_dir/'orchestration-baseline.csv').open()))
     after=list(csv.DictReader((args.report_dir/'orchestration-phase1.csv').open()))
     assert len(before)==len(after) and len(before)==788
