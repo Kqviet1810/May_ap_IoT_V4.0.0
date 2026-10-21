@@ -49,7 +49,17 @@ struct Plant {
   double resolution = 0.1;
   double bias = 0;
   double noise = 0;
-  double khTrue() const { return 16000.0 * eff / capacity; }  // degC/s at 100 % duty
+  // Optional second thermal node (0 = off, the single-capacity plant above). The eggs are a large, slow node that exchanges heat
+  // with the chamber air (hA, W/degC); fanW is power dissipated into the air (circulation motor), eggW is embryo heat into the eggs.
+  double eggCap = 0;         // J/degC of the load (eggs); `capacity` is then the fast node (air + steel + trays)
+  double hA = 0;             // W/degC air <-> eggs
+  double fanW = 0;           // W into the air, always
+  double eggW = 0;           // W into the eggs (embryo metabolism)
+  double eggStart = NAN;     // initial egg temperature (NaN = same as the air)
+  double eggWEnd = NAN;      // if finite, eggW ramps linearly to this value over eggRampS (embryo heat rising with the incubation day)
+  double eggRampS = 0;
+  double heaterW = 16000.0;  // electrical power of the heater bank at 100 % duty (before `eff`)
+  double khTrue() const { return heaterW * eff / (capacity + eggCap); }  // degC/s at 100 % duty (whole thermal mass)
 };
 
 struct Scenario {
@@ -196,6 +206,7 @@ inline Result run(const Plant &base, const Scenario &sc) {
   size_t cursor = 0;
   const double temp0 = std::isfinite(sc.startTemp) ? sc.startTemp : p.ambient;
   double temp = temp0, heater = 0, ventAir = 0, sensPhys = temp0;
+  double eggT = std::isfinite(p.eggStart) ? p.eggStart : temp0;
   bool prevFwHigh = false, prevFwEmergency = false;
   double energy = 0;
   bool prevHigh = false, prevEmergency = false, ventPrev = false, reached = false;
@@ -368,7 +379,7 @@ inline Result run(const Plant &base, const Scenario &sc) {
       if (sc.path.fault == SensorFault::SsrStuckOn) actualOn = st.heatMaster;
       else if (sc.path.fault == SensorFault::SsrContactorStuck) actualOn = true;
     }
-    const double delivered = actualOn ? 16000.0 * p.eff : 0.0;
+    const double delivered = actualOn ? p.heaterW * p.eff : 0.0;
     const double delayed = pipe[cursor];
     pipe[cursor] = delivered;
     cursor = (cursor + 1U) % pipe.size();
@@ -376,7 +387,14 @@ inline Result run(const Plant &base, const Scenario &sc) {
     ventAir += ((st.ventFan ? 1.0 : 0.0) - ventAir) * dt / 8.0;
     const double ventW = p.ventG * ventAir * (temp - p.ambient);
     const double extraLoss = (sc.extraLossW > 0 && t >= sc.changeAtS && t < sc.extraLossUntilS) ? sc.extraLossW : 0.0;
-    temp += (heater - (p.loss + extraLoss) * (temp - p.ambient) - ventW) * dt / p.capacity;
+    if (p.eggCap > 0.0) {
+      const double q = p.hA * (temp - eggT);   // air -> eggs
+      temp += (heater - (p.loss + extraLoss) * (temp - p.ambient) - ventW - q + p.fanW) * dt / p.capacity;
+      const double ew = std::isfinite(p.eggWEnd) && p.eggRampS > 0 ? p.eggW + (p.eggWEnd - p.eggW) * std::min(1.0, t / p.eggRampS) : p.eggW;
+      eggT += (q + ew) * dt / p.eggCap;
+    } else {
+      temp += (heater - (p.loss + extraLoss) * (temp - p.ambient) - ventW) * dt / p.capacity;
+    }
     energy += delivered * dt;
     if (!std::isfinite(temp) || !std::isfinite(h->runtime_.heaterPower) || h->runtime_.heaterPower < 0 ||
         h->runtime_.heaterPower > 100.0001) {
