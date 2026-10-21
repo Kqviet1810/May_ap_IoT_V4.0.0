@@ -29,7 +29,8 @@ constexpr int PreBins = 60;             // 10 minutes of heater history before t
 constexpr int CapBins = HistBins + PreBins;
 constexpr int PlanDtSec = 30;           // planner step
 constexpr int PlanSteps = 240;          // two hours
-constexpr int NP = 10;                  // identified parameters
+constexpr int NP = 12;                  // identified parameters
+constexpr int RecentDBins = 90;         // the disturbance estimate that may differ in the last 15 minutes (a few times the longest delay + lag)
 
 struct Model {            // % units, seconds
   float cf = 2500.0f;     // air + steel + trays: % * s / degC
@@ -38,16 +39,18 @@ struct Model {            // % units, seconds
   float a = 1.2f;         // loss to ambient, % / degC
   float dead = 60.0f;     // transport delay of the heater to the sensor
   float tau = 40.0f;      // heater / element lag
-  float vp = 10.0f;       // power removed while the exhaust fan runs, %
+  float vp = 10.0f;       // power removed while the exhaust fan runs with the air 12.5 degC above the room, %
+  float tamb = 25.0f;     // the room (what the exhaust fan blows in): its power scales with the air-to-room difference
+  float ventPower(float ta) const { const float dT = ta - tamb; return dT > 0.0f ? vp * dT * (1.0f / 12.5f) : 0.0f; }
 };
 
 // Wide priors (any oven of this class) and hard bounds. Index order is the identifier's parameter vector.
-//   0 ln cf, 1 ln ce, 2 ln k, 3 ln a, 4 ln dead, 5 ln tau, 6 vp, 7 d0, 8 off (Ta0 - Te0), 9 w0
+//   0 ln cf, 1 ln ce, 2 ln k, 3 ln a, 4 ln dead, 5 ln tau, 6 vp, 7 d0, 8 off (Ta0 - Te0), 9 w0, 10 dr (extra air-side power over the last 15 min), 11 room temperature
 struct Prior {
-  static constexpr float mu[NP] = {7.824f, 9.105f, 1.792f, 0.0f, 4.094f, 3.689f, 10.0f, -10.0f, 0.0f, 0.0f};
-  static constexpr float sd[NP] = {0.9f, 0.9f, 0.9f, 0.6f, 0.7f, 0.7f, 8.0f, 8.0f, 1.5f, 3.0f};
-  static constexpr float lo[NP] = {6.0f, 7.6f, 0.2f, -3.0f, 1.6f, 2.3f, 0.0f, -60.0f, -1.5f, -2.0f};
-  static constexpr float hi[NP] = {9.6f, 11.1f, 3.4f, 1.8f, 5.5f, 4.8f, 45.0f, 15.0f, 14.0f, 12.0f};
+  static constexpr float mu[NP] = {7.824f, 9.105f, 1.792f, 0.0f, 4.094f, 3.689f, 10.0f, -10.0f, 0.0f, 0.0f, 0.0f, 25.0f};
+  static constexpr float sd[NP] = {0.9f, 0.9f, 0.9f, 0.6f, 0.7f, 0.7f, 8.0f, 8.0f, 1.5f, 3.0f, 4.0f, 6.0f};
+  static constexpr float lo[NP] = {6.0f, 7.6f, 0.2f, -3.0f, 1.6f, 2.3f, 1.0f, -60.0f, -1.5f, -2.0f, -15.0f, 5.0f};
+  static constexpr float hi[NP] = {9.6f, 11.1f, 3.4f, 1.8f, 5.5f, 4.8f, 45.0f, 15.0f, 14.0f, 12.0f, 15.0f, 36.0f};
 };
 constexpr float Prior::mu[NP];
 constexpr float Prior::sd[NP];
@@ -130,7 +133,7 @@ inline void simStep(const Model &m, float dt, float uDelayed, float d, float w, 
   for (int i = 0; i < sub; ++i) {
     s.hl += ex * (uDelayed - s.hl);
     const float q = m.k * (s.ta - s.te);
-    s.ta += (h / m.cf) * (s.hl - m.a * (s.ta - Tref) - q + d - m.vp * vent);
+    s.ta += (h / m.cf) * (s.hl - m.a * (s.ta - Tref) - q + d - m.ventPower(s.ta) * vent);
     s.te += (h / m.ce) * (q + w);
   }
 }
@@ -169,7 +172,7 @@ class Identifier {
       anchor(h);
       rich_ = physicsLearnable(h);
       float lastErr = 0.0f;
-      cost_ = evaluate(x_, h, &rms_, &end_, offTr_, &recent_, &lastErr);
+      cost_ = evaluate(x_, h, &rms_, &end_, offTr_, &recent_, &lastErr, &slope_);
       // a sudden miss of the last bin after a quiet stretch is an event, not a worse model
       if (std::fabs(lastErr) > 0.6f && quiet_ >= 6U && !isEvent(n - 1U)) { addEvent(n - 1U); dirty_ = true; quiet_ = 0; }
       else if (std::fabs(lastErr) < 0.3f) { if (quiet_ < 100U) ++quiet_; }
@@ -180,9 +183,15 @@ class Identifier {
     std::memcpy(cand, x_, sizeof(cand));
     int j = coord_;
     coord_ = (coord_ + 1) % (NP + 3);
+    // A power the model lacks (a door held open, the room warming up, the load changing) shows as a steady drift of the residual: the size
+    // of the missing power is -cf * slope. Propose it directly every fourth evaluation instead of waiting for the random search to find it.
+    const float missing = -std::exp(x_[0]) * slope_;
+    const bool newton = (evals_ & 3U) == 3U && std::fabs(missing) >= 0.3f;
     // Poor data (hold, no events) cannot teach the physics: only the slow nuisances (vent, d, off, w) may move
-    if (!rich_ && !frozen_) { if (j < NP) j = 6 + (j % 4); else j = 6 + (j % 4); }
-    if (j < NP) {
+    if (!rich_ && !frozen_) j = 6 + (j % 6);
+    if (newton) {
+      j = 10; cand[10] += clampf(0.8f * missing, -10.0f, 10.0f);
+    } else if (j < NP) {
       const float dir = (nextRand() & 1U) ? 1.0f : -1.0f;
       cand[j] += dir * step_[j] * (0.5f + uniform());
     } else if (j == NP) {          // heat capacities move together (the data fix their ratio to the heater power much better than each)
@@ -233,7 +242,7 @@ class Identifier {
   bool atBound() const {
     for (int i = 0; i < NP; ++i) {
       const float span = Prior::hi[i] - Prior::lo[i];
-      if (i < 7 && (x_[i] - Prior::lo[i] < 0.02f * span || Prior::hi[i] - x_[i] < 0.02f * span)) return true;
+      if (i < 6 && (x_[i] - Prior::lo[i] < 0.02f * span || Prior::hi[i] - x_[i] < 0.02f * span)) return true;
     }
     return false;
   }
@@ -241,12 +250,13 @@ class Identifier {
   // Simulated state at the end of the window under the incumbent (the moving-horizon estimate of the hidden egg temperature).
   const Sim &endState() const { return end_; }
   float d0() const { return x_[7]; }
+  float dEffective() const { return x_[7] + x_[10]; }      // the air-side power to assume from now on
   float off0() const { return x_[8]; }
   float w0() const { return x_[9]; }
   static Model toModel(const float *x) {
     Model m;
     m.cf = std::exp(x[0]); m.ce = std::exp(x[1]); m.k = std::exp(x[2]); m.a = std::exp(x[3]);
-    m.dead = std::exp(x[4]); m.tau = std::exp(x[5]); m.vp = x[6];
+    m.dead = std::exp(x[4]); m.tau = std::exp(x[5]); m.vp = x[6]; m.tamb = x[11];
     return m;
   }
   // Residual RMS of the model `m` (with the given nuisance values) on the window; used by tests and by the supervisor.
@@ -266,10 +276,11 @@ class Identifier {
     mu_[8] = a; sd_[8] = 0.7f;
     x_[8] = clampf(a, Prior::lo[8], Prior::hi[8]);
   }
-  float evaluate(const float *x, const History &h, float *rmsOut, Sim *endOut = nullptr, int8_t *trace = nullptr, float *recentOut = nullptr, float *lastErrOut = nullptr) const {
+  float evaluate(const float *x, const History &h, float *rmsOut, Sim *endOut = nullptr, int8_t *trace = nullptr, float *recentOut = nullptr, float *lastErrOut = nullptr, float *slopeOut = nullptr) const {
     const Model m = toModel(x);
     const uint32_t n = h.count(), s = h.windowStart();
-    const float d0 = x[7], w0 = x[9];
+    const float d0 = x[7], w0 = x[9], dr = x[10];
+    const uint32_t recentFrom = n > static_cast<uint32_t>(RecentDBins) ? n - RecentDBins : 0U;
     Sim sim;
     sim.ta = h.y(s);
     sim.te = sim.ta - x[8];
@@ -284,13 +295,15 @@ class Identifier {
     float chi = 0.0f, chiRecent = 0.0f;
     const float inv = 1.0f / (0.07f * 0.07f);
     uint32_t cnt = 0, cntRecent = 0;
+    // slope of the residual over the last SlopeBins bins: a constant power the model lacks makes (model - measurement) drift at -power/cf
+    float sn = 0.0f, st = 0.0f, se = 0.0f, stt = 0.0f, ste = 0.0f;
     for (uint32_t b = s; b < n; ++b) {
       const float tMid = (static_cast<float>(b) + 0.5f) * BinSec;
       const float ud = h.uAtTime(tMid - m.dead);
-      simStep(m, static_cast<float>(BinSec), ud, d0, w0, h.v(b), sim);
+      simStep(m, static_cast<float>(BinSec), ud, b >= recentFrom ? d0 + dr : d0, w0, h.v(b), sim);
       const float e = sim.ta - h.y(b);
       if (lastErrOut && b + 1U == n) *lastErrOut = e;
-      if (isEvent(b)) {      // an air-side step the model cannot explain (door, a glitch): re-synchronise the air to the measurement, no scoring
+      if (isEvent(b) || (b > 0U && isEvent(b - 1U))) {   // an air-side step the model cannot explain (door, a glitch) completes inside its bin (the bin mean is not the new level): re-synchronise on that bin and the next, no scoring
         sim.ta = h.y(b);
         if (trace) trace[b % CapBins] = static_cast<int8_t>(clampf((sim.ta - sim.te) * 10.0f, -127.0f, 127.0f));
         continue;
@@ -299,6 +312,7 @@ class Identifier {
       if (b > s) { chi += e * e * inv; ++cnt; }
       { const float over = sim.te - sim.ta - 3.0f; if (over > 0.0f) chi += over * over * 400.0f; }   // the eggs are not hotter than the air by degrees
       if (recentOut && b + RecentBins >= n) { chiRecent += e * e; ++cntRecent; }
+      if (slopeOut && b + SlopeBins >= n) { const float tt = static_cast<float>(b + SlopeBins - n); sn += 1.0f; st += tt; se += e; stt += tt * tt; ste += tt * e; }
       if (!finitef(sim.ta) || sim.ta > 80.0f || sim.ta < -20.0f) { *rmsOut = 99.0f; return 1e30f; }
     }
     float prior = 0.0f;
@@ -306,17 +320,19 @@ class Identifier {
     *rmsOut = cnt ? std::sqrt(chi / inv / static_cast<float>(cnt)) : 0.0f;
     if (endOut) *endOut = sim;
     if (recentOut) *recentOut = cntRecent ? std::sqrt(chiRecent / static_cast<float>(cntRecent)) : 0.0f;
+    if (slopeOut) { const float den = sn * stt - st * st; *slopeOut = (sn >= 8.0f && den > 1e-3f) ? (sn * ste - st * se) / den / static_cast<float>(BinSec) : 0.0f; }
     return chi + prior;
   }
   float x_[NP], mu_[NP], sd_[NP], step_[NP];
   int8_t offTr_[CapBins] = {};      // (Ta - Te) of the incumbent per bin, 0.1 C: the arrival state of the next window
   int8_t offScratch_[CapBins] = {};
   static constexpr uint32_t RecentBins = 12;
+  static constexpr uint32_t SlopeBins = 18;
   static constexpr int MaxEvents = 6;
   uint32_t events_[MaxEvents] = {};
   int nEvents_ = 0;
   uint32_t quiet_ = 0;
-  float cost_ = -1.0f, rms_ = 0.0f, recent_ = 0.0f;
+  float cost_ = -1.0f, rms_ = 0.0f, recent_ = 0.0f, slope_ = 0.0f;
   Sim end_{0, 0, 0};
   uint32_t evals_ = 0, accepted_ = 0, lastN_ = 0, rng_ = 1;
   int coord_ = 0;
@@ -328,19 +344,41 @@ class Identifier {
 };
 
 // ---------------------------------------------------------------------------------------------------------------------------------------
+// The exhaust fan the machine itself has scheduled (ventilation owns WHEN and HOW LONG): a known disturbance of tens of percent of the bank
+// that the plan must pre-compensate by the delay of the heater, not wait to see in the air temperature.
+struct VentSchedule {
+  float startsIn = -1.0f;    // s to the next run (>= 0 when the fan is not running and the next run is known)
+  float remaining = -1.0f;   // s to the end of the run in progress (>= 0 when it is running and its end is known)
+  float run = 0.0f;          // length of a run, s
+  float cycle = 0.0f;        // period of the runs, s (0: no repeat inside the horizon)
+  // 1 when the scheduled fan runs `t` seconds from now
+  float at(float t) const {
+    if (t < 0.0f) return 0.0f;
+    float first = -1.0f;
+    if (remaining >= 0.0f) { if (t < remaining) return 1.0f; first = cycle > run && run > 0.0f ? remaining + (cycle - run) : -1.0f; }
+    else if (startsIn >= 0.0f && run > 0.0f) first = startsIn;
+    if (first < 0.0f || t < first) return 0.0f;
+    const float x = t - first;
+    return (cycle > run ? std::fmod(x, cycle) : x) < run ? 1.0f : 0.0f;
+  }
+  bool known() const { return remaining >= 0.0f || (startsIn >= 0.0f && run > 0.0f); }
+};
+
 struct PlanChoice {
-  float u1 = 0.0f;      // % for the first T1 minutes
+  float du = 0.0f;      // offset (% of the bank) added to the energy-balance law for the first T1 minutes: the deviation the plan commits to
   float t1Min = 0.0f;
   float tau = 300.0f;   // tail law time constant, s
   float ventMin = 0.0f; // exhaust fan on for this many minutes
   float cost = 1e30f;
+  float peak = 0.0f;    // highest predicted air temperature above SP, degC
   bool valid = false;
 };
 
 class Planner {
  public:
   struct State { float ta, te, w, d, hl; };
-  void start(const Model &m, const State &st, float sp, float limitPct, bool ventAllowed, const History &h, uint32_t nowBin) {
+  void start(const Model &m, const State &st, float sp, float limitPct, bool ventAllowed, const History &h, uint32_t nowBin, const VentSchedule &vs) {
+    vs_ = vs;
     m_ = m; ta_ = st.ta; te_ = st.te; w_ = st.w; d_ = st.d; hl0_ = st.hl; sp_ = sp;
     limit_ = limitPct; ventAllowed_ = ventAllowed; hist_ = &h; nowBin_ = nowBin;
     idx_ = 0; best_ = PlanChoice{}; running_ = true;
@@ -350,51 +388,69 @@ class Planner {
   bool service(int n) {
     for (int i = 0; i < n && running_; ++i) {
       PlanChoice c;
+      // The exhaust fan wastes heat and the air exchange is the machine's to schedule: it is a candidate only when the best the heater alone
+      // can do still lets the air rise past the knee of the cost (what idling the elements cannot absorb)
+      if (idx_ == NU * NT * NTAU && best_.peak <= OvershootKnee) { running_ = false; best_.valid = best_.cost < 1e29f; break; }
       if (!candidate(idx_, c)) { running_ = false; best_.valid = best_.cost < 1e29f; break; }
       c.cost = evaluate(c);
+      c.peak = peak_;
       if (c.cost < best_.cost) best_ = c;
       ++idx_;
     }
     return !running_;
   }
   const PlanChoice &best() const { return best_; }
+  // Diagnostics (host tests): the cost of a candidate and the air temperature it predicts for the planner's last start state.
+  float replay(const PlanChoice &c, float *taOut) { return evaluate(c, taOut); }
   // Energy-balance tail law: the power that holds the air while the eggs absorb heat, plus a pull toward SP with time constant tau.
   static float tail(const Model &m, float ta, float te, float d, float vent, float sp, float tau, float limit) {
-    const float p = m.a * (ta - Tref) + m.k * (ta - te) - d + m.vp * vent + m.cf * (sp - ta) / tau;
+    const float p = m.a * (ta - Tref) + m.k * (ta - te) - d + m.ventPower(ta) * vent + m.cf * (sp - ta) / tau;
     return clampf(p, 0.0f, limit);
   }
  private:
-  static constexpr int NU = 8, NT = 6, NTAU = 4, NV = 3;
+  static constexpr int NU = 10, NT = 6, NTAU = 4, NV = 5;
+  // A candidate is the energy-balance law (the exact feedback law of the model) plus a committed deviation du for t1 minutes, then the law
+  // again with time constant tau. du = 0 is the pure law; large |du| are the cutback / full-power moves of a cold start or a door.
+  // The last candidates open the exhaust fan for a few minutes with the heater idle (what the controller does while it is cooling).
   bool candidate(int i, PlanChoice &c) const {
-    static const float U1[NU] = {0.0f, 10.0f, 20.0f, 30.0f, 45.0f, 60.0f, 80.0f, 100.0f};
+    static const float DU[NU] = {-100.0f, -60.0f, -30.0f, -15.0f, -6.0f, 0.0f, 6.0f, 15.0f, 30.0f, 100.0f};
     static const float T1[NT] = {0.0f, 1.0f, 2.0f, 4.0f, 8.0f, 16.0f};
     static const float TAUK[NTAU] = {2.0f, 3.5f, 7.0f, 15.0f};      // x (delay + lag): SIMC wants tau_c >= theta, i.e. a closed loop no faster than 2 theta
-    static const float TV[NV] = {0.0f, 10.0f, 30.0f};
-    const int nv = ventAllowed_ ? NV : 1;
-    const int total = NU * NT * NTAU * nv;
+    static const float TV[NV] = {1.0f, 2.0f, 4.0f, 8.0f, 16.0f};
+    const int heaterTotal = NU * NT * NTAU;
+    const int total = heaterTotal + (ventAllowed_ ? NV * NTAU : 0);
     if (i >= total) return false;
+    c = PlanChoice{};
+    if (i >= heaterTotal) {
+      const int r = i - heaterTotal;
+      c.ventMin = TV[r / NTAU]; c.tau = TAUK[r % NTAU] * (m_.dead + m_.tau);
+      return true;
+    }
     int r = i;
-    const int iv = r % nv; r /= nv;
     const int it = r % NTAU; r /= NTAU;
     const int i1 = r % NT; r /= NT;
     const int iu = r;
-    c.t1Min = T1[i1]; c.u1 = c.t1Min <= 0.0f ? 0.0f : fminf(U1[iu], limit_);
-    if (c.t1Min <= 0.0f && iu != 0) { c.cost = 1e30f; c.u1 = -1.0f; }   // duplicates of the pure tail law are skipped by the cost below
-    c.tau = TAUK[it] * (m_.dead + m_.tau); c.ventMin = TV[iv];
+    c.t1Min = T1[i1]; c.du = DU[iu];
+    c.tau = TAUK[it] * (m_.dead + m_.tau);
+    const bool pure = c.du == 0.0f, none = c.t1Min <= 0.0f;
+    if (pure != none) c.du = -1000.0f;       // (du = 0) == (t1 = 0): the other combinations repeat the pure law; the cost marks them as skipped
     return true;
   }
-  float evaluate(const PlanChoice &c) {
-    if (c.u1 < 0.0f) return 1e30f;
+  float evaluate(const PlanChoice &c, float *taOut = nullptr) {
+    peak_ = -99.0f;
+    if (c.du < -500.0f) return 1e30f;
     Sim s; s.ta = ta_; s.te = te_; s.hl = hl0_;
     const float dt = static_cast<float>(PlanDtSec);
     const float tNow = static_cast<float>(nowBin_) * BinSec;
     float cost = 0.0f;
     for (int j = 0; j < PlanSteps; ++j) {
       const float t = j * dt;
-      const float vent = (ventAllowed_ && t < c.ventMin * 60.0f) ? 1.0f : 0.0f;
+      const float planned = (ventAllowed_ && t < c.ventMin * 60.0f) ? 1.0f : 0.0f;
+      const float vent = fmaxf(planned, vs_.at(t + 0.5f * dt));
+      const float ventAhead = fmaxf(planned, vs_.at(t + m_.dead));     // what the heater power commanded now has to face when it arrives
       float u;
-      if (t < c.t1Min * 60.0f) u = c.u1;
-      else u = tail(m_, s.ta, s.te, d_, vent, sp_, c.tau, limit_);
+      if (planned > 0.0f) u = 0.0f;
+      else u = clampf(tail(m_, s.ta, s.te, d_, ventAhead, sp_, c.tau, limit_ + 20.0f) + (t < c.t1Min * 60.0f ? c.du : 0.0f), 0.0f, limit_);
       cmd_[j] = u;
       // heater power delivered `dead` seconds ago: the past from the history, the future from this very plan
       const float td = t + 0.5f * dt - m_.dead;
@@ -402,14 +458,19 @@ class Planner {
       if (td < 0.0f) ud = hist_->uAtTime(tNow + td);
       else { int k = static_cast<int>(td / dt); if (k >= j) k = j; ud = cmd_[k]; }
       simStep(m_, dt, ud, d_, w_, vent, s);
+      if (taOut) taOut[j] = s.ta;
       const float e = s.ta - sp_;
-      cost += (e > 0.03f ? 12.0f * e * e : e * e) + (e > 0.35f ? 400.0f * (e - 0.35f) * (e - 0.35f) : 0.0f) + (vent > 0.0f ? 0.0005f : 0.0f);
+      if (e > peak_) peak_ = e;
+      cost += (e > 0.03f ? 12.0f * e * e : e * e) + (e > OvershootKnee ? 400.0f * (e - OvershootKnee) * (e - OvershootKnee) : 0.0f) + (planned > 0.0f ? 0.0005f : 0.0f);
       if (!finitef(s.ta)) return 1e30f;
     }
     const float eT = s.te - (sp_ + w_ / m_.k);
     return cost + 8.0f * eT * eT;
   }
   Model m_;
+  static constexpr float OvershootKnee = 0.35f;
+  float peak_ = 0.0f;
+  VentSchedule vs_;
   float ta_ = 0, te_ = 0, w_ = 0, d_ = 0, hl0_ = 0, sp_ = 37.5f, limit_ = 100.0f;
   bool ventAllowed_ = false, running_ = false;
   const History *hist_ = nullptr;
@@ -430,6 +491,7 @@ struct Inputs {
   bool heaterPermit = false; // the heater may actually run
   bool ventOn = false;       // the exhaust fan is running
   bool ventAllowed = false;  // the controller may ask for it
+  VentSchedule vent;         // the fan the machine has scheduled
   bool disturbed = false;
 };
 
@@ -444,7 +506,7 @@ class Controller {
     lastPv_ = NAN; hl_ = 0; request_ = 0; cooling_ = false; state_ = enabled_ ? State::Learning : State::Off;
     fallbackUntilBin_ = 0; healthyBins_ = 0; badBins_ = 0; plan_ = PlanChoice{}; planner_ = Planner{}; planStartBin_ = 0; pendingStartBin_ = -1000;
     readySince_ = 0; model_ = stored.valid ? stored.m : Model{}; modelOk_ = false; sensorGapMs_ = 0; firstHeatBin_ = -1; lastSampleMs_ = 0;
-    planOnTop_ = false; trim_ = 0.0f; lastUpdateMs_ = 0; lastPinned_ = false;
+    planOnTop_ = false; trim_ = 0.0f; lastUpdateMs_ = 0; coolUntilMs_ = 0; lastPinned_ = false; lastJudgedBin_ = 0;
   }
   // Called every control cycle with the ACTUAL state of the heater SSR (and master) and of the exhaust fan.
   void tick(uint32_t now, bool heaterOn, bool ventOn) {
@@ -495,11 +557,15 @@ class Controller {
     else if (finitef(in.pv) && in.pv > in.sp + 0.7f && request_ > 0.5f) why = 4;
     const bool unhealthy = why != 0;
     if (unhealthy) lastWhy_ = why;
+    const bool newBin = bins != lastJudgedBin_;     // the verdict advances once per 10 s bin, whatever the sensor rate
+    lastJudgedBin_ = bins;
     if (state_ == State::Learning) {
       if (modelOk_ && !unhealthy) { state_ = State::Active; readySince_ = bins; badBins_ = 0; trim_ = 0.0f; }
     } else if (state_ == State::Active) {
-      badBins_ = unhealthy ? badBins_ + 1U : 0U;
-      if (!modelOk_ && bins > 120U) { badBins_ += 1U; lastWhy_ = 5; }
+      if (newBin) {
+        badBins_ = unhealthy ? badBins_ + 1U : 0U;
+        if (!modelOk_ && bins > 120U) { badBins_ += 1U; lastWhy_ = 5; }
+      }
       if (badBins_ >= 30U) { state_ = State::Fallback; fallbackUntilBin_ = bins + 120U; badBins_ = 0; }
     } else if (state_ == State::Fallback) {
       if (bins >= fallbackUntilBin_) state_ = State::Learning;
@@ -507,7 +573,7 @@ class Controller {
     if (state_ != State::Active) { request_ = 0.0f; cooling_ = false; return; }
     // proposal ------------------------------------------------------------------------------------------------------------------
     const float limit = clampf(in.limitPct, 0.0f, 100.0f);
-    const float vent = in.ventOn ? 1.0f : 0.0f;
+    const float vent = fmaxf(in.ventOn ? 1.0f : 0.0f, in.vent.at(model_.dead));   // the fan the heater power sent now will meet
     float u;
     const float sinceSec = static_cast<float>(static_cast<int64_t>(bins) - planStartBin_) * BinSec;
     const Planner::State st = currentState(in);
@@ -517,15 +583,22 @@ class Controller {
     lastUpdateMs_ = in.now;
     const float err = in.sp - st.ta;
     const float theta = model_.dead + model_.tau;
-    const float ki = model_.cf / (16.0f * theta * theta);          // SIMC: Kc = cf / (2 theta), Ti = 8 theta
+    // Integral gain of the SIMC rule: Ti = tau1 with tau1 = cf / (a + k) the air's own time constant, Kc = cf / tau_c with tau_c >= 2 theta
+    // -> ki = Kc / Ti = (a + k) / tau_c; the planner's own pull uses tau_c = 2 theta at least, so ki = (a + k) / (4 theta) keeps a 2x margin.
+    const float ki = (model_.a + model_.k) / (4.0f * theta);
     if (std::fabs(err) < 0.4f && !lastPinned_) trim_ = clampf(trim_ + ki * err * dtSec, -8.0f, 8.0f);
     // Exhaust fan: it removes kilowatts, so it is a large disturbance of its own. Ask for it only when the air really is above SP and
     // the plan wants it; hold the request until the air is back within 0.03 C of SP. The heater is idle meanwhile.
+    // The plan says for how long (heater idle meanwhile); venting never helps while the air is below SP.
     if (!in.ventAllowed || !finitef(in.pv)) cooling_ = false;
-    else if (cooling_) cooling_ = in.pv > in.sp + CoolOffC;
-    else cooling_ = plan_.valid && plan_.ventMin > 0.0f && in.pv >= in.sp + CoolOnC;
-    if (plan_.valid && sinceSec < plan_.t1Min * 60.0f) u = fminf(plan_.u1, limit);
-    else u = Planner::tail(model_, st.ta, st.te, st.d, cooling_ ? 0.0f : vent, in.sp, plan_.valid ? plan_.tau : 300.0f, limit + 20.0f) + trim_;
+    else if (cooling_ && static_cast<int32_t>(in.now - coolUntilMs_) < 0) cooling_ = in.pv >= in.sp;     // once started it runs at least a minute (relay)
+    else {
+      const bool want = plan_.valid && plan_.ventMin > 0.0f && sinceSec < plan_.ventMin * 60.0f && in.pv >= in.sp;
+      if (want && !cooling_) coolUntilMs_ = in.now + 60000U;
+      cooling_ = want;
+    }
+    u = Planner::tail(model_, st.ta, st.te, st.d, cooling_ ? 0.0f : vent, in.sp, plan_.valid ? plan_.tau : 300.0f, limit + 20.0f) + trim_;
+    if (plan_.valid && sinceSec < plan_.t1Min * 60.0f) u += plan_.du;
     // guard rails: never ask for heat well above SP; never more than the limit
     if (finitef(in.pv) && in.pv > in.sp + 0.3f) u = 0.0f;
     if (cooling_) u = 0.0f;
@@ -538,7 +611,7 @@ class Controller {
   bool coolingRequest() const { return cooling_; }
   Telemetry telemetry() const {
     Telemetry t;
-    t.state = state_; t.rms = ident_.rms(); t.innov = ident_.recentRms(); t.te = ident_.endState().te; t.w = ident_.w0(); t.d = ident_.d0();
+    t.state = state_; t.rms = ident_.rms(); t.innov = ident_.recentRms(); t.te = ident_.endState().te; t.w = ident_.w0(); t.d = ident_.dEffective();
     t.request = request_; t.m = model_; t.windowBins = static_cast<uint16_t>(hist_.count() > HistBins ? HistBins : hist_.count());
     t.cooling = cooling_; t.modelOk = modelOk_;
     return t;
@@ -553,10 +626,11 @@ class Controller {
     return enabled_ && hist_.count() >= 24U && !planner_.running() && static_cast<int64_t>(hist_.count()) - pendingStartBin_ >= PlanDtSec / BinSec;
   }
   void beginPlan(const Inputs &in) {
-    planner_.start(model_, currentState(in), in.sp, clampf(in.limitPct, 0.0f, 100.0f), in.ventAllowed, hist_, hist_.count());
+    planner_.start(model_, currentState(in), in.sp, clampf(in.limitPct, 0.0f, 100.0f), in.ventAllowed, hist_, hist_.count(), in.vent);
     pendingStartBin_ = static_cast<int64_t>(hist_.count());   // the plan is aged from the moment its sweep started
   }
   const PlanChoice &plan() const { return plan_; }
+  Planner &plannerForTest() { return planner_; }
   Identifier &identifierForTest() { return ident_; }
   const Identifier &identifier() const { return ident_; }
   const History &history() const { return hist_; }
@@ -566,7 +640,6 @@ class Controller {
   static constexpr float RmsOk = 0.10f;
   static constexpr float RmsKeep = 0.20f;
   static constexpr float TrimTauSec = 900.0f;
-  static constexpr float CoolOnC = 0.50f, CoolOffC = 0.10f;
 
  private:
   // The state the planner starts from: the moving-horizon estimate while the identifier fits well (it is consistent with the fitted
@@ -575,7 +648,7 @@ class Controller {
     Planner::State st;
     const bool mhe = ident_.rms() > 0.0f && ident_.rms() <= 0.12f && hist_.count() >= 24U;
     st.ta = finitef(in.pv) ? in.pv : ident_.endState().ta;
-    st.te = clampf(ident_.endState().te, st.ta - 15.0f, st.ta + 3.0f); st.w = ident_.w0(); st.d = ident_.d0(); st.hl = ident_.endState().hl;
+    st.te = clampf(ident_.endState().te, st.ta - 15.0f, st.ta + 3.0f); st.w = ident_.w0(); st.d = ident_.dEffective(); st.hl = ident_.endState().hl;
     (void)mhe;
     return st;
   }
@@ -586,7 +659,10 @@ class Controller {
     const float pv = pvN_ > 0 ? pvSum_ / static_cast<float>(pvN_) : lastPv_;
     onMs_ = 0; elapsedMs_ = 0; ventMs_ = 0; pvSum_ = 0.0f; pvN_ = 0;
     binStartMs_ = now;
-    if (!finitef(pv)) { hist_.push(uPct, hist_.count() ? hist_.y(hist_.count() - 1) : 0.0f, vfrac); return; }
+    if (!finitef(pv)) {   // no valid air temperature yet: the leading bins are dropped, a gap later repeats the last value
+      if (hist_.count()) hist_.push(uPct, hist_.y(hist_.count() - 1), vfrac);
+      return;
+    }
     const int64_t bin = hist_.count();
     hist_.push(uPct, pv, vfrac);
     if (firstHeatBin_ < 0 && uPct > 5.0f) { firstHeatBin_ = bin; ident_.setOnset(bin); }
@@ -612,9 +688,10 @@ class Controller {
   uint32_t fallbackUntilBin_ = 0, healthyBins_ = 0, badBins_ = 0, readySince_ = 0, sensorGapMs_ = 0;
   int64_t firstHeatBin_ = -1, planStartBin_ = 0, pendingStartBin_ = -1000;
   float pvSum_ = 0, lastPv_ = NAN, ventSum_ = 0, hl_ = 0, request_ = 0, trim_ = 0;
-  uint32_t lastUpdateMs_ = 0;
+  uint32_t lastUpdateMs_ = 0, coolUntilMs_ = 0;
   bool lastPinned_ = false;
   uint8_t lastWhy_ = 0, phase_ = 0;
+  uint32_t lastJudgedBin_ = 0;
   int pvN_ = 0;
   bool cooling_ = false;
 };

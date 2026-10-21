@@ -785,6 +785,7 @@ void loop() {
     MayapAdaptive::modelStorage.service(millis());
     MayapThermal::profileStorage.service(millis());
     MayapThermal::launchPlanStorage.service(millis());
+    MayapPredictive::predModelStorage.service(millis());
   }
   if(mayapBootStage() >= MayapBoot::Stage::LocalSettle && !mayapFirmwareMaintenanceActive())
   if (mayapBootStage() >= MayapBoot::Stage::LocalSettle) mayapI2cSupervisorUpdate(millis());

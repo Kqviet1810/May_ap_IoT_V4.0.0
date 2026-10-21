@@ -697,6 +697,10 @@ constexpr uint32_t NETWORK_TASK_PERIOD_MS = 250UL;
 // alarm/heartbeat hay Wi-Fi. (ArduinoOTA da go bo; con lai chi la cac phien HTTPS tuan tu.)
 constexpr uint32_t OTA_TASK_PERIOD_MS = 30UL;
 // ESP-IDF tinh stack task theo byte. Tat ca buffer cap phat tinh, khong phan manh heap.
+// Thermal Predictive V1 heavy work per control cycle (one identifier evaluation, or three planner candidates, per call; about 0.3-0.6 ms)
+#ifndef MAYAP_PREDICTIVE_EVALS_PER_CYCLE
+#define MAYAP_PREDICTIVE_EVALS_PER_CYCLE 1
+#endif
 constexpr size_t CONTROL_TASK_STACK_BYTES = 8192U;
 constexpr size_t HMI_TASK_STACK_BYTES = 10240U;
 constexpr size_t SUPERVISOR_TASK_STACK_BYTES = 4096U;
@@ -1050,6 +1054,10 @@ struct MachineConfig {
   // Smart Thermal (HMI NANG CAO, default OFF): startup heat-in-flight brake + faster hold convergence. Only acts while the adaptive balance above is ON
   // and never changes during a batch. Stored in bit 3 of the same schema-13 byte (old records read OFF).
   bool smartThermalEnabled = false;
+  // Thermal Predictive V1 (HMI NANG CAO, default ON): the identified two-mass model proposes the heater power while it is trusted (the legacy
+  // controller keeps running underneath as the fallback). Read at the start of a batch, only together with the adaptive balance. Stored in bit 4 of
+  // the same schema-13 byte with INVERTED polarity (bit set = disabled), so records saved before 1.1.15 read ON.
+  bool predictiveThermalEnabled = true;
 
   // Nang cao (schema 8): nguong chan doan nhiet + tham so Auto Tune, truoc
   // day la hang so cung trong config.h (xem ghi chu cu o khu "HANG SO AN
@@ -1236,6 +1244,8 @@ struct PidMonitorData {
   float actualAvgPct = 0;             // moving average (60 s) of the REAL SSR ON share [%]
   float launchGain = 0, launchDelay = 0, launchHold = 0, launchCap = 0;   // measured by the startup controller on this oven (0 = not yet); cap = its ceiling now [%]
   float launchIdleOver = 0;           // PV stood this far above SP with the heater idle and no heat on its way [C] (the oven cannot cool by itself)
+  // Thermal Predictive V1: 0 off, 1 learning the model, 2 in control, 3 fell back to the legacy controller
+  float predState = 0, predRms = 0, predEggTemp = 0, predDist = 0;   // identifier residual [C], estimated egg temperature [C], air-side net power [%]
 };
 
 struct MachineRuntime {
