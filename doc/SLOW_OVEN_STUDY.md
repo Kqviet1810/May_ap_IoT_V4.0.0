@@ -250,3 +250,25 @@ Known limits (honest list):
 * The hold stored in the plan can be wrong by a large factor on a few grid ovens (0.2 x to 3 x); it is credited at 80 percent and re-measured on every launch, and no grid case crossed High with it.
 * The Adaptive gate "V1 passes at least twice the baseline" was replaced by "at least the baseline": the baseline uses the same launch model now and passes more than twice as many cases itself.
 * `tests/thermal-smart-autotune-unit.cpp`: the very light plant that used to be rejected by the validation (180 kJ/C, 0.1 C probe) is accepted now, the rejection test uses a lighter one.
+
+## 2026-10-21 fourth addendum (firmware 1.1.14): the door, a restart in the hold, and an oven that cannot cool by itself
+
+Field report on 1.1.10 (door opened: PV fell fast, the heater only trickled) and on 1.1.13 (PV 37.5 for a few minutes, then 37.6 and 37.7 with the heater at 0 percent).
+
+* **Door (PV drops 1-5 C at once).** Checked in simulation on 288 ovens (gain 0.008-0.025, delay 100-180 s, hold 12-28 percent, 0.01 / 0.1 C probe, drops 1 / 2 / 3 / 5 C):
+  1.1.13 pushes within a minute (duty 0.8-0.9 in the first two minutes), no High, overshoot at most 0.11 C, back to SP - 0.3 C in a median of 1.67 x the physical minimum
+  (delay + 20 s + drop / net rate). Trying a looser ceiling, reserve or band moved that figure by at most 0.15, so nothing was changed there: the rest is the delay, the brake
+  has to start one delay before the target.
+* **Bug found while testing the door: a restart in the hold lost the plan.** After a controller restart at the set point with a stored plan, the first door was read as "the oven did not
+  answer the plan" (no response expected, PV far under SP) and the plan was dropped, so the model fell back to its strongest-oven assumption and shut the heater for minutes. Fixed
+  (the check is for a real warm-up only). The same restart also never re-read the hold (the plan's was used for ever: a 9-point error kept a phantom brake on and PV stood 0.6 C under SP
+  for good); the hold is read from the flat PV again. Restart + door grid: never recovered 12 -> 0 of 288, High 8 -> 0, worst recovery 19.4 x -> 3.3 x the physical minimum.
+* **An oven that cannot cool by itself.** The screenshot shows request 0 percent, SSR 0 percent, P+I+D 0 and still PV above SP: the algorithm is not heating, something else is.
+  Two different things: (1) the heat stored in the element and its housing keeps arriving for minutes after the cut (the launch model carries it as a lag, and the measured drift of the
+  deliberate cut includes it); (2) a very well insulated oven (hold about 3 percent) loses so little that any overshoot, and any warm room or heat source, stays for hours - heat
+  stored in the element cannot explain a creep of +0.005 C per minute that goes on for half an hour. The controller now notices PV above SP with the heater idle, nothing on its way and PV not
+  falling for 3 minutes, keeps it in the plan (`idleOverC`, in 0.01 C inside the former reserved byte of the plan record: no layout change, older records read as 0, it fades by a fifth per batch
+  when not seen again), lowers the allowance above SP of the brake ceiling by it (never below SP - 0.3 C) and shows it on the HMI PID monitor ("Lo: troi len"). It cannot cool the oven:
+  the vent fan switches on at `ventOnTemp` 38.0 C and off at 37.6 C by default, so at 37.7 C it does nothing until 38.0 C.
+* The HMI PID monitor also shows what the launch measured on this oven (gain, delay, hold, brake ceiling) so a real run can be compared with the simulation: a first batch from 25 C takes about
+  37 minutes for gain 0.012, 45-55 minutes for gain 0.008-0.010 (physical minimum 22-33 minutes).

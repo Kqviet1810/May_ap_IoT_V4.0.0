@@ -88,3 +88,10 @@ Against the reference of the section above (same case ids, same oracle; rows are
 | holdout | 720 | 323 -> 698 | 0 -> 0 | 0 -> 0 |
 
 No suite has more High / Emergency rows than before. Not validated on a real oven.
+
+## 2026-10-21 update (firmware 1.1.14): restart in the hold, door recovery, an oven that cannot cool by itself
+
+The three CSV files were regenerated once more with `--write-reference`: a controller that restarts in the hold with a stored plan keeps reading the hold and
+no longer throws the plan away at the first door, and the plan remembers PV standing above SP with the heater idle (`doc/SLOW_OVEN_STUDY.md`, fourth addendum).
+The aggregate numbers did not move (PASS / High / Emergency rows identical to the 1.1.13 table above: legacy788 1338 / 0 / 0, matrix 3782 / 33 / 4, holdout 698 / 0 / 0);
+only individual rows differ. `../baseline/` is untouched.

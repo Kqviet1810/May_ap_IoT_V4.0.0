@@ -22,7 +22,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/thermal_control.h",
-      "sha256": "3310f7e69d720507f4042f1de2e5bdbbc37773a22f626392a12359e0428ce65a"
+      "sha256": "b112a699ade3262a3a6169a519bf1a924cd2128b401a75236a0c097a73e7c88d"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/firmware_update_guard.h",
@@ -62,12 +62,12 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "51e7c4a606e336ec09594694f3e9bbcdeade45267e1064107df508a055e570ff",
+      "sha256": "29352b16d1c227f574c233cdf58932e1fdae6b0089626f60a1c2f65f994a102b",
       "filter": "config"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "393deaafaa80837949659545ef4e03e3580c5d9517038796d0b326b1338107d5",
+      "sha256": "bdc5d3646a8f76603fc2d6b88f6bcf4f446b8e18f3003fceb8f57c839d0dd29f",
       "signature": "class MachineController {"
     },
     {
@@ -486,5 +486,6 @@
   "thermalLaunch1113ReviewNote": "2026-10-21: reviewed 1.1.13 (measured launch). thermal_control.h: ThermalStartupController is rewritten around a launch model (heat of every ON second followed through the measured delay and lag in 10 s bins, gain / delay / drift / hold measured on the launch, deliberate cut to measure the drift, plan kept in retained_ across reset(), stall backstop, warm-start guard, relaunch bookkeeping on a raised set point); ThermalController gained two optional Assist limits (kpMax lowers the proportional gain and keeps Td, bumpless because only the error part is narrowed; the integral can be restarted with restartIntegral()/adoptFf_) which only ever LOWER the configured / AutoTuned gains. High 38.2 C / Emergency 39.0 C thresholds, RelayAutoTune, OutputArbiter, E115, schemas and EEPROM layouts are unchanged. thermal_assist.h (LaunchPlan, Assist::kpMax) and the new thermal_launch_plan.h (NVS keys la/lb in namespace mayap_thermal, 44-byte CRC record, two slots with read-back, sole writer is loop()) are not pinned files. Evidence: tests/thermal-launch.cpp, thermal-launch-plan.cpp, thermal-slow-oven.cpp, the 788-case orchestration matrix (High=0 Emergency=0), adaptive and A/B suites (doc/SLOW_OVEN_STUDY.md third addendum). Simulation only.",
   "machineLaunch1113ReviewNote": "2026-10-21: reviewed 1.1.13. machine_control.h class MachineController: the heating route builds the launch Assist (hold measured on the launch replaces the learned feed-forward, kiMax / kpMax from the measured gain and delay, integral restart while boosting, no bumpless coupling of the boost to the integral), loads / offers the launch plan (offerLaunchPlan / loadLaunchPlan) and the profile / scheduled vent fan waits during the warm-up (WARMUP_VENT_HOLD_ERR_C / RELEASE_ERR_C / HOLD_MAX_MS, also while the first sensor sample is pending; forced vents, High, sensor fault and cooling are untouched). The permit chain (heater enable, fan, faults, High / Emergency, master drop, OutputArbiter) is unchanged.",
   "release1113ReviewNote": "2026-10-21: reviewed 1.1.13: config.h MAYAP_FIRMWARE_VERSION 1.1.12 -> 1.1.13, new constants WARMUP_VENT_HOLD_ERR_C / WARMUP_VENT_RELEASE_ERR_C / WARMUP_VENT_HOLD_MAX_MS and the turn travel timeout default turnMaxRunSec 300 -> 500 s (Web limit 3-500 s; a machine keeps its stored value). MachineConfig layout, schemas and persisted defaults of other fields untouched.",
-  "release1114ReviewNote": "2026-10-21: reviewed 1.1.14: config.h MAYAP_FIRMWARE_VERSION 1.1.13 -> 1.1.14 and the GuestModeSnapshot / mayapRequestGuestMode / mayapGuestSnapshot declarations for the HMI 'Nang cao > Che do 2 tai khoan' (cloud_alert_link.h guest-mode request: device-key authenticated one-shot HTTPS on the reset-pin / members admission path, no new task; hmi.h Advanced item + screen). MachineConfig layout, schemas and persisted defaults untouched; the mode itself lives on the Worker (migration 0008), nothing is stored in EEPROM. Worker: account claim admits ONE second account as operator only while the machine switched the mode on, nobody removes an account from the Web, see doc/GOOGLE_ACCOUNT_MULTITENANT.md."
+  "release1114ReviewNote": "2026-10-21: reviewed 1.1.14: config.h MAYAP_FIRMWARE_VERSION 1.1.13 -> 1.1.14 and the GuestModeSnapshot / mayapRequestGuestMode / mayapGuestSnapshot declarations for the HMI 'Nang cao > Che do 2 tai khoan' (cloud_alert_link.h guest-mode request: device-key authenticated one-shot HTTPS on the reset-pin / members admission path, no new task; hmi.h Advanced item + screen). MachineConfig layout, schemas and persisted defaults untouched; the mode itself lives on the Worker (migration 0008), nothing is stored in EEPROM. Worker: account claim admits ONE second account as operator only while the machine switched the mode on, nobody removes an account from the Web, see doc/GOOGLE_ACCOUNT_MULTITENANT.md.",
+  "thermalLaunch1114ReviewNote": "2026-10-21: reviewed 1.1.14 thermal changes, ThermalStartupController only (ThermalController, RelayAutoTune, High 38.2 C / Emergency 39.0 C, OutputArbiter, E115, schemas and EEPROM unchanged): (1) a restart in the hold with a stored plan (warm_) no longer drops the plan at the first door and keeps reading the hold from the flat PV; (2) idleOverC: PV above SP with the heater idle, nothing on its way and PV not falling for 3 min is remembered in the launch plan (former reserved byte of the 44-byte record, no layout change, only ever LOWERS the allowance above SP of the brake ceiling, never below SP - 0.3 C); (3) read-only getters launchGain / launchDelaySec / launchHoldPct / idleOverC for the HMI PID monitor (PidMonitorData grew by five floats, runtime only, not persisted). machine_control.h: publishPidMonitor copies them, the warm-up vent hold also covers the first minutes before the sensor is usable (WARMUP_VENT_HOLD_MAX_MS bound), the plan record carries idleOverC. Evidence: doc/SLOW_OVEN_STUDY.md fourth addendum, tests/thermal-launch.cpp (door + restart + idle drift), tests/thermal-launch-plan.cpp. Simulation only."
 }
