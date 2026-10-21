@@ -49,7 +49,7 @@ struct Model {            // % units, seconds
 struct Prior {
   static constexpr float mu[NP] = {7.824f, 9.105f, 1.792f, 0.0f, 4.094f, 3.689f, 10.0f, -10.0f, 0.0f, 0.0f, 0.0f, 25.0f};
   static constexpr float sd[NP] = {0.9f, 0.9f, 0.9f, 0.6f, 0.7f, 0.7f, 8.0f, 8.0f, 1.5f, 3.0f, 4.0f, 6.0f};
-  static constexpr float lo[NP] = {6.0f, 7.6f, 0.2f, -3.0f, 1.6f, 2.3f, 1.0f, -60.0f, -1.5f, -2.0f, -15.0f, 5.0f};
+  static constexpr float lo[NP] = {6.0f, 7.6f, 0.2f, -3.0f, 1.6f, 2.3f, 1.0f, -60.0f, -5.0f, -2.0f, -15.0f, 5.0f};
   static constexpr float hi[NP] = {9.6f, 11.1f, 3.4f, 1.8f, 5.5f, 4.8f, 45.0f, 15.0f, 14.0f, 12.0f, 15.0f, 36.0f};
 };
 constexpr float Prior::mu[NP];
@@ -179,9 +179,12 @@ class Identifier {
       anchor(h);
       rich_ = physicsLearnable(h);
       float lastErr = 0.0f;
-      cost_ = evaluate(x_, h, &rms_, &end_, offTr_, &recent_, &lastErr, &slope_);
+      cost_ = evaluate(x_, h, &rms_, &end_, offTr_, &recent_, &lastErr, &slope_, &peak_);
       // a sudden miss of the last bin after a quiet stretch is an event, not a worse model
-      if (std::fabs(lastErr) > 0.6f && quiet_ >= 6U && !isEvent(n - 1U)) { addEvent(n - 1U); dirty_ = true; quiet_ = 0; }
+      if (std::fabs(lastErr) > 0.6f && quiet_ >= 6U && !isEvent(n - 1U)) {
+        addEvent(n - 1U); quiet_ = 0;
+        cost_ = evaluate(x_, h, &rms_, &end_, offTr_, &recent_, &lastErr, &slope_, &peak_);     // score again without the event at once: the supervisor must not see the raw miss
+      }
       else if (std::fabs(lastErr) < 0.3f) { if (quiet_ < 100U) ++quiet_; }
       else quiet_ = 0;
       return true;
@@ -243,6 +246,7 @@ class Identifier {
   }
   int eventCount() const { return nEvents_; }
   float rms() const { return rms_; }
+  float recentPeak() const { return peak_; }      // largest miss of the last half minute, degC
   float recentRms() const { return recent_; }     // residual over the last two minutes (a model that stopped fitting shows here first)
   uint32_t evals() const { return evals_; }
   uint32_t accepted() const { return accepted_; }
@@ -273,19 +277,25 @@ class Identifier {
  private:
   uint32_t nextRand() { rng_ ^= rng_ << 13; rng_ ^= rng_ >> 17; rng_ ^= rng_ << 5; return rng_; }
   float uniform() { return static_cast<float>(nextRand() >> 8) * (1.0f / 16777216.0f); }
+  // First bin of the fit. A bin that a door (or any step) completed inside is not the level the model starts from: begin after it.
+  uint32_t startBin(const History &h) const {
+    uint32_t s = h.windowStart();
+    while (s + 1U < h.count() && (isEvent(s) || (s > 0U && isEvent(s - 1U)))) ++s;
+    return s;
+  }
   static void clampVector(float *x) { for (int i = 0; i < NP; ++i) x[i] = clampf(x[i], Prior::lo[i], Prior::hi[i]); }
   // When the window has slid, the eggs' temperature at its first bin is what the previous incumbent simulated for that bin (the prior of
   // `off` is re-centred there); at the very start of a batch the eggs are assumed to be at the air temperature.
   void anchor(const History &h) {
-    const uint32_t s = h.windowStart();
+    const uint32_t s = startBin(h);
     if (s == 0U) return;
     const float a = 0.1f * offTr_[s % CapBins];
     mu_[8] = a; sd_[8] = 0.7f;
     x_[8] = clampf(a, Prior::lo[8], Prior::hi[8]);
   }
-  float evaluate(const float *x, const History &h, float *rmsOut, Sim *endOut = nullptr, int8_t *trace = nullptr, float *recentOut = nullptr, float *lastErrOut = nullptr, float *slopeOut = nullptr) const {
+  float evaluate(const float *x, const History &h, float *rmsOut, Sim *endOut = nullptr, int8_t *trace = nullptr, float *recentOut = nullptr, float *lastErrOut = nullptr, float *slopeOut = nullptr, float *peakOut = nullptr) const {
     const Model m = toModel(x);
-    const uint32_t n = h.count(), s = h.windowStart();
+    const uint32_t n = h.count(), s = startBin(h);
     const float d0 = x[7], w0 = x[9], dr = x[10];
     const uint32_t recentFrom = n > static_cast<uint32_t>(RecentDBins) ? n - RecentDBins : 0U;
     Sim sim;
@@ -304,6 +314,7 @@ class Identifier {
     const float inv = 1.0f / (0.07f * 0.07f);
     uint32_t cnt = 0, cntRecent = 0;
     // slope of the residual over the last SlopeBins bins: a constant power the model lacks makes (model - measurement) drift at -power/cf
+    float peak = 0.0f;
     float sn = 0.0f, st = 0.0f, se = 0.0f, stt = 0.0f, ste = 0.0f;
     for (uint32_t b = s; b < n; ++b) {
       const float tMid = (static_cast<float>(b) + 0.5f) * BinSec;
@@ -320,6 +331,7 @@ class Identifier {
       if (b > s) { chi += e * e * inv; ++cnt; }
       { const float over = sim.te - sim.ta - 3.0f; if (over > 0.0f) chi += over * over * 400.0f; }   // the eggs are not hotter than the air by degrees
       if (recentOut && b + RecentBins >= n) { chiRecent += e * e; ++cntRecent; }
+      if (peakOut && b + PeakBins >= n && std::fabs(e) > peak) peak = std::fabs(e);
       if (slopeOut && b + SlopeBins >= n) { const float tt = static_cast<float>(b + SlopeBins - n); sn += 1.0f; st += tt; se += e; stt += tt * tt; ste += tt * e; }
       if (!finitef(sim.ta) || sim.ta > 80.0f || sim.ta < -20.0f) { *rmsOut = 99.0f; return 1e30f; }
     }
@@ -328,6 +340,7 @@ class Identifier {
     *rmsOut = cnt ? std::sqrt(chi / inv / static_cast<float>(cnt)) : 0.0f;
     if (endOut) *endOut = sim;
     if (recentOut) *recentOut = cntRecent ? std::sqrt(chiRecent / static_cast<float>(cntRecent)) : 0.0f;
+    if (peakOut) *peakOut = peak;
     if (slopeOut) { const float den = sn * stt - st * st; *slopeOut = (sn >= 8.0f && den > 1e-3f) ? (sn * ste - st * se) / den / static_cast<float>(BinSec) : 0.0f; }
     return chi + prior;
   }
@@ -336,11 +349,12 @@ class Identifier {
   int8_t offScratch_[CapBins] = {};
   static constexpr uint32_t RecentBins = 12;
   static constexpr uint32_t SlopeBins = 18;
+  static constexpr uint32_t PeakBins = 3;
   static constexpr int MaxEvents = 6;
   uint32_t events_[MaxEvents] = {};
   int nEvents_ = 0;
   uint32_t quiet_ = 0;
-  float cost_ = -1.0f, rms_ = 0.0f, recent_ = 0.0f, slope_ = 0.0f;
+  float cost_ = -1.0f, rms_ = 0.0f, recent_ = 0.0f, slope_ = 0.0f, peak_ = 0.0f;
   Sim end_{0, 0, 0};
   uint32_t evals_ = 0, accepted_ = 0, lastN_ = 0, rng_ = 1;
   int coord_ = 0;
@@ -515,7 +529,7 @@ class Controller {
     lastPv_ = NAN; hl_ = 0; request_ = 0; cooling_ = false; state_ = enabled_ ? State::Learning : State::Off;
     fallbackUntilBin_ = 0; healthyBins_ = 0; badBins_ = 0; plan_ = PlanChoice{}; planner_ = Planner{}; planStartBin_ = 0; pendingStartBin_ = -1000;
     readySince_ = 0; model_ = stored.valid ? stored.m : Model{}; modelOk_ = false; sensorGapMs_ = 0; firstHeatBin_ = -1; lastSampleMs_ = 0;
-    planOnTop_ = false; trim_ = 0.0f; lastUpdateMs_ = 0; coolUntilMs_ = 0; slopeValid_ = false; slope_ = 0.0f; lastPinned_ = false; lastJudgedBin_ = 0;
+    planOnTop_ = false; trim_ = 0.0f; lastUpdateMs_ = 0; coolUntilMs_ = 0; slopeValid_ = false; slope_ = 0.0f; needMove_ = false; lastPinned_ = false; lastJudgedBin_ = 0;
   }
   // Called every control cycle with the ACTUAL state of the heater SSR (and master) and of the exhaust fan.
   void tick(uint32_t now, bool heaterOn, bool ventOn) {
@@ -567,7 +581,7 @@ class Controller {
     if (bins >= 24U && rms > 0.0f && rms <= 0.30f) model_ = ident_.model();   // the best model so far drives the filter and the planner
     uint8_t why = 0;
     if (bins < 24U) why = 1;
-    else if (ident_.recentRms() > 0.30f) why = 2;
+    else if (ident_.recentRms() > 0.30f || ident_.recentPeak() > SeverePeak) why = 2;
     else if (!sensorFresh_(in.now)) why = 3;
     else if (finitef(in.pv) && in.pv > in.sp + 0.7f && request_ > 0.5f) why = 4;
     const bool unhealthy = why != 0;
@@ -575,15 +589,17 @@ class Controller {
     const bool newBin = bins != lastJudgedBin_;     // the verdict advances once per 10 s bin, whatever the sensor rate
     lastJudgedBin_ = bins;
     if (state_ == State::Learning) {
-      if (modelOk_ && !unhealthy) { state_ = State::Active; readySince_ = bins; badBins_ = 0; trim_ = 0.0f; }
+      // After a stand-down the model must have been checked against a real move of the heater (a quiet hold cannot tell a changed oven from
+      // an unchanged one: the old and the new plant agree in steady state and differ only in how they answer a change of power)
+      if (modelOk_ && !unhealthy && (!needMove_ || heaterSwing_(bins) >= ProbeSwingPct)) { needMove_ = false; state_ = State::Active; readySince_ = bins; badBins_ = 0; trim_ = 0.0f; }
     } else if (state_ == State::Active) {
       if (newBin) {
         // severity x duration: a model that misses by more than 0.6 degC (the structure of the oven just changed) is stood down within a minute
         const bool untrusted = !modelOk_ && bins > 120U;      // the fit is not good enough to keep driving (e.g. a physical parameter at its bound)
         if (untrusted && !unhealthy) lastWhy_ = 5;
-        badBins_ = (unhealthy || untrusted) ? badBins_ + (unhealthy && ident_.recentRms() > SevereMiss ? 5U : 1U) : 0U;
+        badBins_ = (unhealthy || untrusted) ? badBins_ + (unhealthy && (ident_.recentRms() > SevereMiss || ident_.recentPeak() > SeverePeak) ? BadBinsToFallback : 1U) : 0U;
       }
-      if (badBins_ >= 30U) { state_ = State::Fallback; fallbackUntilBin_ = bins + 120U; badBins_ = 0; }
+      if (badBins_ >= BadBinsToFallback) { state_ = State::Fallback; fallbackUntilBin_ = bins + 120U; badBins_ = 0; needMove_ = true; }
     } else if (state_ == State::Fallback) {
       if (bins >= fallbackUntilBin_) state_ = State::Learning;
     }
@@ -658,7 +674,10 @@ class Controller {
   float heaterLag() const { return hl_; }
   uint8_t lastWhy() const { return lastWhy_; }
 
-  static constexpr float SevereMiss = 0.6f;
+  static constexpr float SeverePeak = 0.5f;
+  static constexpr float ProbeSwingPct = 15.0f;
+  static constexpr float SevereMiss = 0.6f;            // a miss this large is stood down at once
+  static constexpr uint32_t BadBinsToFallback = 30U;    // 5 minutes of lesser trouble
   static constexpr float RmsOk = 0.10f;
   static constexpr float RmsKeep = 0.20f;
   static constexpr float TrimTauSec = 900.0f;
@@ -689,6 +708,12 @@ class Controller {
     hist_.push(uPct, pv, vfrac);
     if (firstHeatBin_ < 0 && uPct > 5.0f) { firstHeatBin_ = bin; ident_.setOnset(bin); }
   }
+  float heaterSwing_(uint32_t bins) const {       // largest minus smallest heater duty over the last 15 minutes
+    float lo = 100.0f, hi = 0.0f;
+    const uint32_t from = bins > 90U ? bins - 90U : 0U;
+    for (uint32_t b = from; b < bins; ++b) { const float u = hist_.u(b); if (u < lo) lo = u; if (u > hi) hi = u; }
+    return hi > lo ? hi - lo : 0.0f;
+  }
   bool excited_() const {
     if (firstHeatBin_ < 0) return false;
     const uint32_t bins = hist_.count();
@@ -711,7 +736,7 @@ class Controller {
   int64_t firstHeatBin_ = -1, planStartBin_ = 0, pendingStartBin_ = -1000;
   float pvSum_ = 0, lastPv_ = NAN, ventSum_ = 0, hl_ = 0, request_ = 0, trim_ = 0;
   uint32_t lastUpdateMs_ = 0, coolUntilMs_ = 0;
-  bool lastPinned_ = false, slopeValid_ = false;
+  bool lastPinned_ = false, slopeValid_ = false, needMove_ = false;
   uint32_t slopeMs_ = 0;
   float slope_ = 0.0f, slopePv_ = 0.0f;
   static constexpr float OvershootKnee = 0.35f;

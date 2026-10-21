@@ -86,7 +86,7 @@ struct Harness {
   float updateAdaptiveBalance(uint32_t,bool,bool,bool){return config_.maxHeaterPower;}
   bool adaptiveCoolingRequested()const{return false;}
   MayapPredictive::Controller thermalPredictive_;MayapPredictive::StoredModel predictiveSeed_;
-  bool predictiveBatchSeen_=false,predictiveApplied_=false;uint32_t predictiveOfferAt_=0;
+  bool predictiveBatchSeen_=false,predictiveApplied_=false,predictiveWasActive_=false;uint32_t predictiveOfferAt_=0;
   void offerPredictiveModel(const MayapPredictive::StoredModel &){}
   void loadPredictiveSeed(){}
 #ifdef THERMAL_V3_BASELINE

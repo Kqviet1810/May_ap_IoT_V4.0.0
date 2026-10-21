@@ -6865,11 +6865,12 @@ class MachineController {
         // Thermal Predictive V1: while the identified model is trusted its proposal replaces the legacy request (limits below still apply)
         if (predictiveRuns && actuatorConfig.controlMode == ControlMode::Pid && !autotune_.externalControl()) {
           thermalPredictive_.update(predictiveIn);
-          if (thermalPredictive_.active()) {
-            pidPower_ = thermalPredictive_.request();
-            // The legacy PID keeps running underneath: it follows the power actually requested, so a hand-back (fallback) is no step
-            pid_.forceOutputBumpless(config_.targetTemp, temperature_, actuatorConfig, pidPower_);
-          }
+          const bool predictiveActive = thermalPredictive_.active();
+          if (predictiveActive) pidPower_ = thermalPredictive_.request();
+          // The legacy PID ran underneath with its own integral unaware of the power that was applied: on the hand-back it starts over at the
+          // feed-forward (the hold it knows) instead of carrying a windup built while it was not in control
+          else if (predictiveWasActive_) pid_.restartIntegral();
+          predictiveWasActive_ = predictiveActive;
         }
         MayapThermal::LaunchPlan planOut;
         if (startupHeat_.takePlan(planOut)) offerLaunchPlan(planOut);
@@ -8592,6 +8593,7 @@ class MachineController {
   MayapThermal::LaunchPlan launchPlan_{};
   MayapPredictive::Controller thermalPredictive_;
   MayapPredictive::StoredModel predictiveSeed_;
+  bool predictiveWasActive_ = false;
   bool predictiveBatchSeen_ = false, predictiveApplied_ = false;
   uint32_t predictiveOfferAt_ = 0;
   bool warmupVentHold_ = false, warmupVentChecked_ = false;

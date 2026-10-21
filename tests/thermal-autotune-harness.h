@@ -106,7 +106,7 @@ struct TuneHarness {
   void offerLaunchPlan(const MayapThermal::LaunchPlan &p){launchPlanOffered_=p;++launchPlanOffers_;}
   void loadLaunchPlan(){}
   MayapPredictive::Controller thermalPredictive_;MayapPredictive::StoredModel predictiveSeed_,predictiveOffered_;
-  bool predictiveBatchSeen_=false,predictiveApplied_=false;uint32_t predictiveOfferAt_=0;unsigned predictiveOffers_=0;
+  bool predictiveBatchSeen_=false,predictiveApplied_=false,predictiveWasActive_=false;uint32_t predictiveOfferAt_=0;unsigned predictiveOffers_=0;
   void offerPredictiveModel(const MayapPredictive::StoredModel &m){predictiveOffered_=m;++predictiveOffers_;}
   void loadPredictiveSeed(){}
   bool testModeActive_=false,lightWebOverrideActive_=false,lightWebOverrideRefInput_=false,lightWebOverrideValue_=false;
