@@ -75,7 +75,7 @@ static void identifierRecoversPhysics() {
   // Open loop (a staircase of heater power) on the oven: no controller involved, only History + Identifier.
   const Oven o;
   History h; h.reset();
-  Identifier id; id.reset(StoredModel{});
+  Identifier id; id.reset(StoredModel{}); static int8_t scratch[CapBins]; id.bind(scratch);
   double Ta = 28, Te = 28, hl = 0, on = 0, yAcc = 0; int yN = 0;
   std::vector<double> pipe(static_cast<size_t>(o.dead * 10) + 1, 0.0); size_t pp = 0;
   for (long it = 0; it < 20 * 600L; ++it) {

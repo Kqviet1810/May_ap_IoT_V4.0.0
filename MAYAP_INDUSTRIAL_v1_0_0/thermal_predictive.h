@@ -29,6 +29,7 @@ constexpr int PreBins = 60;             // 10 minutes of heater history before t
 constexpr int CapBins = HistBins + PreBins;
 constexpr int PlanDtSec = 30;           // planner step
 constexpr int PlanSteps = 240;          // two hours
+static_assert(CapBins >= PlanSteps, "the shared scratch buffer must hold a plan");
 constexpr int NP = 12;                  // identified parameters
 constexpr int RecentDBins = 90;         // the disturbance estimate that may differ in the last 15 minutes (a few times the longest delay + lag)
 
@@ -84,12 +85,12 @@ inline bool finitef(float v) { return std::isfinite(v); }
 // ---------------------------------------------------------------------------------------------------------------------------------------
 class History {
  public:
-  void reset() { n_ = 0; std::memset(u_, 0, sizeof(u_)); std::memset(y_, 0, sizeof(y_)); std::memset(v_, 0, sizeof(v_)); }
+  void reset() { n_ = 0; std::memset(u_, 0, sizeof(u_)); std::memset(y_, 0, sizeof(y_)); std::memset(vb_, 0, sizeof(vb_)); }
   void push(float uPct, float pv, float vent) {
     const uint32_t i = n_ % CapBins;
     u_[i] = static_cast<uint8_t>(clampf(uPct, 0.0f, 100.0f) * 2.0f + 0.5f);
     y_[i] = static_cast<int16_t>((clampf(pv, 0.0f, 80.0f) - 20.0f) * 100.0f + 0.5f);
-    v_[i] = static_cast<uint8_t>(clampf(vent, 0.0f, 1.0f) * 255.0f + 0.5f);
+    if (vent >= 0.5f) vb_[i >> 3] = static_cast<uint8_t>(vb_[i >> 3] | (1U << (i & 7U))); else vb_[i >> 3] = static_cast<uint8_t>(vb_[i >> 3] & ~(1U << (i & 7U)));      // the fan was on for most of the bin
     ++n_;
   }
   uint32_t count() const { return n_; }
@@ -102,7 +103,8 @@ class History {
   float y(int64_t bin) const { return 20.0f + 0.01f * y_[static_cast<uint32_t>(bin) % CapBins]; }
   float v(int64_t bin) const {
     if (bin < static_cast<int64_t>(first()) || bin >= static_cast<int64_t>(n_)) return 0.0f;
-    return v_[static_cast<uint32_t>(bin) % CapBins] * (1.0f / 255.0f);
+    const uint32_t i = static_cast<uint32_t>(bin) % CapBins;
+    return (vb_[i >> 3] >> (i & 7U)) & 1U ? 1.0f : 0.0f;
   }
   // Heater power delivered at time `t` (seconds, bin 0 starts at 0), linear between bin centres; before the data: 0.
   float uAtTime(float t) const {
@@ -116,7 +118,7 @@ class History {
   uint32_t n_ = 0;
   uint8_t u_[CapBins] = {};
   int16_t y_[CapBins] = {};
-  uint8_t v_[CapBins] = {};
+  uint8_t vb_[(CapBins + 7) / 8] = {};
 };
 
 // ---------------------------------------------------------------------------------------------------------------------------------------
@@ -162,6 +164,7 @@ class Identifier {
     for (int i = 0; i < NP; ++i) step_[i] = 0.35f * sd_[i];
     cost_ = -1.0f; evals_ = 0; accepted_ = 0; rng_ = 0x9E3779B9u; coord_ = 0; dirty_ = true; rms_ = 0.0f; nEvents_ = 0; quiet_ = 0; onset_ = -1; badBins_ = 0;
   }
+  void bind(int8_t *scratch) { scratch_ = scratch; }
   // Test hook: pin the parameter vector (and stop searching).
   void freeze(const float *x) { std::memcpy(x_, x, sizeof(x_)); frozen_ = true; dirty_ = true; }
   // Test hook: pin the coordinates in `mask` to `x` and keep searching the others.
@@ -218,11 +221,11 @@ class Identifier {
     for (int i = 0; i < NP; ++i) if (pinMask_ & (1u << i)) cand[i] = pinVal_[i];
     float rms = 0.0f;
     Sim endCand{0, 0, 0};
-    const float c = evaluate(cand, h, &rms, &endCand, offScratch_);
+    const float c = evaluate(cand, h, &rms, &endCand, scratch_);
     ++evals_;
     if (c < cost_) {
       std::memcpy(x_, cand, sizeof(x_)); cost_ = c; rms_ = rms; ++accepted_; end_ = endCand;
-      std::memcpy(offTr_, offScratch_, sizeof(offTr_));
+      if (scratch_) std::memcpy(offTr_, scratch_, sizeof(offTr_));
       if (j < NP) step_[j] = std::fmin(step_[j] * 1.4f, 1.0f * sd_[j]);
     } else if (j < NP) {
       step_[j] = std::fmax(step_[j] * 0.8f, 0.01f * sd_[j]);
@@ -346,7 +349,7 @@ class Identifier {
   }
   float x_[NP], mu_[NP], sd_[NP], step_[NP];
   int8_t offTr_[CapBins] = {};      // (Ta - Te) of the incumbent per bin, 0.1 C: the arrival state of the next window
-  int8_t offScratch_[CapBins] = {};
+  int8_t *scratch_ = nullptr;       // shared with the planner (never both at once): the controller owns the buffer
   static constexpr uint32_t RecentBins = 12;
   static constexpr uint32_t SlopeBins = 18;
   static constexpr uint32_t PeakBins = 3;
@@ -405,6 +408,7 @@ class Planner {
     limit_ = limitPct; ventAllowed_ = ventAllowed; hist_ = &h; nowBin_ = nowBin;
     idx_ = 0; best_ = PlanChoice{}; running_ = true;
   }
+  void bind(uint8_t *scratch) { cmd_ = scratch; }       // PlanSteps bytes
   bool running() const { return running_; }
   // Evaluate up to `n` candidates; returns true when the sweep has finished.
   bool service(int n) {
@@ -460,7 +464,7 @@ class Planner {
   }
   float evaluate(const PlanChoice &c, float *taOut = nullptr) {
     peak_ = -99.0f;
-    if (c.du < -500.0f) return 1e30f;
+    if (c.du < -500.0f || !cmd_) return 1e30f;
     Sim s; s.ta = ta_; s.te = te_; s.hl = hl0_;
     const float dt = static_cast<float>(PlanDtSec);
     const float tNow = static_cast<float>(nowBin_) * BinSec;
@@ -474,12 +478,12 @@ class Planner {
       float u;
       if (planned > 0.0f) u = 0.0f;
       else u = clampf(tail(m_, s.ta, s.te, d_, ventAhead, sp_, c.tau, limit_ + 20.0f) + (t < c.t1Min * 60.0f ? c.du : 0.0f), 0.0f, limit_);
-      cmd_[j] = u;
+      cmd_[j] = static_cast<uint8_t>(u * 2.0f + 0.5f);       // half-percent steps
       // heater power delivered `dead` seconds ago: the past from the history, the future from this very plan
       const float td = t + 0.5f * dt - m_.dead;
       float ud;
       if (td < 0.0f) ud = hist_->uAtTime(tNow + td);
-      else { int k = static_cast<int>(td / dt); if (k >= j) k = j; ud = cmd_[k]; }
+      else { int k = static_cast<int>(td / dt); if (k >= j) k = j; ud = 0.5f * cmd_[k]; }
       simStep(m_, sc, ud, d_, w_, vent, s);
       if (taOut) taOut[j] = s.ta;
       const float e = s.ta - sp_;
@@ -500,7 +504,7 @@ class Planner {
   uint32_t nowBin_ = 0;
   int idx_ = 0;
   PlanChoice best_;
-  float cmd_[PlanSteps];
+  uint8_t *cmd_ = nullptr;
 };
 
 // ---------------------------------------------------------------------------------------------------------------------------------------
@@ -557,6 +561,7 @@ class Controller {
     if (!enabled_) return;
     (void)in;
     phase_ ^= 1U;
+    ident_.bind(scratch_); planner_.bind(reinterpret_cast<uint8_t *>(scratch_));
     if (phase_ == 0U) {
       // the first twenty minutes at full rate (the physics is learned from the warm-up), afterwards a quarter of it
       const int n = hist_.count() < 120U ? budget : (budget > 3 ? budget / 4 : 1);
@@ -665,6 +670,7 @@ class Controller {
     return enabled_ && hist_.count() >= 24U && !planner_.running() && static_cast<int64_t>(hist_.count()) - pendingStartBin_ >= PlanDtSec / BinSec;
   }
   void beginPlan(const Inputs &in) {
+    planner_.bind(reinterpret_cast<uint8_t *>(scratch_));
     planner_.start(model_, currentState(in), in.sp, clampf(in.limitPct, 0.0f, 100.0f), in.ventAllowed, hist_, hist_.count(), in.vent);
     pendingStartBin_ = static_cast<int64_t>(hist_.count());   // the plan is aged from the moment its sweep started
   }
@@ -730,6 +736,7 @@ class Controller {
   History hist_;
   Identifier ident_;
   Planner planner_;
+  int8_t scratch_[CapBins] = {};       // one working buffer for whichever of the two is evaluating (they alternate, never overlap)
   PlanChoice plan_;
   StoredModel stored_;
   Model model_;
