@@ -114,6 +114,23 @@ int main() {
       CHECK(backWarm >= 0 && backWarm <= 4.0 * ideal);
     }
   }
+  // An oven in a room warmer than its set point (here 37.9 C against SP 37.5 C: PV creeps +0.1 C in two hours at 0 percent): with the heater idle PV still climbs above SP.
+  // The controller must not heat it (no overshoot of its own making), must remember that this oven cannot cool by itself (the plan carries it),
+  // and the next batch must stay clear of High.
+  {
+    Plant p; p.eff = 1.0; p.capacity = 16000.0 / 0.012; p.dead = 140; p.lag = 40; p.ambient = 37.9; p.resolution = 0.1;
+    p.loss = 0.5 * 16000.0 / 100.0;                       // 80 W/C: equilibrium without heating 37.9 C
+    Case c{0.012, 140, 40, 0.0, 0.10, 32};
+    const Scenario s1 = makeScenario(c);
+    Scenario s1l = s1; s1l.durationS = 9000; s1l.metricsFromS = 8000;
+    const Result r1 = run(p, s1l);
+    CHECK(r1.high == 0 && r1.emergency == 0);
+    CHECK(r1.planOffered);
+    CHECK(r1.planOut.idleOverC >= 0.08f && r1.planOut.idleOverC <= 0.5f);   // remembered: PV crept above SP with the heater idle and nothing on its way
+    Scenario s2 = s1l; s2.planSet = true; s2.plan = r1.planOut;
+    const Result r2 = run(p, s2);
+    CHECK(r2.high == 0 && r2.emergency == 0);
+  }
   std::printf("Launch: %u realistic ovens, batch 1 without a plan, batch 2 with the stored plan, half / double thermal mass: High=0, overshoot bounded (%u checks) PASS\n", n, checks);
   return 0;
 }

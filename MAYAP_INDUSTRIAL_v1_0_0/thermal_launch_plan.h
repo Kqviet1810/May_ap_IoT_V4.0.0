@@ -34,7 +34,8 @@ struct LaunchPlanRecord {
   float delaySec;    // apparent delay
   float coastCal;    // measured drift / modelled heat in flight
   uint8_t calMeasured;   // 1 = coastCal was measured on a real cut
-  uint8_t reserved[3];
+  uint8_t idleOverCc;    // idleOverC in 0.01 C (0 = never seen; older records have 0 here)
+  uint8_t reserved[2];
   float holdPct;     // duty that holds PV at SP (0 = unknown)
   uint32_t signature;  // hardware compatibility (same as the thermal profile)
   uint32_t epoch;      // RTC epoch at save (0 = unknown)
@@ -75,6 +76,7 @@ inline LaunchPlanRecord makeLaunchPlanRecord(const LaunchPlan &p, uint32_t signa
   std::memset(&r, 0, sizeof(r));
   r.magic = LaunchPlanMagic; r.version = LaunchPlanVersion; r.size = sizeof(LaunchPlanRecord);
   r.gain = p.gain; r.delaySec = p.delaySec; r.coastCal = p.coastCal; r.calMeasured = p.calMeasured ? 1U : 0U; r.holdPct = p.holdPct;
+  r.idleOverCc = static_cast<uint8_t>(std::fmin(255.0f, std::fmax(0.0f, std::floor(p.idleOverC * 100.0f + 0.5f))));
   r.signature = signature; r.epoch = epoch;
   r.crc = launchPlanCrc(r);
   return r;
@@ -92,6 +94,7 @@ inline bool shouldPersistLaunchPlan(const LaunchPlanRecord &live, const LaunchPl
   if (std::fabs(live.delaySec - stored.delaySec) > 10.0f) return true;
   if (live.calMeasured != stored.calMeasured) return true;
   if (std::fabs(live.holdPct - stored.holdPct) > 3.0f) return true;
+  if (std::abs(static_cast<int>(live.idleOverCc) - static_cast<int>(stored.idleOverCc)) > 5) return true;   // 0.05 C
   return std::fabs(live.coastCal - stored.coastCal) > 0.15f;
 }
 

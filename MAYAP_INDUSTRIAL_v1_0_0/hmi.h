@@ -2959,8 +2959,8 @@ void advSelect() {
   }
 }
 
-constexpr uint8_t MON_ITEM_COUNT = 22U;     // PID Monitor: 12 muc PID, 4 muc "Lo" (do tren lo nay, muc 20..23), 6 muc ho so (12..17)
-uint8_t monItemIndex(uint8_t k) { return k < 12U ? k : (k < 16U ? static_cast<uint8_t>(20U + k - 12U) : static_cast<uint8_t>(k - 4U)); }
+constexpr uint8_t MON_ITEM_COUNT = 23U;     // PID Monitor: 12 muc PID, 5 muc "Lo" (do tren lo nay, muc 20..24), 6 muc ho so (12..17)
+uint8_t monItemIndex(uint8_t k) { return k < 12U ? k : (k < 17U ? static_cast<uint8_t>(20U + k - 12U) : static_cast<uint8_t>(k - 5U)); }
 constexpr uint8_t PROFILE_FIRST = 12U, PROFILE_COUNT = 8U;   // Ho so nhiet: muc 12..19
 // Mot muc thong tin chi-doc (nhan + gia tri). Du lieu lay tu bo dieu khien dang chay, khong co so gia.
 void infoItem(uint8_t i, const char *&label, char *v, size_t n) {
@@ -2997,6 +2997,7 @@ void infoItem(uint8_t i, const char *&label, char *v, size_t n) {
     case 21: label = "Lo: tre do"; if (m.valid && m.launchDelay > 0.0f) snprintf(v, n, "%.0fs", m.launchDelay); break;
     case 22: label = "Lo: hold do"; if (m.valid && m.launchHold > 0.0f) snprintf(v, n, "%.1f%%", m.launchHold); break;
     case 23: label = "Lo: tran phanh"; if (m.valid) snprintf(v, n, "%.0f%%", m.launchCap); break;
+    case 24: label = "Lo: troi len"; if (m.valid && m.launchIdleOver > 0.0f) snprintf(v, n, "+%.2fC", m.launchIdleOver); break;
     default: label = "Loi du bao"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%.2fC", r.thermalPredictionError); break;
   }
   if (!v[0]) snprintf(v, n, "--");

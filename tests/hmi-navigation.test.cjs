@@ -299,11 +299,11 @@ test('Che do 2 tai khoan: only in HMI Nang cao, needs Online, the machine asks t
 });
 
 test('PID monitor shows what the launch measured on this oven (gain, delay, hold, brake ceiling), after the 12 PID rows', () => {
-  assert.match(hmi, /constexpr uint8_t MON_ITEM_COUNT = 22U;/);
-  assert.match(bodyOf('uint8_t monItemIndex('), /k < 12U \? k : \(k < 16U \?/);
+  assert.match(hmi, /constexpr uint8_t MON_ITEM_COUNT = 23U;/);
+  assert.match(bodyOf('uint8_t monItemIndex('), /k < 12U \? k : \(k < 17U \?/);
   assert.match(bodyOf('void drawPidMonitor()'), /monPage, true\)/);
   const info = bodyOf('void infoItem(');
-  for (const label of ['Lo: gain do', 'Lo: tre do', 'Lo: hold do', 'Lo: tran phanh']) assert.ok(info.includes(`"${label}"`), label);
+  for (const label of ['Lo: gain do', 'Lo: tre do', 'Lo: hold do', 'Lo: tran phanh', 'Lo: troi len']) assert.ok(info.includes(`"${label}"`), label);
   const machine = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'machine_control.h'), 'utf8');
   assert.match(machine, /m\.launchGain = startupHeat_\.launchGain\(\);[\s\S]*?m\.launchCap = startupHeat_\.lastCeiling\(\);/);
 });

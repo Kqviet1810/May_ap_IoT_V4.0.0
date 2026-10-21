@@ -238,6 +238,7 @@ class ThermalStartupController {
       retained_.coastCal = calKnown_ ? coastCal_ : DefaultPlanCal; retained_.calMeasured = calKnown_;
       retained_.holdPct = (holdValid_ && holdLive_ > 0.0f) ? clampFloat(holdLive_, 0.0f, 100.0f) : retained_.holdPct;
     }
+    if (retained_.valid) retained_.idleOverC = fmaxf(retained_.idleOverC, idleOverC_);
     for (uint8_t i = 0; i < Buckets; ++i) onMs_[i] = 0;
     phase_ = Phase::FullHeat; initialized_ = false; observed_ = false; historyGap_ = false;
     bucket_ = 0; firstHeatAt_ = 0; firstRiseAt_ = 0;
@@ -248,7 +249,7 @@ class ThermalStartupController {
     pvFast_ = 0.0f; gainLive_ = 0.0f; gainEst_ = 0.0f; gainInfo_ = false; holdLive_ = -1.0f; holdIdle_ = -1.0f; holdFlat_ = -1.0f; holdValid_ = false; coastCal_ = 1.0f; calKnown_ = false; planBad_ = false;
     onset_ = false; lastDhS_ = DelayUnknownS; lastGUseS_ = ProbeGain; onsetElapsedS_ = 0.0f; pvMin_ = 0.0f; pvMinSet_ = false; pvcMin_ = 0.0f; pvcMinSet_ = false; pvMinAt_ = 0U; lambda0_ = 0.0f; lambdaT_ = 0.0f; onsetSeen_ = 0U;
     cutActive_ = false; cutDone_ = false; cutAt_ = 0U; cutPv_ = 0.0f; cutPred1_ = 0.0f; cutPeak_ = 0.0f; cutFlatAt_ = 0U; cutIfS_ = cutWinS_ = cutG_ = cutDrift_ = 0.0f; cutX_ = 1.0f; calHoldDone_ = false;
-    planOffered_ = false; planReady_ = false; holdSince_ = 0U; lastBoostAt_ = 0U; overshootSeen_ = false; pvMaxAfterBoost_ = 0.0f;
+    planOffered_ = false; planReady_ = false; holdSince_ = 0U; lastBoostAt_ = 0U; overshootSeen_ = false; pvMaxAfterBoost_ = 0.0f; idleOverC_ = 0.0f; idleSince_ = 0U;
     boostNow_ = false; trustedNow_ = false; holdFf_ = 0.0f; tiMin_ = 0.0f; kpMax_ = 0.0f; stallRelax_ = 0.0f; stallSince_ = 0U;
     hint_ = MayapThermal::StartupHint{};
   }
@@ -276,7 +277,7 @@ class ThermalStartupController {
     if (heaterOn && firstHeatAt_ == 0U) firstHeatAt_ = now;
   }
   // What the launch model says about the heat on its way (all zero for a learned-hint plant).
-  struct Prior { bool valid = false; float gain = 0.0f, delaySec = 0.0f, holdPct = 0.0f; };
+  struct Prior { bool valid = false; float gain = 0.0f, delaySec = 0.0f, holdPct = 0.0f, idleOverC = 0.0f; };
   struct LaunchView {
     float gUse = 0.0f;        // degC/s at 100 %: a ceiling of the heater gain until the launch has measured it
     float gEst = 0.0f;        // degC/s at 100 %: the measured gain (0 = not measured yet)
@@ -374,7 +375,7 @@ class ThermalStartupController {
     // Prior of the plant before this launch has measured it: the plan of the last good warm-up, else a learned profile of high strength.
     Prior prior;
     const MayapThermal::LaunchPlan &pp = (plan_.valid && !planBad_) ? plan_ : retained_;
-    if (pp.valid) { prior.valid = true; prior.gain = pp.gain; prior.delaySec = pp.delaySec; prior.holdPct = pp.holdPct; }
+    if (pp.valid) { prior.valid = true; prior.gain = pp.gain; prior.delaySec = pp.delaySec; prior.holdPct = pp.holdPct; prior.idleOverC = pp.idleOverC; }
     else if (hs >= 0.5f && hint_.gainPerSec > 0.0f) { prior.valid = true; prior.gain = hint_.gainPerSec; prior.delaySec = hint_.delaySec; prior.holdPct = 0.0f; }
     // The oven did not answer as promised: well under SP, a real amount of heat given, and no rise after twice the delay of the plan. (A restart
     // at the set point, with the hold duty only, shows no rise by design.)
@@ -542,7 +543,11 @@ class ThermalStartupController {
     // envelope merely because the filtered PV was momentarily stationary.
     // The ceiling lets the predicted peak reach SP + CeilOverC (a measured plant is braked by its predicted peak; the PID closes the last
     // tenth); the boost request below tapers off earlier, so the PID, not the brake, finishes the approach.
-    const float remaining = error-expectedCoast+(trusted ? (phase_ == Phase::Hold ? HoldCeilOverC : CeilOverC) : 0.0f);
+    // An oven that was seen standing above SP with the heater idle cannot take an overshoot back (the plan keeps that between batches): the
+    // allowance above SP shrinks by what was seen (never below SP - IdleOverFloorC).
+    const float idleOver = fmaxf(idleOverC_, prior.idleOverC);
+    const float over = trusted ? fmaxf(-IdleOverFloorC, (phase_ == Phase::Hold ? HoldCeilOverC : CeilOverC) - idleOver) : 0.0f;
+    const float remaining = error-expectedCoast+over;
     // Braking band: 0.5 C (legacy). A measured plant has a model error of a fraction of its full-power coast, and that error times the steep
     // fraction-per-degree of a narrow band is a limit cycle on a strong plant with a long dead time (G 0.1 C/s, 77 s: +-0.7 C every two
     // minutes), so the band grows with the full-power coast.
@@ -611,6 +616,21 @@ class ThermalStartupController {
         coastCal_ = clampFloat((calKnown_ ? coastCal_ : 1.0f) * OvershootCalUp, CalMin, CalMax); calKnown_ = true; planBad_ = true;
       }
       if (pv < sp) overshootSeen_ = false;
+      // ---- An oven that cannot cool by itself: PV above SP with the heater idle, nothing on its way and PV not falling, for minutes. Not the
+      // model's fault (no heat is being given), so it is not a calibration: it is remembered (plan) and lowers the allowance above SP next time.
+      {
+        const bool idleAbove = pv > sp + IdleOverMinC && !lastOn_ && lv.inFlightS < IdleInFlightS && windowSlope(now) >= -0.00005f && !disturbed_ &&
+                               (lastBoostAt_ == 0U || static_cast<uint32_t>(now-lastBoostAt_) > 600000U);
+        if (!idleAbove) idleSince_ = 0U;
+        else if (idleSince_ == 0U) idleSince_ = now;
+        else if (static_cast<uint32_t>(now-idleSince_) >= IdleOverHoldMs) {
+          const float seen = clampFloat(pv - sp, 0.0f, 1.0f);
+          if (seen > idleOverC_ + 0.02f) {
+            idleOverC_ = seen;
+            if (seen > prior.idleOverC + 0.05f) { planOffered_ = false; holdSince_ = 0U; }   // offer the plan again with what was learned
+          }
+        }
+      }
       // ---- Drift measurement: the first time the predicted peak comes within CutMarginC of SP while the heat in flight is large (once per
       // warm-up, only without a known calibration), the heater is cut to 0 and held there until PV has peaked: the rise after the cut / the
       // modelled heat in flight is the calibration of the model (the "drift").
@@ -663,9 +683,10 @@ class ThermalStartupController {
         out.coastCal = calKnown_ ? coastCal_ : DefaultPlanCal;
         out.calMeasured = calKnown_;
         out.holdPct = holdLive_ > 0.0f ? clampFloat(holdLive_, 0.0f, 100.0f) : 0.0f;
+        out.idleOverC = fmaxf(idleOverC_, 0.8f * prior.idleOverC);   // seen on this batch, else the stored one fades by a fifth
         const bool same = plan_.valid && fabsf(out.gain-plan_.gain) <= 0.10f*plan_.gain &&
                           fabsf(out.delaySec-plan_.delaySec) <= 10.0f && fabsf(out.coastCal-plan_.coastCal) <= 0.15f &&
-                          out.calMeasured == plan_.calMeasured && fabsf(out.holdPct-plan_.holdPct) <= 3.0f;
+                          out.calMeasured == plan_.calMeasured && fabsf(out.holdPct-plan_.holdPct) <= 3.0f && fabsf(out.idleOverC-plan_.idleOverC) <= 0.05f;
         if (!same) { planOut_ = out; planReady_ = true; }
       }
     } else holdSince_ = 0U;
@@ -681,6 +702,7 @@ class ThermalStartupController {
   Phase phase() const { return phase_; }
   float predictedPeak() const { return lastPeak_; }
   float lastCeiling() const { return lastCap_; }
+  float idleOverC() const { return idleOverC_; }
   // What the launch measured on this oven (0 = not measured yet), for the HMI PID monitor: gain [degC/s at 100 %], delay [s], hold [% duty].
   float launchGain() const { return gainInfo_ ? gainEst_ : 0.0f; }
   float launchDelaySec() const { return onset_ ? lastDhS_ : 0.0f; }
@@ -786,6 +808,9 @@ class ThermalStartupController {
   static constexpr uint32_t PlanBadMinOnMs = 30000U;    // ... with this much heat given, nothing rises after twice its delay
   static constexpr float PlanNearSpC = 0.5f;
   static constexpr float SetpointRelaunchC = 0.5f;      // a set point raised by more than this restarts the launch (the plan stays as the prior)
+  static constexpr float IdleOverMinC = 0.08f;           // PV this far above SP, heater idle, nothing on its way, not falling for IdleOverHoldMs: the oven cannot cool by itself
+  static constexpr uint32_t IdleOverHoldMs = 180000U;
+  static constexpr float IdleOverFloorC = 0.3f;         // the ceiling is never lowered below SP - this
   static constexpr float WarmStartErrC = 0.6f;          // the first heat with PV this close to SP is a restart in the hold, not a warm-up
   static constexpr float OvershootCalC = 0.15f;         // PV this far above SP after a boost: the model under-braked
   static constexpr float OvershootCalUp = 1.5f;
@@ -1063,6 +1088,8 @@ class ThermalStartupController {
   bool cutActive_ = false, cutDone_ = false, planOffered_ = false, planReady_ = false, overshootSeen_ = false;
   bool boostNow_ = false, trustedNow_ = false;
   uint32_t cutAt_ = 0U, cutFlatAt_ = 0U, holdSince_ = 0U, lastBoostAt_ = 0U;
+  float idleOverC_ = 0.0f;   // highest PV - SP seen with the heater idle, nothing on its way and PV not falling (this oven cannot cool by itself)
+  uint32_t idleSince_ = 0U;
   float cutPv_ = 0.0f, cutPred1_ = 0.0f, cutPeak_ = 0.0f, pvMaxAfterBoost_ = 0.0f;
   float holdFf_ = 0.0f, tiMin_ = 0.0f, kpMax_ = 0.0f, stallRelax_ = 0.0f;
   uint32_t stallSince_ = 0U;

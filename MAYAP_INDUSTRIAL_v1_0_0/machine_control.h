@@ -5059,6 +5059,7 @@ class MachineController {
     m.launchDelay = startupHeat_.launchDelaySec();
     m.launchHold = startupHeat_.launchHoldPct();
     m.launchCap = startupHeat_.lastCeiling();
+    m.launchIdleOver = startupHeat_.idleOverC();
   }
 
   bool startBatch(uint32_t now, const char *&message) {
@@ -6360,8 +6361,9 @@ class MachineController {
     launchPlan_ = plan;
     MayapThermal::LaunchPlanRecord rec = MayapThermal::makeLaunchPlanRecord(plan, thermalSignature(), rtc_.valid() ? rtc_.epoch() : 0U);
     MayapThermal::launchPlanStorage.offer(rec);
-    mayapSerialPrintf(false, "[LAUNCH] plan saved gain=%.4f delay=%.0fs cal=%.2f\n",
-                      static_cast<double>(plan.gain), static_cast<double>(plan.delaySec), static_cast<double>(plan.coastCal));
+    mayapSerialPrintf(false, "[LAUNCH] plan saved gain=%.4f delay=%.0fs cal=%.2f hold=%.1f idleOver=%.2f\n",
+                      static_cast<double>(plan.gain), static_cast<double>(plan.delaySec), static_cast<double>(plan.coastCal),
+                      static_cast<double>(plan.holdPct), static_cast<double>(plan.idleOverC));
   }
   void loadLaunchPlan() {
     MayapThermal::LaunchPlanRecord rec{};
@@ -6369,6 +6371,7 @@ class MachineController {
     if (!MayapThermal::launchPlanCompatible(rec, thermalSignature(), abnormalResetLatched_)) return;
     launchPlan_.valid = true; launchPlan_.gain = rec.gain; launchPlan_.delaySec = rec.delaySec; launchPlan_.coastCal = rec.coastCal;
     launchPlan_.calMeasured = rec.calMeasured != 0U; launchPlan_.holdPct = rec.holdPct;
+    launchPlan_.idleOverC = 0.01f * static_cast<float>(rec.idleOverCc);
     mayapSerialPrintf(false, "[LAUNCH] plan loaded gain=%.4f delay=%.0fs cal=%.2f\n",
                       static_cast<double>(rec.gain), static_cast<double>(rec.delaySec), static_cast<double>(rec.coastCal));
   }

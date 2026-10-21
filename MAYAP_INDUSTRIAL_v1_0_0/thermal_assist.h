@@ -51,6 +51,7 @@ struct LaunchPlan {
   float coastCal = 1;   // measured drift after a cut / the heat-in-flight model (1 = the model is right)
   bool calMeasured = false;   // coastCal was measured on a real cut (false = the conservative default)
   float holdPct = 0;    // duty that holds PV at SP, measured from the gain (0 = unknown); a prior credited at 80 %
+  float idleOverC = 0;  // how far above SP PV stood with the heater idle and no heat on its way (this oven cannot cool by itself: no overshoot allowance)
 };
 
 struct StartupHint {  // learned plant knowledge for the startup/braking controller

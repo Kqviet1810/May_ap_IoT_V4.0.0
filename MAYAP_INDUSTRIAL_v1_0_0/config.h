@@ -1235,6 +1235,7 @@ struct PidMonitorData {
   float requestPct = 0;               // final heater request after every limit [%]
   float actualAvgPct = 0;             // moving average (60 s) of the REAL SSR ON share [%]
   float launchGain = 0, launchDelay = 0, launchHold = 0, launchCap = 0;   // measured by the startup controller on this oven (0 = not yet); cap = its ceiling now [%]
+  float launchIdleOver = 0;           // PV stood this far above SP with the heater idle and no heat on its way [C] (the oven cannot cool by itself)
 };
 
 struct MachineRuntime {

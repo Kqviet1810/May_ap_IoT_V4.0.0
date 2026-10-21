@@ -18,6 +18,9 @@ static void recordTests() {
   const LaunchPlanRecord r = makeLaunchPlanRecord(goodPlan(), 0x1234U, 1800000000U);
   CHECK(validLaunchPlanRecord(r));
   CHECK(r.gain == 0.012f && r.delaySec == 150.0f && r.calMeasured == 1U && r.holdPct == 20.0f);
+  CHECK(r.idleOverCc == 0U);                                   // an older record (the byte used to be reserved) means "never seen"
+  { LaunchPlan q = goodPlan(); q.idleOverC = 0.234f; CHECK(makeLaunchPlanRecord(q, 1U, 0U).idleOverCc == 23U);
+    q.idleOverC = 9.0f; CHECK(makeLaunchPlanRecord(q, 1U, 0U).idleOverCc == 255U); q.idleOverC = -1.0f; CHECK(makeLaunchPlanRecord(q, 1U, 0U).idleOverCc == 0U); }
   // a bit flip anywhere in the record is rejected (CRC covers everything before it; the CRC itself is checked against it)
   for (size_t b = 0; b < sizeof(r); ++b) {
     LaunchPlanRecord bad = r;
@@ -56,6 +59,8 @@ static void policyTests() {
   p = goodPlan(); p.holdPct = 24.0f;   CHECK(shouldPersistLaunchPlan(makeLaunchPlanRecord(p, 7U, 0U), stored, true, MinIntervalMs));
   p = goodPlan(); p.coastCal = 1.5f;   CHECK(shouldPersistLaunchPlan(makeLaunchPlanRecord(p, 7U, 0U), stored, true, MinIntervalMs));
   p = goodPlan(); p.calMeasured = false; CHECK(shouldPersistLaunchPlan(makeLaunchPlanRecord(p, 7U, 0U), stored, true, MinIntervalMs));
+  p = goodPlan(); p.idleOverC = 0.03f; CHECK(!shouldPersistLaunchPlan(makeLaunchPlanRecord(p, 7U, 0U), stored, true, MinIntervalMs));
+  p = goodPlan(); p.idleOverC = 0.20f; CHECK(shouldPersistLaunchPlan(makeLaunchPlanRecord(p, 7U, 0U), stored, true, MinIntervalMs));   // an oven that cannot cool is remembered
 }
 
 static LaunchPlanRecord planWith(float gain, float hold) {
