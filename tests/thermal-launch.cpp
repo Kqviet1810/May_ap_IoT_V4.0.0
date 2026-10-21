@@ -6,6 +6,7 @@
 //   overshoot bounded (the gain is measured again on every launch, the plan is only a prior).
 #include "thermal-adaptive-sim.h"
 #include <cstdio>
+#include <sstream>
 using namespace sim;
 
 static unsigned checks = 0;
@@ -22,6 +23,32 @@ static Scenario makeScenario(const Case &c) {
   Scenario sc; sc.sp = 37.5f; sc.durationS = 3600; sc.mode = Mode::Adaptive; sc.metricsFromS = 3000; sc.startTemp = c.start;
   sc.gainsSet = true; sc.kp = 60.0 / (c.G * (c.dead + c.lag)); sc.ki = sc.kp / 250.0f; sc.kd = 0.0f;   // gains of an AutoTune of this plant
   return sc;
+}
+
+
+// A door opened in the hold drops PV by 1-5 C at once. The controller must push at once (the old symptom: the heater trickled while PV was
+// far under SP) and brake in time (no overshoot). Seconds from the door until PV is back within 0.3 C of SP; `warm` = the controller restarted
+// in the hold with the stored plan (the plan must survive the first door: it used to be thrown away as "the oven did not answer").
+static double doorRecoveryS(const Case &c, double drop, bool warm, double &over, double &firstMinuteDuty) {
+  const Plant p = makePlant(c, 1.0);
+  const Scenario s1 = makeScenario(c);
+  const Result r1 = run(p, s1);
+  Scenario s2 = s1; s2.planSet = true; s2.plan = r1.planOut; s2.startTemp = warm ? 37.4f : 32.0f;
+  s2.event = "door"; s2.eventAtS = 3000; s2.eventValue = drop; s2.durationS = 3000 + 3000; s2.metricsFromS = 3000;
+  std::stringstream trace; s2.trace = true; s2.traceOut = &trace; s2.label = "T";
+  const Result r2 = run(p, s2);
+  CHECK(r2.high == 0 && r2.emergency == 0);
+  double back = -1, peak = -99, duty = 0; unsigned nDuty = 0; bool low = false; std::string line;
+  while (std::getline(trace, line)) {
+    double t = 0, temp = 0, fed = 0, sp = 0, d60 = 0; char mode[40];
+    if (std::sscanf(line.c_str(), "T,%39[^,],%lf,%lf,%lf,%lf,%lf", mode, &t, &temp, &fed, &sp, &d60) != 6 || t < 3000) continue;
+    if (temp < 37.2) low = true;
+    if (low && back < 0 && temp >= 37.2) back = t - 3000;
+    if (t > 3060) peak = std::max(peak, temp);
+    if (t >= 3030 && t <= 3150) { duty += d60; ++nDuty; }
+  }
+  over = peak - 37.5; firstMinuteDuty = nDuty ? duty / nDuty : 0;
+  return back;
 }
 
 int main() {
@@ -72,6 +99,19 @@ int main() {
       const Result closed2 = run(makePlant(c, 1.0), sc2), vented2 = run(pv, sv2);
       CHECK(vented2.high == 0 && vented2.emergency == 0);
       CHECK(vented2.riseS10 >= 0 && vented2.riseS10 <= closed2.riseS10 + 60);
+    }
+  }
+  for (const Case &c : {cases[0], cases[1], cases[3], cases[4]}) for (double drop : {1.0, 3.0}) {
+    double over = 0, duty = 0;
+    const double net = c.G * (1.0 - c.hold * 0.7), ideal = c.dead + 20 + (drop - 0.3) / net;
+    const double back = doorRecoveryS(c, drop, false, over, duty);
+    CHECK(duty >= (drop >= 3.0 ? 0.6 : 0.35));             // pushes within the first two minutes (well above the hold duty of 0.1-0.28; it trickled before)
+    CHECK(back >= 0 && back <= 2.4 * ideal);                // back within 0.3 C of SP, not much slower than physics allows
+    CHECK(over <= 0.35);                                    // and braked in time
+    if (drop == 3.0) {                                      // restart in the hold with the plan, then a door
+      const double backWarm = doorRecoveryS(c, drop, true, over, duty);
+      CHECK(duty >= 0.6);
+      CHECK(backWarm >= 0 && backWarm <= 4.0 * ideal);
     }
   }
   std::printf("Launch: %u realistic ovens, batch 1 without a plan, batch 2 with the stored plan, half / double thermal mass: High=0, overshoot bounded (%u checks) PASS\n", n, checks);

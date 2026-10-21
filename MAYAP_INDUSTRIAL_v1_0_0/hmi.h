@@ -2959,7 +2959,8 @@ void advSelect() {
   }
 }
 
-constexpr uint8_t MON_ITEM_COUNT = 18U;     // PID Monitor: muc 0..17
+constexpr uint8_t MON_ITEM_COUNT = 22U;     // PID Monitor: 12 muc PID, 4 muc "Lo" (do tren lo nay, muc 20..23), 6 muc ho so (12..17)
+uint8_t monItemIndex(uint8_t k) { return k < 12U ? k : (k < 16U ? static_cast<uint8_t>(20U + k - 12U) : static_cast<uint8_t>(k - 4U)); }
 constexpr uint8_t PROFILE_FIRST = 12U, PROFILE_COUNT = 8U;   // Ho so nhiet: muc 12..19
 // Mot muc thong tin chi-doc (nhan + gia tri). Du lieu lay tu bo dieu khien dang chay, khong co so gia.
 void infoItem(uint8_t i, const char *&label, char *v, size_t n) {
@@ -2992,6 +2993,10 @@ void infoItem(uint8_t i, const char *&label, char *v, size_t n) {
       if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%s", learn[r.thermalLearnState < 5U ? r.thermalLearnState : 0U]);
       break;
     }
+    case 20: label = "Lo: gain do"; if (m.valid && m.launchGain > 0.0f) snprintf(v, n, "%.4f", m.launchGain); break;
+    case 21: label = "Lo: tre do"; if (m.valid && m.launchDelay > 0.0f) snprintf(v, n, "%.0fs", m.launchDelay); break;
+    case 22: label = "Lo: hold do"; if (m.valid && m.launchHold > 0.0f) snprintf(v, n, "%.1f%%", m.launchHold); break;
+    case 23: label = "Lo: tran phanh"; if (m.valid) snprintf(v, n, "%.0f%%", m.launchCap); break;
     default: label = "Loi du bao"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%.2fC", r.thermalPredictionError); break;
   }
   if (!v[0]) snprintf(v, n, "--");
@@ -5046,7 +5051,7 @@ void drawAdvMenu() {
 }
 
 // Trang thong tin chi-doc 4 dong/trang; xoay de doi trang.
-void drawInfoPage(const char *title, uint8_t first, uint8_t count, uint8_t page) {
+void drawInfoPage(const char *title, uint8_t first, uint8_t count, uint8_t page, bool monitorOrder = false) {
   const uint8_t pages = static_cast<uint8_t>((count + 3U) / 4U);
   drawHeader(title, false);
   drawListPosition(page, pages);
@@ -5055,7 +5060,7 @@ void drawInfoPage(const char *title, uint8_t first, uint8_t count, uint8_t page)
     const uint8_t k = static_cast<uint8_t>(page * 4U + row);
     if (k >= count) break;
     const char *label = "";
-    infoItem(static_cast<uint8_t>(first + k), label, value, sizeof(value));
+    infoItem(monitorOrder ? monItemIndex(k) : static_cast<uint8_t>(first + k), label, value, sizeof(value));
     const int16_t y = 22 + row * 12;
     lcd.setFont(u8g2_font_6x12_tf);
     const int16_t valueX = max(2, 126 - static_cast<int16_t>(lcd.getStrWidth(value)));
@@ -5063,7 +5068,7 @@ void drawInfoPage(const char *title, uint8_t first, uint8_t count, uint8_t page)
     drawLeftFit2(2, y, label, static_cast<int16_t>(valueX - 4), u8g2_font_6x12_tf, u8g2_font_5x8_tf);
   }
 }
-void drawPidMonitor() { drawInfoPage("PID MONITOR", 0U, MON_ITEM_COUNT, monPage); }
+void drawPidMonitor() { drawInfoPage("PID MONITOR", 0U, MON_ITEM_COUNT, monPage, true); }
 void drawThermalProfile() { drawInfoPage("HO SO NHIET", PROFILE_FIRST, PROFILE_COUNT, profilePage); }
 
 void drawAdvHistory() {

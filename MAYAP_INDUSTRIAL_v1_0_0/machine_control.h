@@ -5055,6 +5055,10 @@ class MachineController {
     m.limitHi = pid_.lastLimitHi();
     m.requestPct = runtime_.heaterPower;
     m.actualAvgPct = pidMonActual_;
+    m.launchGain = startupHeat_.launchGain();
+    m.launchDelay = startupHeat_.launchDelaySec();
+    m.launchHold = startupHeat_.launchHoldPct();
+    m.launchCap = startupHeat_.lastCeiling();
   }
 
   bool startBatch(uint32_t now, const char *&message) {

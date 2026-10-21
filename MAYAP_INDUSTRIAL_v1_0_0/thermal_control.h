@@ -681,6 +681,10 @@ class ThermalStartupController {
   Phase phase() const { return phase_; }
   float predictedPeak() const { return lastPeak_; }
   float lastCeiling() const { return lastCap_; }
+  // What the launch measured on this oven (0 = not measured yet), for the HMI PID monitor: gain [degC/s at 100 %], delay [s], hold [% duty].
+  float launchGain() const { return gainInfo_ ? gainEst_ : 0.0f; }
+  float launchDelaySec() const { return onset_ ? lastDhS_ : 0.0f; }
+  float launchHoldPct() const { return holdValid_ && holdLive_ > 0.0f ? holdLive_ : 0.0f; }
   float slope() const { return slope_; }
   // read-only telemetry (host simulation / diagnostics)
   float learnedHold() const { return holdPower_; }
@@ -882,7 +886,7 @@ class ThermalStartupController {
       pvHist_[(gainHistBid_ + k) % GainHistLen] = pvFast_;
     }
     gainHistBid_ = bid;
-    if (firstHeatAt_ == 0U || !pvStartSet_ || warm_ || disturbed_ || steps > 3U) return;
+    if (firstHeatAt_ == 0U || !pvStartSet_ || disturbed_ || steps > 3U) return;
     launchEstimate(now);
   }
   // Gain: C of PV rise (plus the loss over the same time, from the cooling slope seen before the heat surfaced) per ARRIVED ON-second.
@@ -892,6 +896,8 @@ class ThermalStartupController {
     const float elapsed = static_cast<float>(static_cast<uint32_t>(now - firstHeatAt_)) * 0.001f;
     if (elapsed < 20.0f) return;
     const float dh = lastDhS_;
+    // A restart in the hold has no response to measure the gain from, but the hold is still read from the flat PV (the plan's hold is only a prior).
+    if (warm_) { launchHold(now, elapsed, dh); return; }
     float if0, win0, on0;
     sumBins(now, dh, 0.0f, if0, win0, on0);
     // The gain is measured over the launch (anchored at the first heat, up to the 800 s ring). After that it is kept; only a launch that has
