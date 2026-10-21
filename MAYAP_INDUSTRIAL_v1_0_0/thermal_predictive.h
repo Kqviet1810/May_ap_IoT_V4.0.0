@@ -124,19 +124,26 @@ class History {
 struct Sim {
   float ta, te, hl;
 };
-inline void simStep(const Model &m, float dt, float uDelayed, float d, float w, float vent, Sim &s) {
+// The constants of a step depend only on the model and on dt: computed once per simulation, not per step (the exponential dominates the cost).
+struct StepCoef { float h; float ex; int sub; };
+inline StepCoef stepCoef(const Model &m, float dt) {
+  StepCoef c;
   // substeps keep the explicit scheme stable for stiff (small cf, large k) models
   const float stiff = (m.a + m.k) * dt / m.cf;
-  const int sub = stiff > 0.8f ? static_cast<int>(stiff / 0.8f) + 1 : 1;
-  const float h = dt / static_cast<float>(sub);
-  const float ex = 1.0f - std::exp(-h / m.tau);
-  for (int i = 0; i < sub; ++i) {
-    s.hl += ex * (uDelayed - s.hl);
+  c.sub = stiff > 0.8f ? static_cast<int>(stiff / 0.8f) + 1 : 1;
+  c.h = dt / static_cast<float>(c.sub);
+  c.ex = 1.0f - std::exp(-c.h / m.tau);
+  return c;
+}
+inline void simStep(const Model &m, const StepCoef &c, float uDelayed, float d, float w, float vent, Sim &s) {
+  for (int i = 0; i < c.sub; ++i) {
+    s.hl += c.ex * (uDelayed - s.hl);
     const float q = m.k * (s.ta - s.te);
-    s.ta += (h / m.cf) * (s.hl - m.a * (s.ta - Tref) - q + d - m.ventPower(s.ta) * vent);
-    s.te += (h / m.ce) * (q + w);
+    s.ta += (c.h / m.cf) * (s.hl - m.a * (s.ta - Tref) - q + d - m.ventPower(s.ta) * vent);
+    s.te += (c.h / m.ce) * (q + w);
   }
 }
+inline void simStep(const Model &m, float dt, float uDelayed, float d, float w, float vent, Sim &s) { simStep(m, stepCoef(m, dt), uDelayed, d, w, vent, s); }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------
 // ---------------------------------------------------------------------------------------------------------------------------------------
@@ -292,6 +299,7 @@ class Identifier {
       for (uint32_t b = p0; b < s; ++b) sim.hl += ex * (h.uAtTime((static_cast<float>(b) + 0.5f) * BinSec - m.dead) - sim.hl);
     }
     if (trace) trace[s % CapBins] = static_cast<int8_t>(clampf(x[8] * 10.0f, -127.0f, 127.0f));
+    const StepCoef sc = stepCoef(m, static_cast<float>(BinSec));
     float chi = 0.0f, chiRecent = 0.0f;
     const float inv = 1.0f / (0.07f * 0.07f);
     uint32_t cnt = 0, cntRecent = 0;
@@ -300,7 +308,7 @@ class Identifier {
     for (uint32_t b = s; b < n; ++b) {
       const float tMid = (static_cast<float>(b) + 0.5f) * BinSec;
       const float ud = h.uAtTime(tMid - m.dead);
-      simStep(m, static_cast<float>(BinSec), ud, b >= recentFrom ? d0 + dr : d0, w0, h.v(b), sim);
+      simStep(m, sc, ud, b >= recentFrom ? d0 + dr : d0, w0, h.v(b), sim);
       const float e = sim.ta - h.y(b);
       if (lastErrOut && b + 1U == n) *lastErrOut = e;
       if (isEvent(b) || (b > 0U && isEvent(b - 1U))) {   // an air-side step the model cannot explain (door, a glitch) completes inside its bin (the bin mean is not the new level): re-synchronise on that bin and the next, no scoring
@@ -442,6 +450,7 @@ class Planner {
     Sim s; s.ta = ta_; s.te = te_; s.hl = hl0_;
     const float dt = static_cast<float>(PlanDtSec);
     const float tNow = static_cast<float>(nowBin_) * BinSec;
+    const StepCoef sc = stepCoef(m_, dt);
     float cost = 0.0f;
     for (int j = 0; j < PlanSteps; ++j) {
       const float t = j * dt;
@@ -457,7 +466,7 @@ class Planner {
       float ud;
       if (td < 0.0f) ud = hist_->uAtTime(tNow + td);
       else { int k = static_cast<int>(td / dt); if (k >= j) k = j; ud = cmd_[k]; }
-      simStep(m_, dt, ud, d_, w_, vent, s);
+      simStep(m_, sc, ud, d_, w_, vent, s);
       if (taOut) taOut[j] = s.ta;
       const float e = s.ta - sp_;
       if (e > peak_) peak_ = e;

@@ -79,6 +79,20 @@ int main(){
     assert(store.saveConfig(input,readback));
     assert(readback.smartThermalEnabled==smart && readback.adaptiveThermalBalanceEnabled==adaptive && readback.sensorResolutionMode==mode);
   }
+  // Predictive thermal switch (bit 4, stored inverted so that every older record reads ON) is independent of the others.
+  for(bool predictive:{false,true}) for(bool smart:{false,true}) for(bool adaptive:{false,true}) for(uint8_t mode:{0U,2U}) {
+    ConfigStore store;MachineConfig input,readback;
+    input.predictiveThermalEnabled=predictive;input.smartThermalEnabled=smart;input.adaptiveThermalBalanceEnabled=adaptive;input.sensorResolutionMode=mode;
+    assert(store.saveConfig(input,readback));
+    assert(readback.predictiveThermalEnabled==predictive && readback.smartThermalEnabled==smart &&
+           readback.adaptiveThermalBalanceEnabled==adaptive && readback.sensorResolutionMode==mode);
+    ConfigStore reboot;std::memcpy(reboot.bytes,store.bytes,sizeof(store.bytes));
+    assert(reboot.loadConfig(readback) && readback.predictiveThermalEnabled==predictive);
+  }
+  { const MachineConfig d;assert(d.predictiveThermalEnabled);                                  // the factory default is ON
+    PackedMachineConfigV1 p=packConfig(d);p.adaptiveThermalBalanceEnabled=1U;                  // an older record never wrote bit 4
+    assert(unpackConfig(p).predictiveThermalEnabled);
+    p.adaptiveThermalBalanceEnabled=17U;assert(!unpackConfig(p).predictiveThermalEnabled); }
   { // a pre-existing record (byte 0/1) means "automatic"
     const MachineConfig d;assert(d.sensorResolutionMode==0U);
     PackedMachineConfigV1 p=packConfig(d);p.adaptiveThermalBalanceEnabled=1U;

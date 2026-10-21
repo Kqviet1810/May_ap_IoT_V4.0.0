@@ -162,11 +162,74 @@ static void persistence() {
   CHECK(c.telemetry().m.cf == m.m.cf);
 }
 
+static PredModelRecord modelWith(float cf, float k) {
+  StoredModel m; m.valid = true; m.rms = 0.03f; m.m.cf = cf; m.m.k = k;
+  return makePredModelRecord(m, 0xABCDU, 0U);
+}
+
+static void storageTests() {
+  Preferences::records().clear(); Preferences::budget() = -1;
+  PredModelStorage st; st.resetForTest(); st.service(0);
+  PredModelRecord seed{};
+  CHECK(!st.takeSeed(seed));                                   // nothing stored on a new machine
+  st.offer(modelWith(2500.0f, 6.0f)); st.service(1000);
+  CHECK(st.saves() == 1U);
+  CHECK(Preferences::records().count("pa") == 1U && Preferences::records().count("pb") == 0U);
+  // a model that differs materially goes to the OTHER slot; within the wear interval it waits
+  st.offer(modelWith(3500.0f, 6.0f)); st.service(2000);
+  CHECK(st.saves() == 1U);
+  st.service(2000U + MinIntervalMs);
+  CHECK(st.saves() == 2U && Preferences::records().count("pb") == 1U);
+  // an immaterial change is dropped, never written
+  st.offer(modelWith(3510.0f, 6.0f)); st.service(2000U + 3U * MinIntervalMs);
+  CHECK(st.saves() == 2U);
+  // reboot: the newest slot is the seed, handed over once
+  PredModelStorage boot; boot.resetForTest(); boot.service(0);
+  CHECK(boot.takeSeed(seed) && validPredModelRecord(seed) && seed.cf == 3500.0f);
+  CHECK(!boot.takeSeed(seed));
+  // sequence wrap: the slot with the larger (wrapping) sequence wins
+  {
+    PredModelRecord a = modelWith(2500.0f, 6.0f), b = modelWith(3000.0f, 6.0f);
+    a.sequence = 0xFFFFFFFFU; a.crc = predModelCrc(a); b.sequence = 0U; b.crc = predModelCrc(b);
+    Preferences::records().clear();
+    Preferences::records()["pa"].assign(reinterpret_cast<unsigned char *>(&a), reinterpret_cast<unsigned char *>(&a) + sizeof(a));
+    Preferences::records()["pb"].assign(reinterpret_cast<unsigned char *>(&b), reinterpret_cast<unsigned char *>(&b) + sizeof(b));
+    PredModelStorage w; w.resetForTest(); w.service(0);
+    CHECK(w.takeSeed(seed) && seed.cf == 3000.0f);
+  }
+  // a corrupt newest slot falls back to the older valid one
+  {
+    Preferences::records().clear();
+    PredModelStorage s2; s2.resetForTest(); s2.service(0);
+    s2.offer(modelWith(2500.0f, 6.0f)); s2.service(1000);
+    s2.offer(modelWith(3500.0f, 6.0f)); s2.service(1000U + MinIntervalMs);
+    CHECK(s2.saves() == 2U);
+    Preferences::records()["pb"][5] ^= 0x40;
+    PredModelStorage s3; s3.resetForTest(); s3.service(0);
+    CHECK(s3.takeSeed(seed) && seed.cf == 2500.0f);
+  }
+  // power cut at every byte of the second write: the first model survives and is the seed
+  for (int cut = 0; cut < static_cast<int>(sizeof(PredModelRecord)); ++cut) {
+    Preferences::records().clear(); Preferences::budget() = -1;
+    PredModelStorage s4; s4.resetForTest(); s4.service(0);
+    s4.offer(modelWith(2500.0f, 6.0f)); s4.service(1000);
+    CHECK(s4.saves() == 1U);
+    Preferences::budget() = cut;
+    s4.offer(modelWith(3500.0f, 6.0f)); s4.service(1000U + MinIntervalMs);
+    Preferences::budget() = -1;
+    CHECK(s4.saves() == 1U);
+    PredModelStorage s5; s5.resetForTest(); s5.service(0);
+    CHECK(s5.takeSeed(seed) && validPredModelRecord(seed) && seed.cf == 2500.0f);
+  }
+  Preferences::budget() = -1;
+}
+
 int main() {
   identifierRecoversPhysics();
   coldStartAndDoor();
   badInput();
   persistence();
+  storageTests();
   std::printf("thermal predictive: %u checks OK\n", checks);
   return 0;
 }
