@@ -115,7 +115,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
         extra.append(match[0])
     (out / 'actual-heating-config.inc').write_text('struct HeatingConfig : MachineConfig {\n' + '\n'.join(extra) + '\n HeatingConfig() { kp=18.0f; ki=0.8f; kd=45.0f; }\n};\n')
     assert re.search(r'uint16_t heaterStuckDurationSec\s*=\s*900;', config), 'E115 test must match production default'
-    constants = ['CIRC_FAN_BATCH_START_STAGGER_MS','POST_COOL_MS','VENT_SCHEDULE_MAX_RUNS','FAN_PRESTART_MS','MANUAL_FAN_CAN_DISABLE_HEATING','HUMIDIFIER_HYSTERESIS_RH','HEATER_BURST_QUANTUM_MS']
+    constants = ['CIRC_FAN_BATCH_START_STAGGER_MS','POST_COOL_MS','VENT_SCHEDULE_MAX_RUNS','FAN_PRESTART_MS','MANUAL_FAN_CAN_DISABLE_HEATING','HUMIDIFIER_HYSTERESIS_RH','HEATER_BURST_QUANTUM_MS','WARMUP_VENT_HOLD_ERR_C','WARMUP_VENT_RELEASE_ERR_C','WARMUP_VENT_HOLD_MAX_MS']
     (out / 'actual-heating-constants.inc').write_text('\n'.join(re.search(r'constexpr [^;\n]*\b'+n+r'\s*=[^;]*;',config)[0] for n in constants))
     start = machine.index('  void updateFilter(')
     end = machine.index('  void completeCycleSuccess(', start)
@@ -160,7 +160,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
     (out / 'Preferences.h').write_text('#pragma once\n#include <map>\n#include <string>\n#include <vector>\n#include <cstring>\nclass Preferences {\n public:\n  static std::map<std::string,std::vector<unsigned char>> &records(){static std::map<std::string,std::vector<unsigned char>> map;return map;}\n  static int &budget(){static int limit=-1;return limit;}\n  bool begin(const char *,bool){return true;}\n  bool isKey(const char *key){auto i=records().find(key);return i!=records().end()&&!i->second.empty();}\n  size_t getBytes(const char *key,void *data,size_t length){auto &v=records()[key];if(v.size()!=length)return 0;std::memcpy(data,v.data(),length);return length;}\n  size_t putBytes(const char *key,const void *data,size_t length){if(budget()>=0 && static_cast<size_t>(budget())<length){const auto *p=static_cast<const unsigned char *>(data);records()[key]=std::vector<unsigned char>(p,p+budget());return budget();}const auto *p=static_cast<const unsigned char *>(data);records()[key]=std::vector<unsigned char>(p,p+length);return length;}\n};\n')
     extra_constants = ['THERMAL_PID_BETA','PID_D_FILTER_TAU_SEC','HEAT_RESTART_LOCKOUT_MS','POST_COOL_MS',
         'EVENT_LOG_RAM_SIZE','HMI_EVENT_DISPLAY_CAPACITY','CIRC_FAN_BATCH_START_STAGGER_MS','FAN_PRESTART_MS',
-        'MANUAL_FAN_CAN_DISABLE_HEATING','CONTROL_TASK_PERIOD_MS','CONTROL_CYCLE_TRIP_US']
+        'MANUAL_FAN_CAN_DISABLE_HEATING','CONTROL_TASK_PERIOD_MS','CONTROL_CYCLE_TRIP_US','WARMUP_VENT_HOLD_ERR_C','WARMUP_VENT_RELEASE_ERR_C','WARMUP_VENT_HOLD_MAX_MS']
     (out / 'actual-tune-extra.inc').write_text('\n'.join(re.search(r'constexpr [^;\n]*\b'+n+r'\s*=[^;]*;', config)[0] for n in extra_constants))
     event_types = ''
     for name in ['HmiEventItem','HmiEventSnapshot']:

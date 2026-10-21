@@ -600,6 +600,11 @@ constexpr uint32_t SENSOR_STARTUP_GRACE_MS = 20000UL; // chua bao coi trong 20 s
 // nhieu/troi nen it khi giu nguyen tuyet doi lau nhu vay).
 constexpr float SENSOR_FROZEN_EPSILON_C = 0.01f;
 constexpr uint32_t SENSOR_FROZEN_TIMEOUT_MS = 1200000UL; // 20 phut
+// Warm-up: profile / scheduled ventilation waits while PV is more than this far below SP (the fan takes heat away and Adaptive learns
+// nothing while it runs); released at the second threshold or after the maximum. Forced vents (High, sensor fault, cooling) are untouched.
+constexpr float WARMUP_VENT_HOLD_ERR_C = 1.0f;
+constexpr float WARMUP_VENT_RELEASE_ERR_C = 0.5f;
+constexpr uint32_t WARMUP_VENT_HOLD_MAX_MS = 1800000UL;   // 30 phut
 constexpr uint32_t LOW_TEMP_STARTUP_GRACE_MS = 300000UL; // 5 phut
 constexpr uint32_t LOW_TEMP_CONFIRM_MS = 300000UL;       // thap lien tuc 5 phut
 constexpr uint32_t HIGH_TEMP_CONFIRM_MS = 1000UL;
@@ -1097,7 +1102,7 @@ struct MachineConfig {
 
   bool turningEnabled = true;
   uint16_t turnIntervalMin = 120;
-  uint16_t turnMaxRunSec = 300;
+  uint16_t turnMaxRunSec = 500;
   TurnDirection nextDirection = TurnDirection::Left;
 
   uint8_t totalIncubationDays = 21;

@@ -101,7 +101,9 @@ int main() {
     float maxCap = 0; for (const Step &s : r) if (s.now > 1000U + 200000U) maxCap = std::max(maxCap, s.cap);
     assert(maxCap > 5.0f);
     double onLegacy = 0; run(false, strong120, 37.5f, 25.0f, 600, 1000, nullptr, &onLegacy);
-    assert(onS < onLegacy);                                  // and strictly less than the legacy model commits
+    assert(onS <= onLegacy);                                 // and never more than the legacy model commits (the launch model replaced the flag: both run it)
+    float maxPv = 0; for (const Step &s : r) maxPv = std::max(maxPv, s.pv);
+    assert(maxPv < 38.2f);                                   // the heat of the probing pulses never reaches the High alarm (legacy: 41.5 C on this plant)
   }
   { // small start error (2 C): identical to legacy while nothing is observed
     const std::vector<Step> a = run(true, medium, 30.0f, 28.0f, 40, 1000, nullptr, nullptr);

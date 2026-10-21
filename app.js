@@ -3754,7 +3754,7 @@
     const interval = Number($('turnInterval').value);
     const limit = Number($('limitAlarmTime').value);
     if (!(interval >= 15 && interval <= 720)) return invalidate('turningForm', 'turnInterval', 'Chu kỳ đảo phải từ 15 đến 720 phút.');
-    if (!(limit >= 3 && limit <= 120)) return invalidate('turningForm', 'limitAlarmTime', 'Thời gian chờ hành trình phải từ 3 đến 120 giây.');
+    if (!(limit >= 3 && limit <= 500)) return invalidate('turningForm', 'limitAlarmTime', 'Thời gian chờ hành trình phải từ 3 đến 500 giây.');
     return true;
   }
 

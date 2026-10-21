@@ -5,6 +5,7 @@
 #include "adaptive_persistence.h"
 #include "thermal_adaptive_v1.h"
 #include "thermal_profile_storage.h"
+#include "thermal_launch_plan.h"
 #include "turn_schedule_policy.h"
 #include "firmware_update_guard.h"
 #include "boot_diagnostic.h"
@@ -6350,7 +6351,25 @@ class MachineController {
       static_cast<float>(MAYAP_SENSOR_PROFILE),1.0f};
     return mcCrc32(reinterpret_cast<const uint8_t *>(signature),sizeof(signature));
   }
+  // Launch plan (accelerate-then-brake prior): loaded once from the NVS record of the last good warm-up, offered after each new one.
+  void offerLaunchPlan(const MayapThermal::LaunchPlan &plan) {
+    launchPlan_ = plan;
+    MayapThermal::LaunchPlanRecord rec = MayapThermal::makeLaunchPlanRecord(plan, thermalSignature(), rtc_.valid() ? rtc_.epoch() : 0U);
+    MayapThermal::launchPlanStorage.offer(rec);
+    mayapSerialPrintf(false, "[LAUNCH] plan saved gain=%.4f delay=%.0fs cal=%.2f\n",
+                      static_cast<double>(plan.gain), static_cast<double>(plan.delaySec), static_cast<double>(plan.coastCal));
+  }
+  void loadLaunchPlan() {
+    MayapThermal::LaunchPlanRecord rec{};
+    if (!MayapThermal::launchPlanStorage.takeSeed(rec)) return;
+    if (!MayapThermal::launchPlanCompatible(rec, thermalSignature(), abnormalResetLatched_)) return;
+    launchPlan_.valid = true; launchPlan_.gain = rec.gain; launchPlan_.delaySec = rec.delaySec; launchPlan_.coastCal = rec.coastCal;
+    launchPlan_.calMeasured = rec.calMeasured != 0U; launchPlan_.holdPct = rec.holdPct;
+    mayapSerialPrintf(false, "[LAUNCH] plan loaded gain=%.4f delay=%.0fs cal=%.2f\n",
+                      static_cast<double>(rec.gain), static_cast<double>(rec.delaySec), static_cast<double>(rec.coastCal));
+  }
   void trackAdaptiveEnergy(uint32_t now) {
+    loadLaunchPlan();
     adaptiveThermal_.tick(now, outputs_.state().heaterSsr);
     thermalV1_.tick(now, outputs_.state().heaterSsr);
     if(testModeActive_ || resumeConfirmationRequired_){
@@ -6634,6 +6653,16 @@ class MachineController {
       }
     }
 
+    // Warm-up: no profile / scheduled ventilation while PV is still far below SP (the fan takes heat away and Adaptive learns nothing while it
+    // runs). Forced vents (High / sensor fault / cooling) are untouched. Ends at SP - 0.5 C or after WARMUP_VENT_HOLD_MAX_MS.
+    if (!batchRunning_) { warmupVentChecked_ = false; warmupVentHold_ = false; }
+    else if (sensorUsable_ && !warmupVentChecked_) {
+      warmupVentChecked_ = true;
+      warmupVentHold_ = (config_.targetTemp - temperature_) > WARMUP_VENT_HOLD_ERR_C;
+      warmupVentHoldSince_ = now;
+    } else if (warmupVentHold_ && ((config_.targetTemp - temperature_) <= WARMUP_VENT_RELEASE_ERR_C ||
+               elapsedMs(now, warmupVentHoldSince_) >= WARMUP_VENT_HOLD_MAX_MS || !sensorUsable_)) warmupVentHold_ = false;
+    if (warmupVentHold_) { scheduledVentActive = false; profileVentActive = false; }
     const bool safetyForcesCirculation = faults_.circulationForced() ||
         ventTemperatureActive_ || scheduledVentActive || profileVentActive ||
         sensorFaultNeedsFan || postCooling;
@@ -6730,16 +6759,42 @@ class MachineController {
         actuatorConfig.maxHeaterPower = static_cast<uint8_t>(effectiveLimit);
         float ceiling = effectiveLimit;
         bool freezePositiveIntegral = false;
+        float launchFloorPct = 0.0f;
         if (actuatorConfig.controlMode == ControlMode::Pid) {
           startupHeat_.setHint(autotune_.externalControl() ? autotune_.startupHint(config_.highTempAlarm, config_.targetTemp) : v1plan.hint);
+          startupHeat_.setPlan(launchPlan_);
+          startupHeat_.setDisturbed(ventInfo_.active);
           const auto decision = startupHeat_.decide(now, config_.targetTemp,
               temperature_, effectiveLimit);
           ceiling = decision.ceiling;
           freezePositiveIntegral = decision.freezePositiveIntegral;
+          launchFloorPct = autotune_.externalControl() ? 0.0f : decision.floorPct;
         }
+        // The hold measured on this launch (or stored in the launch plan) is fed forward, so the PID does not have to learn it through its
+        // integral: that takes ~Kp/Ki x the hold error, which is the half hour a slow oven used to sit under the set point.
+        MayapThermal::Assist launchAssist = autotune_.externalControl() ? tuneAssist : v1plan.assist;
+        if (!autotune_.externalControl() && actuatorConfig.controlMode == ControlMode::Pid)
+        {
+          // Measured on this launch: it replaces a learned profile's feed-forward (that one can be stale, or learned from the launch's own
+          // cuts and bursts). Until it is measured the learned one is not used during the climb, only once PV stands at the set point.
+          launchAssist.feedForward = startupHeat_.holdMeasured() ? startupHeat_.holdFeedForward()
+              : std::max(startupHeat_.phase() == ThermalStartupController::Phase::Hold ? launchAssist.feedForward : 0.0f,
+                         startupHeat_.holdFeedForward());
+          // The delay measured by the launch limits the integral: Ti >= 4 x (delay + lag) (only ever LOWERS the configured Ki)
+          const float tiMin = startupHeat_.minIntegralTimeSec();
+          const float kpLimit = startupHeat_.maxProportionalGain();
+          if (kpLimit > 0.0f) launchAssist.kpMax = std::min(launchAssist.kpMax, kpLimit);
+          const float kpUsed = std::min(actuatorConfig.kp, launchAssist.kpMax);
+          if (tiMin > 0.0f && kpUsed > 0.0f) launchAssist.kiMax = std::min(launchAssist.kiMax, kpUsed / tiMin);
+        }
+        if (!autotune_.externalControl() && startupHeat_.boosting()) pid_.restartIntegral();
         pidPower_ = pid_.updateOnNewSample(now, config_.targetTemp,
-            temperature_, actuatorConfig, true, ceiling, freezePositiveIntegral,
-            autotune_.externalControl() ? &tuneAssist : &v1plan.assist);
+            temperature_, actuatorConfig, true, ceiling, freezePositiveIntegral, &launchAssist);
+        // Accelerate-then-brake (measured plant): the startup controller requests the power the predicted peak allows; the PID follows
+        // bumplessly, so the hand-back near SP is no step.
+        if (launchFloorPct > pidPower_) pidPower_ = launchFloorPct;   // the integral is not coupled to the boost: it must not carry it into the hold
+        MayapThermal::LaunchPlan planOut;
+        if (startupHeat_.takePlan(planOut)) offerLaunchPlan(planOut);
       }
       if (config_.controlMode == ControlMode::Pid && startupHeat_.sampleStale(now)) {
         pid_.reset();
@@ -8456,6 +8511,9 @@ class MachineController {
   HeaterBurstScheduler heaterBurst_{HEATER_GROUP_COUNT, HEATER_BURST_QUANTUM_MS};
   bool previousFanCommand_ = false;
   uint32_t fanOnSince_ = 0;
+  MayapThermal::LaunchPlan launchPlan_{};
+  bool warmupVentHold_ = false, warmupVentChecked_ = false;
+  uint32_t warmupVentHoldSince_ = 0;
   // Contactor nhiet tong PHAI dong tuc thi cung cong tac (yeu cau nguoi lap
   // dat, xem comment tai normalMasterPermit) nen KHONG duoc tri hoan no. De
   // 2 relay (quat tuan hoan + contactor) khong dong DIEN CUNG 1 thoi diem

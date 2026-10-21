@@ -60,6 +60,10 @@ struct Harness {
   RelayAutoTune autotune_;
 #include "actual-burst-member.inc"
   struct {float heaterPower=0;} runtime_;
+  MayapThermal::LaunchPlan launchPlan_{}, launchPlanOffered_{};unsigned launchPlanOffers_=0;
+  bool warmupVentHold_=false,warmupVentChecked_=false;uint32_t warmupVentHoldSince_=0;
+  void offerLaunchPlan(const MayapThermal::LaunchPlan &p){launchPlanOffered_=p;++launchPlanOffers_;}
+  void loadLaunchPlan(){}
   bool testModeActive_=false,lightWebOverrideActive_=false,lightWebOverrideRefInput_=false,lightWebOverrideValue_=false;
   bool resumeConfirmationRequired_=false,batchRunning_=true,prevBatchRunningForOutputs_=false;
   bool sensorUsable_=true,humidityLowActive_=false,previousFanCommand_=false;

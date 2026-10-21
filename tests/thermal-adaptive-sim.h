@@ -84,6 +84,9 @@ struct Scenario {
   float kp = 18.0f, ki = 0.8f, kd = 45.0f;
   bool seedSet = false;
   MayapThermal::ThermalProfile seed{};
+  // Launch plan of the previous warm-up (accelerate-then-brake prior); the egg-trolley change is modelled with capScale / effScale at changeAtS.
+  bool planSet = false;
+  MayapThermal::LaunchPlan plan{};
   // Sensor-path integrity (opt-in): High/Emergency/E115/E104 derived from the REPORTED temperature.
   SensorPath path;
 };
@@ -92,7 +95,10 @@ struct VentRecord { double start, end, minDev, postMax, recoverS, heaterOnS, win
 
 struct Result {
   Reach reach = Reach::Reachable;
-  double overshoot = -1000, mae = 0, p95 = 0, ripple = 0, riseS = -1, energyJ = 0;
+  double overshoot = -1000, mae = 0, p95 = 0, ripple = 0, riseS = -1, riseS03 = -1, riseS10 = -1, energyJ = 0;
+  bool planOffered = false;
+  MayapThermal::LaunchPlan planOut{};
+  double peakAfterRise = -1000;   // highest PV once SP - 0.15 has been reached
   int settling = -1;
   int high = 0, emergency = 0;
   bool pass = false;
@@ -164,6 +170,7 @@ inline void configure(PathHarness &h, const Scenario &sc) {
   h.sensorStartupGraceUntil_ = sc.clockOffset + 1000U + 60000U;
   if (sc.gainsSet) { h.config_.kp = sc.kp; h.config_.ki = sc.ki; h.config_.kd = sc.kd; }
   if (sc.seedSet) h.thermalV1_.learner().seed(sc.seed, 75, sc.seed.holdPowerPct > 0.5f);
+  if (sc.planSet) h.launchPlan_ = sc.plan;
 }
 
 inline Result run(const Plant &base, const Scenario &sc) {
@@ -394,7 +401,10 @@ inline Result run(const Plant &base, const Scenario &sc) {
       if (actualOn && t >= sc.path.faultAtS && sc.path.fault != SensorFault::None) r.heaterOnAfterFaultS += dt;
     }
     r.overshoot = std::max(r.overshoot, temp - sp);
+    if (r.riseS10 < 0 && temp >= sp - 1.0) r.riseS10 = t;
+    if (r.riseS03 < 0 && temp >= sp - 0.3) r.riseS03 = t;
     if (!reached && temp >= sp - 0.15) { reached = true; r.riseS = t; }
+    if (reached && temp > r.peakAfterRise) r.peakAfterRise = temp;
     if (std::fabs(temp - sp) > 0.15) lastOut = static_cast<int>(t);
     if (tick % 10U == 0U) {
       sec_temp.push_back(static_cast<float>(temp));
@@ -550,6 +560,8 @@ inline Result run(const Plant &base, const Scenario &sc) {
   r.ventDropEvents = dropEvents;
   if (r.ventEvents) { r.postVentOvershootMean = postSum / r.ventEvents; r.ventEnergyMean /= r.ventEvents; }
   if (dropEvents) r.ventDevMean = dropSum / dropEvents;
+  r.planOffered = h->launchPlanOffers_ > 0;
+  r.planOut = h->launchPlanOffered_;
   return r;
 }
 

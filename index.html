@@ -190,7 +190,7 @@
 <div class="notificationLine"><div><strong>Đảo tự động</strong><small>máy thực hiện theo chu kỳ và công tắc hành trình.</small></div><label class="toggle"><input checked="" id="turningEnabled" type="checkbox"/><i></i></label></div>
 <div class="notificationLine"><div><strong>Đảo tay cập nhật lịch</strong><small>Bật: sau khi đảo tay, máy tính lại chu kỳ đảo tự động từ vị trí vừa đảo. Tắt: đảo tay không đổi lịch đảo tự động.</small></div><label class="toggle"><input id="manualTurnReanchorsSchedule" type="checkbox"/><i></i></label></div>
 <label class="field"><span>Khoảng thời gian giữa hai lần đảo</span><div class="unit"><input id="turnInterval" max="720" min="15" type="number" value="120"/><b>Phút</b></div></label>
-<label class="field"><span>Thời gian chờ hành trình</span><div class="unit"><input id="limitAlarmTime" max="120" min="3" type="number" value="20"/><b>Giây</b></div></label>
+<label class="field"><span>Thời gian chờ hành trình</span><div class="unit"><input id="limitAlarmTime" max="500" min="3" type="number" value="500"/><b>Giây</b></div></label>
 <label class="field"><span>Hướng đảo kế tiếp</span><select id="nextDirection"><option value="left">Trái</option><option value="right">Phải</option></select></label>
 <button class="primary full" type="submit">Lưu cài đặt đảo</button>
 </form>
@@ -413,5 +413,5 @@
 </dialog>
 <div aria-live="polite" class="toast" id="toast" role="status"></div>
 
-<script defer src="./config.js?v=1.1.18"></script><script defer src="./account.js?v=1.1.18"></script><script defer src="./vendor/jsQR.min.js"></script><script defer src="./vendor/mqtt.min.js"></script><script defer src="./push.js?v=1.1.18"></script><script defer src="./protocol_v2.js?v=1.1.18"></script><script defer src="./notes.js?v=1.1.18"></script><script defer src="./mqtt_transport.js?v=1.1.18"></script><script defer src="./app.js?v=1.1.18"></script></body>
+<script defer src="./config.js?v=1.1.19"></script><script defer src="./account.js?v=1.1.19"></script><script defer src="./vendor/jsQR.min.js"></script><script defer src="./vendor/mqtt.min.js"></script><script defer src="./push.js?v=1.1.19"></script><script defer src="./protocol_v2.js?v=1.1.19"></script><script defer src="./notes.js?v=1.1.19"></script><script defer src="./mqtt_transport.js?v=1.1.19"></script><script defer src="./app.js?v=1.1.19"></script></body>
 </html>

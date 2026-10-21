@@ -29,6 +29,9 @@ struct Assist {  // what the PID receives
   // Ceiling (never a floor) on the integral gain, derived from the learned delay and gain.
   // It can only LOWER the configured / AutoTuned Ki, never raise it. INFINITY == no limit.
   float kiMax = INFINITY;
+  // Ceiling on the proportional gain (and with it the derivative gain: Td is kept), from the measured gain and delay: Kp x gain x (delay + lag)
+  // beyond ~1 is a limit cycle. Only ever LOWERS the configured / AutoTuned Kp. INFINITY == no limit.
+  float kpMax = INFINITY;
   // Authority limiter on the PID CORRECTION around the feed-forward: the output stays inside
   // [ff - A, ff + A], A = corrBase + corrPerC * |error|. It only NARROWS the legacy [0, max]
   // range, so a limit cycle through a long delay cannot exceed an amplitude the learned plant
@@ -36,6 +39,18 @@ struct Assist {  // what the PID receives
   // INFINITY == off.
   float corrBase = INFINITY;
   float corrPerC = 60.0f;
+};
+
+// Launch plan: what the startup controller measured on the LAST good warm-up of this oven, so the next batch can launch at full power at once
+// instead of probing. It is a PRIOR, never evidence: the controller re-measures the heater gain during every launch (a changed number of egg
+// trolleys changes the thermal mass, hence the gain) and drops the plan for the rest of the batch if the oven does not answer as promised.
+struct LaunchPlan {
+  bool valid = false;
+  float gain = 0;       // degC/s at 100 % duty, as measured during the launch (the loss makes it read a little low)
+  float delaySec = 0;   // delay after which the heat of an ON-second starts to reach PV (the arrival kernel's, measured by the launch)
+  float coastCal = 1;   // measured drift after a cut / the heat-in-flight model (1 = the model is right)
+  bool calMeasured = false;   // coastCal was measured on a real cut (false = the conservative default)
+  float holdPct = 0;    // duty that holds PV at SP, measured from the gain (0 = unknown); a prior credited at 80 %
 };
 
 struct StartupHint {  // learned plant knowledge for the startup/braking controller
