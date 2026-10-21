@@ -334,7 +334,7 @@ class ThermalStartupController {
     if (smart_) observeGain(now);
     trackOnset(now);
     if (sp != lastSp_) { stableAt_ = 0U; phase_ = Phase::Approach; lastSp_ = sp; }
-    if (!pvStartSet_ && firstHeatAt_ != 0U) { pvStartSet_ = true; pvStart_ = pv; warm_ = (sp - pv) < WarmStartErrC; }
+    if (!pvStartSet_ && firstHeatAt_ != 0U) { pvStartSet_ = true; pvStart_ = pv; warm_ = (sp - pv) < WarmStartErrC && ((plan_.valid && !planBad_) || retained_.valid); }
     // First rise = the heat has surfaced. A strong oven shows it as a slope above 0.003 C/s; a weak or heavy one never reaches that slope (its
     // whole climb is 0.0005 C/s), and with no "first rise" the hold learner, the delay estimate and the measured gain below stay switched off for
     // good: the oven then sits under the set point forever (grid test: 0.5 C under SP for 3 h). A rise of FirstRiseC since the first heat (two
@@ -1043,7 +1043,7 @@ class ThermalStartupController {
   uint32_t onTotalMs_ = 0U;      // heater ON-time since the first heat (measured gain)
   float pvStart_ = 0.0f;
   bool pvStartSet_ = false;
-  bool warm_ = false;   // the heat started with PV already at the set point (a restart in the hold): there is no response to measure, the plan's model governs
+  bool warm_ = false;   // the heat started with PV already at the set point and a plan is known (a restart in the hold): there is no response to measure, the plan's model governs
   float holdLive_ = -1.0f, holdIdle_ = -1.0f, holdFlat_ = -1.0f;   // hold (% duty): in use / from an idle chamber's cooling / from a standing-still PV, -1 = none yet
   float pvFast_ = 0.0f, gainLive_ = 0.0f, gainEst_ = 0.0f, coastCal_ = 1.0f;   // C/s at 100 %: ceiling / measured gain, drift calibration
   bool gainInfo_ = false, holdValid_ = false, onset_ = false, pvMinSet_ = false, pvcMinSet_ = false;
