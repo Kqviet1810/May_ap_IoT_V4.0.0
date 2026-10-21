@@ -6865,7 +6865,11 @@ class MachineController {
         // Thermal Predictive V1: while the identified model is trusted its proposal replaces the legacy request (limits below still apply)
         if (predictiveRuns && actuatorConfig.controlMode == ControlMode::Pid && !autotune_.externalControl()) {
           thermalPredictive_.update(predictiveIn);
-          if (thermalPredictive_.active()) pidPower_ = thermalPredictive_.request();
+          if (thermalPredictive_.active()) {
+            pidPower_ = thermalPredictive_.request();
+            // The legacy PID keeps running underneath: it follows the power actually requested, so a hand-back (fallback) is no step
+            pid_.forceOutputBumpless(config_.targetTemp, temperature_, actuatorConfig, pidPower_);
+          }
         }
         MayapThermal::LaunchPlan planOut;
         if (startupHeat_.takePlan(planOut)) offerLaunchPlan(planOut);

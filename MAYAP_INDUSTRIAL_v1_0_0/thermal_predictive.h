@@ -515,7 +515,7 @@ class Controller {
     lastPv_ = NAN; hl_ = 0; request_ = 0; cooling_ = false; state_ = enabled_ ? State::Learning : State::Off;
     fallbackUntilBin_ = 0; healthyBins_ = 0; badBins_ = 0; plan_ = PlanChoice{}; planner_ = Planner{}; planStartBin_ = 0; pendingStartBin_ = -1000;
     readySince_ = 0; model_ = stored.valid ? stored.m : Model{}; modelOk_ = false; sensorGapMs_ = 0; firstHeatBin_ = -1; lastSampleMs_ = 0;
-    planOnTop_ = false; trim_ = 0.0f; lastUpdateMs_ = 0; coolUntilMs_ = 0; lastPinned_ = false; lastJudgedBin_ = 0;
+    planOnTop_ = false; trim_ = 0.0f; lastUpdateMs_ = 0; coolUntilMs_ = 0; slopeValid_ = false; slope_ = 0.0f; lastPinned_ = false; lastJudgedBin_ = 0;
   }
   // Called every control cycle with the ACTUAL state of the heater SSR (and master) and of the exhaust fan.
   void tick(uint32_t now, bool heaterOn, bool ventOn) {
@@ -528,8 +528,14 @@ class Controller {
   // Called on every new filtered sensor sample.
   void sample(uint32_t now, float pv, bool sensorOk) {
     lastSampleMs_ = now;
-    if (!sensorOk || !finitef(pv)) return;
+    if (!sensorOk || !finitef(pv)) { slopeValid_ = false; return; }
     pvSum_ += pv; ++pvN_; lastPv_ = pv;
+    // Observed air-temperature slope (K/s), smoothed over about a minute. It needs no model, so it keeps working when the model is wrong.
+    if (slopeValid_ && now - slopeMs_ >= 1000U && now - slopeMs_ < 30000U) {
+      const float dt = static_cast<float>(now - slopeMs_) * 0.001f;
+      slope_ += (clampf((pv - slopePv_) / dt, -0.5f, 0.5f) - slope_) * clampf(dt / 60.0f, 0.0f, 1.0f);
+      slopePv_ = pv; slopeMs_ = now;
+    } else if (!slopeValid_ || now - slopeMs_ >= 30000U) { slopeValid_ = true; slopePv_ = pv; slopeMs_ = now; slope_ = 0.0f; }
   }
   // Chunked heavy work, one kind per call so a control cycle never carries both: even calls advance the identifier, odd calls the planner.
   // `budget` is the number of identifier evaluations (a planner candidate costs about a third of one, so it gets three times as many).
@@ -572,8 +578,10 @@ class Controller {
       if (modelOk_ && !unhealthy) { state_ = State::Active; readySince_ = bins; badBins_ = 0; trim_ = 0.0f; }
     } else if (state_ == State::Active) {
       if (newBin) {
-        badBins_ = unhealthy ? badBins_ + 1U : 0U;
-        if (!modelOk_ && bins > 120U) { badBins_ += 1U; lastWhy_ = 5; }
+        // severity x duration: a model that misses by more than 0.6 degC (the structure of the oven just changed) is stood down within a minute
+        const bool untrusted = !modelOk_ && bins > 120U;      // the fit is not good enough to keep driving (e.g. a physical parameter at its bound)
+        if (untrusted && !unhealthy) lastWhy_ = 5;
+        badBins_ = (unhealthy || untrusted) ? badBins_ + (unhealthy && ident_.recentRms() > SevereMiss ? 5U : 1U) : 0U;
       }
       if (badBins_ >= 30U) { state_ = State::Fallback; fallbackUntilBin_ = bins + 120U; badBins_ = 0; }
     } else if (state_ == State::Fallback) {
@@ -611,6 +619,10 @@ class Controller {
     // guard rails: never ask for heat well above SP; never more than the limit
     if (finitef(in.pv) && in.pv > in.sp + 0.3f) u = 0.0f;
     if (cooling_) u = 0.0f;
+    // Model-free overshoot guard: whatever the model believes, heat already on its way keeps raising the air for about delay + lag after the
+    // power is cut. If the observed slope carries the air past SP by that time, no more power (the same logic as a cutback / fuzzy overshoot
+    // suppression, but it acts on what is measured, so a model that has just become wrong cannot defeat it).
+    if (slopeValid_ && finitef(in.pv) && in.pv + slope_ * (model_.dead + model_.tau) > in.sp + OvershootKnee) u = 0.0f;
     request_ = clampf(u, 0.0f, limit);
     lastPinned_ = request_ <= 0.0f || request_ >= limit;
   }
@@ -646,6 +658,7 @@ class Controller {
   float heaterLag() const { return hl_; }
   uint8_t lastWhy() const { return lastWhy_; }
 
+  static constexpr float SevereMiss = 0.6f;
   static constexpr float RmsOk = 0.10f;
   static constexpr float RmsKeep = 0.20f;
   static constexpr float TrimTauSec = 900.0f;
@@ -698,7 +711,10 @@ class Controller {
   int64_t firstHeatBin_ = -1, planStartBin_ = 0, pendingStartBin_ = -1000;
   float pvSum_ = 0, lastPv_ = NAN, ventSum_ = 0, hl_ = 0, request_ = 0, trim_ = 0;
   uint32_t lastUpdateMs_ = 0, coolUntilMs_ = 0;
-  bool lastPinned_ = false;
+  bool lastPinned_ = false, slopeValid_ = false;
+  uint32_t slopeMs_ = 0;
+  float slope_ = 0.0f, slopePv_ = 0.0f;
+  static constexpr float OvershootKnee = 0.35f;
   uint8_t lastWhy_ = 0, phase_ = 0;
   uint32_t lastJudgedBin_ = 0;
   int pvN_ = 0;
