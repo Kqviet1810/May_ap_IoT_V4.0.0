@@ -644,10 +644,6 @@ class ThermalStartupController {
       }
     }
     lastCap_ = cap;
-#ifdef MAYAP_DBG_LAUNCH
-    if (now % 10000U < 2100U) std::fprintf(stderr, "L t=%u pv=%.2f gUse=%.4f gEst=%.4f info=%d kap=%.2f if=%.1f win=%.1f hc=%.1f dh=%.0f onset=%d(%.0f) lam0=%.5f exc=%.1f coast=%.2f slopeC=%.2f cap=%.0f floor=%.0f cut=%d cal=%.2f/%d hold=%.1f/%d\n",
-      now/1000U, pv, lv.gUse, lv.gEst, (int)lv.informative, lv.kappa, lv.inFlightS, lv.windowS, lv.holdCred, lv.dhS, (int)onset_, onsetElapsedS_, lambda0_, excessNominalS, expectedCoast, slopeCoast, cap, floorPct, (int)cutActive_, coastCal_, (int)calKnown_, holdLive_, (int)holdValid_);
-#endif
     // ---- Plan of this warm-up, for the next batch: gain + delay + drift calibration + hold, once PV has stood still near SP for 90 s.
     if (!planOffered_ && trusted && lv.informative && onset_ && holdValid_ && fabsf(error) <= PlanNearSpC && !disturbed_ &&
         pvMaxAfterBoost_ <= sp + PlanMaxOverC && windowSlope(now) <= FlatSlope && windowSlope(now) >= -FlatSlope) {
