@@ -197,3 +197,14 @@ login/session, cache/retained bootstrap, WARM/socket reuse, HMAC command/signed 
 không HTTP mỗi click. Migration SQL chạy trong SQLite test; Worker dry-run bundle.
 Build ESP32/ATtiny + host ASan/UBSan/ISR checks là CI gates. Giới hạn MQTT read/topic
 ở trên vẫn còn, không có test nào tuyên bố broker shared credential đã tenant-safe.
+
+## Chế độ 2 tài khoản (firmware 1.1.14, Web 1.1.20, migration 0008)
+
+Mục đích: một máy có thể được dùng bởi **hai** tài khoản Google ngang quyền vận hành (chủ + một người khác), nhưng **chỉ người đứng trước máy** quyết định có thêm tài khoản hay không.
+
+* **Công tắc nằm trên HMI**: Nâng cao > "Che do 2 tai khoan" (cần Online; vào Nâng cao đã có mã kỹ thuật). Không có công tắc nào trên Web.
+* **Bật**: máy gọi `POST /api/device/guest-mode` bằng `device_key` của chính nó (như reset-pin). Worker mở **một** chỗ thứ hai trong **15 phút**. Tài khoản Google thứ hai đăng nhập, "Thêm máy" bằng Device ID + PIN như thường lệ và được ghi là `operator`. Hết 15 phút mà chưa ai vào thì chỗ tự đóng; đã có người vào thì chế độ giữ nguyên đến khi tắt trên HMI.
+* **Quyền**: hai tài khoản ngang nhau về xem, điều khiển (cấp grant điều khiển), cấu hình, ghi chú, đổi tên máy, đổi PIN, thông báo đẩy (mỗi tài khoản có liên kết riêng). Tài khoản thứ ba bị từ chối (`GUEST_MODE_OFF`/409).
+* **Tắt**: trên HMI. Tài khoản thứ hai bị xóa khỏi máy cùng liên kết thông báo đẩy của nó; tài khoản đầu tiên không bị chạm. Không ai gỡ ai trên Web (`/api/device/revoke-access` trả `HMI_ONLY`); tài khoản thứ hai tự rời được (`/api/device/leave`), chủ không rời được.
+* **Giới hạn đã biết**: (1) lệnh điều khiển đã cấp cho tài khoản bị gỡ còn hiệu lực tối đa 5 phút; (2) thẻ MQTT đọc dữ liệu của Web là thẻ không trạng thái sống 1 giờ nên tài khoản vừa bị gỡ còn đọc được telemetry tối đa 1 giờ (không còn điều khiển được); (3) máy mất mạng thì chưa gỡ được tài khoản thứ hai cho tới khi nối lại (HMI báo lỗi/Offline); (4) Gmail thứ hai phải được thêm vào danh sách người dùng thử khi màn hình đồng ý OAuth còn ở chế độ Testing.
+* Triển khai: Worker + migration `0008_guest_mode.sql` **trước**, Web, rồi mới OTA firmware 1.1.14 (Worker mới tương thích ngược: chế độ mặc định tắt).

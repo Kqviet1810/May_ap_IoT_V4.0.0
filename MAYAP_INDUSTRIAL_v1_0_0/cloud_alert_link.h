@@ -111,6 +111,8 @@ static volatile uint8_t pinResetRequestFlag = 0U;
 static volatile uint8_t memberListRequestFlag = 0U;
 static volatile int8_t memberRemoveIndex = -1;   // pending removal from the HMI (-1 none)
 static MemberListSnapshot memberSnap;            // guarded by cloudMux
+static volatile uint8_t guestRequest = 0xFFU;   // pending "Che do 2 tai khoan" action from the HMI (0xFF none)
+static GuestModeSnapshot guestSnap;              // guarded by cloudMux
 
 // -------------------------------- Hang doi gui ----------------------------------
 // Chi networkTask dung (ca ghi lan doc) - moi logic quyet dinh gui gi cung
@@ -1203,6 +1205,49 @@ inline void serviceMembers() {
   }
 }
 
+// HMI "Nang cao > Che do 2 tai khoan": status / on / off, authenticated by the device key like reset-pin (the HMI is the only switch).
+// One-shot HTTPS on the same admission path; a deferred request keeps the user's intent, an HTTP error is shown and never replayed.
+inline void guestSetState(GuestModeState state, uint8_t result = 0xFFU) {
+  portENTER_CRITICAL(&cloudMux);
+  guestSnap.state = state;
+  if (result != 0xFFU) guestSnap.result = result;
+  ++guestSnap.seq;
+  portEXIT_CRITICAL(&cloudMux);
+}
+inline bool sendGuestMode(uint8_t action) {
+  JsonDocument doc;
+  doc["device_id"] = mayapDeviceIdText();
+  doc["device_key"] = mayapDeviceSecret();
+  doc["action"] = action == 1U ? "on" : action == 2U ? "off" : "status";
+  String response;
+  int code = 0;
+  if (!postJson("/api/device/guest-mode", doc, "guest-mode", &response, &code)) return false;
+  JsonDocument parsed;
+  if (deserializeJson(parsed, response) != DeserializationError::Ok || !parsed["success"].as<bool>()) return false;
+  portENTER_CRITICAL(&cloudMux);
+  guestSnap.state = GuestModeState::Ready;
+  guestSnap.enabled = parsed["enabled"].as<bool>();
+  guestSnap.joined = parsed["joined"].as<bool>();
+  guestSnap.windowLeftS = static_cast<uint16_t>(constrain(parsed["window_left_s"] | 0, 0, 65535));
+  if (action != 0U) guestSnap.result = 1U;
+  ++guestSnap.seq;
+  portEXIT_CRITICAL(&cloudMux);
+  return true;
+}
+inline void serviceGuestMode() {
+  const uint8_t action = __atomic_exchange_n(&guestRequest, static_cast<uint8_t>(0xFFU), __ATOMIC_ACQ_REL);
+  if (action == 0xFFU) return;
+  const NetworkStatus netStatus = mayapGetRawNetworkStatus();
+  if (netStatus.requestedMode != ConnectivityMode::Online || !netStatus.connected) {
+    guestSetState(GuestModeState::Offline, action != 0U ? 2U : 0xFFU);
+    return;
+  }
+  if (!sendGuestMode(action)) {
+    if (requestDeferred) __atomic_store_n(&guestRequest, action, __ATOMIC_RELEASE);   // no request was sent: keep the intent
+    else guestSetState(GuestModeState::Error, action != 0U ? 2U : 0xFFU);
+  }
+}
+
 }  // namespace MayapCloudInternal
 
 // ================================ API cong khai ================================
@@ -1237,6 +1282,17 @@ inline void mayapRequestMemberRemove(uint8_t index) {
   { portENTER_CRITICAL(&MayapCloudInternal::cloudMux); MayapCloudInternal::memberSnap.state = MemberListState::Loading;
     MayapCloudInternal::memberSnap.removeResult = 0U; ++MayapCloudInternal::memberSnap.seq; portEXIT_CRITICAL(&MayapCloudInternal::cloudMux); }
   __atomic_store_n(&MayapCloudInternal::memberRemoveIndex, static_cast<int8_t>(index), __ATOMIC_RELEASE);
+}
+inline void mayapRequestGuestMode(uint8_t action) {
+  { portENTER_CRITICAL(&MayapCloudInternal::cloudMux); MayapCloudInternal::guestSnap.state = GuestModeState::Loading;
+    MayapCloudInternal::guestSnap.result = 0U; ++MayapCloudInternal::guestSnap.seq; portEXIT_CRITICAL(&MayapCloudInternal::cloudMux); }
+  __atomic_store_n(&MayapCloudInternal::guestRequest, static_cast<uint8_t>(action > 2U ? 0U : action), __ATOMIC_RELEASE);
+}
+inline GuestModeSnapshot mayapGuestSnapshot() {
+  portENTER_CRITICAL(&MayapCloudInternal::cloudMux);
+  const GuestModeSnapshot copy = MayapCloudInternal::guestSnap;
+  portEXIT_CRITICAL(&MayapCloudInternal::cloudMux);
+  return copy;
 }
 inline MemberListSnapshot mayapMemberSnapshot() {
   portENTER_CRITICAL(&MayapCloudInternal::cloudMux);
@@ -1298,6 +1354,7 @@ inline void mayapCloudAlertUpdate(uint32_t now) {
   // send gap left by routine heartbeat/alarm traffic.
   servicePinReset();
   serviceMembers();
+  serviceGuestMode();
   serviceRegister(now);
   if (registered) {
     drainOutbox(now);

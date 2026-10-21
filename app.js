@@ -1060,6 +1060,15 @@
     syncSelectedDevice(true);
     renderPushStatus();
     syncDeviceSelectorUi();
+    renderLeaveDevice();
+  }
+
+  // The second account of a machine (HMI "Che do 2 tai khoan") may leave by itself; nobody removes an account from the Web.
+  function renderLeaveDevice() {
+    const device = state.devices.find((item) => item.id === state.selectedId);
+    const show = Boolean(device && device.accountRole === 'operator');
+    $('leaveDeviceForm').hidden = !show;
+    $('leaveDeviceDivider').hidden = !show;
   }
 
   function closeDeviceSelectorPanel() {
@@ -3966,7 +3975,7 @@
         submitBtn.disabled = false;
         submitBtn.textContent = 'Thêm và chọn máy';
       }
-      if (!result.success) return toast(result.error || 'Sai mã PIN hoặc thiết bị chưa đăng ký');
+      if (!result.success) return toast(result.message || result.error || 'Sai mã PIN hoặc thiết bị chưa đăng ký');
       await window.MayapAccount.refresh();
 
       // Ten hien thi lay tu server (da dat san tu truoc, hoac mac dinh la
@@ -4035,6 +4044,18 @@
       saveDevices();
       renderSelector();
       toast('Đã đổi tên máy');
+    });
+
+    $('leaveDeviceForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const device = currentDevice();
+      if (!device || device.accountRole !== 'operator') return;
+      if (!window.confirm('Rời khỏi máy "' + device.name + '"? Bạn chỉ vào lại được khi máy bật «Chế độ 2 tài khoản».')) return;
+      const result = await postCloudJson('/api/device/leave', { device_id: device.id });
+      if (!result.success) return toast(result.error || 'Không rời được máy');
+      controlSessions.delete(device.id);
+      await window.MayapAccount.refresh();
+      toast('Đã rời khỏi máy');
     });
 
     $('changePinForm').addEventListener('submit', async (event) => {

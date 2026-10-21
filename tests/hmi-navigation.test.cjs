@@ -274,3 +274,26 @@ test('Smart Thermal is a run-time switch in NANG CAO, off by default, locked dur
   const bridge = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h'), 'utf8');
   assert.doesNotMatch(bridge, /smartThermalEnabled/);
 });
+
+test('Che do 2 tai khoan: only in HMI Nang cao, needs Online, the machine asks the Worker with its own key, back returns to the Advanced list', () => {
+  const cloud = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'cloud_alert_link.h'), 'utf8');
+  // Advanced list: the item sits after "Quyen Web" and before "Doi ma ky thuat"; the screen belongs to the Advanced session (PIN keep-alive, lock on leave)
+  assert.match(hmi, /enum AdvItem : uint8_t \{[^}]*ADV_WEB, ADV_GUEST, ADV_PINCHG, ADV_EXIT \}/);
+  assert.match(hmi, /constexpr uint8_t ADV_ITEM_COUNT = 11U;/);
+  assert.match(bodyOf('bool viewInAdvanced('), /case View::GuestMode:/);
+  assert.match(bodyOf('void advSelect()'), /case ADV_GUEST: openGuestMode\(\); break;/);
+  assert.match(bodyOf('void goBack()'), /case View::GuestMode: view = View::AdvMenu; advIndex = 8U;/);   // 8 = ADV_GUEST
+  assert.match(bodyOf('void openGuestMode('), /CHI DUNG DUOC KHI ONLINE/);
+  // not reachable from the normal menus (no GroupExtra / ConnItem entry)
+  assert.doesNotMatch(bodyOf('const char *groupExtraLabelFor('), /GuestMode|2 tai khoan/);
+  assert.doesNotMatch(bodyOf('const char *connItemLabel('), /GuestMode|2 tai khoan/);
+  // the knob toggles, a changed choice is sent (1 = on, 2 = off), an unchanged one just leaves; the answer arrives through the snapshot
+  const input = bodyOf('void handleInput()');
+  assert.match(input, /case View::GuestMode: \{[\s\S]*?mayapRequestGuestMode\(guestChoice \? 1U : 2U\)/);
+  assert.match(bodyOf('void drawGuestMode('), /TK THU 2 BI XOA KHOI MAY/);                               // the consequence of "off" is on the screen
+  // firmware side: device key + action to the Worker, same admission path as reset-PIN / members, no new task
+  assert.match(cloud, /"\/api\/device\/guest-mode"/);
+  assert.match(cloud, /doc\["device_key"\] = mayapDeviceSecret\(\);\s*doc\["action"\]/);
+  assert.match(cloud, /servicePinReset\(\);\s*serviceMembers\(\);\s*serviceGuestMode\(\);/);
+  assert.match(config, /void mayapRequestGuestMode\(uint8_t action\);/);
+});

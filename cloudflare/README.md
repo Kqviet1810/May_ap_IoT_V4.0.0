@@ -39,7 +39,7 @@ Wire frame là JSON bounded với `v`, `channel`, `payload`. Command/config/hist
 ## Resources hiện hành
 
 - `DB`: D1 `mayap_push`.
-- SQL migrations: `0001` → `0006`.
+- SQL migrations: `0001` → `0008`.
 - Ghi chú và Nhắc nhở tùy chỉnh lưu trực tiếp trong D1 theo tài khoản/máy; ESP32/AT24C512 không nằm trong đường commit dữ liệu.
 - `DEVICE_HUB`: SQLite Durable Object class `DeviceHub`, Wrangler migration tag `device-hub-v1`.
 - `ASSETS`: thư mục build `cloudflare/public/` từ allowlist của `tools/build_web_assets.py`.

@@ -812,7 +812,7 @@ enum class View : uint8_t {
   // NANG CAO (can ma ky thuat): nhap ma, menu, PID Monitor, ho so nhiet, ban ghi cu, quyen Web, yeu cau tu Web.
   AdvPin, AdvMenu, PidMonitor, ThermalProfile, AdvHistory, AdvHistoryView, WebAccess, TechRequest,
   // HE THONG: "Thong tin ket noi" gom Chi tiet / Doi wifi / Ma QR / Dat lai PIN / Thiet bi ket noi; Thoi gian ngu.
-  ConnMenu, MemberList, SleepTime
+  ConnMenu, MemberList, SleepTime, GuestMode
 };
 
 enum class ConfirmAction : uint8_t { None, BatchToggle, AutoTuneStart, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AutoTuneCancel, AdvRestore, MemberRemove };
@@ -918,6 +918,13 @@ uint32_t memberPolledAt = 0U;
 uint8_t memberRemovePending = 0U;     // row the user asked to unlink (confirmation in flight)
 uint8_t memberShownResult = 0U;
 MemberListSnapshot memberView;
+// "Che do 2 tai khoan" (Nang cao): status comes from the Worker, the choice is local until confirmed with the knob.
+GuestModeSnapshot guestView;
+uint32_t guestSeenSeq = 0xFFFFFFFFU;
+uint32_t guestPolledAt = 0U;
+bool guestChoice = false;
+bool guestChoiceTouched = false;
+uint8_t guestShownResult = 0U;
 // Thoi gian ngu: HMI-only preference (NVS), 0 = khong bao gio ngu. Khong thuoc cau hinh may.
 constexpr uint8_t SLEEP_MINUTES_DEFAULT = 2U;
 constexpr uint8_t SLEEP_MINUTES_MAX = 30U;
@@ -1087,7 +1094,7 @@ const MachineConfig &editConfigView() { return (advActive && advGroup(selectedGr
 bool viewInAdvanced(View v) {
   switch (v) {
     case View::AdvPin: case View::AdvMenu: case View::PidMonitor: case View::ThermalProfile:
-    case View::AdvHistory: case View::AdvHistoryView: case View::WebAccess: case View::TechRequest:
+    case View::AdvHistory: case View::AdvHistoryView: case View::WebAccess: case View::TechRequest: case View::GuestMode:
     case View::AutoTune: return true;
     case View::SettingList: case View::EditSetting: return advGroup(selectedGroup);
     case View::Alarm: return advActive && alarmReturnView != View::Alarm && viewInAdvanced(alarmReturnView);
@@ -1593,6 +1600,7 @@ void goBack() {
     case View::AdvHistory: view = View::AdvMenu; advIndex = 6U; alignAdvMenuWindow(); break;
     case View::AdvHistoryView: view = View::AdvHistory; break;
     case View::WebAccess: view = View::AdvMenu; advIndex = 7U; alignAdvMenuWindow(); break;
+    case View::GuestMode: view = View::AdvMenu; advIndex = 8U; alignAdvMenuWindow(); break;
     case View::TechRequest: view = techReturnView; break;
     case View::EventLog:
       view = eventLogReturnView;
@@ -1730,6 +1738,22 @@ void openWifiChange() {
     view = View::WifiChange;
     dirty = true;
   }
+}
+
+void openGuestMode() {
+  if (currentConfig.connectivityMode != ConnectivityMode::Online) {
+    showToast("CHI DUNG DUOC KHI ONLINE", true);
+    return;
+  }
+  mayapRequestGuestMode(0U);
+  guestSeenSeq = 0xFFFFFFFFU;
+  guestPolledAt = 0U;
+  guestChoiceTouched = false;
+  guestShownResult = 0U;
+  guestView = GuestModeSnapshot();
+  guestView.state = GuestModeState::Loading;
+  view = View::GuestMode;
+  dirty = true;
 }
 
 void openMemberList() {
@@ -2677,8 +2701,8 @@ bool handleInlineConfirmation() {
 // ============================================================
 // NANG CAO: phien ky thuat, nhap ma, luu mot lan khi thoat, ban ghi cu, yeu cau tu Web
 // ============================================================
-constexpr uint8_t ADV_ITEM_COUNT = 10U;
-enum AdvItem : uint8_t { ADV_PID, ADV_TUNE, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_PROFILE, ADV_HISTORY, ADV_WEB, ADV_PINCHG, ADV_EXIT };
+constexpr uint8_t ADV_ITEM_COUNT = 11U;
+enum AdvItem : uint8_t { ADV_PID, ADV_TUNE, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_PROFILE, ADV_HISTORY, ADV_WEB, ADV_GUEST, ADV_PINCHG, ADV_EXIT };
 void alignAdvMenuWindow() { advTop = advIndex >= 3U ? static_cast<uint8_t>(advIndex - 3U) : 0U; }
 
 void pinWipe() {
@@ -2913,6 +2937,7 @@ const char *advItemLabel(uint8_t i) {
     case ADV_PROFILE: return "Ho so nhiet";
     case ADV_HISTORY: return "Ban ghi cu";
     case ADV_WEB: return currentRuntime.tech.webAllowed ? "Quyen Web: HIEN" : "Quyen Web: AN";
+    case ADV_GUEST: return "Che do 2 tai khoan";
     case ADV_PINCHG: return "Doi ma ky thuat";
     default: return "Thoat (luu)";
   }
@@ -2928,6 +2953,7 @@ void advSelect() {
     case ADV_PROFILE: profilePage = 0U; view = View::ThermalProfile; dirty = true; break;
     case ADV_HISTORY: histIndex = 0U; view = View::AdvHistory; dirty = true; break;
     case ADV_WEB: webChoice = currentRuntime.tech.webAllowed; view = View::WebAccess; dirty = true; break;
+    case ADV_GUEST: openGuestMode(); break;
     case ADV_PINCHG: advOpenPin(PinPurpose::SetNew); break;
     default: advBeginExit(); break;
   }
@@ -3325,6 +3351,16 @@ void handleInput() {
         else if (queueCommand(HmiCommandType::TechWebSet, COMMAND_DEFAULT_VALID_MS, 0, webChoice ? 1UL : 0UL)) goBack();
       }
       break;
+
+    case View::GuestMode: {
+      const bool ready = guestView.state == GuestModeState::Ready;
+      if (ready && rotary.step) { guestChoice = !guestChoice; guestChoiceTouched = true; dirty = true; }
+      if (rotary.button == ButtonEvent::ShortPress) {
+        if (!ready || guestChoice == guestView.enabled) goBack();
+        else mayapRequestGuestMode(guestChoice ? 1U : 2U);   // the answer (new state) arrives through the snapshot
+      }
+      break;
+    }
 
     case View::TechRequest: {
       const uint8_t count = techReqItemCount();
@@ -5085,6 +5121,28 @@ void drawWebAccess() {
   drawCenteredFit(63, "XOAY:DOI  NHAN:LUU  GIU:LUI", u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
 }
 
+void drawGuestMode() {
+  drawHeader("2 TAI KHOAN", false);
+  const GuestModeSnapshot &g = guestView;
+  if (g.state != GuestModeState::Ready) {
+    const char *msg = g.state == GuestModeState::Offline ? "CAN ONLINE DE DUNG"
+                    : g.state == GuestModeState::Error ? "LOI KET NOI CLOUD"
+                    : "DANG TAI...";
+    drawCenteredFit(34, msg, u8g2_font_6x12_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+    drawCenteredFit(63, "NHAN:LUI  GIU:LUI", u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+    return;
+  }
+  char line[28];
+  if (g.enabled && g.joined) snprintf(line, sizeof(line), "HIEN TAI: BAT - DA CO TK 2");
+  else if (g.enabled) snprintf(line, sizeof(line), "HIEN TAI: BAT - CON %um", static_cast<unsigned>((g.windowLeftS + 59U) / 60U));
+  else snprintf(line, sizeof(line), "HIEN TAI: TAT");
+  drawCenteredFit(24, line, u8g2_font_6x12_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+  drawCenteredFit(44, guestChoice ? "BAT" : "TAT", u8g2_font_helvB14_tf, u8g2_font_helvB12_tf, u8g2_font_6x12_tf);
+  drawCenteredFit(54, guestChoice ? "TK THU 2 VAO BANG ID + PIN" : "TAT: TK THU 2 BI XOA KHOI MAY",
+                  u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+  drawCenteredFit(63, "XOAY:DOI  NHAN:LUU  GIU:LUI", u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+}
+
 void drawTechRequest() {
   const TechStatus &t = currentRuntime.tech;
   const uint8_t count = techReqItemCount();
@@ -5276,6 +5334,7 @@ void render(uint32_t now) {
       case View::AdvHistory: drawAdvHistory(); break;
       case View::AdvHistoryView: drawAdvHistoryView(); break;
       case View::WebAccess: drawWebAccess(); break;
+      case View::GuestMode: drawGuestMode(); break;
       case View::TechRequest: drawTechRequest(); break;
       case View::TestMode: drawTestMode(); break;
       case View::TestSummary: drawTestSummary(); break;
@@ -5596,6 +5655,7 @@ bool runtimeVisibleChanged(const MachineRuntime &before,
     case View::ConnMenu:
     case View::MemberList:
     case View::SleepTime:
+    case View::GuestMode:
       return false;
 
     case View::AutoTune:
@@ -6151,6 +6211,23 @@ void hmiUpdate(uint32_t now) {
         memberShownResult = snap.removeResult;
         if (snap.removeResult == 1U) showToast("DA XOA THIET BI");
         else if (snap.removeResult == 2U) showToast("XOA THAT BAI", true);
+      }
+    }
+  }
+
+  // Che do 2 tai khoan: same rule, the snapshot is read only while this screen is open.
+  if (view == View::GuestMode && now - guestPolledAt >= 200UL) {
+    guestPolledAt = now;
+    const GuestModeSnapshot snap = mayapGuestSnapshot();
+    if (snap.seq != guestSeenSeq) {
+      guestSeenSeq = snap.seq;
+      guestView = snap;
+      if (snap.state == GuestModeState::Ready && (!guestChoiceTouched || snap.result == 1U)) { guestChoice = snap.enabled; guestChoiceTouched = false; }
+      dirty = true;
+      if (snap.result != guestShownResult) {
+        guestShownResult = snap.result;
+        if (snap.result == 1U) showToast(snap.enabled ? "TK THU 2: DA BAT" : "TK THU 2: DA TAT");
+        else if (snap.result == 2U) showToast("KHONG DOI DUOC", true);
       }
     }
   }

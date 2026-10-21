@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "1.1.13";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "1.1.14";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -1393,6 +1393,18 @@ struct MemberListSnapshot {
   uint32_t seq = 0;
   MemberEntry entry[MEMBER_LIST_MAX] = {};
 };
+// HMI "Nang cao > Che do 2 tai khoan": the machine (and only the machine) lets ONE more account claim it. State lives on the Worker.
+enum class GuestModeState : uint8_t { Idle, Loading, Ready, Error, Offline };
+struct GuestModeSnapshot {
+  GuestModeState state = GuestModeState::Idle;
+  bool enabled = false;          // the second slot is open / in use
+  bool joined = false;           // a second account is linked
+  uint16_t windowLeftS = 0;      // seconds the slot stays open while nobody has joined
+  uint8_t result = 0;            // 0 none, 1 done, 2 failed (cleared by the next request)
+  uint32_t seq = 0;
+};
+void mayapRequestGuestMode(uint8_t action);   // 0 status, 1 on, 2 off
+GuestModeSnapshot mayapGuestSnapshot();
 void mayapRequestMemberList();
 void mayapRequestMemberRemove(uint8_t index);
 MemberListSnapshot mayapMemberSnapshot();

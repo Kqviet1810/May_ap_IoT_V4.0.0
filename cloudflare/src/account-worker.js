@@ -271,8 +271,57 @@ async function claim(request, env, auth, data) {
     SELECT ?,?,'owner',? WHERE NOT EXISTS(SELECT 1 FROM user_devices WHERE device_id=? AND role='owner')`)
     .bind(auth.user_sub,id,now,id).run();
   const owner=await env.DB.prepare("SELECT user_sub FROM user_devices WHERE device_id=? AND role='owner'").bind(id).first();
-  if (owner?.user_sub!==auth.user_sub) return json({success:false,error:'Thiết bị đã thuộc một tài khoản khác.'},409);
+  if (owner?.user_sub!==auth.user_sub) {
+    // A second account: only while the machine itself (HMI, Nang cao) has switched "Che do 2 tai khoan" on, only one slot, only once.
+    const member=await env.DB.prepare('SELECT role FROM user_devices WHERE device_id=? AND user_sub=?').bind(id,auth.user_sub).first();
+    if (!member) {
+      await env.DB.prepare(`INSERT OR IGNORE INTO user_devices(user_sub,device_id,role,created_at)
+        SELECT ?,?,'operator',? WHERE EXISTS(SELECT 1 FROM device_guest_mode WHERE device_id=? AND enabled=1 AND join_until>?)
+        AND NOT EXISTS(SELECT 1 FROM user_devices WHERE device_id=? AND role!='owner')`)
+        .bind(auth.user_sub,id,now,id,now,id).run();
+      const joined=await env.DB.prepare('SELECT role FROM user_devices WHERE device_id=? AND user_sub=?').bind(id,auth.user_sub).first();
+      if (!joined) return json({success:false,error:'GUEST_MODE_OFF',
+        message:'Máy đã có chủ. Muốn thêm tài khoản thứ hai: trên HMI vào Nâng cao > Chế độ 2 tài khoản, bật rồi thử lại.'},409);
+    }
+  }
   return json({success:true,device_id:id,device_name:device.device_name || id});
+}
+
+// "Che do 2 tai khoan" - authenticated by the machine's device key (physical presence: the HMI is the only switch), like reset-pin.
+const GUEST_JOIN_WINDOW_MS = 15 * 60 * 1000;
+async function guestState(env, id, now) {
+  const row = await env.DB.prepare('SELECT enabled, join_until FROM device_guest_mode WHERE device_id=?').bind(id).first();
+  const joined = Number((await env.DB.prepare("SELECT COUNT(*) AS n FROM user_devices WHERE device_id=? AND role!='owner'").bind(id).first())?.n || 0) > 0;
+  let enabled = Boolean(row && row.enabled === 1);
+  if (enabled && !joined && now >= Number(row.join_until)) {   // nobody came in time: the slot closes by itself
+    await env.DB.prepare('UPDATE device_guest_mode SET enabled=0, join_until=0, updated_at=? WHERE device_id=?').bind(now, id).run();
+    enabled = false;
+  }
+  return { enabled, joined, window_left_s: enabled && !joined ? Math.max(0, Math.ceil((Number(row.join_until) - now) / 1000)) : 0 };
+}
+async function handleGuestMode(request, env) {
+  let data = null;
+  try { data = await body(request); } catch (_) { return json({ success:false, error:'JSON_INVALID' }, 400); }
+  const id = String(data?.device_id || '').trim(), key = String(data?.device_key || ''), action = String(data?.action || 'status');
+  if (!idRe.test(id) || !/^[a-f0-9]{64}$/.test(key) || !env.DEVICE_KEY_PEPPER) return json({ success:false, error:'DEVICE_AUTH' }, 401);
+  if (!['status','on','off'].includes(action)) return json({ success:false, error:'INVALID_REQUEST' }, 400);
+  const device = await env.DB.prepare('SELECT device_key_hash FROM devices WHERE device_id=?').bind(id).first();
+  if (!device || !await verifyDeviceKey(key, env.DEVICE_KEY_PEPPER, device.device_key_hash)) return json({ success:false, error:'DEVICE_AUTH' }, 401);
+  const now = Date.now();
+  if (action === 'on') {
+    await env.DB.prepare(`INSERT INTO device_guest_mode(device_id,enabled,join_until,updated_at) VALUES(?,1,?,?)
+      ON CONFLICT(device_id) DO UPDATE SET enabled=1, join_until=excluded.join_until, updated_at=excluded.updated_at`)
+      .bind(id, now + GUEST_JOIN_WINDOW_MS, now).run();
+  } else if (action === 'off') {
+    // The second account leaves the machine (its access, its push links); the first account is never touched.
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO device_guest_mode(device_id,enabled,join_until,updated_at) VALUES(?,0,0,?)
+        ON CONFLICT(device_id) DO UPDATE SET enabled=0, join_until=0, updated_at=excluded.updated_at`).bind(id, now),
+      env.DB.prepare('DELETE FROM push_subscriptions WHERE device_id=? AND user_sub IN (SELECT user_sub FROM user_devices WHERE device_id=? AND role!=\'owner\')').bind(id, id),
+      env.DB.prepare("DELETE FROM user_devices WHERE device_id=? AND role!='owner'").bind(id),
+    ]);
+  }
+  return json({ success:true, ...await guestState(env, id, now) });
 }
 
 // Physical presence at the machine manages who is linked to it (HMI "Thiết bị kết nối"): authenticated by the firmware's device key,
@@ -302,6 +351,7 @@ async function handleDeviceMembers(request, env, remove) {
 async function fetchAccount(request, env, ctx) {
   const url=new URL(request.url), path=url.pathname, method=request.method;
   if (method==='POST' && (path==='/api/device/members' || path==='/api/device/members/remove')) return handleDeviceMembers(request, env, path.endsWith('/remove'));
+  if (method==='POST' && path==='/api/device/guest-mode') return handleGuestMode(request, env);
   // Existing physical-device authentication and task architecture stay unchanged.
   if ((method==='POST' && physical.has(path)) || (method==='GET' && /^\/api\/firmware\/download\//.test(path))) {
     return physicalWorker.fetch(request,env,ctx);
@@ -370,22 +420,21 @@ async function fetchAccount(request, env, ctx) {
     }
     return json(base);
   }
-  if (path==='/api/device/revoke-access' && method==='POST') {
-    const owner=await permission(env,auth.user_sub,id,true);
-    if (!owner || owner.role!=='owner') return deny();
-    const target=String(data.user_sub || '').trim();
-    if (!target || target===auth.user_sub || target.length>128) return deny();
-    const member=await env.DB.prepare('SELECT role FROM user_devices WHERE device_id=? AND user_sub=?').bind(id,target).first();
-    if (member?.role==='owner') return deny();
+  // Nobody removes another account from the Web: the machine decides (HMI, Nang cao > Che do 2 tai khoan). An account may leave by itself.
+  if (path==='/api/device/revoke-access' && method==='POST') return json({success:false,error:'HMI_ONLY'},403);
+  if (path==='/api/device/leave' && method==='POST') {
+    const member=await permission(env,auth.user_sub,id,false);
+    if (!member) return deny();
+    if (member.role==='owner') return json({success:false,error:'OWNER_PROTECTED'},403);
     await env.DB.batch([
-      env.DB.prepare("DELETE FROM user_devices WHERE device_id=? AND user_sub=? AND role!='owner'").bind(id,target),
-      env.DB.prepare('DELETE FROM push_subscriptions WHERE device_id=? AND user_sub=?').bind(id,target),
+      env.DB.prepare("DELETE FROM user_devices WHERE device_id=? AND user_sub=? AND role!='owner'").bind(id,auth.user_sub),
+      env.DB.prepare('DELETE FROM push_subscriptions WHERE device_id=? AND user_sub=?').bind(id,auth.user_sub),
     ]);
     return json({success:true});
   }
   if (path==='/api/device/rename' && method==='POST') {
     const device=await permission(env,auth.user_sub,id,true);
-    if (!device || device.role!=='owner') return deny();
+    if (!device) return deny();
     const name=String(data.device_name || data.name || '').trim().slice(0,64);
     if (!name) return json({success:false},400);
     await env.DB.prepare('UPDATE devices SET device_name=? WHERE device_id=?').bind(name,id).run();
@@ -393,7 +442,7 @@ async function fetchAccount(request, env, ctx) {
   }
   if (path==='/api/device/change-pin' && method==='POST') {
     const device=await permission(env,auth.user_sub,id,true);
-    if (!device || device.role!=='owner') return deny();
+    if (!device) return deny();
     // Legacy handler still verifies old PIN; never returns the legacy pairing secret to Web.
     const response=await legacy.fetch(new Request(request.url,{method:'POST',headers:request.headers,
       body:JSON.stringify(data)}),env,ctx), value=await response.json(); delete value.pairing_token;
