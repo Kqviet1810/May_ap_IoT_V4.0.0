@@ -589,9 +589,9 @@ class Controller {
     const bool newBin = bins != lastJudgedBin_;     // the verdict advances once per 10 s bin, whatever the sensor rate
     lastJudgedBin_ = bins;
     if (state_ == State::Learning) {
-      // After a stand-down the model must have been checked against a real move of the heater (a quiet hold cannot tell a changed oven from
-      // an unchanged one: the old and the new plant agree in steady state and differ only in how they answer a change of power)
-      if (modelOk_ && !unhealthy && (!needMove_ || heaterSwing_(bins) >= ProbeSwingPct)) { needMove_ = false; state_ = State::Active; readySince_ = bins; badBins_ = 0; trim_ = 0.0f; }
+      // The model must have been checked against a real move of the heater inside its window (a quiet hold cannot tell one oven from another:
+      // plants agree in steady state and differ only in how they answer a change of power), and after a stand-down against a recent one
+      if (modelOk_ && !unhealthy && heaterSwing_(bins, static_cast<uint32_t>(HistBins)) >= ProbeSwingPct && (!needMove_ || heaterSwing_(bins, 90U) >= ProbeSwingPct)) { needMove_ = false; state_ = State::Active; readySince_ = bins; badBins_ = 0; trim_ = 0.0f; }
     } else if (state_ == State::Active) {
       if (newBin) {
         // severity x duration: a model that misses by more than 0.6 degC (the structure of the oven just changed) is stood down within a minute
@@ -610,6 +610,7 @@ class Controller {
     float u;
     const float sinceSec = static_cast<float>(static_cast<int64_t>(bins) - planStartBin_) * BinSec;
     const Planner::State st = currentState(in);
+    holdPct_ = clampf(model_.a * (in.sp - Tref) + model_.k * (in.sp - st.te) - st.d, 0.0f, limit);     // what holds SP with the eggs where they are
     // slow trim of what the model gets wrong (a biased disturbance or egg temperature): an integral on the air error, frozen when the
     // output is pinned or the error is large (events are the planner's job)
     const float dtSec = lastUpdateMs_ ? clampf(static_cast<float>(in.now - lastUpdateMs_) * 0.001f, 0.0f, 10.0f) : 0.0f;
@@ -645,6 +646,7 @@ class Controller {
   State state() const { return state_; }
   bool active() const { return enabled_ && state_ == State::Active; }
   float request() const { return request_; }
+  float holdEstimate() const { return holdPct_; }       // the power the model says holds SP now (for a bumpless hand-back)
   bool coolingRequest() const { return cooling_; }
   Telemetry telemetry() const {
     Telemetry t;
@@ -708,9 +710,9 @@ class Controller {
     hist_.push(uPct, pv, vfrac);
     if (firstHeatBin_ < 0 && uPct > 5.0f) { firstHeatBin_ = bin; ident_.setOnset(bin); }
   }
-  float heaterSwing_(uint32_t bins) const {       // largest minus smallest heater duty over the last 15 minutes
+  float heaterSwing_(uint32_t bins, uint32_t span) const {       // largest minus smallest heater duty over the last `span` bins
     float lo = 100.0f, hi = 0.0f;
-    const uint32_t from = bins > 90U ? bins - 90U : 0U;
+    const uint32_t from = bins > span ? bins - span : 0U;
     for (uint32_t b = from; b < bins; ++b) { const float u = hist_.u(b); if (u < lo) lo = u; if (u > hi) hi = u; }
     return hi > lo ? hi - lo : 0.0f;
   }
@@ -734,7 +736,7 @@ class Controller {
   uint32_t binStartMs_ = 0, lastTick_ = 0, onMs_ = 0, ventMs_ = 0, elapsedMs_ = 0, lastSampleMs_ = 0;
   uint32_t fallbackUntilBin_ = 0, healthyBins_ = 0, badBins_ = 0, readySince_ = 0, sensorGapMs_ = 0;
   int64_t firstHeatBin_ = -1, planStartBin_ = 0, pendingStartBin_ = -1000;
-  float pvSum_ = 0, lastPv_ = NAN, ventSum_ = 0, hl_ = 0, request_ = 0, trim_ = 0;
+  float holdPct_ = 0, pvSum_ = 0, lastPv_ = NAN, ventSum_ = 0, hl_ = 0, request_ = 0, trim_ = 0;
   uint32_t lastUpdateMs_ = 0, coolUntilMs_ = 0;
   bool lastPinned_ = false, slopeValid_ = false, needMove_ = false;
   uint32_t slopeMs_ = 0;

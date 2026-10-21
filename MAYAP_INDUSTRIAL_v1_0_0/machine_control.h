@@ -6867,9 +6867,9 @@ class MachineController {
           thermalPredictive_.update(predictiveIn);
           const bool predictiveActive = thermalPredictive_.active();
           if (predictiveActive) pidPower_ = thermalPredictive_.request();
-          // The legacy PID ran underneath with its own integral unaware of the power that was applied: on the hand-back it starts over at the
-          // feed-forward (the hold it knows) instead of carrying a windup built while it was not in control
-          else if (predictiveWasActive_) pid_.restartIntegral();
+          // The legacy PID ran underneath with its own integral unaware of the power that was applied: on the hand-back it starts from the
+          // power the model says holds SP, instead of carrying a windup built while it was not in control
+          else if (predictiveWasActive_) pid_.seedBumpless(now, config_.targetTemp, temperature_, actuatorConfig, thermalPredictive_.holdEstimate());
           predictiveWasActive_ = predictiveActive;
         }
         MayapThermal::LaunchPlan planOut;
