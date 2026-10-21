@@ -320,6 +320,12 @@ class ThermalStartupController {
   Decision decide(uint32_t now, float sp, float pv, float maxPower) {
     if (!isfinite(sp) || !isfinite(pv)) return {0, true, phase_, pv, 0.0f};
     historyGap_ = false; // only a fresh real sensor sample can resume heat
+    // A set point raised by more than SetpointRelaunchC is a new warm-up on the same oven: what was measured (gain, delay, hold, drift) stays,
+    // the bookkeeping of the previous warm-up (the deliberate cut, the plan offer, the overshoot watch) starts again.
+    if (initialized_ && sp - lastSp_ > SetpointRelaunchC) {
+      cutActive_ = false; cutDone_ = calKnown_; planOffered_ = false; planReady_ = false; holdSince_ = 0U; overshootSeen_ = false;
+      pvMaxAfterBoost_ = pv; stallRelax_ = 0.0f; stallSince_ = 0U;
+    }
     if (!initialized_) {
       initialized_ = true; lastPv_ = pv; lastSp_ = sp;
       lastSampleAt_ = now; pvSlow_ = pv; pvFast_ = pv;
@@ -493,8 +499,9 @@ class ThermalStartupController {
       // can be caused by an older pulse which already aged out of the ring.
       modelEnergyCoast = excessOnMs*16.0f*1.35f/MinimumCapacity;
     }
-    // A learned hint can only ADD braking to the measured model of the launch (weight = its strength).
-    const float energyCoast = hs > 0.0f && hint_.coastPerOnMs > 0.0f
+    // A learned hint can only ADD braking to the legacy model. The measured model of the launch is not touched by it: the hint's coast figure is
+    // per ON-ms of an average warm-up and double counts the heat the launch model already follows (limit cycle on a strong plant, 1 C overshoot).
+    const float energyCoast = !launch && hs > 0.0f && hint_.coastPerOnMs > 0.0f
         ? fmaxf(modelEnergyCoast, modelEnergyCoast + hs*(excessOnMs*hint_.coastPerOnMs - modelEnergyCoast))
         : modelEnergyCoast;
     float expectedCoast = fmaxf(slopeCoast, energyCoast);
@@ -774,6 +781,7 @@ class ThermalStartupController {
   static constexpr float PlanBadMinErrC = 1.0f;         // the stored plan is dropped when, this far under SP ...
   static constexpr uint32_t PlanBadMinOnMs = 30000U;    // ... with this much heat given, nothing rises after twice its delay
   static constexpr float PlanNearSpC = 0.5f;
+  static constexpr float SetpointRelaunchC = 0.5f;      // a set point raised by more than this restarts the launch (the plan stays as the prior)
   static constexpr float WarmStartErrC = 0.6f;          // the first heat with PV this close to SP is a restart in the hold, not a warm-up
   static constexpr float OvershootCalC = 0.15f;         // PV this far above SP after a boost: the model under-braked
   static constexpr float OvershootCalUp = 1.5f;
