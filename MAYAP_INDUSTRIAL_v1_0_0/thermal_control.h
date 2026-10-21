@@ -378,7 +378,7 @@ class ThermalStartupController {
     else if (hs >= 0.5f && hint_.gainPerSec > 0.0f) { prior.valid = true; prior.gain = hint_.gainPerSec; prior.delaySec = hint_.delaySec; prior.holdPct = 0.0f; }
     // The oven did not answer as promised: well under SP, a real amount of heat given, and no rise after twice the delay of the plan. (A restart
     // at the set point, with the hold duty only, shows no rise by design.)
-    if (plan_.valid && !planBad_ && !onset_ && firstHeatAt_ != 0U && sp-pv > PlanBadMinErrC && onTotalMs_ >= PlanBadMinOnMs &&
+    if (plan_.valid && !planBad_ && !onset_ && !warm_ && firstHeatAt_ != 0U && sp-pv > PlanBadMinErrC && onTotalMs_ >= PlanBadMinOnMs &&
         static_cast<uint32_t>(now-firstHeatAt_) > static_cast<uint32_t>(plan_.delaySec*2000.0f) + 90000U) planBad_ = true;
     const LaunchView lv = launchView(now, prior);
     lastDhS_ = lv.dhS; lastGUseS_ = lv.gUse;
