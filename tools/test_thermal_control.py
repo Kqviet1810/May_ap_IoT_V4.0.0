@@ -185,7 +185,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
         shutil.copytree(out, args.emit_includes, dirs_exist_ok=True)
         print('Generated include directory: ' + str(args.emit_includes))
         raise SystemExit(0)
-    unit_tests = ['adaptive-observer','adaptive-thermal','thermal-autotune','thermal-control','thermal-startup','thermal-smart-startup','thermal-program','heat-latch','program-store','output-budget','thermal-v2','thermal-output','thermal-heating','thermal-e115','thermal-config','thermal-filter','thermal-adaptive-unit','thermal-smart-autotune-unit','thermal-slow-oven']
+    unit_tests = ['adaptive-observer','adaptive-thermal','thermal-autotune','thermal-control','thermal-startup','thermal-smart-startup','thermal-program','heat-latch','program-store','output-budget','thermal-v2','thermal-output','thermal-heating','thermal-e115','thermal-config','thermal-filter','thermal-adaptive-unit','thermal-smart-autotune-unit','thermal-slow-oven','thermal-launch-plan','thermal-launch']
     if args.only: unit_tests = [t for t in args.only.split(',') if t]
     # Everything below is independent (own executable, own output file): compile and run on all cores. The sanitized CI run used to take
     # ~17 minutes sequentially; results are collected and printed in the original order.

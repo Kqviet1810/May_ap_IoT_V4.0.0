@@ -6655,11 +6655,14 @@ class MachineController {
 
     // Warm-up: no profile / scheduled ventilation while PV is still far below SP (the fan takes heat away and Adaptive learns nothing while it
     // runs). Forced vents (High / sensor fault / cooling) are untouched. Ends at SP - 0.5 C or after WARMUP_VENT_HOLD_MAX_MS.
-    if (!batchRunning_) { warmupVentChecked_ = false; warmupVentHold_ = false; }
-    else if (sensorUsable_ && !warmupVentChecked_) {
-      warmupVentChecked_ = true;
-      warmupVentHold_ = (config_.targetTemp - temperature_) > WARMUP_VENT_HOLD_ERR_C;
-      warmupVentHoldSince_ = now;
+    // (until the first usable sample decides, the batch start counts as a warm-up: the first minutes of the sensor filter must not open the fan)
+    if (!batchRunning_) { warmupVentChecked_ = false; warmupVentHold_ = false; warmupVentHoldSince_ = now; }
+    else if (!warmupVentChecked_) {
+      if (sensorUsable_) {
+        warmupVentChecked_ = true;
+        warmupVentHold_ = (config_.targetTemp - temperature_) > WARMUP_VENT_HOLD_ERR_C;
+        warmupVentHoldSince_ = now;
+      } else warmupVentHold_ = elapsedMs(now, warmupVentHoldSince_) < WARMUP_VENT_HOLD_MAX_MS;
     } else if (warmupVentHold_ && ((config_.targetTemp - temperature_) <= WARMUP_VENT_RELEASE_ERR_C ||
                elapsedMs(now, warmupVentHoldSince_) >= WARMUP_VENT_HOLD_MAX_MS || !sensorUsable_)) warmupVentHold_ = false;
     if (warmupVentHold_) { scheduledVentActive = false; profileVentActive = false; }

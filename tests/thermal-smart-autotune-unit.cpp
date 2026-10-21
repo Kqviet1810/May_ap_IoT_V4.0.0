@@ -209,8 +209,9 @@ static void powerLossTests() {
 
 // ---- H. validation rejects (not an abort): rollback ---------------------------------------------------------------------------
 static void validationRejectTests() {
-  // light plant, 0.1 C probe: the candidate cannot hold the tail band (p95/ripple of one probe step) -> NOT accepted, nothing saved
-  Plant p; p.eff = 0.7; p.capacity = 180000; p.loss = 180; p.dead = 15; p.lag = 8; p.ambient = 20; p.resolution = 0.1;
+  // very light plant, 0.1 C probe: the candidate cannot hold the tail band (p95/ripple of one probe step) -> NOT accepted, nothing saved
+  // (1.1.13: the measured launch holds the 180000 J/C plant of earlier releases within that band, so its candidate is now accepted)
+  Plant p; p.eff = 0.7; p.capacity = 120000; p.loss = 180; p.dead = 15; p.lag = 8; p.ambient = 20; p.resolution = 0.1;
   TuneOpts o;
   const TuneOut r = tune(p, 37.5f, o);
   CHECK(r.started && !r.accepted && r.oldKept && r.saves == 0 && r.profileSaves == 0);
