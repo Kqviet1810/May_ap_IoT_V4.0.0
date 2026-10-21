@@ -72,3 +72,19 @@ Against the reference of the section above (same case ids, same oracle; rows are
 
 A first attempt with a 2 x reserve on the measured gain gave 3 holdout rows with High (dead time 90 s, room 31 C, overshoot 0.77-0.88 C) and was
 rejected; the 4 x reserve has no extra High / Emergency row in any suite. Not validated on a real oven.
+
+## 2026-10-21 update (firmware 1.1.13): measured launch model
+
+The three CSV files were regenerated again with `--write-reference` for the startup controller of 1.1.13 (`doc/SLOW_OVEN_STUDY.md`, third addendum): the heat of every
+ON-second is followed through the measured delay and lag, the gain, delay, drift and hold are measured on the launch itself and kept as a plan for the next batch, and
+the proportional gain is limited by the measured gain and delay. `../baseline/` is untouched.
+
+Against the reference of the section above (same case ids, same oracle; rows are A and B together):
+
+| suite | rows | PASS before -> after | rows with High (before -> after) | rows with Emergency (before -> after) |
+|---|---|---|---|---|
+| legacy788 | 1576 | 722 -> 1338 | 0 -> 0 | 0 -> 0 |
+| matrix | 4320 | 1674 -> 3782 | 66 -> 33 | 34 -> 4 |
+| holdout | 720 | 323 -> 698 | 0 -> 0 | 0 -> 0 |
+
+No suite has more High / Emergency rows than before. Not validated on a real oven.
