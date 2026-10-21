@@ -713,6 +713,7 @@ class Controller {
   float heaterSwing_(uint32_t bins, uint32_t span) const {       // largest minus smallest heater duty over the last `span` bins
     float lo = 100.0f, hi = 0.0f;
     const uint32_t from = bins > span ? bins - span : 0U;
+    if (from == 0U) lo = 0.0f;       // the batch began from rest: switching the heater on is itself the move
     for (uint32_t b = from; b < bins; ++b) { const float u = hist_.u(b); if (u < lo) lo = u; if (u > hi) hi = u; }
     return hi > lo ? hi - lo : 0.0f;
   }
