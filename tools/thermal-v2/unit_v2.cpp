@@ -137,6 +137,16 @@ int main() {
     CHECK(b.step(j) == 0.0f, "adapter: NaN cap gives 0");
     ThermalV2Slot c; ThermalV2SlotIn k; k.pv = 30.0f; k.sp = 37.5f; k.permit = false; k.capPct = 100.0f; k.newSample = true; k.nowMs = 1000U;
     CHECK(c.step(k) == 0.0f, "adapter: no permit gives 0"); }
+  { Controller a; Mini p; simulate(a, p, 1.5, 37.5f, 100.0f); Prior pr; const bool have = a.exportPrior(pr);
+    CHECK(have, "prior: a controller that completed a batch fit exports its path");
+    Controller b; const bool ok = b.importPrior(pr);
+    CHECK(ok && b.batchesDone() == 1 && b.identified(), "prior: a fresh controller accepts it (stage 1, identified)");
+    Controller c; Prior bad = pr; bad.th[0] = NAN; CHECK(!c.importPrior(bad), "prior: NaN is refused");
+    bad = pr; bad.td = 5000.0f; CHECK(!c.importPrior(bad), "prior: a delay outside the searched family is refused");
+    bad = pr; bad.th[0] = 1e9f; CHECK(!c.importPrior(bad), "prior: k outside its clamp is refused");
+    CHECK(!a.importPrior(pr), "prior: a controller that already learned in this run refuses to be overwritten");
+    Mini q; const Run r = simulate(b, q, 1.0, 37.5f, 100.0f);
+    CHECK(!r.nan && r.minU >= 0.0f && r.maxU <= 100.0f, "prior: a controller started from a stored path stays finite and in [0, 100]"); }
   g_q = 0.01;                                                                                  // fine sensor: the egg observer is active
   { Controller c; Mini p; Run r = simulate(c, p, 3.0, 37.5f, 100.0f);
     CHECK(!r.nan && r.minU >= 0.0f && r.maxU <= 100.0f && r.peak < 38.5f, "fine sensor, cold start 3 h: finite, in [0, 100], peak below 38.5 degC");

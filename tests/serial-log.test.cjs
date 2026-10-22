@@ -78,7 +78,7 @@ test('the AI log carries the columns promised in the documentation', () => {
   const h = read('serial_log.h');
   const cols = h.match(/AI_COLUMNS\[\] =\s*\n?\s*"([^"]+)\\n"/)[1].split(',');
   assert.equal(cols.length, 33);
-  for (const c of ['seq', 't', 'age', 'sp', 'pv', 'raw', 'req', 'ssrms', 'avg60', 'fl', 'pid', 'ts', 'tc', 'tg', 'al', 'fc', 'drop', 'crc']) assert.ok(cols.includes(c), c);
+  for (const c of ['seq', 't', 'age', 'sp', 'pv', 'raw', 'req', 'ssrms', 'avg60', 'fl', 'integ', 'phase', 'fits', 'kx1e3', 'al', 'fc', 'drop', 'crc']) assert.ok(cols.includes(c), c);
   const doc = fs.readFileSync(path.join(root, 'doc/SERIAL_LOG.md'), 'utf8');
   for (const c of cols) assert.ok(doc.includes('`' + c + '`'), 'doc: ' + c);
 });

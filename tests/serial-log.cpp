@@ -103,7 +103,7 @@ int main() {
   publishAi(sample());                                                               // first snapshot after the mode started
   run(10050, 13650);
   { auto ls = lines(Serial.output);
-    assert(ls.size() >= 6 && ls[0].rfind("#MAYAP-AI-LOG schema=1 fw=", 0) == 0);
+    assert(ls.size() >= 6 && ls[0].rfind("#MAYAP-AI-LOG schema=2 fw=", 0) == 0);
     assert(ls[1].rfind("#cfg sp=37.50 kp=18.00", 0) == 0 && ls[2] + "\n" == std::string(AI_COLUMNS));
     unsigned data = 0; unsigned long expectSeq = 0;
     for (size_t i = 3; i < ls.size(); ++i) {

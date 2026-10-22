@@ -23,7 +23,7 @@ Các lệnh `TIME SET`, `BATCH`, `FAULT`, `CONFIG`... vẫn chỉ có ở bản 
 
 ## `LOG AI` (CSV, 1 dòng/giây)
 
-Đầu luồng (và lặp lại mỗi 10 phút) có 3 dòng bắt đầu bằng `#`: tiêu đề `#MAYAP-AI-LOG schema=1 fw=...`, cấu hình `#cfg sp= kp= ki= kd=` và dòng tên cột.
+Đầu luồng (và lặp lại mỗi 10 phút) có 3 dòng bắt đầu bằng `#`: tiêu đề `#MAYAP-AI-LOG schema=2 fw=...` (schema 2: các cột bộ điều khiển mang số của Thermal V2), cấu hình `#cfg sp= kp= ki= kd=` và dòng tên cột.
 Mỗi dòng dữ liệu kết thúc bằng `,<CRC-8>` (đa thức 0x07, tính trên toàn bộ chữ đứng trước dấu phẩy cuối). Dòng sai CRC hoặc thiếu `seq` là dữ liệu hỏng/mất.
 
 | Cột | Ý nghĩa |
@@ -40,19 +40,19 @@ Mỗi dòng dữ liệu kết thúc bằng `,<CRC-8>` (đa thức 0x07, tính tr
 | `ssrms` | Tổng thời gian heater đã BẬT (ms), lấy mẫu 5 Hz; hiệu hai dòng liên tiếp = thời gian bật thực trong khoảng đó |
 | `avg60` | Trung bình trượt 60 s của tỷ lệ SSR bật thực (%) |
 | `fl` | Cờ (hex): bit0 mẻ chạy, 1 tự động, 2 cảm biến tốt, 3 SSR đang bật, 4 contactor heat-master, 5 quạt đảo, 6 quạt hút, 7 tạo ẩm, 8 đèn, 9 adaptive, 10 smart, 11 còi, 12 đảo trứng, 13 đang AutoTune |
-| `pid` | P + I + D (không gồm feed-forward) |
-| `hff` | Feed-forward giữ nhiệt đã học |
-| `vff` | Feed-forward quạt hút |
+| `integ` | Thermal V2: thành phần tích phân (trim) của luật điều khiển (%) |
+| `dnow` | Thermal V2: nhu cầu công suất mô hình tại PV hiện tại (%) |
+| `dloss` | Thermal V2: nhu cầu khi không có chênh lệch khí–trứng (%) |
 | `lo` | Cận dưới hành lang quyền của adaptive (%) |
 | `hi` | Cận trên hành lang quyền của adaptive (%) |
-| `ts` | Trạng thái bộ học nhiệt (0 chưa học ... xem `thermal_learner.h`) |
-| `tc` | Độ tin cậy bộ học (0–100) |
-| `tg` | Hệ số gia nhiệt học được Kh (°C/s ở 100%) |
-| `td` | Thời gian trễ học được (s) |
-| `th` | Công suất giữ nhiệt học được (%) |
-| `tk` | Độ trôi nhiệt sau khi tắt (°C) |
-| `tv` | Hệ số làm mát của quạt hút |
-| `te` | Sai số dự đoán của bộ học |
+| `phase` | Thermal V2: 0 nhìn/thăm dò, 1 đã nhận dạng, 2 đã khớp lần 1, 3 đã khớp lần 2; cộng 4 nếu bộ canh phản hồi đã cắt đề nghị |
+| `fits` | Thermal V2: số lần khớp batch đã được chấp nhận (0–2) |
+| `kx1e3` | Thermal V2: độ lợi lò k × 1000 (°C/s trên mỗi % công suất) |
+| `tdel` | Thermal V2: thời gian trễ vận chuyển đã nhận dạng (s) |
+| `tlag` | Thermal V2: hằng số thời gian lag của heater đã nhận dạng (s) |
+| `ha` | Thermal V2: hệ số trao đổi nhiệt khí–trứng (% công suất trên °C) |
+| `sigma` | Thermal V2: độ bất định của dự đoán PV (°C) |
+| `pred` | Thermal V2: PV dự đoán với công suất đang trên đường tới (°C) |
 | `vp` | Pha quạt hút |
 | `al` | Mặt nạ cảnh báo (hex) |
 | `fc` | Mã lỗi chính |

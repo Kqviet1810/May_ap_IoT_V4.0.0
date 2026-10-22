@@ -7296,6 +7296,12 @@ class MachineController {
     a.req = runtime_.pidMon.requestPct; a.avg60 = runtime_.pidMon.actualAvgPct; a.ssrOnMs = pidMonSsrOnMs_;
     a.alarmMask = runtime_.alarmMask; a.faultCode = runtime_.primaryFaultCode; a.stateCode = static_cast<uint8_t>(runtime_.stateCode);
     a.kp = config_.kp; a.ki = config_.ki; a.kd = config_.kd;
+    {
+      const thermalv2::Controller &v2 = thermalV2_.controller();          // Thermal V2 columns (schema 2, see serial_log.h)
+      a.pidCorr = v2.integral(); a.holdFf = v2.dNow(); a.ventFf = v2.dLoss();
+      a.learnState = static_cast<uint8_t>(runtime_.pidMon.phase + (runtime_.pidMon.suspect ? 4U : 0U)); a.confidence = v2.batchesDone();
+      a.gain = v2.kAir() * 1000.0f; a.delaySec = v2.tdHat(); a.holdPct = v2.tauHat(); a.coastC = v2.haPct(); a.ventGain = v2.sigmaPred(); a.predErr = v2.predicted();
+    }
     a.flags = static_cast<uint16_t>(
         (runtime_.batchRunning ? FlBatch : 0U) | (runtime_.autoMode ? FlAuto : 0U) | (sensorUsable_ ? FlSensorOk : 0U) |
         (o.heaterSsr ? FlSsrNow : 0U) | (runtime_.heaterOn ? FlMaster : 0U) | (runtime_.circulationFanOn ? FlCircFan : 0U) |

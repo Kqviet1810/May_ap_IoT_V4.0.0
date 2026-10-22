@@ -101,9 +101,10 @@ def grade(rows, refs, acc):
     for r in rows:
         sfx[0] = '.C8cal' if r['plant'].endswith('C8') else ''
         sid = r['scenario']; case = r['plant'] + '/' + sid; base = sid[:2] if sid[:2] in ('S5', 'S6') else sid
-        ref = refs.get((r['plant'], sid))
+        if sid in ('S3p', 'S3w', 'S3q', 'S3r'): sfx[0] += '.' + {'S3p': 'persist', 'S3w': 'wrongprior', 'S3q': 'gainx1.43', 'S3r': 'gainx0.77'}[sid]; base = 'S3'      # restart with a stored path: graded as S3, reported apart
+        ref = refs.get((r['plant'], 'S3' if sid in ('S3p', 'S3w', 'S3q', 'S3r') else sid))
         for c in acc['criteria']:
-            if 'scn' not in c or sid not in c['scn'] and base not in c['scn']: continue
+            if 'scn' not in c or (sid not in c['scn'] and base not in c['scn']): continue
             m = c['metric']; cid = c['id']
             if m == 'reach_s' and 'max_vs_fastest' in c:
                 if ref is None or ref <= 0: put(cid + '.NOREF', False, case); continue

@@ -129,6 +129,13 @@ struct Output {
   bool powerLimited = false;
 };
 
+// What survives a restart: the oven's identified path and loss model (the last accepted batch fit).  Nothing about the eggs or the room is kept.
+struct Prior {
+  float th[NP] = {0, 0, 0, 0, 0};     // a (= 100k, scaled), c0, cp, ce, c3 of the fit
+  float td = 0, tau = 0, kStd = 0, rms = 0;
+  uint8_t tauEsel = 0;
+};
+
 class Controller {
  public:
   Controller() { reset(); }
@@ -146,6 +153,7 @@ class Controller {
     binHead_ = 0; ringCount_ = 0; secT_ = 0; secAcc_ = 0; ring10_ = 0; lag_ = 0; absS_ = 0;
     tau_ = TAU_LAG_S; setDelay(THETA_PRIOR_S - THETA_PICKUP_S);
     histCount_ = 0; histHead_ = 0; firstPowerAbs_ = -1.0f; batchStage_ = 0; batchDue_ = false; batchActive_ = false; kFrozen_ = false; kStdB_ = 0; dBias_ = 0; fitRejects_ = 0; prevFitRms_ = 0.0f;
+    lastFitOk_ = false; fitSerial_ = 0;
     respPv_ = NAN; respT_ = 0.0f; respE_ = 0.0f; respSuspect_ = false;
     I_ = 0; Te_ = NAN; pv_ = NAN; spNow_ = 37.5f; far_ = false; tauEsel_ = TAU_E_PRIOR; sigPred_ = 1.0f;
     idDone_ = false; idPhase_ = 0; rlsHold_ = SLOPE_N + 1; thetaSeen_ = false;
@@ -177,6 +185,30 @@ class Controller {
   bool batchRunning() const { return batchActive_; }
   bool responseSuspect() const { return respSuspect_; }
   bool identified() const { return idDone_; }
+  uint8_t fitSerial() const { return fitSerial_; }                 // +1 per accepted batch fit: the signal to store a new Prior
+  bool exportPrior(Prior &p) const {
+    if (!lastFitOk_) return false;
+    for (int i = 0; i < NP; ++i) p.th[i] = th_[i];
+    p.td = tdEst_; p.tau = tau_; p.kStd = kStdB_; p.rms = prevFitRms_; p.tauEsel = tauEsel_;
+    return true;
+  }
+  // Only before anything was learned in this run.  A restored path is treated as less certain than a fresh fit (k uncertainty >= 15 %, egg offset forgotten),
+  // the power cap of the unidentified state is lifted, and the second batch fit (1500 s after the first power) re-checks it against the oven as it is now.
+  bool importPrior(const Prior &p) {
+    if (batchStage_ != 0 || idPhase_ != 0 || absS_ > 60.0f) return false;
+    for (int i = 0; i < NP; ++i) if (!std::isfinite(p.th[i])) return false;
+    if (!std::isfinite(p.td) || !std::isfinite(p.tau) || !std::isfinite(p.kStd) || !std::isfinite(p.rms)) return false;
+    if (p.th[0] < K_MIN * 1e5f * 1.02f || p.th[0] > K_MAX_EST * 1e5f * 0.98f) return false;
+    if (p.th[2] < 0.5f || p.th[2] > 9.0f || p.th[3] < 0.2f || p.th[3] > p.th[2]) return false;
+    if (p.td < TD_MIN_S + 0.1f || p.td > TD_MAX_S - 0.1f || p.tau < 10.0f || p.tau > 120.0f || p.kStd < 0.0f || p.rms < 0.0f || p.tauEsel >= 3) return false;
+    for (int i = 0; i < NP; ++i) th_[i] = p.th[i];
+    th_[4] = 0.0f;                                                  // the egg start offset belonged to that start
+    tau_ = p.tau; setDelay(p.td); tauEsel_ = p.tauEsel;
+    kStdB_ = p.kStd; if (kStdB_ < 0.15f * kRaw()) kStdB_ = 0.15f * kRaw();
+    kFrozen_ = true; for (int q = 0; q < NP; ++q) { P_[0][q] = 0.0f; P_[q][0] = 0.0f; }
+    prevFitRms_ = p.rms; batchStage_ = 1; dBias_ = 0.0f; idDone_ = true; idPhase_ = 3; rlsHold_ = SLOPE_N + 1;
+    return true;
+  }
 
   Output step(const Input &in) {
     Output out;
@@ -573,7 +605,7 @@ class Controller {
       else ++batchStage_;
       return;
     }
-    ++batchStage_; prevFitRms_ = static_cast<float>(bestRms_);
+    ++batchStage_; prevFitRms_ = static_cast<float>(bestRms_); lastFitOk_ = true; ++fitSerial_;
     const double s2 = static_cast<double>(SLOPE_STD_MKS) * SLOPE_STD_MKS;
     tau_ = bestTau_; setDelay(bestTd_);
     tauEsel_ = bestTe_; Te_ = teJ_[tauEsel_];
@@ -630,7 +662,7 @@ class Controller {
   }
 
   float idPower_ = 100.0f, idT0_ = 0, idPv0_ = 0, idTTheta_ = 0;
-  uint8_t bigNu_ = 0; float respPv_ = NAN, respT_ = 0.0f, respE_ = 0.0f, respNeed_ = 3750.0f; bool respSuspect_ = false; bool fineSensor_ = false; bool idDone_ = false; uint8_t idPhase_ = 0, rlsHold_ = 0;
+  uint8_t bigNu_ = 0; float respPv_ = NAN, respT_ = 0.0f, respE_ = 0.0f, respNeed_ = 3750.0f; bool respSuspect_ = false; bool lastFitOk_ = false; uint8_t fitSerial_ = 0; bool fineSensor_ = false; bool idDone_ = false; uint8_t idPhase_ = 0, rlsHold_ = 0;
   uint8_t binU_[BIN_N];
   float pvH_[HIST_N], teH_[3][HIST_N], bla_[HIST_N], bx_[HIST_N][NP + 1], teJ_[3];
   bool histOk_[HIST_N];

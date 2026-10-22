@@ -28,7 +28,7 @@ static Scenario scenario(const std::string &id) {
   Scenario s; s.id = id;
   if (id == "S1") { s.startAir = s.startEgg = 33; s.duration = 4 * 3600; }
   else if (id == "S2") { s.startAir = s.startEgg = 28; s.duration = 6 * 3600; }
-  else if (id == "S3") { s.startAir = 33; s.startEgg = 37; s.duration = 3 * 3600; }
+  else if (id == "S3" || id == "S3p" || id == "S3w" || id == "S3q" || id == "S3r") { s.startAir = 33; s.startEgg = 37; s.duration = 3 * 3600; }
   else if (id == "S4") { s.warm = true; s.eventAt = 5400; s.door = -3; s.duration = 5400 + 2 * 3600; }
   else if (id == "S5a") { s.warm = true; s.eventAt = 5400; s.trayFrac = 0.25; s.duration = 5400 + 4 * 3600; }
   else if (id == "S5b") { s.warm = true; s.eventAt = 5400; s.trayFrac = 0.5; s.duration = 5400 + 4 * 3600; }
@@ -124,6 +124,17 @@ int main(int argc, char **argv) {
     header();
     while (std::getline(ss, sid, ',')) for (const Plant &p : plants) {
       Scenario s = scenario(sid); std::unique_ptr<Controller> c = makeController(cn);
+      if ((sid == "S3p" || sid == "S3w" || sid == "S3q" || sid == "S3r") && cn == "v2") {      // restart with the Prior stored by an earlier run: p = the same oven (S3p), w = ANOTHER oven of the set (S3w, the stored path does not fit)
+        size_t src = 0; for (size_t i = 0; i < plants.size(); ++i) if (plants[i].id == p.id) src = i;
+        if (sid == "S3w") src = (src + plants.size() / 2) % plants.size();
+        Plant lp = plants[src];
+        if (sid == "S3q") lp.gainScale *= 0.7;       // stored when the heater was 30 % weaker than it is now (element replaced)
+        if (sid == "S3r") lp.gainScale *= 1.3;       // stored when the heater was 30 % stronger than it is now (element ageing)
+        V2Ctl learner; Scenario ls = scenario("S1"); ls.duration = 2 * 3600; Sim lsim(lp, ls, learner); lsim.run();
+        thermalv2::Prior pr;
+        if (learner.slot.controller().exportPrior(pr)) static_cast<V2Ctl *>(c.get())->slot.controller().importPrior(pr);
+        else std::fprintf(stderr, "no prior from %s\n", plants[src].id.c_str());
+      }
       if (s.warm && cn != "fastest" && cn != "zero" && cn.rfind("const", 0) != 0) {      // a real controller meets its disturbances after a real cold start
         const double P = 4 * 3600.0; s.coldStart = true; s.startAir = s.startEgg = 33; s.eventAt += P; s.duration += P;
         if (s.ventAt >= 0) s.ventAt += P;
