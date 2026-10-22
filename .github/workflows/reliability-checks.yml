@@ -156,6 +156,9 @@ jobs:
       - name: Heater path host tests (GPIO arbiter, SSR burst scheduler, E115 evidence, config serializers, sensor filter, programme). No controller exists in V2.0.0.
         run: python3 tools/test_heater_path.py --sanitize --report-dir /tmp/mayap-heater-path-report
 
+      - name: Thermal V2 digital-twin rig self-test (analytic closed forms, burst accuracy, protection layers, E115; simulation only)
+        run: python3 tools/thermal-v2/run_grid.py selftest
+
       - name: Technical PIN, Web permission, HMI-approved requests and old records (host tests of the real controller code)
         run: python3 tools/test_tech_access.py --sanitize
 
