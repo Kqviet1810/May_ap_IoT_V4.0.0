@@ -288,8 +288,9 @@ test('Nhiet du doan (Thermal Predictive V1) is a run-time switch in NANG CAO, ON
   const bridge = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h'), 'utf8');
   assert.doesNotMatch(bridge, /predictiveThermalEnabled/);
   // the monitor rows
-  assert.match(hmi, /constexpr uint8_t MON_ITEM_COUNT = 26U;/);
+  assert.match(hmi, /constexpr uint8_t MON_ITEM_COUNT = 34U;/);
   assert.match(hmi, /label = "Du doan: che do"/);
+  for (const label of ['Du doan: yeu cau', 'Du doan: hold', 'Du doan: tre/qt', 'Du doan: k / a', 'Du doan: loi gan', 'Du doan: ly do', 'Du doan: lui/ph', 'Chu ky DK us']) assert.ok(hmi.includes(`label = "${label}"`), label);
 });
 
 test('Che do 2 tai khoan: only in HMI Nang cao, needs Online, the machine asks the Worker with its own key, back returns to the Advanced list', () => {
@@ -316,7 +317,7 @@ test('Che do 2 tai khoan: only in HMI Nang cao, needs Online, the machine asks t
 });
 
 test('PID monitor shows what the launch measured on this oven (gain, delay, hold, brake ceiling), after the 12 PID rows', () => {
-  assert.match(hmi, /constexpr uint8_t MON_ITEM_COUNT = 26U;/);   // 12 PID + 5 Lo + 6 profile + 3 Du doan
+  assert.match(hmi, /constexpr uint8_t MON_ITEM_COUNT = 34U;/);   // 12 PID + 5 Lo + 6 profile + 3 Du doan + 8 field-trial rows
   assert.match(bodyOf('uint8_t monItemIndex('), /k < 12U \? k : \(k < 17U \?/);
   assert.match(bodyOf('void drawPidMonitor()'), /monPage, true\)/);
   const info = bodyOf('void infoItem(');
