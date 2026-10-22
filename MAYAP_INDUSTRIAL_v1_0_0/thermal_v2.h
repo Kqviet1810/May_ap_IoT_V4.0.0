@@ -21,7 +21,7 @@ constexpr float THETA_PICKUP_S = 6.0f;     // measured "first 2*dQ rise" minus t
 constexpr float K_PRIOR = 5.3e-4f;         // degC/s per % of bank: 16 kW on 0.3 MJ/degC (lightest oven => most cautious controller)
 constexpr float HA_PCT_PRIOR = 8.0f;       // % of bank per degC air-egg difference: 1300 W/K on 16 kW
 constexpr float TAU_EGG_S = 1500.0f;       // Ce/hA of 10 000 eggs: 1.9 MJ / 1300 W/K ~ 1460 s
-constexpr float BETA = 0.7f;               // trust in the egg feed-forward (doc section 3)
+constexpr float BETA = 1.0f;               // trust in the egg feed-forward (doc section 3)
 constexpr float I_MAX = 30.0f;             // trim limit: the balance estimate carries the hold, I only removes its bias
 constexpr float H_LO = 12.0f;              // demand used before the balance is known (same number as the independent limiter)
 constexpr float ID_ROOM_C = 3.0f;         // identification climb needs this much room below SP: 0.2 (theta) + 1.0 (k) + energy still in flight
@@ -39,6 +39,7 @@ constexpr float STEP_FLAT_PCT = 15.0f;     // % of bank
 constexpr float STEP_GIVEUP_S = 900.0f;
 constexpr float STEP_MIN_DP = 25.0f;       // % of bank: the step must be at least this large for D to cancel inside 10 %
 constexpr float BAL_MAX_NET = 25.0f;       // % of bank
+constexpr bool TRANSFER_I = true;
 constexpr float B_GAIN = 0.0f;             // per 10 s balance, at a flat PV
 constexpr float BAL_SIGMA_PCT = 3.0f;      // % of bank: noise of one balance at a flat PV (0.1 degC steps over a 180 s half-window, k ~ 1.3e-4)
 constexpr float BAL_NET_SCALE = 15.0f;     // % of bank: extra variance grows with |slope/k| (a 15 % error of k on that term)
@@ -47,6 +48,7 @@ constexpr float HA_MIN = 4.0f, HA_MAX = 13.0f;   // 900..1800 W/K on 14..22 kW (
 constexpr float P0_L = 100.0f, P0_HA = 16.0f;    // prior variances: L 12+-10 %, ha 8+-4 %/degC
 constexpr float ID_TIMEOUT_S = 600.0f;
 constexpr float E115_CLIMB_FRAC = 0.4f;
+constexpr float E115_BOOST_MAX = 25.0f;    // % of bank added at the trip point; PV must rise 0.3 degC inside the remaining 60 % of 900 s
 constexpr float PERMIT_RECOMPUTE_S = 120.0f;
 
 enum State : uint8_t { StIdle = 0, StClimb = 1, StTrack = 2, StFrozen = 3, StE115 = 4 };
@@ -97,7 +99,7 @@ class Controller {
       if (lostS_ > PERMIT_RECOMPUTE_S) { I_ = 0; idPhase_ = 0; }
       lastU_ = 0.0f; out.state = StFrozen; return out;
     }
-    lostS_ = 0;
+    lostS_ = 0; spNow_ = in.sp;
     const float Ttr = tdPrime() + TAU_LAG_S;
     const float Etr = transitEnergy();
     // Air temperature once the energy already delivered has arrived and the demand (loss + egg flow at the present PV) has been paid for the same time.
@@ -121,7 +123,10 @@ class Controller {
     }
     out.state = StTrack;
     if (idPhase_ == 1 || idPhase_ == 2) { u = idPower_ < cap ? idPower_ : cap; out.state = StClimb; }
-    if (in.e115Frac >= E115_CLIMB_FRAC && pv_ < in.sp) { u = cap; out.state = StE115; }
+    if (in.e115Frac >= E115_CLIMB_FRAC && pv_ < in.sp) {          // the heater has been on for a long time without the air rising 0.3: ask for more, in proportion
+      const float boost = E115_BOOST_MAX * (in.e115Frac - E115_CLIMB_FRAC) / (1.0f - E115_CLIMB_FRAC);
+      const float ub = u + boost; u = ub > cap ? cap : ub; out.state = StE115;
+    }
     else if (u >= cap && e > 0.0f) out.state = StClimb;
     out.powerLimited = (u >= cap) && cap < 100.0f;
     out.powerPct = u; lastU_ = u; state_ = out.state;
@@ -176,6 +181,7 @@ class Controller {
     const float x = 0.5f * (a + b) - Te_;                                     // air - egg difference at the window centre
     const float sig = BAL_SIGMA_PCT * (1.0f + std::fabs(net) / BAL_NET_SCALE);
     // Bayesian RLS on  dMeas = L + ha*x  : L = loss of the air, ha = egg coupling in % of bank per degC.  Forgetting keeps it following slow change.
+    const float ffBefore = dLoss_ + bias_ + BETA * haPct_ * (spNow_ - Te_);
     const float lam = BAL_FORGET;
     float p00 = p00_ / lam, p01 = p01_ / lam, p11 = p11_ / lam;
     const float eAll = dMeas - (dLoss_ + haPct_ * x + bias_);
@@ -188,6 +194,11 @@ class Controller {
     if (dLoss_ < 0.0f) dLoss_ = 0.0f; else if (dLoss_ > 60.0f) dLoss_ = 60.0f;
     if (haPct_ < HA_MIN) haPct_ = HA_MIN; else if (haPct_ > HA_MAX) haPct_ = HA_MAX;
     dKnown_ = true; (void)in;
+    // Two learners, one job each: the model (L, ha) owns the demand, the integral owns what the model does not know yet.  Whatever the model just
+    // absorbed is taken out of I, so u does not jump at the update and I does not double-count the same bias.
+    const float ffAfter = dLoss_ + bias_ + BETA * haPct_ * (spNow_ - Te_);
+    if (TRANSFER_I) I_ -= (ffAfter - ffBefore);
+    if (I_ > I_MAX) I_ = I_MAX; else if (I_ < -I_MAX) I_ = -I_MAX;
   }
 
   void onSample(const Input &in, float dt) {
@@ -251,27 +262,28 @@ class Controller {
       if (rise >= 2.0f * in.dQ) {
         const float th = absS_ - idT0_;
         theta_ = th < 30.0f ? 30.0f : (th > 320.0f ? 320.0f : th); thetaKnown_ = true;
-        idPhase_ = 2; idTTheta_ = absS_; idPvTheta_ = in.pv; replayLag();
+        idPhase_ = 2; idSumX_ = 0; idTTheta_ = absS_; idPvTheta_ = in.pv; replayLag();
       } else if (absS_ - idT0_ > ID_TIMEOUT_S) finishId();
       return;
     }
-    idSumLa_ += lag_; ++idN_;
+    idSumLa_ += lag_; idSumX_ += in.pv - Te_; ++idN_;
     const float span = absS_ - idTTheta_;
     if (in.pv - idPvTheta_ >= 10.0f * in.dQ && span >= 60.0f && idN_ > 20) {
-      const float net = idSumLa_ / idN_ - H_LO;
+      // demand during the probe: the prior loss plus the egg flow that grows with the air-egg difference built up so far
+      const float net = idSumLa_ / idN_ - H_LO - HA_PCT_PRIOR * (idSumX_ / idN_);
       const float kNew = (in.pv - idPvTheta_) / (span * (net > 30.0f ? net : 30.0f));
       k_ = kNew < 5e-5f ? 5e-5f : (kNew > 1.2e-3f ? 1.2e-3f : kNew); kKnown_ = true; finishId();
     } else if (in.sp - in.pv < ID_ROOM_C * 0.5f) finishId();          // ran out of room: keep theta, prior k
   }
 
   float idPower_ = 100.0f;
-  bool idDone_ = false; uint8_t idPhase_ = 0; float idT0_ = 0, idPv0_ = 0, idTTheta_ = 0, idPvTheta_ = 0, idSumLa_ = 0; uint32_t idN_ = 0;
+  bool idDone_ = false; uint8_t idPhase_ = 0; float idT0_ = 0, idPv0_ = 0, idTTheta_ = 0, idPvTheta_ = 0, idSumLa_ = 0, idSumX_ = 0; uint32_t idN_ = 0;
   float bins_[BIN_N];
   float pvRing_[RING_N], paRing_[RING_N];
   uint16_t binHead_; uint8_t ringCount_, ring10_;
   float secT_, secAcc_, lag_, absS_;
   uint8_t stepPhase_ = 0; float slope0_ = 0, pa0_ = 0, stepSince_ = -1;
-  float bias_ = 0; bool far_ = false; float p00_ = P0_L, p01_ = 0, p11_ = P0_HA;
+  float bias_ = 0, spNow_ = 37.5f; bool far_ = false; float p00_ = P0_L, p01_ = 0, p11_ = P0_HA;
   float k_, theta_, haPct_, dLoss_, I_, Te_, pv_, pvPred_ = 0, lastU_, lostS_;
   bool kKnown_, thetaKnown_, dKnown_, haveSample_;
   uint32_t prevSeq_; uint8_t state_;
