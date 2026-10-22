@@ -162,6 +162,9 @@ jobs:
       - name: Thermal V2 controller host unit tests (contract of thermal_v2.h: permit, NaN, cap, SP step, determinism)
         run: python3 tools/thermal-v2/run_grid.py unit
 
+      - name: Thermal V2 protection under injected faults (G4; simulation only; fails on a heating command while blocked, or on a hazard from a fault the layers can see)
+        run: V2_DQ=0.01 python3 tools/thermal-v2/run_grid.py protect --ctl v2,fastest --sets A
+
       - name: Technical PIN, Web permission, HMI-approved requests and old records (host tests of the real controller code)
         run: python3 tools/test_tech_access.py --sanitize
 

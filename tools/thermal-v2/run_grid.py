@@ -4,6 +4,7 @@
   run_grid.py selftest                         build the rig and run its self-tests (analytic closed forms, burst accuracy, protection, E115)
   run_grid.py unit                             host unit tests of thermal_v2.h alone
   run_grid.py plants A|B|C                      print the plant CSV generated from plants.json
+  run_grid.py protect [--ctl v2,fastest] [--sets A,D]   G4: injected faults (S10a..h), pass = no heating command while blocked + no hazard for the faults the layers can see
   run_grid.py grid --ctl NAME [--sets A,B,C] [--scn S1,S2,...] [--out DIR]
                                                 run the sets, grade against tools/thermal-research/acceptance.json
 
@@ -129,8 +130,35 @@ def grade(rows, refs, acc):
         put('GATE.unsafe', int(r['unsafe_ticks']) == 0, case)
     return res
 
+FAULTS = {'S10a': ('sensor frozen at the setpoint (valid frames, value never changes)', False), 'S10b': ('sensor drifts low by 3 C in 30 min', False),
+          'S10c': ('sensor jumps low by 4 C', False), 'S10d': ('sensor jumps high by 4 C', True), 'S10e': ('sensor / path lost for 2 h', True),
+          'S10f': ('SSR welded on (only the master contactor can stop it)', False), 'S10g': ('SSR never conducts', True),
+          'S10h': ('sensor frozen LOW while climbing from 28 C', False)}
+
+def protect(exe, spec, work, ctls, sets):
+    """G4.  Formal criteria: P1 no heating command while the production layers block (all faults, all plants);
+    P2 for faults the single-sensor layers CAN see (jump high, path lost, SSR off): no High, no Emergency.  The rest is reported as measured containment, not pass/fail."""
+    ok = True; scn = ','.join(FAULTS)
+    for ctl in ctls:
+        rows = []
+        for s in sets: rows += run(exe, plants_csv(s, spec), 'run', ctl, scn, work, 'prot' + s)
+        print(f'controller={ctl} sets={",".join(sets)} cases={len(rows)}  (SIMULATION ONLY)')
+        unsafe = sum(int(r['unsafe_ticks']) for r in rows)
+        print(f'  P1 unsafe heating commands        {unsafe:>6}   {"PASS" if unsafe == 0 else "FAIL"}'); ok &= unsafe == 0
+        for sid, (what, visible) in FAULTS.items():
+            rs = [r for r in rows if r['scenario'] == sid]
+            hi = sum(int(r['high_samples']) > 0 for r in rs); em = sum(int(r['emergency_samples']) > 0 for r in rs); pk = max(float(r['peak_air']) for r in rs)
+            e115 = sum(int(r['e115']) for r in rs)
+            tag = ''
+            if visible and ctl == 'v2':
+                good = hi == 0 and em == 0; ok &= good; tag = 'P2 ' + ('PASS' if good else 'FAIL')
+            elif visible: tag = 'info (a 100 % requester overheats a settled oven before the fault)'
+            else: tag = 'measured (not detectable by the single-sensor layers)' if sid not in ('S10h',) else 'measured'
+            print(f'  {sid} {what:<62} High {hi:>3}/{len(rs)} Emergency {em:>3}/{len(rs)} peak {pk:6.1f} C E115 {e115:>3}  {tag}')
+    return ok
+
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument('cmd', choices=['selftest', 'unit', 'plants', 'grid']); ap.add_argument('arg', nargs='?')
+    ap = argparse.ArgumentParser(); ap.add_argument('cmd', choices=['selftest', 'unit', 'plants', 'grid', 'protect']); ap.add_argument('arg', nargs='?')
     ap.add_argument('--ctl', default='fastest'); ap.add_argument('--sets', default='A'); ap.add_argument('--scn', default='S1,S2,S3,S4,S5a,S5b,S6a,S6b,S7,S8,S9')
     ap.add_argument('--out', default=None); a = ap.parse_args()
     spec = json.loads((TV2 / 'plants.json').read_text()); acc = json.loads(ACC.read_text())
@@ -144,6 +172,9 @@ def main():
         work = Path(td); exe = build(work)
         if a.cmd == 'selftest':
             sys.exit(subprocess.run([str(exe), 'selftest']).returncode)
+        if a.cmd == 'protect':
+            ctls = a.ctl.split(',') if a.ctl != 'fastest' else ['v2', 'fastest']
+            sys.exit(0 if protect(exe, spec, work, ctls, a.sets.split(',')) else 1)
         sets = a.sets.split(','); held_out_guard(sets, a.ctl, spec)
         outdir = Path(a.out) if a.out else None
         if outdir: outdir.mkdir(parents=True, exist_ok=True)

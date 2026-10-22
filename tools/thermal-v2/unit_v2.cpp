@@ -109,6 +109,18 @@ int main() {
       p.step(in.deliveredPct > 0 ? 1.0 : 0.0, 0.1);
     }
     (void)total; CHECK(!bad, "fuzz 11 h: output always finite, within [0, cap], zero without permit"); }
+  { Controller c; Mini p; Input in; in.sp = 37.5f; in.capPct = 100.0f; in.dtS = 0.1f; in.permit = true; float u = 0; bool frozen = false, suspected = false, leaked = false; float held = 0;
+    for (int k = 0; k < 36000 * 2; ++k) {                                                      // sensor freezes LOW 10 min into the climb: the response watchdog must withdraw the request
+      if (!frozen && k == 6000) { frozen = true; held = quant(p.Ta); }
+      in.pv = frozen ? held : quant(p.Ta); in.newSample = (k % 20) == 0;
+      in.deliveredPct = ((k % 30) < static_cast<int>(u * 0.3f + 0.5f)) ? 100.0f : 0.0f;
+      const Output o = c.step(in); u = o.powerPct;
+      if (frozen && c.responseSuspect()) suspected = true;
+      if (suspected && u > 0.0f) leaked = true;
+      p.step(in.deliveredPct > 0 ? 1.0 : 0.0, 0.1);
+    }
+    CHECK(suspected && !leaked, "frozen low sensor while climbing: response watchdog trips and keeps the request at 0");
+    CHECK(p.Ta < 40.0, "frozen low sensor while climbing: the air stays below 40 degC"); }
   g_q = 0.01;                                                                                  // fine sensor: the egg observer is active
   { Controller c; Mini p; Run r = simulate(c, p, 3.0, 37.5f, 100.0f);
     CHECK(!r.nan && r.minU >= 0.0f && r.maxU <= 100.0f && r.peak < 38.5f, "fine sensor, cold start 3 h: finite, in [0, 100], peak below 38.5 degC");

@@ -85,3 +85,11 @@ Tập phát triển mới D (40 lò, hạt giống 4242) để tinh chỉnh cùn
 Tổng case-criteria hỏng trên A+D: bậc 0,1: 287 → 169; bậc 0,01: 205 → 73. Bốn cổng an toàn 0 hỏng ở cả hai.
 Kiểm chứng B/C (cấu hình chốt): B 0,01 → 175 hỏng/660 ca (G3 cũ: 425); C 0,01 → không có High ngoài C8; chi tiết `tools/thermal-v2/g3_results.txt`.
 Độ bền: nhiễu cảm biến σ 0,05 °C và jitter slot 30 %: bộ điều khiển vẫn hữu hạn/an toàn nhưng cổng High hỏng 1–2 ca ở A+D; chỉ tiêu mềm xấu hơn (73 → 102–141).
+
+## 11. G4 — vòng bảo vệ dưới lỗi chèn (mô phỏng, `run_grid.py protect`, kết quả: `tools/thermal-v2/g4_results.txt`)
+Chèn vào lò đang ổn định (hoặc đang leo nhiệt) qua đường bảo vệ SẢN XUẤT (High/Emergency/E115/lọc cảm biến/cổng cho phép/bộ chia xung): cảm biến đứng, trôi thấp, nhảy thấp, nhảy cao, mất đường, SSR hàn dính, SSR không dẫn. Bộ điều khiển thử: `v2` và `fastest` (luôn đề nghị 100 %).
+- **P1** (bắt buộc): không có lệnh sưởi nào lọt ra khi lớp bảo vệ đang chặn: 0 trên 832 ca, cả hai bộ điều khiển. ĐẠT.
+- **P2** (bắt buộc cho lỗi mà các lớp một-cảm-biến nhìn thấy: nhảy cao, mất đường, SSR không dẫn): v2 không chạm High/Emergency, ĐẠT ở cả 0,01 và 0,1 °C.
+- **Bộ canh phản hồi mới (`RESP_WATCHDOG`)** trong `thermal_v2.h`: công suất đã đủ thời gian tới nơi (cũ hơn td+2τ, tối đa 260 s) mà PV không nhúc nhích 0,3 °C trong khi vẫn thấp hơn SP 1 °C ⇒ rút đề nghị về 0 tới khi PV đổi. Tính từ hằng số xấu nhất, và sau khi có batch fit thì dùng td/τ/k đã học (k lấy nửa giá trị). Cảm biến đứng THẤP khi đang leo: đỉnh không khí 35–44 °C (không có bộ canh) xuống còn 35–38,6 °C (tập A), 12 lò đều dưới Emergency. Không đổi chỉ tiêu A+D (73 ở 0,01; 169 ở 0,1).
+- **Không bảo vệ được bằng phần mềm một cảm biến** (đo, không chấm đạt/trượt): cảm biến đứng đúng ở SP (đỉnh 39–46 °C), cảm biến trôi thấp 3 °C (40,9 °C), nhảy thấp 4 °C (42 °C), SSR hàn dính (43 °C; chỉ contactor tổng cắt được và nhiệt trong ống dẫn vẫn đẩy qua 39 °C). Cần phần cứng: cảm biến thứ hai độc lập, cầu chì nhiệt/relay quá nhiệt cơ khí, hoặc đo dòng SSR. Production hiện chỉ phát hiện cảm biến đứng sau 20 phút (SENSOR_FROZEN_TIMEOUT_MS).
+- Cờ `responseSuspect()` để G5 đưa lên telemetry và cảnh báo.

@@ -56,7 +56,7 @@ class Sim {
     double cmdSum = 0; unsigned cmdN = 0; uint32_t lastCmdTick = 0;
     double deliveredNow = 0, d60 = 0;
     unsigned filterSamples = 0;
-    float held = static_cast<float>(Ta);
+    float held = static_cast<float>(Ta), frozenValue = NAN;
     rig.temperature_ = held; rig.rawTemperature_ = held;
     for (unsigned k = 0; k < ticks; ++k) {
       const double t = k * dt;
@@ -75,6 +75,8 @@ class Sim {
         }
       }
       pathLost = s_.permitLossAt >= 0 && t >= s_.permitLossAt && t < s_.permitLossAt + s_.permitLossFor;
+      const bool faultOn = s_.fault > 0 && s_.faultAt >= 0 && t >= s_.faultAt;
+      if (faultOn && s_.fault == 5) pathLost = true;
       // S7 is only meaningful where the oven CAN reject the embryo heat: cap it at 60 % of the loss capacity at the end ambient (documented in acceptance.json)
       const double endAmb = isfinite(s_.ambientTo) ? s_.ambientTo : p_.Tamb;
       const double embryoCap = std::min(s_.embryoMax, 0.6 * p_.UA * std::max(0.0, s_.SP - endAmb));
@@ -90,7 +92,10 @@ class Sim {
         static std::mt19937 noiseRng(12345);
         static const double noiseC = std::getenv("V2_NOISE") ? std::atof(std::getenv("V2_NOISE")) : 0.0;   // robustness runs only: sensor noise sigma, C
         const double noise = noiseC > 0 ? std::normal_distribution<double>(0.0, noiseC)(noiseRng) : 0.0;
-        const float reported = static_cast<float>(std::round((sensPhys + p_.sensorOffset + noise) / stepC) * stepC);   // C8: the SENSOR reads low, the controller is not told
+        double fo = 0;
+        if (faultOn) { if (s_.fault == 2) fo = -std::min(3.0, 3.0 * (t - s_.faultAt) / 1800.0); else if (s_.fault == 3) fo = -4.0; else if (s_.fault == 4) fo = 4.0; }
+        float reported = static_cast<float>(std::round((sensPhys + p_.sensorOffset + noise + fo) / stepC) * stepC);   // C8: the SENSOR reads low, the controller is not told
+        if (faultOn && s_.fault == 1) { if (!isfinite(frozenValue)) frozenValue = reported; reported = frozenValue; }       // S10: the frame is valid but the value never changes
         filter.updateFilter(reported, 60);
         const float filtered = filter.value();
         rig.rawTemperature_ = std::max(reported, reported + rig.config_.tempOffset);
@@ -108,7 +113,7 @@ class Sim {
       const bool on = st.heaterSsr && st.heatMaster;
       if (on && (rig.faults_.inhibit || rig.faults_.drop)) ++m.unsafe_ticks;
       if (on && m.first_on_s < 0) m.first_on_s = t;
-      deliveredNow = (on ? 100.0 : 0.0);        // instantaneous 0/100 of the last step; the controller integrates it with its own window
+      deliveredNow = (on ? 100.0 : 0.0);          // what the arbiter THINKS it gave (a welded SSR is invisible to it)        // instantaneous 0/100 of the last step; the controller integrates it with its own window
       d60 += ((on ? 1.0 : 0.0) - d60) * dt / 60.0;
       cmdSum += rig.lastCommand_; ++cmdN; m.max_cmd = std::max<double>(m.max_cmd, rig.lastCommand_);
       // ---- plant ----
@@ -116,7 +121,10 @@ class Sim {
       const double sagD = std::max(p_.sagPerDuty, s_.sagPerDuty);
       if (sagD > 0) sag -= sagD * d60;          // supply sag follows the DELIVERED duty over ~60 s, as plants.json C7 says
       if (p_.sagStepAtS >= 0 && t >= p_.sagStepAtS) sag *= (1.0 - p_.sagStep);
-      const double delivered = on ? p_.Pmax * p_.gainScale * sag : 0.0;
+      bool plantOn = on;
+      if (faultOn && s_.fault == 6) plantOn = st.heatMaster;          // the SSR is welded: only the master contactor can stop the heater
+      if (faultOn && s_.fault == 7) plantOn = false;                  // the SSR never conducts
+      const double delivered = plantOn ? p_.Pmax * p_.gainScale * sag : 0.0;
       const double delayed = pipe[cur]; pipe[cur] = delivered; cur = (cur + 1) % pipe.size();
       heater += (delayed - heater) * dt / std::max(0.1, p_.tl);
       vent += ((st.ventFan ? 1.0 : 0.0) - vent) * dt / 8.0;

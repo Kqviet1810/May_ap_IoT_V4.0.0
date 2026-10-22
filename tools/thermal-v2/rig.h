@@ -100,6 +100,7 @@ struct Scenario {
   double permitLossAt = -1, permitLossFor = 600;          // S9
   double sagPerDuty = 0;                                  // S7 supply sag
   bool batchRunning = true;
+  int fault = 0; double faultAt = -1;                    // S10 (G4): 1 frozen sensor, 2 drift low, 3 jump low, 4 jump high, 5 long dropout, 6 SSR stuck on, 7 SSR stuck off
   bool coldStart = false;                                // event scenarios run after a real cold start (identification climb), not from a settled state
 };
 

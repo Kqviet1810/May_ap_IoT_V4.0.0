@@ -1,0 +1,35 @@
+G4 — vòng bảo vệ dưới lỗi chèn (mô phỏng). Lệnh: V2_DQ=0.01 python3 tools/thermal-v2/run_grid.py protect --ctl v2,fastest --sets A,D
+
+== cảm biến 0,01 °C, tập A+D (52 lò) ==
+controller=v2 sets=A,D cases=416  (SIMULATION ONLY)
+  P1 unsafe heating commands             0   PASS
+  S10a sensor frozen at the setpoint (valid frames, value never changes) High   5/52 Emergency   4/52 peak   46.5 C E115   0  measured (giới hạn một cảm biến)
+  S10b sensor drifts low by 3 C in 30 min                             High  52/52 Emergency  52/52 peak   40.9 C E115   0  measured (giới hạn một cảm biến)
+  S10c sensor jumps low by 4 C                                        High  52/52 Emergency  52/52 peak   42.1 C E115   0  measured (giới hạn một cảm biến)
+  S10d sensor jumps high by 4 C                                       High   0/52 Emergency   0/52 peak   37.9 C E115   0  P2 PASS
+  S10e sensor / path lost for 2 h                                     High   0/52 Emergency   0/52 peak   37.9 C E115   0  P2 PASS
+  S10f SSR welded on (only the master contactor can stop it)          High  52/52 Emergency  50/52 peak   43.3 C E115   0  measured (giới hạn một cảm biến)
+  S10g SSR never conducts                                             High   0/52 Emergency   0/52 peak   37.9 C E115  52  P2 PASS
+  S10h sensor frozen LOW while climbing from 28 C                     High   5/52 Emergency   1/52 peak   39.3 C E115   0  measured
+controller=fastest sets=A,D cases=416  (SIMULATION ONLY)
+  P1 unsafe heating commands             0   PASS
+  S10a sensor frozen at the setpoint (valid frames, value never changes) High  52/52 Emergency  47/52 peak   97.4 C E115   2  measured (giới hạn một cảm biến)
+  S10b sensor drifts low by 3 C in 30 min                             High  52/52 Emergency  52/52 peak   45.6 C E115   0  measured (giới hạn một cảm biến)
+  S10c sensor jumps low by 4 C                                        High  52/52 Emergency  52/52 peak   46.4 C E115   0  measured (giới hạn một cảm biến)
+  S10d sensor jumps high by 4 C                                       High  52/52 Emergency  46/52 peak   43.0 C E115   0  P2 FAIL
+  S10e sensor / path lost for 2 h                                     High  52/52 Emergency  46/52 peak   43.0 C E115   0  P2 FAIL
+  S10f SSR welded on (only the master contactor can stop it)          High  52/52 Emergency  50/52 peak   43.3 C E115   0  measured (giới hạn một cảm biến)
+  S10g SSR never conducts                                             High  52/52 Emergency  46/52 peak   43.0 C E115  48  P2 FAIL
+  S10h sensor frozen LOW while climbing from 28 C                     High  52/52 Emergency  46/52 peak  165.1 C E115  36  measured
+
+== cảm biến 0,1 °C, v2, tập A+D ==
+controller=v2 sets=A,D cases=416  (SIMULATION ONLY)
+  P1 unsafe heating commands             0   PASS
+  S10a sensor frozen at the setpoint (valid frames, value never changes) High  11/52 Emergency   1/52 peak   39.3 C E115   0  measured (not detectable by the single-sensor layers)
+  S10b sensor drifts low by 3 C in 30 min                             High  52/52 Emergency  52/52 peak   40.9 C E115   0  measured (not detectable by the single-sensor layers)
+  S10c sensor jumps low by 4 C                                        High  52/52 Emergency  52/52 peak   42.0 C E115   0  measured (not detectable by the single-sensor layers)
+  S10d sensor jumps high by 4 C                                       High   0/52 Emergency   0/52 peak   38.0 C E115   0  P2 PASS
+  S10e sensor / path lost for 2 h                                     High   0/52 Emergency   0/52 peak   38.0 C E115   0  P2 PASS
+  S10f SSR welded on (only the master contactor can stop it)          High  52/52 Emergency  49/52 peak   43.3 C E115   0  measured (not detectable by the single-sensor layers)
+  S10g SSR never conducts                                             High   0/52 Emergency   0/52 peak   38.0 C E115  52  P2 PASS
+  S10h sensor frozen LOW while climbing from 28 C                     High   1/52 Emergency   0/52 peak   38.8 C E115   0  measured

@@ -37,6 +37,11 @@ static Scenario scenario(const std::string &id) {
   else if (id == "S7") { s.warm = true; s.eventAt = 0; s.duration = 24 * 3600; s.embryoMax = 1500; s.ambientTo = 20; s.sagPerDuty = 0.08; }
   else if (id == "S8") { s.warm = true; s.eventAt = 5400; s.spStep = 0.5; s.duration = 5400 + 2 * 3600; }
   else if (id == "S9") { s.warm = true; s.eventAt = 5400; s.permitLossAt = 5400; s.permitLossFor = 600; s.duration = 5400 + 2 * 3600; }
+  else if (id.rfind("S10", 0) == 0) {            // G4 protection: S10a..S10g = fault kinds 1..7, injected into a settled oven
+    s.warm = true; s.eventAt = 5400; s.fault = id.size() > 3 ? id[3] - 'a' + 1 : 1; s.faultAt = 5400; s.duration = 5400 + 2 * 3600;
+    if (id == "S10h") { s.warm = false; s.startAir = s.startEgg = 28; s.fault = 1; s.faultAt = 800; s.eventAt = 0; s.duration = 4 * 3600; }   // frozen sensor WHILE climbing (cold, far below SP)
+    else if (s.fault < 1 || s.fault > 7) { std::fprintf(stderr, "unknown scenario %s\n", id.c_str()); std::exit(2); }
+  }
   else { std::fprintf(stderr, "unknown scenario %s\n", id.c_str()); std::exit(2); }
   return s;
 }
@@ -123,6 +128,7 @@ int main(int argc, char **argv) {
         const double P = 4 * 3600.0; s.coldStart = true; s.startAir = s.startEgg = 33; s.eventAt += P; s.duration += P;
         if (s.ventAt >= 0) s.ventAt += P;
         if (s.permitLossAt >= 0) s.permitLossAt += P;
+        if (s.faultAt >= 0) s.faultAt += P;
       }
       Sim sim(p, s, *c);
       std::ofstream tr; if (argc >= 6) { tr.open(std::string(argv[5]) + "/" + p.id + "_" + sid + ".csv"); tr << "t,air,egg,pv,cmd,on,high,e115,vent\n"; sim.trace = &tr; }

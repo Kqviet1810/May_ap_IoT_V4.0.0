@@ -92,6 +92,13 @@ constexpr float E115_BOOST_MAX = 25.0f;
 // ---- independent last-resort limiter (fixed worst-case numbers from the RG144 study, NOT tuned to this controller; it can only lower u) ----
 constexpr float LIM_K_HI = 2.5e-4f;        // degC/s per % : 0.02 degC/s of net rise at ~80 % net power, the steepest of RG144
 constexpr float LIM_THETA_S = 180.0f;      // longest delay of RG144: energy delivered in this window may still be on its way
+// Response watchdog (G4): power that has had time to arrive (older than the longest transit) must move the PV; otherwise the sensor, the heater or the
+// path is not what the law believes and the request is withdrawn.  It uses only fixed worst-case constants.
+constexpr bool RESP_WATCHDOG = true;
+constexpr uint16_t RESP_MATURE_S = 260;           // = T_MAX_S: energy younger than this has not arrived yet
+constexpr float RESP_MOVE_C = 0.3f;               // a PV move this large restarts the account (rise or fall)
+constexpr float RESP_LOSS_PCT = 85.0f;            // highest loss the heater can be fighting while the air is below SP - RESP_DEFICIT_C
+constexpr float RESP_DEFICIT_C = 1.0f;
 constexpr float LIM_H_LO = 12.0f;          // lowest hold power seen
 constexpr float LIM_NEW_S = 60.0f;         // horizon over which a newly commanded % is priced
 constexpr float LIM_MARGIN_C = 0.4f;       // below the Emergency line
@@ -139,6 +146,7 @@ class Controller {
     binHead_ = 0; ringCount_ = 0; secT_ = 0; secAcc_ = 0; ring10_ = 0; lag_ = 0; absS_ = 0;
     tau_ = TAU_LAG_S; setDelay(THETA_PRIOR_S - THETA_PICKUP_S);
     histCount_ = 0; histHead_ = 0; firstPowerAbs_ = -1.0f; batchStage_ = 0; batchDue_ = false; batchActive_ = false; kFrozen_ = false; kStdB_ = 0; dBias_ = 0; fitRejects_ = 0; prevFitRms_ = 0.0f;
+    respPv_ = NAN; respT_ = 0.0f; respE_ = 0.0f; respSuspect_ = false;
     I_ = 0; Te_ = NAN; pv_ = NAN; spNow_ = 37.5f; far_ = false; tauEsel_ = TAU_E_PRIOR; sigPred_ = 1.0f;
     idDone_ = false; idPhase_ = 0; rlsHold_ = SLOPE_N + 1; thetaSeen_ = false;
     th_[0] = A0; th_[1] = C0_0; th_[2] = CP_0; th_[3] = CE_0; th_[4] = C3_0;
@@ -167,6 +175,7 @@ class Controller {
   float fitRms() const { return prevFitRms_; }
   float lastCandRms() const { return static_cast<float>(bestRms_); }
   bool batchRunning() const { return batchActive_; }
+  bool responseSuspect() const { return respSuspect_; }
 
   Output step(const Input &in) {
     Output out;
@@ -255,6 +264,7 @@ class Controller {
       const float boost = E115_BOOST_MAX * (in.e115Frac - E115_CLIMB_FRAC) / (1.0f - E115_CLIMB_FRAC);
       const float ub = u + boost; u = ub > cap ? cap : ub; out.state = StE115;
     } else if (u >= cap && e > 0.0f) out.state = StClimb;
+    if (respSuspect_) { u = 0.0f; far_ = false; }                    // power that arrived did nothing: withdraw the request until the PV moves
     if (!(u >= 0.0f)) u = 0.0f;                                     // also catches NaN
     if (u > cap) u = cap;
     out.powerLimited = (u >= cap) && cap < 100.0f;
@@ -314,6 +324,18 @@ class Controller {
       if (firstPowerAbs_ < 0.0f && bin > 1.0f) firstPowerAbs_ = absS_;
       const uint16_t td = static_cast<uint16_t>(tdPrime() + 0.5f);
       const uint16_t idx = static_cast<uint16_t>((binHead_ + BIN_N - td) % BIN_N);   // the bin that leaves the transport delay now
+      if (RESP_WATCHDOG && in.permit && pvBadS_ <= 0.0f) {
+        const bool known = batchStage_ > 0;                                              // after an accepted fit the account uses what was learned, with margins
+        float mature = RESP_MATURE_S, loss = RESP_LOSS_PCT;
+        if (known) {
+          mature = tdPrime() + 2.0f * tau_ + 10.0f; if (mature < 60.0f) mature = 60.0f; if (mature > RESP_MATURE_S) mature = RESP_MATURE_S;
+          loss = 1.5f * demandAt(std::isfinite(pv_) ? pv_ : 35.0f) + 10.0f; if (loss < 25.0f) loss = 25.0f; if (loss > RESP_LOSS_PCT) loss = RESP_LOSS_PCT;
+        }
+        const float m = binU_[(binHead_ + BIN_N - static_cast<uint16_t>(mature)) % BIN_N] * 0.5f;       // the bin delivered `mature` seconds ago
+        respT_ += 1.0f; respE_ += m - loss;
+        if (respT_ < mature || respE_ < 0.0f) respE_ = 0.0f;                             // nothing has matured yet; a period below the loss is no credit
+        respNeed_ = RESP_MOVE_C / (known ? std::fmax(K_MIN, 0.5f * kRaw()) : K_MIN); if (respNeed_ < 600.0f) respNeed_ = 600.0f;
+      }
       binHead_ = static_cast<uint16_t>((binHead_ + 1) % BIN_N);
       lag_ += (binU_[idx] * 0.5f - lag_) * (1.0f - std::exp(-1.0f / tau_));
       if (ring10_ >= 9) {
@@ -330,6 +352,10 @@ class Controller {
           histOk_[histHead_] = !gap;
           histHead_ = static_cast<uint8_t>((histHead_ + 1) % HIST_N); if (histCount_ < HIST_N) ++histCount_; lastPushAbs_ = absS_;
           if (ringCount_ < RING_N) ++ringCount_;
+          if (RESP_WATCHDOG) {
+            if (!std::isfinite(respPv_) || std::fabs(pv_ - respPv_) >= RESP_MOVE_C) { respPv_ = pv_; respT_ = 0.0f; respE_ = 0.0f; respSuspect_ = false; }
+            else if (respE_ >= respNeed_ && pv_ < spNow_ - RESP_DEFICIT_C) respSuspect_ = true;
+          }
           if (!batchActive_ && firstPowerAbs_ >= 0.0f && batchStage_ < 2 && absS_ - firstPowerAbs_ >= (batchStage_ == 0 ? BATCH1_S : BATCH2_S)) batchDue_ = true;
           if (rlsHold_ > 0 && !gap) --rlsHold_;
           else if (!gap) { eggObserver(); rlsUpdate(); levelUpdate(); }
@@ -603,7 +629,7 @@ class Controller {
   }
 
   float idPower_ = 100.0f, idT0_ = 0, idPv0_ = 0, idTTheta_ = 0;
-  uint8_t bigNu_ = 0; bool fineSensor_ = false; bool idDone_ = false; uint8_t idPhase_ = 0, rlsHold_ = 0;
+  uint8_t bigNu_ = 0; float respPv_ = NAN, respT_ = 0.0f, respE_ = 0.0f, respNeed_ = 3750.0f; bool respSuspect_ = false; bool fineSensor_ = false; bool idDone_ = false; uint8_t idPhase_ = 0, rlsHold_ = 0;
   uint8_t binU_[BIN_N];
   float pvH_[HIST_N], teH_[3][HIST_N], bla_[HIST_N], bx_[HIST_N][NP + 1], teJ_[3];
   bool histOk_[HIST_N];
