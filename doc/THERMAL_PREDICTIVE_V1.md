@@ -66,11 +66,24 @@ Công cụ: `tests/thermal-adaptive-sim.h` (chạy mã `updateHeatingAndOutputs`
 (Cf 0,3–0,8 MJ/°C, hA 1000–1700 W/°C, quạt 1,5–2 kW, nhiệt phôi 0/1,5 kW, trễ 20/60/120 s), heater 20 kW.
 Kịch bản: T1 mẻ đầu (28 °C, chưa có mô hình), T3 kích SP, T4 mở cửa −3 °C, T5 giai đoạn cuối có biểu đồ quạt hút + nhiệt phôi tăng, T6 phòng +5 °C **đột ngột**, T7 phòng +5 °C trong 2 giờ (chiều → tối).
 
-KẾT QUẢ: xem `audit/thermal-predictive/` (điền sau khi chạy lưới đầy đủ).
+KẾT QUẢ (mô phỏng, lò ảo hai nút, 1.1.14 so với 1.1.15; chi tiết và cách đọc ở `doc/THERMAL_AUDIT_V1.1.15.md`):
+
+| Chỉ số | 1.1.14 | 1.1.15 |
+|---|---|---|
+| % thời gian trong ±0,1 °C, mẻ đầu | 86 % | 97 % |
+| Kích SP: phục hồi | 293 s | 16 s |
+| Mở cửa −3 °C: vọt tệ nhất | 0,63 °C | 0,16 °C |
+| Giai đoạn cuối (nhiệt phôi tăng): phục hồi | 13199 s | 247 s |
+| Phòng +5 °C: % trong dải / mẫu chạm High | 81 % / 189 | 97 % / 0 |
+| Mẻ đầu: vọt / tụt tệ nhất | 1,66 / −4,16 °C | **1,66 / −4,16 °C (chưa đổi)** |
+| Mẻ đầu: thời gian chạm SP−0,3 °C | trung vị ~15 phút | **~15 phút (chưa đổi)** |
+
+Giữ nhiệt tốt hơn rõ; khởi động mẻ đầu **chưa** cải thiện (hệ cũ vẫn khởi động ~9 phút đầu). `tools/check_thermal_acceptance.py` đo 12 tiêu chí tuyệt đối theo triệu chứng
+(chỉ báo cáo, chưa chặn CI): hiện 8/12 chưa đạt, toàn bộ nằm ở khởi động mẻ đầu và cú tụt sau khi chạm SP.
 
 ## 7. Giới hạn đã biết
 
-1. **Mẻ đầu tiên của một lò mới, lò trễ ≥ 120 s và khối khí nhỏ:** hệ cũ vẫn là người khởi động cho tới khi mô hình khớp (~9 phút);
+1. **Mẻ đầu tiên của một lò mới, lò trễ ≥ 120 s và khối khí nhỏ:** hệ cũ vẫn là người khởi động cho tới khi mô hình khớp (~9 phút); hai thử nghiệm thay nó (khởi động tự đo độ lợi; vào điều khiển sớm) đã bị gỡ vì mất an toàn hoặc chậm hơn;
    giai đoạn này vẫn có thể vọt >1 °C. Mẻ sau dùng mô hình đã lưu.
 2. Tách (nhiệt độ trứng, công suất ròng, nhiệt phôi) từ riêng nhiệt độ không khí là **không xác định duy nhất** ở trạng thái giữ;
    sai số nhiệt độ trứng ước lượng có thể ~1 K; tích phân bù và cửa sổ `dr` che phần lớn nhưng không triệt để.
@@ -81,6 +94,6 @@ KẾT QUẢ: xem `audit/thermal-predictive/` (điền sau khi chạy lưới đ�
 ## 8. Nghiệm thu trên lò thật (đề xuất)
 
 1. Chạy một mẻ với công tắc BẬT, đọc PID Monitor: "Du doan: che do" phải đi LEARNING → DIEU KHIEN trong ~10–15 phút; "model rms" < 0,10.
-2. Ghi lại PV 1 giờ ở trạng thái giữ: kỳ vọng |PV−SP| ≲ 0,1 °C. Nếu "LUI VE PID" xuất hiện lặp lại, tắt công tắc và gửi log.
+2. Ghi lại PV 1 giờ ở trạng thái giữ: kỳ vọng |PV−SP| ≲ 0,1 °C. Nếu "LUI VE PID" xuất hiện lặp lại, tắt công tắc và gửi log. Quy trình chạy thử và ngưỡng tắt: `doc/FIELD_TRIAL_V1.1.15.md`.
 3. Mẻ thứ hai (mô hình đã lưu) nên vào DIEU KHIEN sớm hơn.
 4. Đo thời gian chu kỳ điều khiển (không được tăng quá vài ms).
