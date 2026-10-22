@@ -43,6 +43,19 @@ static Plant mk(const O &o, double amb, double eggStart, double ceScale = 1.0) {
   p.loss = (0.03 * o.heaterW + o.fanW + o.eggEnd) / (37.5 - 25.0);
   return p;
 }
+// Fastest possible warm-up of this twin: heater at 100 % from the start with no control at all (open loop). Seconds until the air reaches SP - 0.3 C.
+// A controller cannot beat this; how far above it a controller is says how much time it wastes.
+static double fastestReach(const Plant &p, double start, double sp = 37.5) {
+  double ta = start, te = p.eggStart, hl = 0.0; const double dt = 0.5; std::vector<double> q((size_t)(p.dead / dt + 0.5), 0.0); size_t c = 0;
+  for (double t = 0; t < 14400; t += dt) {
+    double delayed = q.empty() ? p.heaterW : q[c]; if (!q.empty()) { q[c] = p.heaterW; c = (c + 1) % q.size(); }
+    hl += (delayed - hl) * dt / p.lag;
+    double ex = p.hA * (ta - te);
+    ta += (hl + p.fanW - p.loss * (ta - p.ambient) - ex) * dt / p.capacity; te += (ex + p.eggW) * dt / p.eggCap;
+    if (ta >= sp - 0.3) return t;
+  }
+  return -1;
+}
 static Scenario base(const Plant &p, double start) {
   Scenario sc; sc.sp = 37.5f; sc.mode = getenv("MODE") && std::string(getenv("MODE")) == "predictive" ? Mode::Predictive : (getenv("MODE") && std::string(getenv("MODE")) == "smart" ? Mode::Smart : Mode::Adaptive); sc.startTemp = start; sc.gainsSet = true;
   const double G = p.khTrue();
@@ -54,19 +67,21 @@ int main(int argc, char **argv) {
   std::vector<O> os;
   for (double Cf : {0.3e6, 0.5e6, 0.8e6}) for (double hA : {1000.0, 1700.0}) for (double fan : {1500.0, 2000.0}) for (double ee : {0.0, 1500.0}) for (double D : {20.0, 60.0, 120.0})
     os.push_back({Cf, 1.9e6, hA, fan, ee, D, HW});
-  printf("scn,Cf,hA,fan,eggEnd,dead,over,under,recov_s,inband_pct,high,reach_s,duty_pct,tOver_s,predActive_s,predFirst_s,predRms,predState,predFallbacks,in10_pct,mean_err,tail_mean_err,tail_in10_pct\n");
+  printf("scn,Cf,hA,fan,eggEnd,dead,over,under,recov_s,inband_pct,high,reach_s,duty_pct,tOver_s,predActive_s,predFirst_s,predRms,predState,predFallbacks,in10_pct,mean_err,tail_mean_err,tail_in10_pct,fastest_s\n");
   for (size_t i = part; i < os.size(); i += parts) {
     if (getenv("STRIDE") && (i % atoi(getenv("STRIDE"))) != (getenv("PHASE") ? atoi(getenv("PHASE")) : 0)) continue;
     const O &o = os[i];
     const std::string SCN = getenv("SCN") ? getenv("SCN") : "123456";
     auto want = [&](char c) { return SCN.find(c) != std::string::npos; };
+    double fastest = 0;      // set once the oven is built
     auto row = [&](const char *n, const M &m, int high, double reach) {
-      printf("%s,%.0f,%.0f,%.0f,%.0f,%.0f,%.3f,%.3f,%.0f,%.1f,%d,%.0f,%.2f,%.0f,%.0f,%.0f,%.3f,%d,%d,%.1f,%.3f,%.3f,%.1f\n", n, o.Cf, o.hA, o.fanW, o.eggEnd, o.dead, m.over, m.under, m.recov, m.inband, high, reach, m.duty, m.tOver, gLast.activeS, gLast.firstS, gLast.rms, gLast.state, gLast.fallbacks, m.in10, m.mean, m.tailMean, m.tailIn10);
+      printf("%s,%.0f,%.0f,%.0f,%.0f,%.0f,%.3f,%.3f,%.0f,%.1f,%d,%.0f,%.2f,%.0f,%.0f,%.0f,%.3f,%d,%d,%.1f,%.3f,%.3f,%.1f,%.0f\n", n, o.Cf, o.hA, o.fanW, o.eggEnd, o.dead, m.over, m.under, m.recov, m.inband, high, reach, m.duty, m.tOver, gLast.activeS, gLast.firstS, gLast.rms, gLast.state, gLast.fallbacks, m.in10, m.mean, m.tailMean, m.tailIn10, fastest);
       fflush(stdout);
     };
     // ---- T1 first batch: air and eggs at 28 C, no plan, 4 h ----
     const double t1Start = getenv("T1START") ? atof(getenv("T1START")) : 28.0;      // air and eggs at the start of the first batch
     Plant p = mk(o, 25, t1Start);
+    fastest = fastestReach(p, t1Start);
     Scenario s1 = base(p, t1Start); s1.durationS = 14400;
     std::stringstream t1; s1.trace = true; s1.traceOut = &t1; s1.label = "T";
     Result r1 = run(p, s1); gLast = {r1.predActiveS, r1.predFirstActiveS, r1.predRms, r1.predState, r1.predFallbacks}; auto v1 = parse(t1.str());

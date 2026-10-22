@@ -59,13 +59,15 @@ def main():
             print('%-14s  no rows' % c['id']); failed += 1; continue
         bad = 0; worst = None
         for r in sel:
-            v = float(r[c['metric']]); slow = float(r['dead']) >= 120
-            lim = c.get('max', c.get('min'))
-            if isinstance(lim, dict): lim = lim['slow' if slow else 'typical']
-            ok = (v <= lim) if 'max' in c else (v >= lim)
+            v = float(r[c['metric']])
+            if 'max_vs_fastest' in c:
+                lim = c['max_vs_fastest']['factor'] * float(r['fastest_s']) + c['max_vs_fastest']['add']
+            else:
+                lim = c.get('max', c.get('min'))
+            ok = (v <= lim) if 'min' not in c else (v >= lim)
             if c['metric'] == 'reach_s' and v < 0: ok = False        # never reached
             if not ok: bad += 1
-            if worst is None or ((v > worst[0]) if 'max' in c else (v < worst[0])): worst = (v, lim)
+            if worst is None or ((v > worst[0]) if 'min' not in c else (v < worst[0])): worst = (v, lim)
         failed += bad > 0
         print('%-14s %5d  %3d/%-5d %g (%g)' % (c['id'], len(sel), len(sel) - bad, len(sel), worst[0], worst[1]))
     print('ACCEPTANCE: %s (%d of %d criteria failed) -- simulation on the digital twin, not a real oven' % ('PASS' if not failed else 'FAIL', failed, len(crit)))

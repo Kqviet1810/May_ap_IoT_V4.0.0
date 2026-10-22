@@ -1,17 +1,16 @@
 {
   "note": "Acceptance criteria for the thermal controller, written from the symptoms seen on the oven (slow warm-up, stopping short of SP, overshoot, no recovery). PROPOSED values: the owner must confirm them. They are checked on the two-node digital twin (simulation), never on a real oven.",
-  "classes": {"typical": "transport delay <= 60 s", "slow": "transport delay 120 s"},
   "criteria": [
-    {"id": "T1@33.reach",  "scn": "T1_batch1", "start": 33, "metric": "reach_s",  "max": {"typical": 480, "slow": 720}, "what": "first batch from 33 C: seconds until the air reaches SP - 0.3 C"},
+    {"id": "T1@33.reach",  "scn": "T1_batch1", "start": 33, "metric": "reach_s",  "max_vs_fastest": {"factor": 1.5, "add": 180}, "what": "first batch from 33 C: seconds until the air reaches SP - 0.3 C, vs the fastest this oven can physically do (heater 100 % from the start, no control)"},
     {"id": "T1@33.over",   "scn": "T1_batch1", "start": 33, "metric": "over",     "max": 0.3, "what": "overshoot above SP after reaching it"},
     {"id": "T1@33.under",  "scn": "T1_batch1", "start": 33, "metric": "under",    "min": -0.3, "what": "dip below SP after reaching it"},
     {"id": "T1@33.high",   "scn": "T1_batch1", "start": 33, "metric": "high",     "max": 0, "what": "samples in the High alarm band"},
-    {"id": "T1@28.reach",  "scn": "T1_batch1", "start": 28, "metric": "reach_s",  "max": {"typical": 600, "slow": 900}, "what": "first batch from 28 C"},
+    {"id": "T1@28.reach",  "scn": "T1_batch1", "start": 28, "metric": "reach_s",  "max_vs_fastest": {"factor": 1.5, "add": 180}, "what": "first batch from 28 C"},
     {"id": "T1@28.over",   "scn": "T1_batch1", "start": 28, "metric": "over",     "max": 0.3},
     {"id": "T1@28.under",  "scn": "T1_batch1", "start": 28, "metric": "under",    "min": -0.3},
     {"id": "T1@28.high",   "scn": "T1_batch1", "start": 28, "metric": "high",     "max": 0},
     {"id": "T1.settled",   "scn": "T1_batch1", "start": 28, "metric": "tail_in10_pct", "min": 90, "what": "last hour of the first batch within +-0.1 C of SP"},
-    {"id": "T2.reach",     "scn": "T2_batch2", "start": 28, "metric": "reach_s",  "max": {"typical": 480, "slow": 720}, "what": "second batch (stored model) from 28 C"},
+    {"id": "T2.reach",     "scn": "T2_batch2", "start": 28, "metric": "reach_s",  "max_vs_fastest": {"factor": 1.5, "add": 180}, "what": "second batch (stored model) from 28 C"},
     {"id": "T4.recover",   "scn": "T4_door3",  "start": 28, "metric": "recov_s",  "max": 300, "what": "door opens (-3 C): seconds until the air is back within 0.3 C of SP for good"},
     {"id": "T4.stuck",     "scn": "T4_door3",  "start": 28, "metric": "tail_in10_pct", "min": 90, "what": "last hour after the door: no oven stays stuck below SP"}
   ]
