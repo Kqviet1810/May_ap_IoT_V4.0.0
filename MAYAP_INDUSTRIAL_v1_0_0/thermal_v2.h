@@ -61,7 +61,7 @@ constexpr uint8_t LOOK_RING = 9;           // first look: 90 s with the heater O
 // ---- law ----
 constexpr float E_FAR_ON = 0.5f;           // degC of predicted deficit that switches to full power: eps*E_FAR <= 0.2 degC overshoot budget for eps <= 20 %
 constexpr float E_FAR_OFF = 0.25f;
-constexpr float BETA = 0.7f;
+constexpr float BETA = 0.85f;
 constexpr float I_MAX = 30.0f;
 constexpr float E115_CLIMB_FRAC = 0.4f;
 constexpr float E115_BOOST_MAX = 25.0f;
