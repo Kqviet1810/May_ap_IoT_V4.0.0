@@ -29,7 +29,7 @@ constexpr int PreBins = 60;             // 10 minutes of heater history before t
 constexpr int CapBins = HistBins + PreBins;
 constexpr int PlanDtSec = 30;           // planner step
 constexpr int PlanSteps = 240;          // two hours
-static_assert(CapBins >= PlanSteps, "the shared scratch buffer must hold a plan");
+static_assert(CapBins >= 2 * PlanSteps, "the shared scratch buffer must hold a plan (16 bit per step)");
 constexpr int NP = 12;                  // identified parameters
 constexpr int RecentDBins = 90;         // the disturbance estimate that may differ in the last 15 minutes (a few times the longest delay + lag)
 
@@ -83,14 +83,18 @@ inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi 
 inline bool finitef(float v) { return std::isfinite(v); }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------
+#ifndef MAYAP_VENT_BIT_THRESHOLD
+#define MAYAP_VENT_BIT_THRESHOLD 0.5f
+#endif
 class History {
  public:
+  static constexpr float VentBitThreshold = MAYAP_VENT_BIT_THRESHOLD;
   void reset() { n_ = 0; std::memset(u_, 0, sizeof(u_)); std::memset(y_, 0, sizeof(y_)); std::memset(vb_, 0, sizeof(vb_)); }
   void push(float uPct, float pv, float vent) {
     const uint32_t i = n_ % CapBins;
     u_[i] = static_cast<uint8_t>(clampf(uPct, 0.0f, 100.0f) * 2.0f + 0.5f);
     y_[i] = static_cast<int16_t>((clampf(pv, 0.0f, 80.0f) - 20.0f) * 100.0f + 0.5f);
-    if (vent >= 0.5f) vb_[i >> 3] = static_cast<uint8_t>(vb_[i >> 3] | (1U << (i & 7U))); else vb_[i >> 3] = static_cast<uint8_t>(vb_[i >> 3] & ~(1U << (i & 7U)));      // the fan was on for most of the bin
+    if (vent >= VentBitThreshold) vb_[i >> 3] = static_cast<uint8_t>(vb_[i >> 3] | (1U << (i & 7U))); else vb_[i >> 3] = static_cast<uint8_t>(vb_[i >> 3] & ~(1U << (i & 7U)));      // the fan was on for most of the bin
     ++n_;
   }
   uint32_t count() const { return n_; }
@@ -408,7 +412,7 @@ class Planner {
     limit_ = limitPct; ventAllowed_ = ventAllowed; hist_ = &h; nowBin_ = nowBin;
     idx_ = 0; best_ = PlanChoice{}; running_ = true;
   }
-  void bind(uint8_t *scratch) { cmd_ = scratch; }       // PlanSteps bytes
+  void bind(uint16_t *scratch) { cmd_ = scratch; }       // PlanSteps entries
   bool running() const { return running_; }
   // Evaluate up to `n` candidates; returns true when the sweep has finished.
   bool service(int n) {
@@ -478,12 +482,12 @@ class Planner {
       float u;
       if (planned > 0.0f) u = 0.0f;
       else u = clampf(tail(m_, s.ta, s.te, d_, ventAhead, sp_, c.tau, limit_ + 20.0f) + (t < c.t1Min * 60.0f ? c.du : 0.0f), 0.0f, limit_);
-      cmd_[j] = static_cast<uint8_t>(u * 2.0f + 0.5f);       // half-percent steps
+      cmd_[j] = static_cast<uint16_t>(u * 100.0f + 0.5f);     // 0.01 %: a hold of a few percent integrated over two hours does not forgive coarser steps
       // heater power delivered `dead` seconds ago: the past from the history, the future from this very plan
       const float td = t + 0.5f * dt - m_.dead;
       float ud;
       if (td < 0.0f) ud = hist_->uAtTime(tNow + td);
-      else { int k = static_cast<int>(td / dt); if (k >= j) k = j; ud = 0.5f * cmd_[k]; }
+      else { int k = static_cast<int>(td / dt); if (k >= j) k = j; ud = 0.01f * cmd_[k]; }
       simStep(m_, sc, ud, d_, w_, vent, s);
       if (taOut) taOut[j] = s.ta;
       const float e = s.ta - sp_;
@@ -504,7 +508,7 @@ class Planner {
   uint32_t nowBin_ = 0;
   int idx_ = 0;
   PlanChoice best_;
-  uint8_t *cmd_ = nullptr;
+  uint16_t *cmd_ = nullptr;
 };
 
 // ---------------------------------------------------------------------------------------------------------------------------------------
@@ -561,7 +565,7 @@ class Controller {
     if (!enabled_) return;
     (void)in;
     phase_ ^= 1U;
-    ident_.bind(scratch_); planner_.bind(reinterpret_cast<uint8_t *>(scratch_));
+    ident_.bind(scratch_); planner_.bind(reinterpret_cast<uint16_t *>(scratch_));
     if (phase_ == 0U) {
       // the first twenty minutes at full rate (the physics is learned from the warm-up), afterwards a quarter of it
       const int n = hist_.count() < 120U ? budget : (budget > 3 ? budget / 4 : 1);
@@ -644,7 +648,10 @@ class Controller {
     // Model-free overshoot guard: whatever the model believes, heat already on its way keeps raising the air for about delay + lag after the
     // power is cut. If the observed slope carries the air past SP by that time, no more power (the same logic as a cutback / fuzzy overshoot
     // suppression, but it acts on what is measured, so a model that has just become wrong cannot defeat it).
-    if (slopeValid_ && finitef(in.pv) && in.pv + slope_ * (model_.dead + model_.tau) > in.sp + OvershootKnee) u = 0.0f;
+    // (only while the model is missing: when it forecasts well the planner already schedules the cutback, and a linear extrapolation of the
+    // slope over-cuts it: the eggs and the loss absorb part of the heat in flight)
+    if (slopeValid_ && finitef(in.pv) && (ident_.recentRms() > GuardRms || ident_.recentPeak() > GuardPeak) &&
+        in.pv + slope_ * (model_.dead + model_.tau) > in.sp + OvershootKnee) u = 0.0f;
     request_ = clampf(u, 0.0f, limit);
     lastPinned_ = request_ <= 0.0f || request_ >= limit;
   }
@@ -670,7 +677,7 @@ class Controller {
     return enabled_ && hist_.count() >= 24U && !planner_.running() && static_cast<int64_t>(hist_.count()) - pendingStartBin_ >= PlanDtSec / BinSec;
   }
   void beginPlan(const Inputs &in) {
-    planner_.bind(reinterpret_cast<uint8_t *>(scratch_));
+    planner_.bind(reinterpret_cast<uint16_t *>(scratch_));
     planner_.start(model_, currentState(in), in.sp, clampf(in.limitPct, 0.0f, 100.0f), in.ventAllowed, hist_, hist_.count(), in.vent);
     pendingStartBin_ = static_cast<int64_t>(hist_.count());   // the plan is aged from the moment its sweep started
   }
@@ -682,6 +689,7 @@ class Controller {
   float heaterLag() const { return hl_; }
   uint8_t lastWhy() const { return lastWhy_; }
 
+  static constexpr float GuardRms = 0.10f, GuardPeak = 0.25f;
   static constexpr float SeverePeak = 0.5f;
   static constexpr float ProbeSwingPct = 15.0f;
   static constexpr float SevereMiss = 0.6f;            // a miss this large is stood down at once
@@ -736,7 +744,7 @@ class Controller {
   History hist_;
   Identifier ident_;
   Planner planner_;
-  int8_t scratch_[CapBins] = {};       // one working buffer for whichever of the two is evaluating (they alternate, never overlap)
+  alignas(4) int8_t scratch_[CapBins] = {};       // one working buffer for whichever of the two is evaluating (they alternate, never overlap)
   PlanChoice plan_;
   StoredModel stored_;
   Model model_;
