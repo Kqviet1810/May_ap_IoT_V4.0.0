@@ -62,6 +62,9 @@ constexpr uint8_t LOOK_RING = 9;           // first look: 90 s with the heater O
 constexpr float E_FAR_ON = 0.5f;           // degC of predicted deficit that switches to full power: eps*E_FAR <= 0.2 degC overshoot budget for eps <= 20 %
 constexpr float E_FAR_OFF = 0.25f;
 constexpr float BETA = 0.85f;
+constexpr bool DEMAND_INCLUDES_I = false;
+constexpr float LEVEL_FLAT_C = 0.15f;      // degC rise over the 110 s ring window below which the PV counts as flat
+constexpr float LEVEL_GAIN = 0.05f;        // per 10 s
 constexpr float I_MAX = 30.0f;
 constexpr float E115_CLIMB_FRAC = 0.4f;
 constexpr float E115_BOOST_MAX = 25.0f;
@@ -94,7 +97,7 @@ class Controller {
     for (auto &x : pvRing_) x = 0.0f;
     for (auto &x : paRing_) x = 0.0f;
     binHead_ = 0; ringCount_ = 0; secT_ = 0; secAcc_ = 0; ring10_ = 0; lag_ = 0; absS_ = 0;
-    tau_ = TAU_LAG_S; setDelay(THETA_PRIOR_S - THETA_PICKUP_S); histCount_ = 0; histHead_ = 0; firstPowerAbs_ = -1.0f; batchStage_ = 0; batchDue_ = false; kFrozen_ = false; kStdB_ = 0; I_ = 0; Te_ = NAN; pv_ = NAN; spNow_ = 37.5f; far_ = false;
+    tau_ = TAU_LAG_S; setDelay(THETA_PRIOR_S - THETA_PICKUP_S); histCount_ = 0; histHead_ = 0; firstPowerAbs_ = -1.0f; batchStage_ = 0; batchDue_ = false; kFrozen_ = false; kStdB_ = 0; dBias_ = 0; I_ = 0; Te_ = NAN; pv_ = NAN; spNow_ = 37.5f; far_ = false;
     idDone_ = false; idPhase_ = 0; rlsHold_ = SLOPE_N + 1; thetaSeen_ = false;
     th_[0] = A0; th_[1] = C0_0; th_[2] = CP_0; th_[3] = CE_0;
     for (auto &r : P_) for (auto &v : r) v = 0.0f;
@@ -134,9 +137,10 @@ class Controller {
     const float Ttr = tdPrime() + tau_;
     // the demand grows with the air while it climbs (egg flow ~ PV - Te): pay for it at the middle of the predicted trajectory, not at the present PV
     const float Etr = transitEnergy();
-    const float p0 = pv_ + k * (Etr - clampPos(demandAt(pv_)) * Ttr);
+    const float iDem = DEMAND_INCLUDES_I ? I_ : 0.0f;                  // I is the part of the demand the model does not know: the prediction must pay for it too
+    const float p0 = pv_ + k * (Etr - clampPos(demandAt(pv_) + iDem) * Ttr);
     const float pMid = 0.5f * (pv_ + (p0 < in.sp ? p0 : in.sp));
-    pvPred_ = pv_ + k * (Etr - clampPos(demandAt(pMid)) * Ttr);
+    pvPred_ = pv_ + k * (Etr - clampPos(demandAt(pMid) + iDem) * Ttr);
     const float e = in.sp - pvPred_;
     const float Kc = 1.0f / (k * 3.0f * theta_);                 // SIMC for an integrating plant, tau_c = 2*theta
     const float tauI = 6.0f * theta_;                           // 4*(tau_c + theta)
@@ -182,7 +186,7 @@ class Controller {
   float aSafe() const { return th_[0] > 1.0f ? th_[0] : 1.0f; }
   float haOf() const { return 100.0f * th_[3] / aSafe(); }                                   // egg exchange, % of bank per degC
   float demandAt(float pv) const {                                                            // demand if the air were at pv (egg temperature as modelled)
-    const float d = 100.0f * (th_[1] + th_[2] * (pv - P0) - th_[3] * (Te_ - P0)) / aSafe();
+    const float d = 100.0f * (th_[1] + th_[2] * (pv - P0) - th_[3] * (Te_ - P0)) / aSafe() + dBias_;
     return d < D_MIN ? D_MIN : (d > D_MAX ? D_MAX : d);
   }
   float lossOf() const { return demandAt(Te_); }                                              // demand with no air-egg difference
@@ -221,7 +225,7 @@ class Controller {
         if (ringCount_ < RING_N) ++ringCount_;
         if (!in.permit) { ringCount_ = 0; rlsHold_ = SLOPE_N + 1; histCount_ = 0; }
         else if (rlsHold_ > 0) --rlsHold_;
-        else rlsUpdate();
+        else { rlsUpdate(); levelUpdate(); }
       } else ++ring10_;
     }
   }
@@ -231,6 +235,21 @@ class Controller {
     float sum = 0; const uint16_t td = static_cast<uint16_t>(tdPrime() + 0.5f);
     for (uint16_t i = 1; i <= td; ++i) sum += binU_[(binHead_ + BIN_N - i) % BIN_N] * 0.5f;
     return sum + tau_ * lag_;
+  }
+
+  // Level anchor: in a FLAT window the power that arrives equals the demand whatever k is, so the model's level is pulled to it (slowly).  The same amount
+  // is taken out of I, so the pair (model level, I) changes by nothing but where the number lives.
+  void levelUpdate() {
+    if (!idDone_ || ringCount_ < RING_N) return;
+    const float rise = pvRing_[RING_N - 1] - pvRing_[0];
+    if (std::fabs(rise) > LEVEL_FLAT_C) return;
+    float pa = 0, pvm = 0; for (uint8_t i = 0; i < RING_N; ++i) { pa += paRing_[i]; pvm += pvRing_[i]; }
+    pa /= RING_N; pvm /= RING_N;
+    const float err = pa - demandAt(pvm);
+    const float step = LEVEL_GAIN * err;
+    dBias_ += step; I_ -= step;
+    if (dBias_ > 40.0f) dBias_ = 40.0f; else if (dBias_ < -40.0f) dBias_ = -40.0f;
+    if (I_ > I_MAX) I_ = I_MAX; else if (I_ < -I_MAX) I_ = -I_MAX;
   }
 
   // ---- the single learner: slope(mK/s) = a*La/100 - b1 - b2*x   with theta = [a, b1, b2] ----
@@ -397,7 +416,7 @@ class Controller {
   uint8_t binU_[BIN_N];
   float pvH_[HIST_N], teH_[HIST_N], bla_[HIST_N], bx_[HIST_N][5];
   uint8_t histCount_ = 0, histHead_ = 0, batchStage_ = 0; bool batchDue_ = false;
-  bool kFrozen_ = false; float kStdB_ = 0;
+  bool kFrozen_ = false; float kStdB_ = 0, dBias_ = 0;
   float lastPushAbs_ = 0, firstPowerAbs_ = -1.0f, tau_ = TAU_LAG_S;
   float pvRing_[RING_N], paRing_[RING_N];
   uint16_t binHead_; uint8_t ringCount_, ring10_;
