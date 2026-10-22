@@ -28,9 +28,9 @@
 
 namespace sim {
 
-enum class Mode : uint8_t { Baseline = 0, LearnNoVent = 1, Adaptive = 2, Smart = 3 };
+enum class Mode : uint8_t { Baseline = 0, LearnNoVent = 1, Adaptive = 2, Smart = 3, Predictive = 4 };
 inline const char *modeName(Mode m) {
-  return m == Mode::Baseline ? "BASELINE_V4" : m == Mode::LearnNoVent ? "V1_NO_VENT_COORD" : m == Mode::Smart ? "SMART_THERMAL" : "ADAPTIVE_V1";
+  return m == Mode::Baseline ? "BASELINE_V4" : m == Mode::LearnNoVent ? "V1_NO_VENT_COORD" : m == Mode::Smart ? "SMART_THERMAL" : m == Mode::Predictive ? "PREDICTIVE_V1" : "ADAPTIVE_V1";
 }
 enum class Reach : uint8_t { Reachable, HeatLimited, CoolingRequired, SafetyLimited };
 inline const char *reachName(Reach r) {
@@ -49,7 +49,17 @@ struct Plant {
   double resolution = 0.1;
   double bias = 0;
   double noise = 0;
-  double khTrue() const { return 16000.0 * eff / capacity; }  // degC/s at 100 % duty
+  // Optional second thermal node (0 = off, the single-capacity plant above). The eggs are a large, slow node that exchanges heat
+  // with the chamber air (hA, W/degC); fanW is power dissipated into the air (circulation motor), eggW is embryo heat into the eggs.
+  double eggCap = 0;         // J/degC of the load (eggs); `capacity` is then the fast node (air + steel + trays)
+  double hA = 0;             // W/degC air <-> eggs
+  double fanW = 0;           // W into the air, always
+  double eggW = 0;           // W into the eggs (embryo metabolism)
+  double eggStart = NAN;     // initial egg temperature (NaN = same as the air)
+  double eggWEnd = NAN;      // if finite, eggW ramps linearly to this value over eggRampS (embryo heat rising with the incubation day)
+  double eggRampS = 0;
+  double heaterW = 16000.0;  // electrical power of the heater bank at 100 % duty (before `eff`)
+  double khTrue() const { return heaterW * eff / (capacity + eggCap); }  // degC/s at 100 % duty (whole thermal mass)
 };
 
 struct Scenario {
@@ -70,6 +80,7 @@ struct Scenario {
   double eventAtS = 5400;
   double eventValue = 2.0;       // door drop (degC)
   double ambientDelta = 0;       // applied at changeAtS
+  double ambientRampS = 0;       // > 0: the room changes linearly over this long instead of in one step (afternoon -> evening)
   double extraLossW = 0, extraLossUntilS = 0;  // legacy "vent" event: extra W/degC while t in [changeAtS, until)
   float spBefore = NAN;          // setpoint_step: SP before eventAtS
   uint32_t clockOffset = 0;  // millis() starts here (rollover tests)
@@ -99,6 +110,9 @@ struct Result {
   bool planOffered = false;
   MayapThermal::LaunchPlan planOut{};
   double peakAfterRise = -1000;   // highest PV once SP - 0.15 has been reached
+  // Thermal Predictive V1 (Mode::Predictive): seconds in control, state and residual at the end, times it fell back
+  double predActiveS = 0, predFirstActiveS = -1, predRms = 0;
+  int predState = 0, predFallbacks = 0;
   int settling = -1;
   int high = 0, emergency = 0;
   bool pass = false;
@@ -158,9 +172,10 @@ inline void configure(PathHarness &h, const Scenario &sc) {
   h.batchRunning_ = true;
   h.config_.targetTemp = sc.sp;
   // Smart Thermal is the run-time setting now (production code applies it each cycle together with the adaptive balance); every other mode is the legacy controller.
-  h.config_.smartThermalEnabled = sc.mode == Mode::Smart;
+  h.config_.smartThermalEnabled = sc.mode == Mode::Smart || sc.mode == Mode::Predictive;   // Predictive runs over the best legacy controller
+  h.config_.predictiveThermalEnabled = sc.mode == Mode::Predictive;
   h.config_.adaptiveThermalBalanceEnabled = sc.mode != Mode::Baseline;
-  h.thermalV1_.setVentCoordination(sc.mode == Mode::Adaptive || sc.mode == Mode::Smart);
+  h.thermalV1_.setVentCoordination(sc.mode == Mode::Adaptive || sc.mode == Mode::Smart || sc.mode == Mode::Predictive);
   h.config_.ventAutoEnabled = sc.ventProfile;
   h.config_.ventCycleMinutes = static_cast<uint8_t>(sc.ventCycleMin);
   h.config_.ventDutyDay1To3 = static_cast<uint8_t>(sc.ventDutyPct);
@@ -196,9 +211,11 @@ inline Result run(const Plant &base, const Scenario &sc) {
   size_t cursor = 0;
   const double temp0 = std::isfinite(sc.startTemp) ? sc.startTemp : p.ambient;
   double temp = temp0, heater = 0, ventAir = 0, sensPhys = temp0;
+  double eggT = std::isfinite(p.eggStart) ? p.eggStart : temp0;
   bool prevFwHigh = false, prevFwEmergency = false;
   double energy = 0;
   bool prevHigh = false, prevEmergency = false, ventPrev = false, reached = false;
+  MayapPredictive::State predPrev = MayapPredictive::State::Off;
   int lastOut = 0;
   std::vector<double> tail;
   double lo = 1000, hi = -1000, maeSum = 0;
@@ -232,8 +249,9 @@ inline Result run(const Plant &base, const Scenario &sc) {
     if (!changed && sc.changeAtS >= 0 && t >= sc.changeAtS) {
       changed = true;
       p.eff *= sc.effScale; p.ventG *= sc.ventScale; p.loss *= sc.lossScale; p.capacity *= sc.capScale;
-      p.ambient += sc.ambientDelta;
+      if (sc.ambientRampS <= 0) p.ambient += sc.ambientDelta;
     }
+    if (changed && sc.ambientRampS > 0 && t < sc.changeAtS + sc.ambientRampS) p.ambient += sc.ambientDelta * dt / sc.ambientRampS;
     if (std::isfinite(sc.spBefore)) h->config_.targetTemp = t >= sc.eventAtS ? sc.sp : sc.spBefore;
     // ---- scheduled disturbance / fault events -----------------------------------------------
     const double e0 = sc.eventAtS;
@@ -368,7 +386,7 @@ inline Result run(const Plant &base, const Scenario &sc) {
       if (sc.path.fault == SensorFault::SsrStuckOn) actualOn = st.heatMaster;
       else if (sc.path.fault == SensorFault::SsrContactorStuck) actualOn = true;
     }
-    const double delivered = actualOn ? 16000.0 * p.eff : 0.0;
+    const double delivered = actualOn ? p.heaterW * p.eff : 0.0;
     const double delayed = pipe[cursor];
     pipe[cursor] = delivered;
     cursor = (cursor + 1U) % pipe.size();
@@ -376,7 +394,14 @@ inline Result run(const Plant &base, const Scenario &sc) {
     ventAir += ((st.ventFan ? 1.0 : 0.0) - ventAir) * dt / 8.0;
     const double ventW = p.ventG * ventAir * (temp - p.ambient);
     const double extraLoss = (sc.extraLossW > 0 && t >= sc.changeAtS && t < sc.extraLossUntilS) ? sc.extraLossW : 0.0;
-    temp += (heater - (p.loss + extraLoss) * (temp - p.ambient) - ventW) * dt / p.capacity;
+    if (p.eggCap > 0.0) {
+      const double q = p.hA * (temp - eggT);   // air -> eggs
+      temp += (heater - (p.loss + extraLoss) * (temp - p.ambient) - ventW - q + p.fanW) * dt / p.capacity;
+      const double ew = std::isfinite(p.eggWEnd) && p.eggRampS > 0 ? p.eggW + (p.eggWEnd - p.eggW) * std::min(1.0, t / p.eggRampS) : p.eggW;
+      eggT += (q + ew) * dt / p.eggCap;
+    } else {
+      temp += (heater - (p.loss + extraLoss) * (temp - p.ambient) - ventW) * dt / p.capacity;
+    }
     energy += delivered * dt;
     if (!std::isfinite(temp) || !std::isfinite(h->runtime_.heaterPower) || h->runtime_.heaterPower < 0 ||
         h->runtime_.heaterPower > 100.0001) {
@@ -406,6 +431,28 @@ inline Result run(const Plant &base, const Scenario &sc) {
     if (!reached && temp >= sp - 0.15) { reached = true; r.riseS = t; }
     if (reached && temp > r.peakAfterRise) r.peakAfterRise = temp;
     if (std::fabs(temp - sp) > 0.15) lastOut = static_cast<int>(t);
+    if (tick % 10U == 0U && sc.mode == Mode::Predictive) {
+      const auto ps = h->thermalPredictive_.state();
+      if (ps == MayapPredictive::State::Active) { r.predActiveS += 1.0; if (r.predFirstActiveS < 0) r.predFirstActiveS = t; }
+      if (ps == MayapPredictive::State::Fallback && predPrev == MayapPredictive::State::Active) ++r.predFallbacks;
+      predPrev = ps; r.predState = static_cast<int>(ps); r.predRms = h->thermalPredictive_.telemetry().rms;
+      if (std::getenv("PREDDBG") && tick % static_cast<unsigned>(std::getenv("PREDDT") ? std::atoi(std::getenv("PREDDT")) : 3000) == 0U && t >= (std::getenv("PREDT0") ? std::atof(std::getenv("PREDT0")) : 0.0)) {
+        const auto &id = h->thermalPredictive_.identifier(); const auto tl = h->thermalPredictive_.telemetry();
+        std::fprintf(stderr, "[PRED t=%.0f] st=%d rms=%.3f recent=%.3f bound=%d evals=%u bins=%u ok=%d why=%d te=%.2f d=%.1f req=%.1f pv=%.2f plan[du=%.0f t1=%.0f tau=%.0f v=%.0f cost=%.2f] model[cf=%.0f ce=%.0f k=%.1f a=%.2f D=%.0f tau=%.0f]\n", t, static_cast<int>(ps), tl.rms, tl.innov, id.atBound() ? 1 : 0,
+                     id.evals(), h->thermalPredictive_.history().count(), tl.modelOk ? 1 : 0, h->thermalPredictive_.lastWhy(), tl.te, tl.d, tl.request, temp, h->thermalPredictive_.plan().du, h->thermalPredictive_.plan().t1Min, h->thermalPredictive_.plan().tau, h->thermalPredictive_.plan().ventMin, h->thermalPredictive_.plan().cost, tl.m.cf, tl.m.ce, tl.m.k, tl.m.a, tl.m.dead, tl.m.tau);
+        if (std::getenv("PREDX")) { const float *x = id.vector(); std::fprintf(stderr, "   x: cf=%.0f ce=%.0f k=%.2f a=%.2f D=%.0f tau=%.0f vp=%.1f d0=%.1f off=%.2f w0=%.2f dr=%.2f tamb=%.1f\n", std::exp(x[0]), std::exp(x[1]), std::exp(x[2]), std::exp(x[3]), std::exp(x[4]), std::exp(x[5]), x[6], x[7], x[8], x[9], x[10], x[11]); }
+        if (std::getenv("PREDTRAJ")) {
+          float tr[MayapPredictive::PlanSteps];
+          const auto pl = h->thermalPredictive_.plan();
+          const float c0 = h->thermalPredictive_.plannerForTest().replay(pl, tr);
+          std::fprintf(stderr, "   traj(cost %.1f): ", c0);
+          for (int q = 0; q < MayapPredictive::PlanSteps; q += 10) std::fprintf(stderr, "%.2f ", tr[q]);
+          std::fprintf(stderr, "\n");
+          for (float u1 : {-100.0f, -15.0f, 0.0f, 6.0f, 15.0f, 30.0f}) for (float t1 : {1.0f, 2.0f, 4.0f}) { MayapPredictive::PlanChoice c = pl; c.du = u1; c.t1Min = t1; const float cc = h->thermalPredictive_.plannerForTest().replay(c, tr);
+            std::fprintf(stderr, "   alt du=%.0f t1=%.0f cost %.1f: ", u1, t1, cc); for (int q = 0; q < MayapPredictive::PlanSteps; q += 20) std::fprintf(stderr, "%.2f ", tr[q]); std::fprintf(stderr, "\n"); }
+        }
+      }
+    }
     if (tick % 10U == 0U) {
       sec_temp.push_back(static_cast<float>(temp));
       sec_integral.push_back(h->pid_.integral());

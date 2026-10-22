@@ -586,18 +586,20 @@ const SettingItem SETTINGS[] = {
   // Sensor resolution: choosing 0.1 / 0.01 skips the format guessing at start-up (NANG CAO > HIEU CHUAN).
   ITEM_U8_OPTIONS("DPG cam bien", sensorResolutionMode, OPT_SENSOR_RES, 3),     // 53
   // Smart Thermal (NANG CAO > PID/GIA NHIET): works only with "Tu can bang nhiet" ON; locked while a batch runs.
-  ITEM_BOOL("Smart Thermal", smartThermalEnabled)                               // 54
+  ITEM_BOOL("Smart Thermal", smartThermalEnabled),                              // 54
+  // Thermal Predictive V1 (NANG CAO > PID/GIA NHIET): default ON; read at the start of a batch; acts only with "Tu can bang nhiet" ON.
+  ITEM_BOOL("Nhiet du doan", predictiveThermalEnabled)                          // 55
 };
 
 constexpr uint8_t SETTING_COUNT = sizeof(SETTINGS) / sizeof(SETTINGS[0]);
-static_assert(SETTING_COUNT == 55, "Bang SETTINGS phai co 55 thong so");
+static_assert(SETTING_COUNT == 56, "Bang SETTINGS phai co 56 thong so");
 
 const uint8_t GROUP_SETTING_INDEXES[] = {
   0,1,2,3,                             // Cai dat me
   4,5,6,8,                             // Nhiet do (nguong van hanh; Bu nhiet do da chuyen sang HIEU CHUAN)
   11,12,13,28,                         // Dao trung
   14,29,                               // He thong
-  15,16,17,19,51,54,                   // PID / GIA NHIET + Smart Thermal (NANG CAO)
+  15,16,17,19,51,54,55,                // PID / GIA NHIET + Smart Thermal + Nhiet du doan (NANG CAO)
   20,21,22,23,24,25,26,27,             // Bao ve nhiet      (NANG CAO)
   9,10,                                // Quat hut; Thong gio la menu con
   30,31,                               // Tao am
@@ -618,15 +620,15 @@ const SettingGroup GROUPS[] = {
   // la cai dat mang - gom ca ma QR, dat lai PIN, cap nhat firmware... nen
   // "He thong" mo ta dung hon la cai dat chung cua may.
   {"HE THONG", 12, 2},
-  {"PID/GIA NHIET", 14, 6},
-  {"BAO VE NHIET", 20, 8},
-  {"QUAT HUT", 28, 2},
-  {"TAO AM", 30, 2},
-  {"HIEU CHUAN", 32, 4}
+  {"PID/GIA NHIET", 14, 7},
+  {"BAO VE NHIET", 21, 8},
+  {"QUAT HUT", 29, 2},
+  {"TAO AM", 31, 2},
+  {"HIEU CHUAN", 33, 4}
 };
 constexpr uint8_t GROUP_COUNT = sizeof(GROUPS) / sizeof(GROUPS[0]);
 static_assert(GROUP_COUNT == 9, "Bang GROUPS phai co 9 nhom");
-static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) == 36U,
+static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) == 37U,
               "Sai so luong setting hien trong menu chinh");
 
 // Dong phu (khong phai setting gia tri) duoc gan them vao cuoi mot so nhom.
@@ -2959,8 +2961,8 @@ void advSelect() {
   }
 }
 
-constexpr uint8_t MON_ITEM_COUNT = 23U;     // PID Monitor: 12 muc PID, 5 muc "Lo" (do tren lo nay, muc 20..24), 6 muc ho so (12..17)
-uint8_t monItemIndex(uint8_t k) { return k < 12U ? k : (k < 17U ? static_cast<uint8_t>(20U + k - 12U) : static_cast<uint8_t>(k - 5U)); }
+constexpr uint8_t MON_ITEM_COUNT = 34U;     // PID Monitor: 12 muc PID, 5 muc "Lo" (do tren lo nay, muc 20..24), 6 muc ho so (12..17), 3 muc "Du doan" (25..27)
+uint8_t monItemIndex(uint8_t k) { return k < 12U ? k : (k < 17U ? static_cast<uint8_t>(20U + k - 12U) : (k < 23U ? static_cast<uint8_t>(k - 5U) : (k < 26U ? static_cast<uint8_t>(25U + k - 23U) : static_cast<uint8_t>(28U + k - 26U)))); }
 constexpr uint8_t PROFILE_FIRST = 12U, PROFILE_COUNT = 8U;   // Ho so nhiet: muc 12..19
 // Mot muc thong tin chi-doc (nhan + gia tri). Du lieu lay tu bo dieu khien dang chay, khong co so gia.
 void infoItem(uint8_t i, const char *&label, char *v, size_t n) {
@@ -2998,6 +3000,27 @@ void infoItem(uint8_t i, const char *&label, char *v, size_t n) {
     case 22: label = "Lo: hold do"; if (m.valid && m.launchHold > 0.0f) snprintf(v, n, "%.1f%%", m.launchHold); break;
     case 23: label = "Lo: tran phanh"; if (m.valid) snprintf(v, n, "%.0f%%", m.launchCap); break;
     case 24: label = "Lo: troi len"; if (m.valid && m.launchIdleOver > 0.0f) snprintf(v, n, "+%.2fC", m.launchIdleOver); break;
+    case 25: {
+      label = "Du doan: che do";
+      static const char *const PRED_STATE[] = {"TAT", "DANG HOC", "DIEU KHIEN", "LUI VE PID"};
+      const uint8_t st = static_cast<uint8_t>(m.predState + 0.5f);
+      if (m.valid) snprintf(v, n, "%s", PRED_STATE[st < 4U ? st : 0U]);
+      break;
+    }
+    case 26: label = "Du doan: sai so mh"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.3fC", m.predRms); break;
+    case 27: label = "Du doan: trung"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.2fC", m.predEggTemp); break;
+    case 28: label = "Du doan: yeu cau"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.1f%%", m.predRequest); break;
+    case 29: label = "Du doan: hold"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.1f%%", m.predHold); break;
+    case 30: label = "Du doan: tre/qt"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.0f/%.0fs", m.predDead, m.predTau); break;
+    case 31: label = "Du doan: k / a"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.1f/%.2f", m.predK, m.predA); break;
+    case 32: label = "Du doan: loi gan"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.3fC", m.predInnov); break;
+    case 33: {
+      static const char *const WHY[] = {"OK", "THIEU DL", "SAI LON", "CAM BIEN", "QUA SP", "MH KEM"};
+      label = "Du doan: ly do"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%s", WHY[m.predWhy < 6U ? m.predWhy : 0U]);
+      break;
+    }
+    case 34: label = "Du doan: lui/ph"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%ux %lum", static_cast<unsigned>(m.predFallbacks), static_cast<unsigned long>(m.predActiveS / 60UL)); break;
+    case 35: label = "Chu ky DK us"; if (m.valid) snprintf(v, n, "%lu/%lu", static_cast<unsigned long>(m.cycleLastUs), static_cast<unsigned long>(m.cycleMaxUs)); break;
     default: label = "Loi du bao"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%.2fC", r.thermalPredictionError); break;
   }
   if (!v[0]) snprintf(v, n, "--");

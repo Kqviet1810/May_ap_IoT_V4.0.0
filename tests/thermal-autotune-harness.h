@@ -32,6 +32,10 @@ enum class AutoTuneState:uint8_t{Idle=0,Running=1,Success=2,Failed=3};
 #include "../MAYAP_INDUSTRIAL_v1_0_0/heater_burst_scheduler.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/startup_output_policy.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_adaptive_v1.h"
+#ifndef MAYAP_PREDICTIVE_EVALS_PER_CYCLE
+#define MAYAP_PREDICTIVE_EVALS_PER_CYCLE 20   // the host ticks every 100 ms, the firmware every 5 ms: same evaluations per second of plant time
+#endif
+#include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_predictive.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_profile_storage.h"
 constexpr int LOW=0,HIGH=1,OUTPUT=2;
 static int levels[64]{};
@@ -101,6 +105,10 @@ struct TuneHarness {
   bool warmupVentHold_=false,warmupVentChecked_=false;uint32_t warmupVentHoldSince_=0;
   void offerLaunchPlan(const MayapThermal::LaunchPlan &p){launchPlanOffered_=p;++launchPlanOffers_;}
   void loadLaunchPlan(){}
+  MayapPredictive::Controller thermalPredictive_;MayapPredictive::StoredModel predictiveSeed_,predictiveOffered_;
+  bool predictiveBatchSeen_=false,predictiveApplied_=false,predictiveWasActive_=false;uint32_t predictiveOfferAt_=0;unsigned predictiveOffers_=0;
+  void offerPredictiveModel(const MayapPredictive::StoredModel &m){predictiveOffered_=m;++predictiveOffers_;}
+  void loadPredictiveSeed(){}
   bool testModeActive_=false,lightWebOverrideActive_=false,lightWebOverrideRefInput_=false,lightWebOverrideValue_=false;
   bool resumeConfirmationRequired_=false,resumePending_=false,batchRunning_=false,prevBatchRunningForOutputs_=false;
   bool sensorUsable_=true,humidityLowActive_=false,previousFanCommand_=false;

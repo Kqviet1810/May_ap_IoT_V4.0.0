@@ -49,10 +49,10 @@ test('all settings remain reachable exactly once in shorter groups', () => {
     .replace(/\/\/[^\n]*/g, '').match(/\d+/g).map(Number);
   const groups = [...hmi.matchAll(/\{"([^"\n]+)",\s*(\d+),\s*(\d+)\}/g)]
     .map((match) => ({ name: match[1], first: Number(match[2]), count: Number(match[3]) }));
-  assert.equal(indexes.length, 36);
-  assert.equal(new Set(indexes).size, 36);
+  assert.equal(indexes.length, 37);
+  assert.equal(new Set(indexes).size, 37);
   assert.deepEqual([...indexes].sort((a, b) => a - b), [
-    ...Array.from({ length: 33 }, (_, i) => i).filter((i) => ![18, 33, 34, 35, 36, 37, 38, 39, 40, 41].includes(i)), 51, 52, 53, 54,
+    ...Array.from({ length: 33 }, (_, i) => i).filter((i) => ![18, 33, 34, 35, 36, 37, 38, 39, 40, 41].includes(i)), 51, 52, 53, 54, 55,
   ]);
   assert.equal(groups.length, 9);
   assert.equal(groups.at(-1).name, 'HIEU CHUAN');
@@ -94,7 +94,7 @@ test('PID, thermal protection and calibration live only under NANG CAO; operatin
     .map((m) => ({ name: m[1], first: Number(m[2]), count: Number(m[3]) }));
   const of = (name) => { const g = groups.find((x) => x.name === name); return idx.slice(g.first, g.first + g.count); };
   assert.deepEqual(of('NHIET DO'), [4, 5, 6, 8]);                 // low / high / emergency / out-of-batch: unchanged
-  assert.deepEqual(of('PID/GIA NHIET'), [15, 16, 17, 19, 51, 54]);   // + Smart Thermal switch (behind the technical PIN)
+  assert.deepEqual(of('PID/GIA NHIET'), [15, 16, 17, 19, 51, 54, 55]);   // + Smart Thermal and Nhiet du doan switches (behind the technical PIN)
   assert.deepEqual(of('BAO VE NHIET'), [20, 21, 22, 23, 24, 25, 26, 27]);
   assert.deepEqual(of('HIEU CHUAN'), [7, 52, 32, 53]);      // + Bo tao am (hardware) and DPG cam bien, both behind the technical PIN
   assert.deepEqual(of('HE THONG'), [14, 29]);
@@ -275,6 +275,24 @@ test('Smart Thermal is a run-time switch in NANG CAO, off by default, locked dur
   assert.doesNotMatch(bridge, /smartThermalEnabled/);
 });
 
+test('Nhiet du doan (Thermal Predictive V1) is a run-time switch in NANG CAO, ON by default (old records read ON), read at the start of a batch, and only acts with the adaptive balance', () => {
+  assert.match(hmi, /ITEM_BOOL\("Nhiet du doan", predictiveThermalEnabled\)/);
+  assert.match(config, /bool predictiveThermalEnabled = true;/);
+  const controller = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0/machine_control.h'), 'utf8');
+  // inverted polarity in bit 4 of the schema-13 byte: a record saved before 1.1.15 has the bit clear and therefore reads ON
+  assert.match(controller, /\(c\.predictiveThermalEnabled \? 0U : 16U\)/);
+  assert.match(controller, /c\.predictiveThermalEnabled = \(p\.adaptiveThermalBalanceEnabled & 16U\) == 0U;/);
+  assert.match(controller, /predictiveApplied_ = config_\.predictiveThermalEnabled && config_\.adaptiveThermalBalanceEnabled && config_\.controlMode == ControlMode::Pid;/);
+  // never changeable from the Web, not locked while a batch runs (it is only READ when a batch starts)
+  assert.doesNotMatch(bodyOf('bool settingLockedDuringBatch('), /predictiveThermalEnabled/);
+  const bridge = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h'), 'utf8');
+  assert.doesNotMatch(bridge, /predictiveThermalEnabled/);
+  // the monitor rows
+  assert.match(hmi, /constexpr uint8_t MON_ITEM_COUNT = 34U;/);
+  assert.match(hmi, /label = "Du doan: che do"/);
+  for (const label of ['Du doan: yeu cau', 'Du doan: hold', 'Du doan: tre/qt', 'Du doan: k / a', 'Du doan: loi gan', 'Du doan: ly do', 'Du doan: lui/ph', 'Chu ky DK us']) assert.ok(hmi.includes(`label = "${label}"`), label);
+});
+
 test('Che do 2 tai khoan: only in HMI Nang cao, needs Online, the machine asks the Worker with its own key, back returns to the Advanced list', () => {
   const cloud = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'cloud_alert_link.h'), 'utf8');
   // Advanced list: the item sits after "Quyen Web" and before "Doi ma ky thuat"; the screen belongs to the Advanced session (PIN keep-alive, lock on leave)
@@ -299,7 +317,7 @@ test('Che do 2 tai khoan: only in HMI Nang cao, needs Online, the machine asks t
 });
 
 test('PID monitor shows what the launch measured on this oven (gain, delay, hold, brake ceiling), after the 12 PID rows', () => {
-  assert.match(hmi, /constexpr uint8_t MON_ITEM_COUNT = 23U;/);
+  assert.match(hmi, /constexpr uint8_t MON_ITEM_COUNT = 34U;/);   // 12 PID + 5 Lo + 6 profile + 3 Du doan + 8 field-trial rows
   assert.match(bodyOf('uint8_t monItemIndex('), /k < 12U \? k : \(k < 17U \?/);
   assert.match(bodyOf('void drawPidMonitor()'), /monPage, true\)/);
   const info = bodyOf('void infoItem(');

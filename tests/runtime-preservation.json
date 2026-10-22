@@ -62,12 +62,12 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "29352b16d1c227f574c233cdf58932e1fdae6b0089626f60a1c2f65f994a102b",
+      "sha256": "4b772a8edb4ba06f3269ad5028acc69eb6eb684f0aa5212e5bd8b29e5549dfc6",
       "filter": "config"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "bdc5d3646a8f76603fc2d6b88f6bcf4f446b8e18f3003fceb8f57c839d0dd29f",
+      "sha256": "8f12ec661f29293a1d95325decdd21ae5d7affcd4bafb8c2deccb6398aa7c679",
       "signature": "class MachineController {"
     },
     {
@@ -164,8 +164,8 @@
       "sha256": "d5efdd1ed05ae2a8e726a937450cf4f0da76f8299e4e67228e3403072922e9bf",
       "copyReplacements": [
         [
-          "'Đang nhận dữ liệu từ máy; vui lòng chờ một chút'",
-          "'Chưa nhận bootId từ ESP32; hãy chờ đồng bộ'"
+          "'\u0110ang nh\u1eadn d\u1eef li\u1ec7u t\u1eeb m\u00e1y; vui l\u00f2ng ch\u1edd m\u1ed9t ch\u00fat'",
+          "'Ch\u01b0a nh\u1eadn bootId t\u1eeb ESP32; h\u00e3y ch\u1edd \u0111\u1ed3ng b\u1ed9'"
         ]
       ]
     },
@@ -205,16 +205,16 @@
       "sha256": "6aaa6cdb0e27d7cd03799fd588f42d69d40b0610cd198eb2b4decdb5732c49b7",
       "copyReplacements": [
         [
-          "'Chưa nhận xác nhận cuối từ máy · đang đồng bộ trạng thái'",
-          "'Chưa nhận xác nhận cuối từ ESP32 · đang đồng bộ trạng thái'"
+          "'Ch\u01b0a nh\u1eadn x\u00e1c nh\u1eadn cu\u1ed1i t\u1eeb m\u00e1y \u00b7 \u0111ang \u0111\u1ed3ng b\u1ed9 tr\u1ea1ng th\u00e1i'",
+          "'Ch\u01b0a nh\u1eadn x\u00e1c nh\u1eadn cu\u1ed1i t\u1eeb ESP32 \u00b7 \u0111ang \u0111\u1ed3ng b\u1ed9 tr\u1ea1ng th\u00e1i'"
         ],
         [
-          "'Máy chưa xác nhận đọc lịch sử · kết quả chưa chắc chắn'",
-          "'Chưa nhận xác nhận cuối từ EEPROM · kết quả chưa chắc chắn'"
+          "'M\u00e1y ch\u01b0a x\u00e1c nh\u1eadn \u0111\u1ecdc l\u1ecbch s\u1eed \u00b7 k\u1ebft qu\u1ea3 ch\u01b0a ch\u1eafc ch\u1eafn'",
+          "'Ch\u01b0a nh\u1eadn x\u00e1c nh\u1eadn cu\u1ed1i t\u1eeb EEPROM \u00b7 k\u1ebft qu\u1ea3 ch\u01b0a ch\u1eafc ch\u1eafn'"
         ],
         [
-          "'Chưa nhận xác nhận cuối từ máy; kết quả chưa chắc chắn'",
-          "'Chưa nhận xác nhận cuối từ ESP32; kết quả chưa chắc chắn'"
+          "'Ch\u01b0a nh\u1eadn x\u00e1c nh\u1eadn cu\u1ed1i t\u1eeb m\u00e1y; k\u1ebft qu\u1ea3 ch\u01b0a ch\u1eafc ch\u1eafn'",
+          "'Ch\u01b0a nh\u1eadn x\u00e1c nh\u1eadn cu\u1ed1i t\u1eeb ESP32; k\u1ebft qu\u1ea3 ch\u01b0a ch\u1eafc ch\u1eafn'"
         ]
       ]
     },
@@ -224,12 +224,12 @@
       "sha256": "3766f4c15743c19f6489d81205c82b1dae09e415c79a391955f02320f1216e70",
       "copyReplacements": [
         [
-          "'Đã nhận lịch sử trong bộ nhớ máy; không nhận được ACK cuối'",
-          "'Đã nhận lịch sử EEPROM; không nhận được ACK cuối'"
+          "'\u0110\u00e3 nh\u1eadn l\u1ecbch s\u1eed trong b\u1ed9 nh\u1edb m\u00e1y; kh\u00f4ng nh\u1eadn \u0111\u01b0\u1ee3c ACK cu\u1ed1i'",
+          "'\u0110\u00e3 nh\u1eadn l\u1ecbch s\u1eed EEPROM; kh\u00f4ng nh\u1eadn \u0111\u01b0\u1ee3c ACK cu\u1ed1i'"
         ],
         [
-          "'Chưa xác nhận được lịch sử trong bộ nhớ máy · có thể thử đọc lại'",
-          "'Chưa xác nhận được lịch sử EEPROM · có thể thử đọc lại'"
+          "'Ch\u01b0a x\u00e1c nh\u1eadn \u0111\u01b0\u1ee3c l\u1ecbch s\u1eed trong b\u1ed9 nh\u1edb m\u00e1y \u00b7 c\u00f3 th\u1ec3 th\u1eed \u0111\u1ecdc l\u1ea1i'",
+          "'Ch\u01b0a x\u00e1c nh\u1eadn \u0111\u01b0\u1ee3c l\u1ecbch s\u1eed EEPROM \u00b7 c\u00f3 th\u1ec3 th\u1eed \u0111\u1ecdc l\u1ea1i'"
         ]
       ]
     },
@@ -249,20 +249,20 @@
       "sha256": "00eab415463f4b322b7bc07cdfb0e0bb4cea0b0fc0e724607143160db2403b34",
       "copyReplacements": [
         [
-          "'Hãy thêm máy trước'",
-          "'Hãy thêm thiết bị trước'"
+          "'H\u00e3y th\u00eam m\u00e1y tr\u01b0\u1edbc'",
+          "'H\u00e3y th\u00eam thi\u1ebft b\u1ecb tr\u01b0\u1edbc'"
         ],
         [
-          "'Máy đang ngoại tuyến · chưa gửi'",
-          "'Thiết bị đang offline · chưa gửi'"
+          "'M\u00e1y \u0111ang ngo\u1ea1i tuy\u1ebfn \u00b7 ch\u01b0a g\u1eedi'",
+          "'Thi\u1ebft b\u1ecb \u0111ang offline \u00b7 ch\u01b0a g\u1eedi'"
         ],
         [
-          "'Máy đang ngoại tuyến · chưa gửi'",
-          "'Thiết bị đang offline · chưa gửi'"
+          "'M\u00e1y \u0111ang ngo\u1ea1i tuy\u1ebfn \u00b7 ch\u01b0a g\u1eedi'",
+          "'Thi\u1ebft b\u1ecb \u0111ang offline \u00b7 ch\u01b0a g\u1eedi'"
         ],
         [
-          "'Đang gửi tới máy…'",
-          "'Đang gửi tới ESP32…'"
+          "'\u0110ang g\u1eedi t\u1edbi m\u00e1y\u2026'",
+          "'\u0110ang g\u1eedi t\u1edbi ESP32\u2026'"
         ]
       ]
     },
@@ -272,12 +272,12 @@
       "sha256": "9554b2d66dab25634fcb285dfe7cf0288ff8d47fb894911491c5ce4b2c7c542f",
       "copyReplacements": [
         [
-          "'Máy đang ngoại tuyến'",
-          "'Thiết bị đang offline'"
+          "'M\u00e1y \u0111ang ngo\u1ea1i tuy\u1ebfn'",
+          "'Thi\u1ebft b\u1ecb \u0111ang offline'"
         ],
         [
-          "'Đang nhận dữ liệu từ máy. Vui lòng chờ một chút.'",
-          "'Chưa nhận bootId. Hãy chờ ESP32 đồng bộ.'"
+          "'\u0110ang nh\u1eadn d\u1eef li\u1ec7u t\u1eeb m\u00e1y. Vui l\u00f2ng ch\u1edd m\u1ed9t ch\u00fat.'",
+          "'Ch\u01b0a nh\u1eadn bootId. H\u00e3y ch\u1edd ESP32 \u0111\u1ed3ng b\u1ed9.'"
         ]
       ]
     },
@@ -287,52 +287,52 @@
       "sha256": "4630e15c7b393cddaa2bca7d0f18fbbbc8f4ec94c0f6465e3991f20ab76fa768",
       "copyReplacements": [
         [
-          "'Máy gửi phản hồi chưa hợp lệ. Chưa xác nhận được thao tác.'",
-          "'PROTOCOL_ERROR: ACK từ máy không hợp lệ'"
+          "'M\u00e1y g\u1eedi ph\u1ea3n h\u1ed3i ch\u01b0a h\u1ee3p l\u1ec7. Ch\u01b0a x\u00e1c nh\u1eadn \u0111\u01b0\u1ee3c thao t\u00e1c.'",
+          "'PROTOCOL_ERROR: ACK t\u1eeb m\u00e1y kh\u00f4ng h\u1ee3p l\u1ec7'"
         ],
         [
-          "'Máy đã nhận · đang lưu vào bộ nhớ máy…'",
-          "'Máy đã nhận · đang lưu EEPROM…'"
+          "'M\u00e1y \u0111\u00e3 nh\u1eadn \u00b7 \u0111ang l\u01b0u v\u00e0o b\u1ed9 nh\u1edb m\u00e1y\u2026'",
+          "'M\u00e1y \u0111\u00e3 nh\u1eadn \u00b7 \u0111ang l\u01b0u EEPROM\u2026'"
         ],
         [
-          "'Máy chưa xác nhận lưu vào bộ nhớ máy · đang đồng bộ'",
-          "'Máy chưa xác nhận lưu EEPROM · đang đồng bộ'"
+          "'M\u00e1y ch\u01b0a x\u00e1c nh\u1eadn l\u01b0u v\u00e0o b\u1ed9 nh\u1edb m\u00e1y \u00b7 \u0111ang \u0111\u1ed3ng b\u1ed9'",
+          "'M\u00e1y ch\u01b0a x\u00e1c nh\u1eadn l\u01b0u EEPROM \u00b7 \u0111ang \u0111\u1ed3ng b\u1ed9'"
         ],
         [
-          "'Máy gửi phản hồi chưa hợp lệ. Chưa xác nhận được thao tác.'",
-          "'PROTOCOL_ERROR: ACK từ máy không hợp lệ'"
+          "'M\u00e1y g\u1eedi ph\u1ea3n h\u1ed3i ch\u01b0a h\u1ee3p l\u1ec7. Ch\u01b0a x\u00e1c nh\u1eadn \u0111\u01b0\u1ee3c thao t\u00e1c.'",
+          "'PROTOCOL_ERROR: ACK t\u1eeb m\u00e1y kh\u00f4ng h\u1ee3p l\u1ec7'"
         ],
         [
-          "'Máy đã lưu và xác nhận cài đặt'",
-          "'ESP32 đã lưu và kiểm tra EEPROM'"
+          "'M\u00e1y \u0111\u00e3 l\u01b0u v\u00e0 x\u00e1c nh\u1eadn c\u00e0i \u0111\u1eb7t'",
+          "'ESP32 \u0111\u00e3 l\u01b0u v\u00e0 ki\u1ec3m tra EEPROM'"
         ],
         [
-          "'Đã lưu cấu hình trên máy'",
-          "'Đã lưu cấu hình vào ESP32'"
+          "'\u0110\u00e3 l\u01b0u c\u1ea5u h\u00ecnh tr\u00ean m\u00e1y'",
+          "'\u0110\u00e3 l\u01b0u c\u1ea5u h\u00ecnh v\u00e0o ESP32'"
         ],
         [
-          "`Máy từ chối: ${message}`",
-          "`ESP32 từ chối: ${message}`"
+          "`M\u00e1y t\u1eeb ch\u1ed1i: ${message}`",
+          "`ESP32 t\u1eeb ch\u1ed1i: ${message}`"
         ],
         [
-          "`Máy từ chối: ${message}`",
-          "`ESP32 từ chối: ${message}`"
+          "`M\u00e1y t\u1eeb ch\u1ed1i: ${message}`",
+          "`ESP32 t\u1eeb ch\u1ed1i: ${message}`"
         ],
         [
-          "'Lỗi đọc bộ nhớ lịch sử'",
-          "'Lỗi đọc EEPROM lịch sử'"
+          "'L\u1ed7i \u0111\u1ecdc b\u1ed9 nh\u1edb l\u1ecbch s\u1eed'",
+          "'L\u1ed7i \u0111\u1ecdc EEPROM l\u1ecbch s\u1eed'"
         ],
         [
-          "'Bộ nhớ máy chưa có dữ liệu · cập nhật trực tiếp'",
-          "'EEPROM chưa có dữ liệu · cập nhật trực tiếp'"
+          "'B\u1ed9 nh\u1edb m\u00e1y ch\u01b0a c\u00f3 d\u1eef li\u1ec7u \u00b7 c\u1eadp nh\u1eadt tr\u1ef1c ti\u1ebfp'",
+          "'EEPROM ch\u01b0a c\u00f3 d\u1eef li\u1ec7u \u00b7 c\u1eadp nh\u1eadt tr\u1ef1c ti\u1ebfp'"
         ],
         [
-          "'Đã đọc lịch sử trong bộ nhớ máy'",
-          "'Đã đọc lịch sử EEPROM'"
+          "'\u0110\u00e3 \u0111\u1ecdc l\u1ecbch s\u1eed trong b\u1ed9 nh\u1edb m\u00e1y'",
+          "'\u0110\u00e3 \u0111\u1ecdc l\u1ecbch s\u1eed EEPROM'"
         ],
         [
-          "`Máy từ chối: ${message}`",
-          "`ESP32 từ chối: ${message}`"
+          "`M\u00e1y t\u1eeb ch\u1ed1i: ${message}`",
+          "`ESP32 t\u1eeb ch\u1ed1i: ${message}`"
         ]
       ]
     },
@@ -342,12 +342,12 @@
       "sha256": "b144f05f0a9dd1bbd9c3d1684f1ab15a6e58f2eff15c15f2518da7d410130570",
       "copyReplacements": [
         [
-          "'Máy đã lưu và xác nhận cài đặt'",
-          "'ESP32 đã lưu và đọc lại cấu hình'"
+          "'M\u00e1y \u0111\u00e3 l\u01b0u v\u00e0 x\u00e1c nh\u1eadn c\u00e0i \u0111\u1eb7t'",
+          "'ESP32 \u0111\u00e3 l\u01b0u v\u00e0 \u0111\u1ecdc l\u1ea1i c\u1ea5u h\u00ecnh'"
         ],
         [
-          "'Đã lưu cấu hình trên máy'",
-          "'Đã lưu cấu hình vào ESP32'"
+          "'\u0110\u00e3 l\u01b0u c\u1ea5u h\u00ecnh tr\u00ean m\u00e1y'",
+          "'\u0110\u00e3 l\u01b0u c\u1ea5u h\u00ecnh v\u00e0o ESP32'"
         ]
       ]
     },
@@ -357,8 +357,8 @@
       "sha256": "732cc4e527640482c8abe7d0ddf7e35cbc21b7854ec4451da65cfe744918ba72",
       "copyReplacements": [
         [
-          "'Chưa kết nối với máy chủ'",
-          "'MQTT chưa kết nối'"
+          "'Ch\u01b0a k\u1ebft n\u1ed1i v\u1edbi m\u00e1y ch\u1ee7'",
+          "'MQTT ch\u01b0a k\u1ebft n\u1ed1i'"
         ]
       ]
     },
@@ -446,7 +446,7 @@
   "autotuneQualificationReviewNote": "2026-10-03: reviewed AutoTune-only preheat 30% commissioning candidate with 15min preheat/phase,45min total deadlines; explicit phases/reasons/locked actual relay swing, upward one-ULP uniform gain scaling, bounded diagnostics, fail/reset before next GPIO cycle and outside-batch AutoTune EventLog exception. Actual PID/PDM/filter/safety threshold/alarm bodies, OutputArbiter, EEPROM schema and atomic save implementation unchanged. Plant-in-loop includes honest cold and near-SP qualification; performance/BAD candidates are experimental reports, not physical validation.",
   "adaptivePostAuditReviewNote": "2026-10-03: reviewed post-audit hardening only. MachineController now offers learned NVS models only from supervisor Qualified/Adaptive states and compile-time locks smart-cooling timing to the existing vent relay minimums. Self-heating recovery/diagnostic changes live in the adaptive module; PID/filter/PDM/safety/OutputArbiter/E115 bodies remain unchanged.",
   "pidSetpointReviewNote": "2026-10-03: reviewed PID config-save correction. Setpoint edits and unrelated MachineConfig saves no longer invoke bumpless I re-projection or reset derivative timing; only control mode, Kp/Ki/Kd and maxHeaterPower changes do. Gain/cap changes remain bumpless at the previous setpoint, and safety/PDM/sensor behavior is unchanged.",
-  "notesUiOnlyResetReviewNote": "2026-10-03: removed the complete legacy Ghi chú persistence path (ESP32 EEPROM store/service/retry, realtime notes channels and persistence tests). notes.js/notes.css remain as UI only. Controller/safety/config/reminder/history storage semantics are unchanged.",
+  "notesUiOnlyResetReviewNote": "2026-10-03: removed the complete legacy Ghi ch\u00fa persistence path (ESP32 EEPROM store/service/retry, realtime notes channels and persistence tests). notes.js/notes.css remain as UI only. Controller/safety/config/reminder/history storage semantics are unchanged.",
   "thermalFinalHardeningReviewNote": "2026-10-03: reviewed thermal safety hardening: Test Mode keeps High/Emergency protection, negative calibration cannot lower raw overheat safety, sensor timeout becomes fixed fail-safe legacy field, running-batch setpoint preserves the safety/vent envelope, E114 retains triggering crossing detail, and zero-authority PID is rejected. Physical thermal performance remains a commissioning item.",
   "release1110ReviewNote": "2026-10-16: reviewed 1.1.10: version-only config.h change (MAYAP_FIRMWARE_VERSION 1.1.9 -> 1.1.10); MachineConfig layout, schemas and defaults are untouched. The firmware change in this release is the slow, well insulated oven work reviewed in slowOvenThermalReviewNote (thermal_control.h startup hold learner, thermal_learner.h, thermal_adaptive_v1.h, thermal_assist.h, thermal_smart_autotune.h, one read-only [TUNE] COAST-CHECK serial line); High/Emergency thresholds, PID, OutputArbiter, EEPROM, network and OTA logic are unchanged. The OTA signing key is the one introduced in 1.1.9.",
   "release119ReviewNote": "2026-10-14: reviewed 1.1.9: MAYAP_FIRMWARE_VERSION (config.h) and the OTA signing PUBLIC key in build_public.h replaced with a new ECDSA P-256 key (the matching private key of the previous one was lost; the new private key is held only by the owner and the repository secret). No thermal, output, safety or storage logic is touched. Devices running firmware <= 1.1.8 trust the old key, so 1.1.9 must be flashed once over USB; later updates are signed with the new key.",
@@ -487,5 +487,6 @@
   "machineLaunch1113ReviewNote": "2026-10-21: reviewed 1.1.13. machine_control.h class MachineController: the heating route builds the launch Assist (hold measured on the launch replaces the learned feed-forward, kiMax / kpMax from the measured gain and delay, integral restart while boosting, no bumpless coupling of the boost to the integral), loads / offers the launch plan (offerLaunchPlan / loadLaunchPlan) and the profile / scheduled vent fan waits during the warm-up (WARMUP_VENT_HOLD_ERR_C / RELEASE_ERR_C / HOLD_MAX_MS, also while the first sensor sample is pending; forced vents, High, sensor fault and cooling are untouched). The permit chain (heater enable, fan, faults, High / Emergency, master drop, OutputArbiter) is unchanged.",
   "release1113ReviewNote": "2026-10-21: reviewed 1.1.13: config.h MAYAP_FIRMWARE_VERSION 1.1.12 -> 1.1.13, new constants WARMUP_VENT_HOLD_ERR_C / WARMUP_VENT_RELEASE_ERR_C / WARMUP_VENT_HOLD_MAX_MS and the turn travel timeout default turnMaxRunSec 300 -> 500 s (Web limit 3-500 s; a machine keeps its stored value). MachineConfig layout, schemas and persisted defaults of other fields untouched.",
   "release1114ReviewNote": "2026-10-21: reviewed 1.1.14: config.h MAYAP_FIRMWARE_VERSION 1.1.13 -> 1.1.14 and the GuestModeSnapshot / mayapRequestGuestMode / mayapGuestSnapshot declarations for the HMI 'Nang cao > Che do 2 tai khoan' (cloud_alert_link.h guest-mode request: device-key authenticated one-shot HTTPS on the reset-pin / members admission path, no new task; hmi.h Advanced item + screen). MachineConfig layout, schemas and persisted defaults untouched; the mode itself lives on the Worker (migration 0008), nothing is stored in EEPROM. Worker: account claim admits ONE second account as operator only while the machine switched the mode on, nobody removes an account from the Web, see doc/GOOGLE_ACCOUNT_MULTITENANT.md.",
-  "thermalLaunch1114ReviewNote": "2026-10-21: reviewed 1.1.14 thermal changes, ThermalStartupController only (ThermalController, RelayAutoTune, High 38.2 C / Emergency 39.0 C, OutputArbiter, E115, schemas and EEPROM unchanged): (1) a restart in the hold with a stored plan (warm_) no longer drops the plan at the first door and keeps reading the hold from the flat PV; (2) idleOverC: PV above SP with the heater idle, nothing on its way and PV not falling for 3 min is remembered in the launch plan (former reserved byte of the 44-byte record, no layout change, only ever LOWERS the allowance above SP of the brake ceiling, never below SP - 0.3 C); (3) read-only getters launchGain / launchDelaySec / launchHoldPct / idleOverC for the HMI PID monitor (PidMonitorData grew by five floats, runtime only, not persisted). machine_control.h: publishPidMonitor copies them, the warm-up vent hold also covers the first minutes before the sensor is usable (WARMUP_VENT_HOLD_MAX_MS bound), the plan record carries idleOverC. Evidence: doc/SLOW_OVEN_STUDY.md fourth addendum, tests/thermal-launch.cpp (door + restart + idle drift), tests/thermal-launch-plan.cpp. Simulation only."
+  "thermalLaunch1114ReviewNote": "2026-10-21: reviewed 1.1.14 thermal changes, ThermalStartupController only (ThermalController, RelayAutoTune, High 38.2 C / Emergency 39.0 C, OutputArbiter, E115, schemas and EEPROM unchanged): (1) a restart in the hold with a stored plan (warm_) no longer drops the plan at the first door and keeps reading the hold from the flat PV; (2) idleOverC: PV above SP with the heater idle, nothing on its way and PV not falling for 3 min is remembered in the launch plan (former reserved byte of the 44-byte record, no layout change, only ever LOWERS the allowance above SP of the brake ceiling, never below SP - 0.3 C); (3) read-only getters launchGain / launchDelaySec / launchHoldPct / idleOverC for the HMI PID monitor (PidMonitorData grew by five floats, runtime only, not persisted). machine_control.h: publishPidMonitor copies them, the warm-up vent hold also covers the first minutes before the sensor is usable (WARMUP_VENT_HOLD_MAX_MS bound), the plan record carries idleOverC. Evidence: doc/SLOW_OVEN_STUDY.md fourth addendum, tests/thermal-launch.cpp (door + restart + idle drift), tests/thermal-launch-plan.cpp. Simulation only.",
+  "release1115ReviewNote": "2026-10-21: reviewed 1.1.15 Thermal Predictive V1: new thermal_predictive.h / thermal_predictive_store.h (proposal-only power controller with legacy fallback; own NVS keys pa/pb written only from loop()); config.h MAYAP_FIRMWARE_VERSION 1.1.14 -> 1.1.15, MachineConfig::predictiveThermalEnabled (bit 4 of the schema-13 adaptive byte, stored inverted so older records read ON), PidMonitorData predictive fields and MAYAP_PREDICTIVE_EVALS_PER_CYCLE; machine_control.h updateHeatingAndOutputs: predictive lifecycle/inputs and override of pidPower_ only while Active, exhaust-fan request through the existing arbiter, pack/unpack of the new bit, PID monitor publishing; .ino: predModelStorage.service(). High/Emergency, SSR scheduler, contactor, sensor protection and every safety layer are unchanged. Changed pins: MAYAP_INDUSTRIAL_v1_0_0/config.h ; MAYAP_INDUSTRIAL_v1_0_0/machine_control.h class MachineController { 2026-10-22 field-trial readout: PidMonitorData gains the predictive request/hold/model/why/fallback/active-time and control-cycle-time fields, MachineController::setCycleStats (called by the control task after each cycle, no control effect), eight PID Monitor rows on the HMI."
 }

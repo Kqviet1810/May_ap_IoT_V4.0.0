@@ -186,6 +186,7 @@ void controlTask(void *parameter) {
     while (cycleUs > previousMax &&
            !__atomic_compare_exchange_n(&controlMaxCycleUs, &previousMax, cycleUs,
                                         false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {}
+    Machine.setCycleStats(cycleUs, __atomic_load_n(&controlMaxCycleUs, __ATOMIC_ACQUIRE));
     uint8_t slowCount = __atomic_load_n(&controlTripCycleCount, __ATOMIC_ACQUIRE);
     if (cycleUs >= CONTROL_CYCLE_TRIP_US) {
       if (slowCount < UINT8_MAX) ++slowCount;
@@ -785,6 +786,7 @@ void loop() {
     MayapAdaptive::modelStorage.service(millis());
     MayapThermal::profileStorage.service(millis());
     MayapThermal::launchPlanStorage.service(millis());
+    MayapPredictive::predModelStorage.service(millis());
   }
   if(mayapBootStage() >= MayapBoot::Stage::LocalSettle && !mayapFirmwareMaintenanceActive())
   if (mayapBootStage() >= MayapBoot::Stage::LocalSettle) mayapI2cSupervisorUpdate(millis());

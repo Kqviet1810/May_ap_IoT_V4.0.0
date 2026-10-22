@@ -6,6 +6,7 @@
 #include "thermal_adaptive_v1.h"
 #include "thermal_profile_storage.h"
 #include "thermal_launch_plan.h"
+#include "thermal_predictive_store.h"
 #include "turn_schedule_policy.h"
 #include "firmware_update_guard.h"
 #include "boot_diagnostic.h"
@@ -1838,7 +1839,8 @@ inline PackedMachineConfigV1 packConfig(const MachineConfig &c) {
   p.ventScheduleHour5 = c.ventScheduleHour5;
   p.ventScheduleHour6 = c.ventScheduleHour6;
   p.adaptiveThermalBalanceEnabled = static_cast<uint8_t>((c.adaptiveThermalBalanceEnabled ? 1U : 0U) |
-      ((c.sensorResolutionMode <= 2U ? c.sensorResolutionMode : 0U) << 1U) | (c.smartThermalEnabled ? 8U : 0U));
+      ((c.sensorResolutionMode <= 2U ? c.sensorResolutionMode : 0U) << 1U) | (c.smartThermalEnabled ? 8U : 0U) |
+      (c.predictiveThermalEnabled ? 0U : 16U));
   p.ventAutoEnabled = c.ventAutoEnabled ? 1U : 0U;
   p.ventProfileLevel = c.ventProfileLevel;
   p.ventCycleMinutes = c.ventCycleMinutes;
@@ -1909,6 +1911,7 @@ inline MachineConfig unpackConfig(const PackedMachineConfigV1 &p) {
   c.adaptiveThermalBalanceEnabled = (p.adaptiveThermalBalanceEnabled & 1U) != 0U;
   { const uint8_t mode = static_cast<uint8_t>((p.adaptiveThermalBalanceEnabled >> 1U) & 3U); c.sensorResolutionMode = mode <= 2U ? mode : 0U; }
   c.smartThermalEnabled = (p.adaptiveThermalBalanceEnabled & 8U) != 0U;
+  c.predictiveThermalEnabled = (p.adaptiveThermalBalanceEnabled & 16U) == 0U;
   c.ventAutoEnabled = p.ventAutoEnabled != 0U;
   c.ventProfileLevel = p.ventProfileLevel;
   c.ventCycleMinutes = p.ventCycleMinutes;
@@ -3949,6 +3952,7 @@ class MachineController {
 
   const MachineConfig &config() const { return config_; }
   const MachineRuntime &runtime() const { return runtime_; }
+  void setCycleStats(uint32_t lastUs, uint32_t maxUs) { cycleLastUs_ = lastUs; cycleMaxUs_ = maxUs; }   // called by the control task after each cycle
   const OutputState &outputs() const { return outputs_.state(); }
 
  private:
@@ -5060,6 +5064,10 @@ class MachineController {
     m.launchHold = startupHeat_.launchHoldPct();
     m.launchCap = startupHeat_.lastCeiling();
     m.launchIdleOver = startupHeat_.idleOverC();
+    { const MayapPredictive::Telemetry pt = thermalPredictive_.telemetry();
+      m.predState = static_cast<float>(static_cast<uint8_t>(pt.state)); m.predRms = pt.rms; m.predEggTemp = pt.te; m.predDist = pt.d;
+      m.predRequest = pt.request; m.predHold = pt.hold; m.predDead = pt.m.dead; m.predTau = pt.m.tau; m.predK = pt.m.k; m.predA = pt.m.a; m.predInnov = pt.innov;
+      m.predWhy = pt.why; m.predFallbacks = pt.fallbacks; m.predActiveS = pt.activeS; m.cycleLastUs = cycleLastUs_; m.cycleMaxUs = cycleMaxUs_; }
   }
 
   bool startBatch(uint32_t now, const char *&message) {
@@ -6375,8 +6383,24 @@ class MachineController {
     mayapSerialPrintf(false, "[LAUNCH] plan loaded gain=%.4f delay=%.0fs cal=%.2f\n",
                       static_cast<double>(rec.gain), static_cast<double>(rec.delaySec), static_cast<double>(rec.coastCal));
   }
+  // Thermal Predictive V1: the model identified on the last good batch is the prior of the next one.
+  void offerPredictiveModel(const MayapPredictive::StoredModel &m) {
+    MayapPredictive::predModelStorage.offer(MayapPredictive::makePredModelRecord(m, thermalSignature(), rtc_.valid() ? rtc_.epoch() : 0U));
+    mayapSerialPrintf(false, "[PRED] model saved cf=%.0f ce=%.0f k=%.2f a=%.2f delay=%.0fs lag=%.0fs vent=%.1f rms=%.3f\n",
+                      static_cast<double>(m.m.cf), static_cast<double>(m.m.ce), static_cast<double>(m.m.k), static_cast<double>(m.m.a),
+                      static_cast<double>(m.m.dead), static_cast<double>(m.m.tau), static_cast<double>(m.m.vp), static_cast<double>(m.rms));
+  }
+  void loadPredictiveSeed() {
+    MayapPredictive::PredModelRecord rec{};
+    if (!MayapPredictive::predModelStorage.takeSeed(rec)) return;
+    if (!MayapPredictive::predModelCompatible(rec, thermalSignature(), abnormalResetLatched_)) return;
+    predictiveSeed_ = MayapPredictive::toStoredModel(rec);
+    mayapSerialPrintf(false, "[PRED] model loaded cf=%.0f ce=%.0f k=%.2f delay=%.0fs\n", static_cast<double>(rec.cf), static_cast<double>(rec.ce),
+                      static_cast<double>(rec.k), static_cast<double>(rec.dead));
+  }
   void trackAdaptiveEnergy(uint32_t now) {
     loadLaunchPlan();
+    loadPredictiveSeed();
     adaptiveThermal_.tick(now, outputs_.state().heaterSsr);
     thermalV1_.tick(now, outputs_.state().heaterSsr);
     if(testModeActive_ || resumeConfirmationRequired_){
@@ -6538,6 +6562,32 @@ class MachineController {
     startupHeat_.observe(now, outputs_.state().heaterSsr);
     if (testModeActive_) { startupHeat_.reset(); heaterBurst_.reset(); updateTestModeOutputs(now); return; }
     const InputState &in = inputs_.state();
+    // ---- Thermal Predictive V1 (identified two-mass model + planner; doc/THERMAL_PREDICTIVE_V1.md) -------------------------------------
+    // The setting is read at the start of a batch (a resume is a start). The legacy controller below ALWAYS runs: this block only overrides its
+    // request while the model is trusted, so falling back is just not overriding.
+    if (batchRunning_ != predictiveBatchSeen_) {
+      predictiveBatchSeen_ = batchRunning_;
+      if (batchRunning_) {
+        predictiveApplied_ = config_.predictiveThermalEnabled && config_.adaptiveThermalBalanceEnabled && config_.controlMode == ControlMode::Pid;
+        thermalPredictive_.setEnabled(predictiveApplied_);
+        thermalPredictive_.reset(predictiveSeed_);
+        predictiveOfferAt_ = now;
+      } else {
+        MayapPredictive::StoredModel keep;
+        if (predictiveApplied_ && thermalPredictive_.exportModel(keep)) offerPredictiveModel(keep);
+        thermalPredictive_.setEnabled(false);
+      }
+    }
+    const bool predictiveRuns = predictiveApplied_ && batchRunning_ && !autotune_.running() && !resumeConfirmationRequired_;
+    if (predictiveRuns) {
+      thermalPredictive_.tick(now, outputs_.state().heaterSsr && outputs_.state().heatMaster, outputs_.state().ventFan);
+      if (newSensorSample_) thermalPredictive_.sample(now, temperature_, sensorUsable_);   // every sample, whether or not the heater may run
+      if (elapsedMs(now, predictiveOfferAt_) >= 600000UL) {
+        predictiveOfferAt_ = now;
+        MayapPredictive::StoredModel keep;
+        if (thermalPredictive_.exportModel(keep)) offerPredictiveModel(keep);
+      }
+    }
     OutputRequest req{};
     // Cong tac vat ly doi kien tu luc ghi de (hoac chua tung ghi de) - cong
     // tac lay lai quyen dieu khien. Xem ghi chu tai lightWebOverrideActive_.
@@ -6602,7 +6652,7 @@ class MachineController {
     bool scheduledVentActive = false;
     // Ventilation owns WHEN and HOW LONG; thermal is only told, so the heater can be
     // coordinated (Adaptive Thermal V1). Negative == not known.
-    float ventStartsInSec = -1.0f, ventRemainingSec = -1.0f;
+    float ventStartsInSec = -1.0f, ventRemainingSec = -1.0f, ventRunSec = 0.0f, ventCycleSec = 0.0f;
     if (!config_.ventAutoEnabled && config_.ventScheduleEnabled &&
         batchRunning_ && rtc_.valid()) {
       const uint8_t hours[VENT_SCHEDULE_MAX_RUNS] = {
@@ -6616,6 +6666,7 @@ class MachineController {
       const uint32_t durationSec =
           static_cast<uint32_t>(config_.ventScheduleDurationMin) * 60UL;
       uint32_t nextStartWaitSec = 0xFFFFFFFFUL;
+      ventRunSec = static_cast<float>(durationSec);
       for (uint8_t i = 0U; i < count; ++i) {
         const uint32_t start = static_cast<uint32_t>(hours[i]) * 3600UL;
         const uint32_t end = start + durationSec;
@@ -6654,6 +6705,7 @@ class MachineController {
       const uint32_t onSec = cycleSec * duty / 100UL;
       profileVentActive = (elapsedSec % cycleSec) < onSec;
       if (onSec > 0UL) {
+        ventRunSec = static_cast<float>(onSec); ventCycleSec = static_cast<float>(cycleSec);
         const uint32_t phaseSec = elapsedSec % cycleSec;
         if (phaseSec < onSec) ventRemainingSec = static_cast<float>(onSec - phaseSec);
         else ventStartsInSec = static_cast<float>(cycleSec - phaseSec);
@@ -6727,7 +6779,17 @@ class MachineController {
         !mayapSystemTripLatched() && !mayapFirmwareMaintenanceActive();
 
     const float effectiveLimit = updateAdaptiveBalance(now, normalSsrPermit && actuatorReady, fanStable, req.ventFan);
-    req.ventFan = req.ventFan || adaptiveCoolingRequested();
+    MayapPredictive::Inputs predictiveIn;
+    predictiveIn.now = now; predictiveIn.pv = temperature_; predictiveIn.sensorOk = sensorUsable_; predictiveIn.sp = config_.targetTemp;
+    predictiveIn.high = config_.highTempAlarm; predictiveIn.limitPct = effectiveLimit;
+    predictiveIn.heaterPermit = normalSsrPermit && actuatorReady; predictiveIn.ventOn = outputs_.state().ventFan;
+    predictiveIn.ventAllowed = !warmupVentHold_ && sensorUsable_;
+    if (!warmupVentHold_) { predictiveIn.vent.startsIn = ventStartsInSec; predictiveIn.vent.remaining = ventRemainingSec; predictiveIn.vent.run = ventRunSec; predictiveIn.vent.cycle = ventCycleSec; }
+    if (predictiveRuns) {
+      thermalPredictive_.service(predictiveIn, MAYAP_PREDICTIVE_EVALS_PER_CYCLE);
+      if (thermalPredictive_.wantsPlan()) thermalPredictive_.beginPlan(predictiveIn);
+    }
+    req.ventFan = req.ventFan || adaptiveCoolingRequested() || (predictiveRuns && thermalPredictive_.coolingRequest());
     // Adaptive Thermal V1 plan: feed-forward + integral policy + startup hint. It can only
     // propose; the result still passes the startup ceiling, effectiveLimit, scheduler and arbiter.
     ventInfo_.active = outputs_.state().ventFan;
@@ -6803,6 +6865,16 @@ class MachineController {
         // Accelerate-then-brake (measured plant): the startup controller requests the power the predicted peak allows; the PID follows
         // bumplessly, so the hand-back near SP is no step.
         if (launchFloorPct > pidPower_) pidPower_ = launchFloorPct;   // the integral is not coupled to the boost: it must not carry it into the hold
+        // Thermal Predictive V1: while the identified model is trusted its proposal replaces the legacy request (limits below still apply)
+        if (predictiveRuns && actuatorConfig.controlMode == ControlMode::Pid && !autotune_.externalControl()) {
+          thermalPredictive_.update(predictiveIn);
+          const bool predictiveActive = thermalPredictive_.active();
+          if (predictiveActive) pidPower_ = thermalPredictive_.request();
+          // The legacy PID ran underneath with its own integral unaware of the power that was applied: on the hand-back it starts from the
+          // power the model says holds SP, instead of carrying a windup built while it was not in control
+          else if (predictiveWasActive_) pid_.seedBumpless(now, config_.targetTemp, temperature_, actuatorConfig, thermalPredictive_.holdEstimate());
+          predictiveWasActive_ = predictiveActive;
+        }
         MayapThermal::LaunchPlan planOut;
         if (startupHeat_.takePlan(planOut)) offerLaunchPlan(planOut);
       }
@@ -8522,6 +8594,12 @@ class MachineController {
   bool previousFanCommand_ = false;
   uint32_t fanOnSince_ = 0;
   MayapThermal::LaunchPlan launchPlan_{};
+  uint32_t cycleLastUs_ = 0, cycleMaxUs_ = 0;       // control-task cycle time, reported to the PID monitor (set by the control task)
+  MayapPredictive::Controller thermalPredictive_;
+  MayapPredictive::StoredModel predictiveSeed_;
+  bool predictiveWasActive_ = false;
+  bool predictiveBatchSeen_ = false, predictiveApplied_ = false;
+  uint32_t predictiveOfferAt_ = 0;
   bool warmupVentHold_ = false, warmupVentChecked_ = false;
   uint32_t warmupVentHoldSince_ = 0;
   // Contactor nhiet tong PHAI dong tuc thi cung cong tac (yeu cau nguoi lap

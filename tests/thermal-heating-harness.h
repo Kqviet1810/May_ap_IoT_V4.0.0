@@ -15,6 +15,10 @@
 #include "../MAYAP_INDUSTRIAL_v1_0_0/heater_burst_scheduler.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/startup_output_policy.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_adaptive_v1.h"
+#include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_predictive.h"
+#ifndef MAYAP_PREDICTIVE_EVALS_PER_CYCLE
+#define MAYAP_PREDICTIVE_EVALS_PER_CYCLE 1
+#endif
 static uint32_t clockMs=0;
 uint32_t millis() { return clockMs; }
 bool timeReached(uint32_t now,uint32_t then) { return static_cast<int32_t>(now-then)>=0; }
@@ -81,6 +85,10 @@ struct Harness {
   void trackAdaptiveEnergy(uint32_t){}
   float updateAdaptiveBalance(uint32_t,bool,bool,bool){return config_.maxHeaterPower;}
   bool adaptiveCoolingRequested()const{return false;}
+  MayapPredictive::Controller thermalPredictive_;MayapPredictive::StoredModel predictiveSeed_;
+  bool predictiveBatchSeen_=false,predictiveApplied_=false,predictiveWasActive_=false;uint32_t predictiveOfferAt_=0;
+  void offerPredictiveModel(const MayapPredictive::StoredModel &){}
+  void loadPredictiveSeed(){}
 #ifdef THERMAL_V3_BASELINE
 #include "fixtures/thermal-v3-baseline/heating.inc"
 #else

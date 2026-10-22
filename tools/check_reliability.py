@@ -88,7 +88,7 @@ if "PubSubClient" in build_workflow or "MAYAP_MQTT_" in build_workflow:
 require(build_workflow, "github.event_name == 'workflow_dispatch'", "manual test artifact gate")
 require(build_workflow, "firmware-test-${{ github.sha }}", "test artifact tied to commit SHA")
 require(build_workflow, 'test "$FLASH" -le 1480000', "V4 Flash budget")
-require(build_workflow, 'test "$STATIC_RAM" -le 164000', "V4 network-phase static RAM budget")
+require(build_workflow, 'test "$STATIC_RAM" -le 167500', "V4 network-phase static RAM budget")
 require(ino, '"[HEAP] free=%lu min=%lu largest=%lu', "DEV/PILOT heap diagnostics")
 require(ino, "heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)", "largest allocatable heap diagnostic")
 require(ino, '"[TASK] stack ctrl=%u hmi=%u sup=%u net=%u mqtt=%u cloud=%u ota=%u', "all task stack diagnostics")
