@@ -820,6 +820,10 @@ enum class View : uint8_t {
 
 enum class ConfirmAction : uint8_t { None, BatchToggle, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AdvRestore, MemberRemove };
 
+// NANG CAO menu (declared here because goBack() returns to these rows).
+constexpr uint8_t ADV_ITEM_COUNT = 9U;
+enum AdvItem : uint8_t { ADV_PID, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_HISTORY, ADV_WEB, ADV_GUEST, ADV_PINCHG, ADV_EXIT };
+
 // Prototype thu cong: Arduino IDE tu sinh prototype cho ham trong .ino.
 // Neu ham dung enum/struct tuy chinh, prototype tu dong co the bi chen
 // truoc noi khai bao kieu va gay loi "View was not declared".
@@ -1423,8 +1427,8 @@ bool commandTypesConflict(HmiCommandType a, HmiCommandType b) {
   const bool bTest = b == HmiCommandType::TestModeEnter || b == HmiCommandType::TestModeExit ||
                      b == HmiCommandType::TestOutputPulse || b == HmiCommandType::TestOutputStop ||
                      b == HmiCommandType::TestLimitStart || b == HmiCommandType::TestLimitCancel;
-  // Thu nghiem thiet bi khong duoc dan xen voi bat dau me/auto tune.
-  return (aTest && (bBatch || bTune)) || (bTest && (aBatch || aTune));
+  // Thu nghiem thiet bi khong duoc dan xen voi bat dau me.
+  return (aTest && bBatch) || (bTest && aBatch);
 }
 
 bool commandConflictLocked(HmiCommandType type) {
@@ -2621,8 +2625,6 @@ bool handleInlineConfirmation() {
 // ============================================================
 // NANG CAO: phien ky thuat, nhap ma, luu mot lan khi thoat, ban ghi cu, yeu cau tu Web
 // ============================================================
-constexpr uint8_t ADV_ITEM_COUNT = 9U;
-enum AdvItem : uint8_t { ADV_PID, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_HISTORY, ADV_WEB, ADV_GUEST, ADV_PINCHG, ADV_EXIT };
 void alignAdvMenuWindow() { advTop = advIndex >= 3U ? static_cast<uint8_t>(advIndex - 3U) : 0U; }
 
 void pinWipe() {
