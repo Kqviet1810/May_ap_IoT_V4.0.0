@@ -2877,7 +2877,7 @@ void advSelect() {
   }
 }
 
-constexpr uint8_t MON_ITEM_COUNT = 6U;      // PID Monitor (read-only): what is measured and what the heater was actually given
+constexpr uint8_t MON_ITEM_COUNT = 9U;      // PID Monitor (read-only): what is measured and what the heater was actually given
 // Mot muc thong tin chi-doc (nhan + gia tri). Du lieu lay tu firmware dang chay, khong co so gia.
 void infoItem(uint8_t i, const char *&label, char *v, size_t n) {
   const MachineRuntime &r = currentRuntime;
@@ -2890,7 +2890,15 @@ void infoItem(uint8_t i, const char *&label, char *v, size_t n) {
     case 2: label = "Sai so"; if (ok) snprintf(v, n, "%+.2fC", m.error); break;
     case 3: label = "Yeu cau cuoi"; if (ok) snprintf(v, n, "%.1f%%", m.requestPct); break;
     case 4: label = "SSR TB 60s"; if (ok) snprintf(v, n, "%.1f%%", m.actualAvgPct); break;
-    default: label = "Chu ky DK us"; if (m.valid) snprintf(v, n, "%lu/%lu", static_cast<unsigned long>(m.cycleLastUs), static_cast<unsigned long>(m.cycleMaxUs)); break;
+    case 5: label = "Chu ky DK us"; if (m.valid) snprintf(v, n, "%lu/%lu", static_cast<unsigned long>(m.cycleLastUs), static_cast<unsigned long>(m.cycleMaxUs)); break;
+    case 6: label = "PV du doan"; if (ok) snprintf(v, n, "%.2fC", m.predictedC); break;
+    case 7: {
+      static const char *const phaseText[4] = {"NHIN/DO", "DA NHAN DANG", "DA HOC 1", "DA HOC 2"};
+      label = "Pha hoc V2";
+      if (m.valid) snprintf(v, n, "%s%s", phaseText[m.phase < 4U ? m.phase : 3U], m.suspect ? " NGHI" : "");
+      break;
+    }
+    default: label = "Slot V2 us"; if (m.valid) snprintf(v, n, "%lu/%lu", static_cast<unsigned long>(m.slotLastUs), static_cast<unsigned long>(m.slotMaxUs)); break;
   }
   if (!v[0]) snprintf(v, n, "--");
 }

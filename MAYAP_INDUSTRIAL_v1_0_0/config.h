@@ -1200,6 +1200,10 @@ struct PidMonitorData {
   float requestPct = 0;               // final heater request after every limit [%]
   float actualAvgPct = 0;             // moving average (60 s) of the REAL SSR ON share [%]
   uint32_t cycleLastUs = 0, cycleMaxUs = 0;   // control-task cycle time [us] (CPU budget check)
+  float predictedC = 0;               // V2: where the PV is heading with the power already on its way [degC]
+  uint8_t phase = 0;                  // V2 learning phase: 0 looking / probing, 1 identified, 2 first fit done, 3 second fit done
+  bool suspect = false;               // V2 response watchdog: power arrived but the PV did not move (request withdrawn)
+  uint32_t slotLastUs = 0, slotMaxUs = 0;     // V2 controller slot time [us] (esp_timer)
 };
 
 struct MachineRuntime {

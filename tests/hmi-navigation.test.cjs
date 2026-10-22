@@ -170,13 +170,13 @@ test('old records are HMI-only and restore asks CO/KHONG', () => {
 
 test('PID Monitor is a read-only view of what the firmware measured and commanded', () => {
   const info = bodyOf('void infoItem(');
-  for (const key of ['temperature', 'targetTemp', 'm.error', 'requestPct', 'actualAvgPct', 'cycleLastUs', 'cycleMaxUs']) {
+  for (const key of ['temperature', 'targetTemp', 'm.error', 'requestPct', 'actualAvgPct', 'cycleLastUs', 'cycleMaxUs', 'predictedC', 'slotLastUs', 'slotMaxUs']) {
     assert.ok(info.includes(key), `${key} is shown`);
   }
   for (const gone of ['pidCorrection', 'holdFf', 'ventFf', 'limitLo', 'limitHi', 'thermalConfidence', 'launchGain', 'predState', 'currentConfig.kp']) {
     assert.ok(!info.includes(gone), `${gone} belonged to the old controller`);
   }
-  assert.match(hmi, /constexpr uint8_t MON_ITEM_COUNT = 6U;/);
+  assert.match(hmi, /constexpr uint8_t MON_ITEM_COUNT = 9U;/);
   assert.doesNotMatch(bodyOf('void drawInfoPage('), /queueCommand|startConfigSave/);
   const input = bodyOf('void handleInput()');
   const monCase = input.slice(input.indexOf('case View::PidMonitor:'), input.indexOf('case View::AdvHistory:'));

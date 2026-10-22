@@ -481,6 +481,10 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
     m["err"] = rt.pidMon.error;
     m["req"] = rt.pidMon.requestPct;
     m["act"] = rt.pidMon.actualAvgPct;
+    m["pr"] = rt.pidMon.predictedC;
+    m["ph"] = rt.pidMon.phase;
+    m["sus"] = rt.pidMon.suspect;
+    m["sl"] = rt.pidMon.slotMaxUs;
     m["valid"] = rt.pidMon.valid;
   }
   return publishJson("snapshot", doc, false);

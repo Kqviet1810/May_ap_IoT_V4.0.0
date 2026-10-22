@@ -5036,6 +5036,11 @@ class MachineController {
     m.requestPct = runtime_.heaterPower;
     m.actualAvgPct = pidMonActual_;
     m.cycleLastUs = cycleLastUs_; m.cycleMaxUs = cycleMaxUs_;
+    const thermalv2::Controller &v2 = thermalV2_.controller();
+    m.predictedC = v2.predicted();
+    m.phase = !v2.identified() ? 0U : static_cast<uint8_t>(1U + std::min<uint8_t>(v2.batchesDone(), 2U));
+    m.suspect = v2.responseSuspect();
+    m.slotLastUs = slotLastUs_; m.slotMaxUs = slotMaxUs_;
   }
 
   bool startBatch(uint32_t now, const char *&message) {
@@ -5506,7 +5511,11 @@ class MachineController {
     if (!isfinite(tempRateRefValue_) || elapsedMs(now, tempRateRefAt_) >=
                                              config_.tempRateWindowSec * 1000UL) {
       if (isfinite(tempRateRefValue_) && sensorUsable_ && isfinite(temperature_) && batchRunning_) {
-        temperatureRateActive_ = fabsf(temperature_ - tempRateRefValue_) >= config_.tempRateLimitC;
+        // Thermal V2 climbs and recovers at up to 0.02 degC/s with the heater mostly on: a RISE while the heater has been on more than half the last
+        // minute is the expected answer to the request, not an anomaly. A fall, or a rise with the heater mostly off (welded SSR), still warns.
+        const float rateDelta = temperature_ - tempRateRefValue_;
+        const bool expectedClimb = rateDelta > 0.0f && pidMonActual_ >= 50.0f;
+        temperatureRateActive_ = fabsf(rateDelta) >= config_.tempRateLimitC && !expectedClimb;
       } else {
         temperatureRateActive_ = false;
       }

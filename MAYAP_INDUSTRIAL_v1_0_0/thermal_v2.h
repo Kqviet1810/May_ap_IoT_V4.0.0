@@ -176,6 +176,7 @@ class Controller {
   float lastCandRms() const { return static_cast<float>(bestRms_); }
   bool batchRunning() const { return batchActive_; }
   bool responseSuspect() const { return respSuspect_; }
+  bool identified() const { return idDone_; }
 
   Output step(const Input &in) {
     Output out;
