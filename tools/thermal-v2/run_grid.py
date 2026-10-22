@@ -41,13 +41,13 @@ def gen_plants(which, spec):
     rows = []
     if which == 'A':
         for p in spec['A']: rows.append(plant_row(p, Ce=common['Ce'], Tamb=common['Tamb']))
-    elif which == 'B':
-        b = spec['B']; r = xorshift32(b['seed']); rg = b['ranges']; n = 0
+    elif which in ('B', 'D'):
+        b = spec[which]; r = xorshift32(b['seed']); rg = b['ranges']; n = 0
         while len(rows) < b['count']:
             vals = {k: rg[k][0] + next(r) * (rg[k][1] - rg[k][0]) for k in ['Pmax', 'Cf', 'Ce', 'hA', 'UA', 'td', 'tl']}
             if vals['UA'] * 9.5 / vals['Pmax'] > 0.9: continue          # rejection rule in plants.json
             n += 1
-            rows.append(plant_row(dict(id='B%02d' % n, **{k: round(v, 3) for k, v in vals.items()}), Tamb=common['Tamb']))
+            rows.append(plant_row(dict(id=which + '%02d' % n, **{k: round(v, 3) for k, v in vals.items()}), Tamb=common['Tamb']))
     elif which == 'C':
         mods = {m['id']: m for m in spec['C']['modifiers']}
         over = {'C1': dict(thirdC=1.5e6, thirdG=400), 'C2': dict(sensorLag=20), 'C3': dict(sensorLag=60), 'C4': dict(gain=0.7), 'C5': dict(gain=1.3),
@@ -92,10 +92,13 @@ def grade(rows, refs, acc):
     """returns {criterion: (passed, total, [failing case ids])}"""
     res = {}
     f = lambda r, k: float(r[k])
+    sfx = ['']                      # C8 is a sensor calibration offset the controller cannot see: its rows are graded under '<id>.C8cal'
     def put(cid, ok, case):
+        cid += sfx[0]
         p, t, bad = res.get(cid, (0, 0, []))
         res[cid] = (p + (1 if ok else 0), t + 1, bad + ([case] if not ok else []))
     for r in rows:
+        sfx[0] = '.C8cal' if r['plant'].endswith('C8') else ''
         sid = r['scenario']; case = r['plant'] + '/' + sid; base = sid[:2] if sid[:2] in ('S5', 'S6') else sid
         ref = refs.get((r['plant'], sid))
         for c in acc['criteria']:

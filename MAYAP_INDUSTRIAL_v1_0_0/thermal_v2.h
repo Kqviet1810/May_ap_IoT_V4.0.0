@@ -68,8 +68,9 @@ constexpr uint8_t BATCH_GUARD_POINTS = 12;  // newest points pushed while a batc
 // ---- law ----
 constexpr bool EGG_OBSERVER_FINE = false;   // the egg observer needs a slope that is not a 0.1 degC staircase: it runs only when the sensor step is <= 0.02
 constexpr bool RLS_NEEDS_BATCH = false;
-constexpr float TAUI_FACTOR = 6.0f;        // tau_I = factor * theta (SIMC: 4*(tau_c+theta) = 12 theta; 6 after the sweep on set A)
-constexpr float ASYM = 3.0f;               // gain above SP relative to below (G0: 2)
+constexpr float TAUI_FACTOR = 8.0f;        // tau_I = factor * theta (SIMC: 4*(tau_c+theta) = 12 theta; 6 after the sweep on set A)
+constexpr float KUP = 1.0f;                // proportional gain below SP, in units of Kc
+constexpr float ASYM = 20.0f;               // gain above SP relative to below (G0: 2)
 constexpr float DEADZONE_FRAC = 0.0f;     // of the sensor step dQ
 constexpr float OBS_GAIN = 0.15f;          // fraction of the innovation applied per 10 s (time constant ~70 s)
 constexpr float OBS_DEADBAND_MKS = 0.6f;   // mK/s: below this the 0.1 degC staircase explains the innovation
@@ -80,6 +81,9 @@ constexpr float Z_SIGMA = 1.5f;            // far mode ends when the predicted d
 constexpr float E_ON_MIN = 0.25f;          // degC: never switch to full power for a smaller predicted deficit
 constexpr float BETA = 0.85f;
 constexpr float LEVEL_FLAT_C = 0.15f;      // degC rise over the 110 s ring window below which the PV counts as flat
+constexpr bool LEVEL_SLOPE_MODE = true;      // G3c: the anchor also works while the PV moves (demand = arriving power - slope/k)
+constexpr float LEVEL_SLOPE_GAIN = 0.12f;    // per 10 s
+constexpr float LEVEL_SLOPE_GATE = 25.0f;    // % : a larger mismatch is a door/vent, not the demand
 constexpr float LEVEL_GAIN = 0.05f;        // per 10 s
 constexpr float I_MAX = 30.0f;
 constexpr float E115_CLIMB_FRAC = 0.4f;
@@ -206,7 +210,7 @@ class Controller {
     const float eOn = std::fmax(E_ON_MIN, Z_SIGMA * sigPred_);
     const float Kc = 1.0f / (k * 3.0f * theta_);                 // SIMC for an integrating plant, tau_c = 2*theta
     const float tauI = TAUI_FACTOR * theta_;
-    const float K = (e >= 0.0f) ? Kc : ASYM * Kc;
+    const float K = (e >= 0.0f) ? KUP * Kc : ASYM * Kc;
     if (e > eOn) far_ = true; else if (e < 0.5f * eOn) far_ = false;
     // The sensor reports in steps of dQ: the air can sit anywhere within +-dQ/2 of a reading, so a one-step change of the reading is not a full dQ of error.
     // The proportional action works on the error minus the dead band; the integral (which averages over time) keeps the full error.
@@ -345,10 +349,22 @@ class Controller {
   void levelUpdate() {
     if (!idDone_ || ringCount_ < RING_N || batchActive_) return;
     const float rise = pvRing_[RING_N - 1] - pvRing_[0];
-    if (std::fabs(rise) > LEVEL_FLAT_C) return;
+    const bool flat = std::fabs(rise) <= LEVEL_FLAT_C;
+    if (!flat && !LEVEL_SLOPE_MODE) return;
     float pa = 0, pvm = 0; for (uint8_t i = 0; i < RING_N; ++i) { pa += paRing_[i]; pvm += pvRing_[i]; }
     pa /= RING_N; pvm /= RING_N;
-    const float step = LEVEL_GAIN * (pa - demandAt(pvm));
+    float meas = pa;                                                  // flat: the power that arrives IS the demand
+    if (!flat) {                                                      // moving: demand = arriving power - slope / k (mK/s -> %)
+      const uint8_t n = SLOPE_N; float sx = 0, sy = 0, sxx = 0, sxy = 0, pam = 0;
+      for (uint8_t i = 0; i < n; ++i) { const float t = i * 10.0f, y = pvRing_[RING_N - n + i]; sx += t; sy += y; sxx += t * t; sxy += t * y; pam += paRing_[RING_N - n + i]; }
+      const float slopeMks = 1000.0f * (n * sxy - sx * sy) / (n * sxx - sx * sx);
+      pam /= n;
+      meas = pam - 100.0f * slopeMks / th_[0];
+      pvm = 0; for (uint8_t i = RING_N - n; i < RING_N; ++i) pvm += pvRing_[i]; pvm /= n;
+    }
+    const float err = meas - demandAt(pvm);
+    if (!flat && std::fabs(err) > LEVEL_SLOPE_GATE) return;
+    const float step = (flat ? LEVEL_GAIN : LEVEL_SLOPE_GAIN) * err;
     dBias_ += step; I_ -= step;
     if (dBias_ > 40.0f) dBias_ = 40.0f; else if (dBias_ < -40.0f) dBias_ = -40.0f;
     if (I_ > I_MAX) I_ = I_MAX; else if (I_ < -I_MAX) I_ = -I_MAX;
