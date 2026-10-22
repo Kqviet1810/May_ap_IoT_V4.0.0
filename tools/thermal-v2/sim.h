@@ -40,11 +40,12 @@ class Sim {
     const unsigned ticks = static_cast<unsigned>(s_.duration * 1000 / stepMs);
     const unsigned dly = std::max(1u, static_cast<unsigned>(p_.td * 1000 / stepMs));
     std::vector<double> pipe(dly, 0.0); size_t cur = 0;
-    double Ta = s_.warm ? s_.SP : s_.startAir, Te = s_.warm ? s_.SP : s_.startEgg, Ts = Ta;
+    const bool settledInit = s_.warm && !s_.coldStart;
+    double Ta = settledInit ? s_.SP : s_.startAir, Te = settledInit ? s_.SP : s_.startEgg, Ts = Ta;
     double heater = 0, vent = 0, sensPhys = Ta;
     const double ventG = p_.ventW / 12.5;
     double Tamb = p_.Tamb;
-    if (s_.warm) {          // settled, so the controller starts as after a reboot of a running incubator
+    if (settledInit) {          // settled, so the controller starts as after a reboot of a running incubator
       const double hold = p_.UA * (s_.SP - Tamb);
       heater = hold; std::fill(pipe.begin(), pipe.end(), hold);
     }

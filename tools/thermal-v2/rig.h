@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <cstdarg>
 #include <deque>
 #include <memory>
@@ -28,6 +29,7 @@ inline int constrain(int v, int lo, int hi) { return std::max(lo, std::min(hi, v
 inline float clampFloat(float v, float lo, float hi) { return std::max(lo, std::min(hi, v)); }
 constexpr float PI = 3.14159265358979323846f;
 #include "actual-config.inc"
+#include "../../MAYAP_INDUSTRIAL_v1_0_0/thermal_v2.h"
 #include "../../MAYAP_INDUSTRIAL_v1_0_0/heater_burst_scheduler.h"
 #include "../../MAYAP_INDUSTRIAL_v1_0_0/startup_output_policy.h"
 constexpr int LOW = 0, HIGH = 1, OUTPUT = 2;
@@ -89,6 +91,7 @@ struct Scenario {
   double permitLossAt = -1, permitLossFor = 600;          // S9
   double sagPerDuty = 0;                                  // S7 supply sag
   bool batchRunning = true;
+  bool coldStart = false;                                // event scenarios run after a real cold start (identification climb), not from a settled state
 };
 
 // ------------------------------------------------------------------------------------------------------------------------------------------
@@ -121,6 +124,23 @@ struct HoldSteady : Controller {       // constant percent (self-tests)
   explicit HoldSteady(float p) : pct(p) {}
   const char *name() const override { return "const"; }
   float step(const CtlIn &) override { return pct; }
+};
+struct V2Ctl : Controller {            // the V2 law; the cap / NaN / negative clamp below is what the production adapter does
+  thermalv2::Controller c;
+  thermalv2::Output last;
+  const char *name() const override { return "v2"; }
+  float step(const CtlIn &in) override {
+    thermalv2::Input i;
+    i.pv = in.pv; i.sp = in.sp; i.dQ = 0.1f; i.headroomC = in.headroomC; i.capPct = in.capPct; i.deliveredPct = in.deliveredPct;
+    i.e115Frac = in.e115Frac; i.dtS = static_cast<float>(in.dt); i.newSample = in.newSample; i.permit = in.permit;
+    last = c.step(i);
+    static const bool dbg = std::getenv("V2DBG") != nullptr;
+    if (dbg && (in.now % 30000U) < 100U)
+      std::fprintf(stderr, "t=%6.0f pv=%.2f pred=%.2f u=%.1f k=%.2e th=%.0f dloss=%.1f I=%.1f Te=%.2f st=%d\n", (in.now - 1000) / 1000.0, in.pv, c.predicted(), last.powerPct, c.kAir(), c.thetaHat(), c.dLoss(), c.integral(), c.teModel(), last.state);
+    float u = last.powerPct;
+    if (!(u > 0.0f)) u = 0.0f;
+    return std::min(u, in.capPct);
+  }
 };
 struct BangBang : Controller {         // tiny hysteresis controller, only to exercise the rig end to end
   bool on = true;

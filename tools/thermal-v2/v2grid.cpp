@@ -43,6 +43,7 @@ static Scenario scenario(const std::string &id) {
 static std::unique_ptr<Controller> makeController(const std::string &n) {
   if (n == "fastest") return std::unique_ptr<Controller>(new Fastest());
   if (n == "zero") return std::unique_ptr<Controller>(new Zero());
+  if (n == "v2") return std::unique_ptr<Controller>(new V2Ctl());
   if (n == "bangbang") return std::unique_ptr<Controller>(new BangBang());
   if (n.rfind("const", 0) == 0) return std::unique_ptr<Controller>(new HoldSteady(static_cast<float>(atof(n.c_str() + 5))));
   std::fprintf(stderr, "unknown controller %s\n", n.c_str()); std::exit(2);
@@ -117,7 +118,13 @@ int main(int argc, char **argv) {
     std::vector<Plant> plants = loadPlants(argv[2]); std::string cn = argv[3]; std::stringstream ss(argv[4]); std::string sid;
     header();
     while (std::getline(ss, sid, ',')) for (const Plant &p : plants) {
-      Scenario s = scenario(sid); std::unique_ptr<Controller> c = makeController(cn); Sim sim(p, s, *c);
+      Scenario s = scenario(sid); std::unique_ptr<Controller> c = makeController(cn);
+      if (s.warm && cn != "fastest" && cn != "zero" && cn.rfind("const", 0) != 0) {      // a real controller meets its disturbances after a real cold start
+        const double P = 4 * 3600.0; s.coldStart = true; s.startAir = s.startEgg = 33; s.eventAt += P; s.duration += P;
+        if (s.ventAt >= 0) s.ventAt += P;
+        if (s.permitLossAt >= 0) s.permitLossAt += P;
+      }
+      Sim sim(p, s, *c);
       std::ofstream tr; if (argc >= 6) { tr.open(std::string(argv[5]) + "/" + p.id + "_" + sid + ".csv"); tr << "t,air,egg,pv,cmd,on,high,e115,vent\n"; sim.trace = &tr; }
       row(p, s, cn.c_str(), sim.run());
     }
