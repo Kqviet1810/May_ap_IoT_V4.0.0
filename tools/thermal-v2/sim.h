@@ -118,6 +118,7 @@ class Sim {
       const double q = hA * (Ta - Te);
       double dTa = heater - p_.UA * (Ta - Tamb) - q - ventG * vent * (Ta - Tamb) - extraLoss * (Ta - Tamb) + p_.fanW;
       if (p_.thirdC > 0) { const double qs = p_.thirdG * (Ta - Ts); dTa -= qs; Ts += qs * dt / p_.thirdC; }
+      g_truthDemandPct = 100.0 * (p_.UA * (Ta - Tamb) + q + ventG * vent * (Ta - Tamb) + extraLoss * (Ta - Tamb) - p_.fanW) / (p_.Pmax * p_.gainScale);
       Ta += dTa * dt / p_.Cf;
       Te += (q + embryo) * dt / p_.Ce;
       if (!isfinite(Ta) || Ta > 200) { std::fprintf(stderr, "plant blew up %s %s\n", p_.id.c_str(), s_.id.c_str()); std::abort(); }

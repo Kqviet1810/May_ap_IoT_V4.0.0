@@ -34,7 +34,17 @@ constexpr uint8_t ID_FLAT_RING = 3;
 constexpr float E_FAR_ON = 1.0f;          // degC of predicted deficit that switches to full power: eps*E_FAR <= 0.2 degC overshoot budget for eps <= 20 %
 constexpr float E_FAR_OFF = 0.7f;
 constexpr float BAL_FLAT_SLOPE = 5e-4f;   // degC/s: 0.1 degC over 200 s
-constexpr float BAL_MAX_NET = 20.0f;      // % of bank: balance only trusted when |slope/k| is this small (error <= 20 % of it)
+constexpr uint8_t STEP_N = 6;             // 60 s windows for the power-step estimate of k
+constexpr float STEP_FLAT_PCT = 15.0f;     // % of bank
+constexpr float STEP_GIVEUP_S = 900.0f;
+constexpr float STEP_MIN_DP = 25.0f;       // % of bank: the step must be at least this large for D to cancel inside 10 %
+constexpr float BAL_MAX_NET = 25.0f;       // % of bank
+constexpr float B_GAIN = 0.0f;             // per 10 s balance, at a flat PV
+constexpr float BAL_SIGMA_PCT = 3.0f;      // % of bank: noise of one balance at a flat PV (0.1 degC steps over a 180 s half-window, k ~ 1.3e-4)
+constexpr float BAL_NET_SCALE = 15.0f;     // % of bank: extra variance grows with |slope/k| (a 15 % error of k on that term)
+constexpr float BAL_FORGET = 0.99f;       // per 10 s: ~80 min memory
+constexpr float HA_MIN = 4.0f, HA_MAX = 13.0f;   // 900..1800 W/K on 14..22 kW (plants.json B ranges)
+constexpr float P0_L = 100.0f, P0_HA = 16.0f;    // prior variances: L 12+-10 %, ha 8+-4 %/degC
 constexpr float ID_TIMEOUT_S = 600.0f;
 constexpr float E115_CLIMB_FRAC = 0.4f;
 constexpr float PERMIT_RECOMPUTE_S = 120.0f;
@@ -60,7 +70,7 @@ class Controller {
     for (auto &x : paRing_) x = 0.0f;
     binHead_ = 0; ringCount_ = 0; secT_ = 0; secAcc_ = 0; ring10_ = 0; lag_ = 0; absS_ = 0;
     k_ = K_PRIOR; kKnown_ = false; theta_ = THETA_PRIOR_S; thetaKnown_ = false; haPct_ = HA_PCT_PRIOR;
-    dLoss_ = H_LO; dKnown_ = false; I_ = 0; Te_ = NAN; pv_ = NAN; idDone_ = false; idPhase_ = 0;
+    dLoss_ = H_LO; bias_ = 0; dKnown_ = false; p00_ = P0_L; p01_ = 0; p11_ = P0_HA; I_ = 0; Te_ = NAN; pv_ = NAN; idDone_ = false; idPhase_ = 0; stepPhase_ = 0; stepSince_ = -1;
     lostS_ = 0; lastU_ = 0; state_ = StIdle; haveSample_ = false; prevSeq_ = 0;
   }
   float kAir() const { return k_; }
@@ -69,6 +79,7 @@ class Controller {
   float integral() const { return I_; }
   float predicted() const { return pvPred_; }
   float teModel() const { return Te_; }
+  float dNow() const { return dLoss_ + haPct_ * (pv_ - Te_) + bias_; }
   bool identified() const { return kKnown_ && thetaKnown_; }
 
   Output step(const Input &in) {
@@ -90,14 +101,14 @@ class Controller {
     const float Ttr = tdPrime() + TAU_LAG_S;
     const float Etr = transitEnergy();
     // Air temperature once the energy already delivered has arrived and the demand (loss + egg flow at the present PV) has been paid for the same time.
-    const float dNow = dLoss_ + haPct_ * (pv_ - Te_);
+    const float dNow = dLoss_ + haPct_ * (pv_ - Te_) + bias_;
     pvPred_ = pv_ + k_ * (Etr - (dNow > 0.0f ? dNow : 0.0f) * Ttr);
     const float e = in.sp - pvPred_;
     const float thEff = theta_;
     const float Kc = 1.0f / (k_ * 3.0f * thEff);                 // SIMC for an integrating plant, tau_c = 2*theta_eff
     const float tauI = 12.0f * thEff;                            // 4*(tau_c + theta_eff)
     const float K = (e >= 0.0f) ? Kc : 2.0f * Kc;
-    const float dFF = dLoss_ + BETA * haPct_ * (in.sp - Te_);
+    const float dFF = dLoss_ + bias_ + BETA * haPct_ * (in.sp - Te_);
     // Dual mode on the PREDICTED error: far below SP (e > E_FAR_ON) full power, decided by PV_pred and not by PV; once e < E_FAR_OFF the plain SIMC law
     // runs (small-signal loop = G0 margins).  The hysteresis stops the mode from chattering when the prediction wobbles by the model error.
     if (e > E_FAR_ON) far_ = true; else if (e < E_FAR_OFF) far_ = false;
@@ -134,6 +145,7 @@ class Controller {
         for (uint8_t i = 0; i + 1 < RING_N; ++i) { pvRing_[i] = pvRing_[i + 1]; paRing_[i] = paRing_[i + 1]; }
         pvRing_[RING_N - 1] = std::isfinite(pv_) ? pv_ : 0.0f; paRing_[RING_N - 1] = lag_;
         if (ringCount_ < RING_N) ++ringCount_;
+        stepRefine();
         if (in.permit) balance(in); else ringCount_ = 0;
       } else ++ring10_;
     }
@@ -150,14 +162,31 @@ class Controller {
     if (ringCount_ < RING_N || !idDone_) return;
     const uint8_t h = RING_N / 2; float a = 0, b = 0, pa = 0;
     for (uint8_t i = 0; i < h; ++i) { a += pvRing_[i]; b += pvRing_[h + i]; }
-    for (uint8_t i = 0; i < RING_N; ++i) pa += paRing_[i];
-    a /= h; b /= h; pa /= RING_N;
+    // difference of half-window means = k * triangle-weighted mean of (P_air - demand) over the window: weight P_air the same way
+    float wsum = 0;
+    for (uint8_t i = 0; i < RING_N; ++i) { const float w = static_cast<float>(i < RING_N / 2 ? i + 1 : RING_N - i); pa += w * paRing_[i]; wsum += w; }
+    a /= h; b /= h; pa /= wsum;
     const float slope = (b - a) / (h * 10.0f);
-    if (std::fabs(slope / k_) > BAL_MAX_NET || (!kKnown_ && std::fabs(slope) > BAL_FLAT_SLOPE)) return;   // an unmeasured k only counts for a flat PV                      // ill-conditioned while climbing hard: a 20 % error of k is 20 % of the net power
-    const float egg = haPct_ * (0.5f * (a + b) - Te_);
-    float raw = pa - slope / k_ - egg;
-    if (raw < 0.0f) raw = 0.0f; else if (raw > 100.0f) raw = 100.0f;
-    dLoss_ = dKnown_ ? dLoss_ + (raw - dLoss_) * 0.3f : raw;
+    if (!kKnown_ && std::fabs(slope) > BAL_FLAT_SLOPE) return;               // an unmeasured k only counts for a flat PV
+    // total demand over the window (% of bank): mean air power minus what the slope says went into the air.  The k-error of that second term is
+    // eps*|slope/k|, so the measurement variance grows with it (BAL_SIGMA_PCT at a flat PV).
+    const float net = slope / k_;
+    if (std::fabs(net) > BAL_MAX_NET) return;                                // climbing hard: the k-error of that term would swamp the demand
+    const float dMeas = pa - net;
+    const float x = 0.5f * (a + b) - Te_;                                     // air - egg difference at the window centre
+    const float sig = BAL_SIGMA_PCT * (1.0f + std::fabs(net) / BAL_NET_SCALE);
+    // Bayesian RLS on  dMeas = L + ha*x  : L = loss of the air, ha = egg coupling in % of bank per degC.  Forgetting keeps it following slow change.
+    const float lam = BAL_FORGET;
+    float p00 = p00_ / lam, p01 = p01_ / lam, p11 = p11_ / lam;
+    const float eAll = dMeas - (dLoss_ + haPct_ * x + bias_);
+    bias_ += B_GAIN * eAll * (BAL_SIGMA_PCT / sig);                       // fast residual tracker: the structure (L, ha) is learned slowly, the residual quickly
+    const float e = dMeas - bias_ - (dLoss_ + haPct_ * x);
+    const float s2 = p00 + 2.0f * p01 * x + p11 * x * x + sig * sig;
+    const float g0 = (p00 + p01 * x) / s2, g1 = (p01 + p11 * x) / s2;
+    dLoss_ += g0 * e; haPct_ += g1 * e;
+    p00_ = p00 - g0 * (p00 + p01 * x); p01_ = p01 - g0 * (p01 + p11 * x); p11_ = p11 - g1 * (p01 + p11 * x);
+    if (dLoss_ < 0.0f) dLoss_ = 0.0f; else if (dLoss_ > 60.0f) dLoss_ = 60.0f;
+    if (haPct_ < HA_MIN) haPct_ = HA_MIN; else if (haPct_ > HA_MAX) haPct_ = HA_MAX;
     dKnown_ = true; (void)in;
   }
 
@@ -180,7 +209,27 @@ class Controller {
       lag_ += (x - lag_) * a;
     }
   }
-  void finishId() { idDone_ = true; idPhase_ = 3; }
+  void finishId() { idDone_ = true; idPhase_ = 3; snap0(); }
+  // k from a POWER STEP: the demand D cancels in  (slope1 - slope0) = k*(P_air1 - P_air0)  as long as D moves little between the two windows.
+  // Snapshot 0 is taken when the identification climb ends (low power), snapshot 1 once the full-power climb has settled (delay + 3 lags later).
+  void lastWindow(float &slope, float &pa) const {
+    const uint8_t n = STEP_N; float sx = 0, sy = 0, sxx = 0, sxy = 0, sp = 0;
+    for (uint8_t i = 0; i < n; ++i) { const float x = i * 10.0f, y = pvRing_[RING_N - n + i]; sx += x; sy += y; sxx += x * x; sxy += x * y; sp += paRing_[RING_N - n + i]; }
+    slope = (n * sxy - sx * sy) / (n * sxx - sx * sx); pa = sp / n;
+  }
+  void snap0() { if (ringCount_ >= STEP_N) { lastWindow(slope0_, pa0_); stepPhase_ = 1; stepSince_ = -1; } }
+  void stepRefine() {
+    if (stepPhase_ != 1 || ringCount_ < STEP_N) return;
+    if (stepSince_ < 0) stepSince_ = absS_;                      // measured from the end of the identification climb
+    if (absS_ - stepSince_ < tdPrime() + TAU_LAG_S + 10.0f * STEP_N) return;      // P_air moves inside the window; the model La is what is compared, so no need to wait for it to settle
+    float sl1, pa1; lastWindow(sl1, pa1);
+    if (std::fabs(paRing_[RING_N - 1] - paRing_[RING_N - STEP_N]) > STEP_FLAT_PCT) { if (absS_ - stepSince_ > STEP_GIVEUP_S) stepPhase_ = 2; return; }
+    stepPhase_ = 2;
+    const float dLa = paRing_[RING_N - 1] - paRing_[RING_N - STEP_N];
+    if (pa1 - pa0_ < STEP_MIN_DP || sl1 <= slope0_ || std::fabs(dLa) > STEP_FLAT_PCT) return;   // P_air must be (nearly) constant inside the window
+    const float kNew = (sl1 - slope0_) / (pa1 - pa0_);
+    if (kNew > 0.4f * k_ && kNew < 2.5f * k_) { k_ = kNew; kKnown_ = true; }
+  }
   void identify(const Input &in) {
     if (idDone_) return;
     if (!in.permit) { idPhase_ = 0; return; }
@@ -221,7 +270,8 @@ class Controller {
   float pvRing_[RING_N], paRing_[RING_N];
   uint16_t binHead_; uint8_t ringCount_, ring10_;
   float secT_, secAcc_, lag_, absS_;
-  bool far_ = false;
+  uint8_t stepPhase_ = 0; float slope0_ = 0, pa0_ = 0, stepSince_ = -1;
+  float bias_ = 0; bool far_ = false; float p00_ = P0_L, p01_ = 0, p11_ = P0_HA;
   float k_, theta_, haPct_, dLoss_, I_, Te_, pv_, pvPred_ = 0, lastU_, lostS_;
   bool kKnown_, thetaKnown_, dKnown_, haveSample_;
   uint32_t prevSeq_; uint8_t state_;
