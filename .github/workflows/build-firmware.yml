@@ -230,15 +230,17 @@ jobs:
           # Phase 1 (no transport) measured Flash=1359805 / static RAM=142184.
           # Full esp-mqtt/WSS path (host is tracked, password comes from NVS at runtime,
           # so nothing is dead-stripped) measured on main: Flash=1439981 / static RAM=161024.
+          # 1.1.15 Thermal Predictive V1 (history, identifier, planner: ~4.1 KB static RAM after trimming) measured Flash=1478381 / static RAM=166920;
+          # the RAM ceiling was raised from 164000 to 167500 for it on the owner's decision.
           # Ceilings = measured + ~1.4% Flash / ~1.8% RAM margin; lower them
           # after the stack high-water mark is measured on hardware.
           FLASH=$(sed -n 's/.*Sketch uses \([0-9][0-9]*\) bytes.*/\1/p' /tmp/mayap-size.log | tail -n 1)
           STATIC_RAM=$(sed -n 's/.*Global variables use \([0-9][0-9]*\) bytes.*/\1/p' /tmp/mayap-size.log | tail -n 1)
           test -n "$FLASH" || { echo "::error::Cannot read ESP32 Flash size"; exit 1; }
           test -n "$STATIC_RAM" || { echo "::error::Cannot read ESP32 static RAM size"; exit 1; }
-          echo "V4 network phase: Flash=${FLASH}/1480000 bytes; static RAM=${STATIC_RAM}/164000 bytes"
+          echo "V4 network phase: Flash=${FLASH}/1480000 bytes; static RAM=${STATIC_RAM}/167500 bytes"
           test "$FLASH" -le 1480000 || { echo "::error::ESP32 Flash exceeds V4 budget: ${FLASH} > 1480000"; exit 1; }
-          test "$STATIC_RAM" -le 164000 || { echo "::error::ESP32 static RAM exceeds V4 budget: ${STATIC_RAM} > 164000"; exit 1; }
+          test "$STATIC_RAM" -le 167500 || { echo "::error::ESP32 static RAM exceeds V4 budget: ${STATIC_RAM} > 167500"; exit 1; }
 
       - name: Smart Thermal variants (MAYAP_SMART_THERMAL 0 explicit and 1) - same budgets, size delta against the default build, never published
         shell: bash
@@ -258,7 +260,7 @@ jobs:
             test -n "$F" && test -n "$R" || { echo "::error::Cannot read sizes for MAYAP_SMART_THERMAL=${V}"; exit 1; }
             echo "MAYAP_SMART_THERMAL=${V}: Flash=${F} (default build ${BASE_F}, delta $((F - BASE_F))); static RAM=${R} (default ${BASE_R}, delta $((R - BASE_R)))"
             test "$F" -le 1480000 || { echo "::error::Flash exceeds V4 budget with MAYAP_SMART_THERMAL=${V}: ${F}"; exit 1; }
-            test "$R" -le 164000 || { echo "::error::Static RAM exceeds V4 budget with MAYAP_SMART_THERMAL=${V}: ${R}"; exit 1; }
+            test "$R" -le 167500 || { echo "::error::Static RAM exceeds V4 budget with MAYAP_SMART_THERMAL=${V}: ${R}"; exit 1; }
           done
           # The default (flag absent) and an explicit =0 must be the same firmware: identical Flash and RAM.
           F0=$(size_of "Sketch" /tmp/mayap-size-smart-0.log); R0=$(size_of "Global variables" /tmp/mayap-size-smart-0.log)
@@ -277,9 +279,9 @@ jobs:
             MAYAP_INDUSTRIAL_v1_0_0 2>&1 | tee /tmp/mayap-size-prod.log
           F=$(size_of "Sketch" /tmp/mayap-size-prod.log); R=$(size_of "Global variables" /tmp/mayap-size-prod.log)
           test -n "$F" && test -n "$R" || { echo "::error::Cannot read production-profile sizes"; exit 1; }
-          echo "Production profile: Flash=${F}/1480000 bytes; static RAM=${R}/164000 bytes"
+          echo "Production profile: Flash=${F}/1480000 bytes; static RAM=${R}/167500 bytes"
           test "$F" -le 1480000 || { echo "::error::Production-profile Flash exceeds V4 budget: ${F}"; exit 1; }
-          test "$R" -le 164000 || { echo "::error::Production-profile static RAM exceeds V4 budget: ${R}"; exit 1; }
+          test "$R" -le 167500 || { echo "::error::Production-profile static RAM exceeds V4 budget: ${R}"; exit 1; }
           ELF=$(ls build-prod-profile/*.elf | head -n 1)
           grep -aq "MAYAP-AI-LOG" "$ELF" || { echo "::error::LOG AI is missing from the production profile"; exit 1; }
           grep -aq "MAYAP-CPU-LOG" "$ELF" || { echo "::error::LOG CPU is missing from the production profile"; exit 1; }
