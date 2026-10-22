@@ -30,7 +30,7 @@ inline int constrain(int v, int lo, int hi) { return std::max(lo, std::min(hi, v
 inline float clampFloat(float v, float lo, float hi) { return std::max(lo, std::min(hi, v)); }
 constexpr float PI = 3.14159265358979323846f;
 #include "actual-config.inc"
-#include "../../MAYAP_INDUSTRIAL_v1_0_0/thermal_v2.h"
+#include "../../MAYAP_INDUSTRIAL_v1_0_0/thermal_v2_adapter.h"
 #include "../../MAYAP_INDUSTRIAL_v1_0_0/heater_burst_scheduler.h"
 #include "../../MAYAP_INDUSTRIAL_v1_0_0/startup_output_policy.h"
 constexpr int LOW = 0, HIGH = 1, OUTPUT = 2;
@@ -118,6 +118,8 @@ struct CtlIn {
 };
 struct Controller {
   virtual ~Controller() {}
+  virtual bool usesAdapter() const { return false; }                       // the V2 law is driven through the production slot adapter, not through CtlIn
+  virtual float stepAdapter(const ThermalV2SlotIn &) { return 0.0f; }
   virtual const char *name() const = 0;
   virtual float step(const CtlIn &in) = 0;
 };
@@ -135,21 +137,18 @@ struct HoldSteady : Controller {       // constant percent (self-tests)
   const char *name() const override { return "const"; }
   float step(const CtlIn &) override { return pct; }
 };
-struct V2Ctl : Controller {            // the V2 law; the cap / NaN / negative clamp below is what the production adapter does
-  thermalv2::Controller c;
-  thermalv2::Output last;
+struct V2Ctl : Controller {            // the V2 law behind the production adapter (thermal_v2_adapter.h); the Input is built by the production text (actual-v2-builder.inc)
+  ThermalV2Slot slot;
   const char *name() const override { return "v2"; }
-  float step(const CtlIn &in) override {
-    thermalv2::Input i;
-    i.pv = in.pv; i.sp = in.sp; i.dQ = std::getenv("V2_DQ") ? static_cast<float>(std::atof(std::getenv("V2_DQ"))) : 0.1f; i.headroomC = in.headroomC; i.alarmHeadroomC = in.alarmHeadroomC; i.capPct = in.capPct; i.deliveredPct = in.deliveredPct;
-    i.e115Frac = in.e115Frac; i.dtS = static_cast<float>(in.dt * jitterFactor()); i.newSample = in.newSample; i.permit = in.permit;
-    last = c.step(i);
+  bool usesAdapter() const override { return true; }
+  float step(const CtlIn &) override { return 0.0f; }
+  float stepAdapter(const ThermalV2SlotIn &si) override {
+    const float u = slot.step(si);
+    const thermalv2::Controller &c = slot.controller();
     static const bool dbg = std::getenv("V2DBG") != nullptr;
-    if (dbg && (in.now % 30000U) < 100U)
-      std::fprintf(stderr, "t=%6.0f pv=%.2f pred=%.2f u=%.1f k=%.2e th=%.0f dloss=%.1f I=%.1f Te=%.2f st=%d dnow=%.1f truth=%.1f td=%.0f tl=%.0f te=%.0f ha=%.1f sg=%.2f rj=%d rms=%.2f\n", (in.now - 1000) / 1000.0, in.pv, c.predicted(), last.powerPct, c.kAir(), c.thetaHat(), c.dLoss(), c.integral(), c.teModel(), last.state, c.dNow(), g_truthDemandPct, c.tdHat(), c.tauHat(), c.tauEggHat(), c.haPct(), c.sigmaPred(), c.fitRejects(), c.fitRms());
-    float u = last.powerPct;
-    if (!(u > 0.0f)) u = 0.0f;
-    return std::min(u, in.capPct);
+    if (dbg && (si.nowMs % 30000U) < 100U)
+      std::fprintf(stderr, "t=%6.0f pv=%.2f pred=%.2f u=%.1f k=%.2e th=%.0f dloss=%.1f I=%.1f Te=%.2f st=%d dnow=%.1f truth=%.1f td=%.0f tl=%.0f te=%.0f ha=%.1f sg=%.2f rj=%d rms=%.2f\n", (si.nowMs - 1000) / 1000.0, si.pv, c.predicted(), slot.last().powerPct, c.kAir(), c.thetaHat(), c.dLoss(), c.integral(), c.teModel(), slot.last().state, c.dNow(), g_truthDemandPct, c.tdHat(), c.tauHat(), c.tauEggHat(), c.haPct(), c.sigmaPred(), c.fitRejects(), c.fitRms());
+    return u;
   }
 };
 struct BangBang : Controller {         // tiny hysteresis controller, only to exercise the rig end to end
@@ -203,7 +202,17 @@ struct Rig {
   Controller *ctl_ = nullptr; CtlIn last_{}; uint32_t sampleSeq_ = 0; float deliveredPct_ = 0; double dt_ = 0.1;
   float lastCommand_ = 0, lastUnclamped_ = 0; bool lastPermit_ = false;
 
+  float thermalV2SensorStepC() const { return std::getenv("V2_DQ") ? static_cast<float>(std::atof(std::getenv("V2_DQ"))) : 0.1f; }   // the rig has no decoder: the sensor step is a run parameter
+#include "actual-v2-builder.inc"
   float rigSlot(uint32_t now, bool normalSsrPermit, bool actuatorReady, bool fanStable, const OutputRequest &req) {
+    if (ctl_ && ctl_->usesAdapter()) {                       // production path: production builder text -> adapter -> controller
+      ThermalV2SlotIn si = buildThermalV2SlotIn(now, normalSsrPermit && actuatorReady);
+      if (std::getenv("V2_JIT")) si.dtOverrideS = static_cast<float>(dt_ * jitterFactor());
+      if (newSensorSample_) ++sampleSeq_;
+      lastPermit_ = si.permit;
+      const float u = ctl_->stepAdapter(si);
+      lastUnclamped_ = u; lastCommand_ = u; return u;
+    }
     CtlIn in;
     in.now = now; in.pv = temperature_; in.sp = config_.targetTemp; in.newSample = newSensorSample_;
     if (newSensorSample_) ++sampleSeq_;

@@ -1,5 +1,5 @@
 // Host unit tests of thermal_v2.h alone (no rig, no firmware): contract of the block, not tuning quality (that is the grid's job).
-#include "../../MAYAP_INDUSTRIAL_v1_0_0/thermal_v2.h"
+#include "../../MAYAP_INDUSTRIAL_v1_0_0/thermal_v2_adapter.h"
 #include <cstdio>
 #include <vector>
 using namespace thermalv2;
@@ -121,6 +121,22 @@ int main() {
     }
     CHECK(suspected && !leaked, "frozen low sensor while climbing: response watchdog trips and keeps the request at 0");
     CHECK(p.Ta < 40.0, "frozen low sensor while climbing: the air stays below 40 degC"); }
+  { ThermalV2Slot a, b; Mini pa, pb; float ua = 0, ub = 0; bool same = true, bounded = true; uint32_t nowA = 5000U, nowB = 0xFFFFFF00U - 5000U;   // b crosses the millis() roll-over
+    for (int k = 0; k < 60000; ++k) {
+      ThermalV2SlotIn ia, ib; ia.pv = quant(pa.Ta); ib.pv = quant(pb.Ta); ia.sp = ib.sp = 37.5f; ia.permit = ib.permit = true; ia.capPct = ib.capPct = 70.0f; ia.dQ = ib.dQ = 0.1f;
+      ia.nowMs = nowA; ib.nowMs = nowB; nowA += 100U; nowB += 100U; ia.newSample = ib.newSample = (k % 20) == 0;
+      ia.deliveredPct = ((k % 30) < static_cast<int>(ua * 0.3f + 0.5f)) ? 100.0f : 0.0f; ib.deliveredPct = ((k % 30) < static_cast<int>(ub * 0.3f + 0.5f)) ? 100.0f : 0.0f;
+      ua = a.step(ia); ub = b.step(ib); if (ua != ub) same = false; if (!(ua >= 0.0f && ua <= 70.0f + 1e-3f)) bounded = false;
+      pa.step(ia.deliveredPct > 0 ? 1.0 : 0.0, 0.1); pb.step(ib.deliveredPct > 0 ? 1.0 : 0.0, 0.1);
+    }
+    CHECK(same, "adapter: the step time comes from the clock difference, identical across the millis() roll-over");
+    CHECK(bounded, "adapter: output stays within [0, cap] (cap 70)"); }
+  { ThermalV2Slot a; ThermalV2SlotIn i; i.pv = NAN; i.sp = 37.5f; i.permit = true; i.capPct = 100.0f; i.newSample = true; i.nowMs = 1000U;
+    CHECK(a.step(i) == 0.0f, "adapter: NaN temperature gives 0");
+    ThermalV2Slot b; ThermalV2SlotIn j; j.pv = 30.0f; j.sp = 37.5f; j.permit = true; j.capPct = NAN; j.newSample = true; j.nowMs = 1000U;
+    CHECK(b.step(j) == 0.0f, "adapter: NaN cap gives 0");
+    ThermalV2Slot c; ThermalV2SlotIn k; k.pv = 30.0f; k.sp = 37.5f; k.permit = false; k.capPct = 100.0f; k.newSample = true; k.nowMs = 1000U;
+    CHECK(c.step(k) == 0.0f, "adapter: no permit gives 0"); }
   g_q = 0.01;                                                                                  // fine sensor: the egg observer is active
   { Controller c; Mini p; Run r = simulate(c, p, 3.0, 37.5f, 100.0f);
     CHECK(!r.nan && r.minU >= 0.0f && r.maxU <= 100.0f && r.peak < 38.5f, "fine sensor, cold start 3 h: finite, in [0, 100], peak below 38.5 degC");

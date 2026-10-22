@@ -14,7 +14,9 @@
 #include "tech_access.h"
 #include "advanced_history.h"
 #include "tech_request.h"
+#include "thermal_v2_adapter.h"
 #include <esp_system.h>
+#include <esp_timer.h>
 #include <esp_task_wdt.h>
 #include <esp32-hal-rgb-led.h>
 #include <math.h>
@@ -4995,6 +4997,32 @@ class MachineController {
     snprintf(detail.resultId, sizeof(detail.resultId), "%s", techResultId_);
     MayapTech::publishDetail(detail);
   }
+  // ---- Thermal V2 slot glue (the host rig compiles buildThermalV2SlotIn() textually from here) ----
+  float thermalV2SensorStepC() const {                          // the step of the value the controller sees: the locked sensor format decides, an unlocked one is treated as the coarse 0.1
+    const SensorProfile p = sensor_.sensorProfile();
+    return (p == SensorProfile::X100RhX10 || p == SensorProfile::Sht30Native) ? 0.01f : 0.1f;
+  }
+  ThermalV2SlotIn buildThermalV2SlotIn(uint32_t now, bool permit) const {
+    ThermalV2SlotIn si;
+    si.nowMs = now; si.pv = temperature_; si.sp = config_.targetTemp; si.newSample = newSensorSample_; si.permit = permit;
+    si.capPct = static_cast<float>(config_.maxHeaterPower);
+    const float offsetDown = std::max(0.0f, -config_.tempOffset);
+    si.headroomC = std::min(config_.highTempAlarm, config_.ventOnTemp) - offsetDown - config_.targetTemp;
+    si.alarmHeadroomC = config_.emergencyTemp - offsetDown - config_.targetTemp;
+    const auto &st = outputs_.state();
+    si.deliveredPct = (st.heaterSsr && st.heatMaster) ? 100.0f : 0.0f;
+    const float stuckLimitMs = static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f;
+    si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterStuckAccumOnMs_) / stuckLimitMs : 0.0f;
+    si.dQ = thermalV2SensorStepC();
+    return si;
+  }
+  float thermalV2Command(uint32_t now, bool permit) {
+    const uint32_t t0 = static_cast<uint32_t>(esp_timer_get_time());
+    const float u = thermalV2_.step(buildThermalV2SlotIn(now, permit));
+    slotLastUs_ = static_cast<uint32_t>(esp_timer_get_time()) - t0;
+    if (slotLastUs_ > slotMaxUs_) slotMaxUs_ = slotLastUs_;
+    return u;
+  }
   // Read-only PID monitor. Numbers come from the controller that is running; the 60 s mean is of the arbiter's REAL SSR state.
   void publishPidMonitor(uint32_t now) {
     const uint32_t dtMs = std::min<uint32_t>(elapsedMs(now, pidMonAt_), 1000UL);
@@ -6237,9 +6265,9 @@ class MachineController {
     // ======================= THERMAL DECISION BLOCK (V2.0.0 slot) =======================================
     // ONE block: it sees the already-decided permits and the measured temperature, and it returns ONE number, the
     // heater request in percent. Protection (High / Emergency / sensor / contactor / SSR inhibit) is decided above
-    // and below it and never reads this value. There is no controller in this branch yet: the request is 0 %, so
-    // the heater stays off whatever the temperature. Do NOT put a live oven on this firmware.
-    float commandedPower = 0.0f;
+    // and below it and never reads this value. The request is clamped to [0, cap] by the adapter and then goes through
+    // the burst scheduler and the output arbiter like any other request.
+    float commandedPower = thermalV2Command(now, normalSsrPermit && actuatorReady);
     // ====================================================================================================
     newSensorSample_ = false;
 
@@ -7906,6 +7934,8 @@ class MachineController {
   bool networkStatusInitialized_ = false;
 
   HeaterBurstScheduler heaterBurst_{HEATER_GROUP_COUNT, HEATER_BURST_QUANTUM_MS};
+  ThermalV2Slot thermalV2_;                          // Thermal V2.0.0 controller (RAM ~6.5 KB, nothing stored)
+  uint32_t slotLastUs_ = 0, slotMaxUs_ = 0;          // controller slot time [us], reported to the PID monitor
   bool previousFanCommand_ = false;
   uint32_t fanOnSince_ = 0;
   uint32_t cycleLastUs_ = 0, cycleMaxUs_ = 0;       // control-task cycle time, reported to the PID monitor (set by the control task)
