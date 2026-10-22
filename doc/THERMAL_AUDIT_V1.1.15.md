@@ -1,3 +1,5 @@
+> **Đã gỡ khỏi firmware 2.0.0 (Thermal Control V2.0.0).** Tài liệu này mô tả hệ nhiệt cũ (≤ 1.1.15) đã bị xoá khỏi nhánh `thermal-control-v2.0.0`; chỉ còn giá trị lịch sử. Mã nguồn cũ nằm ở `main` (e8b557e) và nhánh `claude/gracious-hopper-zjvufg`. Xem `doc/THERMAL_V2_REMOVAL_REPORT.md`.
+
 # Audit hệ nhiệt MAYAP (firmware 1.1.15, nhánh `claude/gracious-hopper-zjvufg`)
 
 Báo cáo này **không có mã mới**. Nó trả lời: vì sao hệ cũ cho cảm giác "chậm như rùa, gần chạm SP thì dừng, vọt vì học sai, tụt rồi không kéo lên",

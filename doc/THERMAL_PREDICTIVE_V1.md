@@ -1,3 +1,5 @@
+> **Đã gỡ khỏi firmware 2.0.0 (Thermal Control V2.0.0).** Tài liệu này mô tả hệ nhiệt cũ (≤ 1.1.15) đã bị xoá khỏi nhánh `thermal-control-v2.0.0`; chỉ còn giá trị lịch sử. Mã nguồn cũ nằm ở `main` (e8b557e) và nhánh `claude/gracious-hopper-zjvufg`. Xem `doc/THERMAL_V2_REMOVAL_REPORT.md`.
+
 # Thermal Predictive V1 (firmware 1.1.15) — bộ điều khiển nhiệt dự đoán, tự học
 
 Trạng thái: **đã tích hợp vào firmware, kiểm chứng trên mô phỏng chạy đúng mã firmware; CHƯA kiểm chứng trên lò thật.**
