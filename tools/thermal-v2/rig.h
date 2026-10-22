@@ -132,12 +132,12 @@ struct V2Ctl : Controller {            // the V2 law; the cap / NaN / negative c
   const char *name() const override { return "v2"; }
   float step(const CtlIn &in) override {
     thermalv2::Input i;
-    i.pv = in.pv; i.sp = in.sp; i.dQ = 0.1f; i.headroomC = in.headroomC; i.alarmHeadroomC = in.alarmHeadroomC; i.capPct = in.capPct; i.deliveredPct = in.deliveredPct;
+    i.pv = in.pv; i.sp = in.sp; i.dQ = std::getenv("V2_DQ") ? static_cast<float>(std::atof(std::getenv("V2_DQ"))) : 0.1f; i.headroomC = in.headroomC; i.alarmHeadroomC = in.alarmHeadroomC; i.capPct = in.capPct; i.deliveredPct = in.deliveredPct;
     i.e115Frac = in.e115Frac; i.dtS = static_cast<float>(in.dt); i.newSample = in.newSample; i.permit = in.permit;
     last = c.step(i);
     static const bool dbg = std::getenv("V2DBG") != nullptr;
     if (dbg && (in.now % 30000U) < 100U)
-      std::fprintf(stderr, "t=%6.0f pv=%.2f pred=%.2f u=%.1f k=%.2e th=%.0f dloss=%.1f I=%.1f Te=%.2f st=%d dnow=%.1f truth=%.1f\n", (in.now - 1000) / 1000.0, in.pv, c.predicted(), last.powerPct, c.kAir(), c.thetaHat(), c.dLoss(), c.integral(), c.teModel(), last.state, c.dNow(), g_truthDemandPct);
+      std::fprintf(stderr, "t=%6.0f pv=%.2f pred=%.2f u=%.1f k=%.2e th=%.0f dloss=%.1f I=%.1f Te=%.2f st=%d dnow=%.1f truth=%.1f td=%.0f tl=%.0f te=%.0f ha=%.1f sg=%.2f\n", (in.now - 1000) / 1000.0, in.pv, c.predicted(), last.powerPct, c.kAir(), c.thetaHat(), c.dLoss(), c.integral(), c.teModel(), last.state, c.dNow(), g_truthDemandPct, c.tdHat(), c.tauHat(), c.tauEggHat(), c.haPct(), c.sigmaPred());
     float u = last.powerPct;
     if (!(u > 0.0f)) u = 0.0f;
     return std::min(u, in.capPct);

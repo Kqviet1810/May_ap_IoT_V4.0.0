@@ -81,7 +81,8 @@ class Sim {
       rig.pathDataValid_ = !pathLost; rig.latestFrameValid_ = !pathLost;
       rig.newSensorSample_ = false;
       if (sampleTick && !pathLost) {
-        const float reported = static_cast<float>(std::round((sensPhys + p_.sensorOffset) / p_.stepC) * p_.stepC);   // C8: the SENSOR reads low, the controller is not told
+        const double stepC = std::getenv("V2_DQ") ? std::atof(std::getenv("V2_DQ")) : p_.stepC;
+        const float reported = static_cast<float>(std::round((sensPhys + p_.sensorOffset) / stepC) * stepC);   // C8: the SENSOR reads low, the controller is not told
         filter.updateFilter(reported, 60);
         const float filtered = filter.value();
         rig.rawTemperature_ = std::max(reported, reported + rig.config_.tempOffset);

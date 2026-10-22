@@ -1,77 +1,92 @@
 #pragma once
-// Thermal V2.0.0 - one predictor-PI heating law with ONE learner.  Pure C++ (no Arduino types) so the host rig compiles this exact text.
+// Thermal V2.0.0 - model-based heating law with a predictor and a PI trim.  Pure C++ (no Arduino types) so the host rig compiles this exact text.
 // Spec and the origin of every constant: doc/THERMAL_V2_CONSTANTS.md.  RAM only, nothing stored in NVS (2.0.0).
 //
-// Plant seen by the controller (integrating air node, heater path = transport delay + first-order lag):
-//     d(PV)/dt = k*P_air - [ c0 + cp*(PV-P0) - ce*(Te-P0) ]          P0 = 35 degC (centring only)
-//     demand D(PV,Te) = [ c0 + cp*(PV-P0) - ce*(Te-P0) ] / k   [% of bank]
-//   = [ UA*(PV-Tamb) + hA*(PV-Te) ] / Pmax * 100 : loss to the room grows with PV (cp = k*(UA+hA)/Pmax), egg exchange with PV-Te (ce = k*hA/Pmax).
-//   P_air = delivered power after delay and lag, rebuilt from what the arbiter really gave.  Te: one slow egg state, Te' = (PV-Te)/tau_egg.
-// One recursive least-squares learner estimates (k, c0, cp, ce) from the 60 s slope of PV, from the first look on.  The first 90 s the heater is
-// OFF (P_air = 0): the slope is then the demand itself, independent of k, and a rise with the heater off means warm eggs.
-//
-//     u = clamp( FF + K*(SP - PV_pred) + I , 0, cap )             K = Kc below SP, 2*Kc above;  Kc = 1/(3*k*theta)   (SIMC, tau_c = 2*theta)
-//     FF = D(SP,Te) - (1-BETA)*ha*(SP-Te)                          PV_pred = PV + k*(E_transit - D(PV_mid,Te)*T_transit)
-//     far mode: predicted deficit > E_FAR_ON => full power until the deficit is < E_FAR_OFF (decided by PV_pred, not PV)
+// What the controller believes about the oven (integrating air node, heater path = transport delay + first-order lag):
+//     d(PV)/dt = k*P_air - [ c0 + cp*(PV-P0) - ce*(Te-P0) - c3*w(t) ]            P0 = 35 degC (centring only)
+//     demand D(PV) = 100*[ c0 + cp*(PV-P0) - ce*(Te-P0) - c3*w ] / (100*k)       [% of bank]
+//   which is  [ UA*(PV-Tamb) + hA*(PV-Te) ] / Pmax * 100  : loss to the room grows with PV (cp = k*(UA+hA)/Pmax), exchange with the eggs with PV-Te (ce = k*hA/Pmax).
+//   P_air = delivered power after delay and lag, rebuilt from what the arbiter really gave.
+//   Te = one slow egg state, Te' = (PV-Te)/tau_egg, kept for three candidate tau_egg; Te_true = Te + delta*w(t), w = exp(-t/tau_egg), delta = c3/ce
+//   (the unknown start offset of the egg temperature, e.g. warm eggs after a power cut).
+// What it learns, and when
+//   * 90 s look with the heater OFF (P_air = 0): the slope is minus the demand times k; a rise means warm eggs.
+//   * identification climb at a power that is safe for the fastest oven of the family while the delay is still unknown (time of the first 2*dQ rise).
+//   * BATCH fit (resumable, one candidate per call): search of transport delay, lag and egg time constant on the stored history, ridge least squares for
+//     (k, c0, cp, ce, c3); first fit 600 s after the first power, second at 1500 s (the first one is then its prior).
+//   * a recursive learner follows the coefficients after that; k is frozen between batch fits (a steady hold cannot separate k from the losses).
+// Law
+//     u = clamp( FF + K*(SP - PV_pred) + I , 0, cap )            K = Kc below SP, 2*Kc above;  Kc = 1/(3*k*theta)   (SIMC, tau_c = 2*theta)
+//     FF = D(SP) - (1-BETA)*ha*(SP-Te)                           PV_pred = PV + k*(E_transit - D(PV_mid)*T_transit)
+//     far mode: predicted deficit > Z*sigma_pred => full power until the deficit is < half of that (sigma_pred from the learner's covariance)
 // Nothing here can heat by itself: the output goes through the production OutputArbiter / HeaterBurstScheduler / protection.
 #include <cmath>
 #include <cstdint>
-#ifdef V2_DUMP
-#include <cstdio>
-#endif
 
 namespace thermalv2 {
 
 constexpr uint16_t BIN_N = 1280;           // 1 s bins of delivered power (0.5 % steps): a 960 s fit window + the longest delay of the search
-constexpr uint8_t HIST_N = 96;             // 10 s points of PV and of the egg state kept for the batch fit (960 s)
+constexpr uint8_t HIST_N = 96;             // 10 s points of PV and of the egg states kept for the batch fit (960 s)
 constexpr uint8_t RING_N = 12;             // 10 s samples of PV and of P_air (120 s)
 constexpr uint8_t SLOPE_N = 6;             // 60 s least-squares slope
+constexpr uint8_t NP = 5;                  // learned coefficients: a = 100*k, c0, cp, ce, c3
 constexpr float TAU_LAG_S = 40.0f;         // heater-path lag prior: middle of the 25..55 s range of plants.json
 constexpr float THETA_PRIOR_S = 180.0f;    // upper edge of the RG144 range: conservative until the first climb is measured
-constexpr float THETA_PICKUP_S = 6.0f;     // measured "first 2*dQ rise" minus the filter delay ~6 s
-constexpr float TAU_EGG_S = 1500.0f;       // Ce/hA of 10 000 eggs: 1.9 MJ / 1300 W/K ~ 1460 s
-// ---- learner (scaled so every number is O(1): a = 100*k in mK/s, b1 = c1 and b2 = c2 in mK/s, slope in mK/s) ----
-constexpr float P0 = 35.0f;                      // centring of PV and Te in the regression
+constexpr float THETA_PICKUP_S = 6.0f;     // sensor filter delay
+constexpr float TAU_E_C[3] = {1000.0f, 1500.0f, 2200.0f};   // Ce/hA of 10 000 eggs: 1.9 MJ over 900..1800 W/K is 1050..2100 s
+constexpr float TAU_L_C[4] = {25.0f, 35.0f, 45.0f, 55.0f}; // heater lag candidates (plants.json 25..55 s)
+constexpr uint8_t TAU_E_PRIOR = 1;
+// ---- learner (scaled so every number is O(1): a = 100*k in mK/s, c's in mK/s, slope in mK/s) ----
+constexpr float P0 = 35.0f;
 constexpr float A0 = 30.0f, A0_STD = 20.0f;      // k = 3e-4 +- 2e-4 degC/s per %  (1.3e-4 .. 6.7e-4 over the prior range)
-constexpr float C0_0 = 1.5f, C0_STD = 1.5f;      // mK/s : loss at PV = Te = P0, UA*(P0-Tamb)/Cf
-constexpr float CP_0 = 3.0f, CP_STD = 2.0f;      // mK/s per degC : k*(UA+hA)/Pmax*100 -> (UA+hA)/Pmax 6..13 %/degC at k = 3e-4
+constexpr float C0_0 = 1.5f, C0_STD = 1.5f;      // mK/s : loss at PV = Te = P0
+constexpr float CP_0 = 3.0f, CP_STD = 2.0f;      // mK/s per degC : k*(UA+hA)/Pmax*100
 constexpr float CE_0 = 2.0f, CE_STD = 1.5f;      // mK/s per degC : k*hA/Pmax*100
+constexpr float C3_0 = 0.0f, C3_STD = 3.0f;      // mK/s : ce*delta, delta = 0 +- ~1.5 degC
 constexpr float SLOPE_STD_MKS = 0.9f;            // one 60 s slope of a 0.1 degC staircase: 0.7 mK/s + model error
-constexpr float FORGET = 1.0f;                   // no exponential forgetting (it winds the covariance up in a steady hold); the floors below keep it adaptive
-constexpr float GATE_SIGMAS = 4.0f;              // innovation gate: a door opening is not a heater/plant slope
-constexpr float P_FLOOR_A = 1.0f, P_FLOOR_B1 = 0.3f, P_FLOOR_B2 = 0.3f;   // std 1.0 / 0.3 / 0.3 mK/s: parameters stay slowly adaptive (ambient drift)
+constexpr float GATE_SIGMAS = 4.0f;              // innovation gate: a door opening is not a slope of this plant
+constexpr float P_FLOOR_B = 0.3f;                // mK/s : the running learner stays slowly adaptive (ambient drift)
 constexpr float K_MIN = 8e-5f, K_MAX_EST = 9e-4f;
 constexpr float D_MIN = -60.0f, D_MAX = 100.0f;  // % of bank
-// ---- first-climb identification (delay) ----
+constexpr float C3_MAX = 12.0f;
+// ---- first-climb identification ----
 constexpr float ID_ROOM_C = 3.0f;          // identification climb needs this much room below SP
 constexpr float K_FAST = 6.7e-4f;          // 20 kW on 0.3 MJ/degC: fastest oven of the prior range (only for the safe probe power)
 constexpr float T_MAX_S = 240.0f;          // longest transit of the prior range: 200 s delay + 40 s lag
 constexpr float ID_SAFETY = 0.8f;
 constexpr float ID_RISE_C = 1.0f;
 constexpr float ID_P_MIN = 20.0f;
-constexpr float ID_K_REL_STD = 0.2f;         // sigma_k/k below which k is trusted for the delay correction
-constexpr float BATCH1_S = 600.0f, BATCH2_S = 1500.0f;   // batch fit of (delay, lag, k, loss, exchange) this long after the first power
-constexpr float TD_MIN_S = 20.0f, TD_MAX_S = 260.0f, TD_STEP_S = 10.0f;
-constexpr float BATCH_MIN_POINTS = 40;
-constexpr uint8_t RLS_OFF_AFTER_STAGE = 255;   // the running learner serves only until the second batch fit
-constexpr float ID_MAX_PROBE_S = 900.0f;   // longest the safe-power probe may run after the first rise
 constexpr float H_LO = 12.0f;
+constexpr float ID_MAX_PROBE_S = 900.0f;   // longest the safe-power probe may run after the first rise
 constexpr float ID_TIMEOUT_S = 600.0f;
-constexpr uint8_t LOOK_RING = 9;           // first look: 90 s with the heater OFF; the slope then is the demand itself (hot eggs show as a rise), independent of k
+constexpr uint8_t LOOK_RING = 9;           // first look: 90 s with the heater OFF
+constexpr float BATCH1_S = 600.0f, BATCH2_S = 1500.0f;   // batch fits this long after the first power
+constexpr float TD_MIN_S = 20.0f, TD_MAX_S = 260.0f, TD_STEP_S = 10.0f;
+constexpr uint8_t TD_N = 25;               // (260-20)/10 + 1
+constexpr uint8_t BATCH_MIN_POINTS = 40;
 // ---- law ----
-constexpr float E_FAR_ON = 0.5f;           // degC of predicted deficit that switches to full power: eps*E_FAR <= 0.2 degC overshoot budget for eps <= 20 %
-constexpr float E_FAR_OFF = 0.25f;
+constexpr bool EGG_OBSERVER = false;
+constexpr bool RLS_NEEDS_BATCH = false;
+constexpr float TAUI_FACTOR = 6.0f;        // tau_I = factor * theta (SIMC: 4*(tau_c+theta) = 12 theta; 6 after the sweep on set A)
+constexpr float ASYM = 3.0f;               // gain above SP relative to below (G0: 2)
+constexpr float DEADZONE_FRAC = 0.0f;     // of the sensor step dQ
+constexpr float OBS_GAIN = 0.15f;          // fraction of the innovation applied per 10 s (time constant ~70 s)
+constexpr float OBS_DEADBAND_MKS = 0.6f;   // mK/s: below this the 0.1 degC staircase explains the innovation
+constexpr float OBS_GATE_MKS = 8.0f;       // mK/s: larger innovations are disturbances of the air
+constexpr float OBS_STEP_MAX_C = 0.5f;     // degC per update
+constexpr float OBS_MAX_LA_PRIOR = 5.0f;   // % : 'almost no heater power' before the first batch fit
+constexpr float Z_SIGMA = 1.5f;            // far mode ends when the predicted deficit is below Z sigma_pred (overshoot budget 0.2 degC by construction)
+constexpr float E_ON_MIN = 0.25f;          // degC: never switch to full power for a smaller predicted deficit
 constexpr float BETA = 0.85f;
-constexpr bool DEMAND_INCLUDES_I = false;
 constexpr float LEVEL_FLAT_C = 0.15f;      // degC rise over the 110 s ring window below which the PV counts as flat
 constexpr float LEVEL_GAIN = 0.05f;        // per 10 s
 constexpr float I_MAX = 30.0f;
 constexpr float E115_CLIMB_FRAC = 0.4f;
 constexpr float E115_BOOST_MAX = 25.0f;
-// ---- independent in-flight limiter (fixed worst-case numbers from the RG144 study, NOT tuned to this controller; it can only lower u) ----
+// ---- independent last-resort limiter (fixed worst-case numbers from the RG144 study, NOT tuned to this controller; it can only lower u) ----
 constexpr float LIM_K_HI = 2.5e-4f;        // degC/s per % : 0.02 degC/s of net rise at ~80 % net power, the steepest of RG144
 constexpr float LIM_THETA_S = 180.0f;      // longest delay of RG144: energy delivered in this window may still be on its way
-constexpr float LIM_H_LO = 12.0f;          // lowest hold power seen: what the oven loses while that energy arrives
+constexpr float LIM_H_LO = 12.0f;          // lowest hold power seen
 constexpr float LIM_NEW_S = 60.0f;         // horizon over which a newly commanded % is priced
 constexpr float LIM_MARGIN_C = 0.4f;       // below the Emergency line
 constexpr float PERMIT_RECOMPUTE_S = 120.0f;
@@ -79,7 +94,7 @@ constexpr float PERMIT_RECOMPUTE_S = 120.0f;
 enum State : uint8_t { StIdle = 0, StClimb = 1, StTrack = 2, StFrozen = 3, StE115 = 4 };
 
 struct Input {
-  float pv = NAN, sp = 37.5f, dQ = 0.1f, headroomC = 0.7f, alarmHeadroomC = 0.7f,   // headroomC: to the vent line; alarmHeadroomC: to the Emergency line (both in the control sensor's frame)
+  float pv = NAN, sp = 37.5f, dQ = 0.1f, headroomC = 0.7f, alarmHeadroomC = 0.7f,   // headroomC: to the vent line; alarmHeadroomC: to the Emergency line (control sensor's frame)
   capPct = 100.0f, deliveredPct = 0.0f, e115Frac = 0.0f, dtS = 0.1f;
   bool newSample = false, permit = false;
 };
@@ -97,34 +112,43 @@ class Controller {
     for (auto &x : pvRing_) x = 0.0f;
     for (auto &x : paRing_) x = 0.0f;
     binHead_ = 0; ringCount_ = 0; secT_ = 0; secAcc_ = 0; ring10_ = 0; lag_ = 0; absS_ = 0;
-    tau_ = TAU_LAG_S; setDelay(THETA_PRIOR_S - THETA_PICKUP_S); histCount_ = 0; histHead_ = 0; firstPowerAbs_ = -1.0f; batchStage_ = 0; batchDue_ = false; kFrozen_ = false; kStdB_ = 0; dBias_ = 0; I_ = 0; Te_ = NAN; pv_ = NAN; spNow_ = 37.5f; far_ = false;
+    tau_ = TAU_LAG_S; setDelay(THETA_PRIOR_S - THETA_PICKUP_S);
+    histCount_ = 0; histHead_ = 0; firstPowerAbs_ = -1.0f; batchStage_ = 0; batchDue_ = false; batchActive_ = false; kFrozen_ = false; kStdB_ = 0; dBias_ = 0;
+    I_ = 0; Te_ = NAN; pv_ = NAN; spNow_ = 37.5f; far_ = false; tauEsel_ = TAU_E_PRIOR; sigPred_ = 1.0f;
     idDone_ = false; idPhase_ = 0; rlsHold_ = SLOPE_N + 1; thetaSeen_ = false;
-    th_[0] = A0; th_[1] = C0_0; th_[2] = CP_0; th_[3] = CE_0;
+    th_[0] = A0; th_[1] = C0_0; th_[2] = CP_0; th_[3] = CE_0; th_[4] = C3_0;
     for (auto &r : P_) for (auto &v : r) v = 0.0f;
-    P_[0][0] = A0_STD * A0_STD; P_[1][1] = C0_STD * C0_STD; P_[2][2] = CP_STD * CP_STD; P_[3][3] = CE_STD * CE_STD;
+    P_[0][0] = A0_STD * A0_STD; P_[1][1] = C0_STD * C0_STD; P_[2][2] = CP_STD * CP_STD; P_[3][3] = CE_STD * CE_STD; P_[4][4] = C3_STD * C3_STD;
     lostS_ = 0; lastU_ = 0; haveSample_ = false; pvPred_ = 0;
   }
-  // read-outs
+  // read-outs (telemetry and tests)
   float kEst() const { return th_[0] * 1e-5f; }
   float kStd() const { return kFrozen_ ? kStdB_ : std::sqrt(P_[0][0] > 0 ? P_[0][0] : 0) * 1e-5f; }
   float kAir() const { return kUsed(); }
   float thetaHat() const { return theta_; }
+  float tdHat() const { return tdEst_; }
+  float tauHat() const { return tau_; }
+  float tauEggHat() const { return TAU_E_C[tauEsel_]; }
   float haPct() const { return haOf(); }
   float dLoss() const { return lossOf(); }
   float integral() const { return I_; }
   float predicted() const { return pvPred_; }
+  float sigmaPred() const { return sigPred_; }
   float teModel() const { return Te_; }
   float dNow() const { return demandAt(pv_); }
+  uint8_t batchesDone() const { return batchStage_; }
+  bool batchRunning() const { return batchActive_; }
 
   Output step(const Input &in) {
     Output out;
     const float dt = in.dtS < 0.001f ? 0.001f : (in.dtS > 1.0f ? 1.0f : in.dtS);
     const float cap = (std::isfinite(in.capPct) && in.capPct > 0.0f) ? (in.capPct > 100.0f ? 100.0f : in.capPct) : 0.0f;
     advanceClock(in, dt);
-    if (batchDue_) batchIdentify();
+    if (batchDue_ && !batchActive_) batchBegin();
+    if (batchActive_) batchStep();
     if (std::isfinite(in.pv)) {
-      if (!haveSample_) { Te_ = in.pv; haveSample_ = true; }
-      if (in.newSample) { Te_ += (in.pv - Te_) * (2.0f / TAU_EGG_S); identify(in); }
+      if (!haveSample_) { for (auto &t : teJ_) t = in.pv; Te_ = in.pv; haveSample_ = true; }
+      if (in.newSample) { for (uint8_t j = 0; j < 3; ++j) teJ_[j] += (in.pv - teJ_[j]) * (2.0f / TAU_E_C[j]); Te_ = teJ_[tauEsel_]; identify(in); }
       pv_ = in.pv;
     }
     if (!in.permit || !haveSample_ || !std::isfinite(pv_) || cap <= 0.0f || !std::isfinite(in.sp)) {
@@ -137,16 +161,23 @@ class Controller {
     const float Ttr = tdPrime() + tau_;
     // the demand grows with the air while it climbs (egg flow ~ PV - Te): pay for it at the middle of the predicted trajectory, not at the present PV
     const float Etr = transitEnergy();
-    const float iDem = DEMAND_INCLUDES_I ? I_ : 0.0f;                  // I is the part of the demand the model does not know: the prediction must pay for it too
-    const float p0 = pv_ + k * (Etr - clampPos(demandAt(pv_) + iDem) * Ttr);
+    const float p0 = pv_ + k * (Etr - clampPos(demandAt(pv_)) * Ttr);
     const float pMid = 0.5f * (pv_ + (p0 < in.sp ? p0 : in.sp));
-    pvPred_ = pv_ + k * (Etr - clampPos(demandAt(pMid) + iDem) * Ttr);
+    const float dMid = clampPos(demandAt(pMid));
+    pvPred_ = pv_ + k * (Etr - dMid * Ttr);
     const float e = in.sp - pvPred_;
+    // uncertainty of that prediction: k (relative), and the demand model (learner covariance) paid over the transit
+    sigPred_ = predictionSigma(k, Etr, dMid, Ttr, pMid);
+    const float eOn = std::fmax(E_ON_MIN, Z_SIGMA * sigPred_);
     const float Kc = 1.0f / (k * 3.0f * theta_);                 // SIMC for an integrating plant, tau_c = 2*theta
-    const float tauI = 6.0f * theta_;                           // 4*(tau_c + theta)
-    const float K = (e >= 0.0f) ? Kc : 2.0f * Kc;
-    if (e > E_FAR_ON) far_ = true; else if (e < E_FAR_OFF) far_ = false;
-    const float uRaw = far_ ? cap : feedForward() + K * e + I_;
+    const float tauI = TAUI_FACTOR * theta_;
+    const float K = (e >= 0.0f) ? Kc : ASYM * Kc;
+    if (e > eOn) far_ = true; else if (e < 0.5f * eOn) far_ = false;
+    // The sensor reports in steps of dQ: the air can sit anywhere within +-dQ/2 of a reading, so a one-step change of the reading is not a full dQ of error.
+    // The proportional action works on the error minus the dead band; the integral (which averages over time) keeps the full error.
+    const float dz = DEADZONE_FRAC * in.dQ;
+    const float eP = e > dz ? e - dz : (e < -dz ? e + dz : 0.0f);
+    const float uRaw = far_ ? cap : feedForward() + K * eP + I_;
     float u = uRaw < 0.0f ? 0.0f : (uRaw > cap ? cap : uRaw);
     const bool satHigh = uRaw >= cap, satLow = uRaw < 0.0f;
     if (!((satHigh && e > 0.0f) || (satLow && e < 0.0f))) {      // conditional integration
@@ -184,13 +215,15 @@ class Controller {
   // cautious k: estimate plus one standard deviation (a larger k means a smaller gain and an earlier stop)
   float kUsed() const { const float k = kRaw() + kStd(); return k > K_MAX_EST ? K_MAX_EST : k; }
   float aSafe() const { return th_[0] > 1.0f ? th_[0] : 1.0f; }
+  float wEgg() const { return std::exp(-absS_ / TAU_E_C[tauEsel_]); }
   float haOf() const { return 100.0f * th_[3] / aSafe(); }                                   // egg exchange, % of bank per degC
-  float demandAt(float pv) const {                                                            // demand if the air were at pv (egg temperature as modelled)
-    const float d = 100.0f * (th_[1] + th_[2] * (pv - P0) - th_[3] * (Te_ - P0)) / aSafe() + dBias_;
+  float demandAt(float pv) const {                                                            // demand if the air were at pv
+    const float d = 100.0f * (th_[1] + th_[2] * (pv - P0) - th_[3] * (Te_ - P0) - th_[4] * wEgg()) / aSafe() + dBias_;
     return d < D_MIN ? D_MIN : (d > D_MAX ? D_MAX : d);
   }
-  float lossOf() const { return demandAt(Te_); }                                              // demand with no air-egg difference
-  float feedForward() const { return demandAt(spNow_) - (1.0f - BETA) * haOf() * (spNow_ - Te_); }
+  float teEff() const { const float b = th_[3] > 0.3f ? th_[3] : 0.3f; float d = th_[4] / b; d = d > 6.0f ? 6.0f : (d < -6.0f ? -6.0f : d); return Te_ + d * wEgg(); }
+  float lossOf() const { return demandAt(teEff()); }                                          // demand with no air-egg difference
+  float feedForward() const { return demandAt(spNow_) - (1.0f - BETA) * haOf() * (spNow_ - teEff()); }
   float tdPrime() const { return tdEst_; }
   // transport delay -> effective delay of the gains (SIMC half rule: + half the lag, + the sensor filter)
   void setDelay(float td) {
@@ -202,15 +235,24 @@ class Controller {
     const float n = net > 8.0f ? net : 8.0f;
     return std::sqrt(2.0f * tau_ * 2.0f * dQ / (k * n));
   }
+  // standard deviation of PV_pred: relative error of k acting on the net in-flight energy, and the demand-model covariance acting over the transit
+  float predictionSigma(float k, float Etr, float dMid, float Ttr, float pvMid) const {
+    const float kRel = kEst() > 1e-6f ? kStd() / kEst() : 1.0f;
+    const float a = aSafe(), w = wEgg();
+    const float g[NP] = {-(dMid - dBias_) / a, 100.0f / a, 100.0f * (pvMid - P0) / a, -100.0f * (Te_ - P0) / a, -100.0f * w / a};
+    float var = 0.0f;
+    for (uint8_t i = 1; i < NP; ++i) for (uint8_t j = 1; j < NP; ++j) var += g[i] * P_[i][j] * g[j];     // k is carried by kRel (its row is cleared once frozen)
+    if (var < 0.0f) var = 0.0f;
+    const float sK = kRel * k * std::fabs(Etr - dMid * Ttr), sD = k * Ttr * std::sqrt(var);
+    return std::sqrt(sK * sK + sD * sD + 0.0004f);                                                // + 0.02 degC (sensor step)
+  }
+
   void advanceClock(const Input &in, float dt) {
     secAcc_ += (in.permit && std::isfinite(in.deliveredPct) ? in.deliveredPct : 0.0f) * dt; secT_ += dt;
     while (secT_ >= 1.0f) {
       const float bin = secAcc_ / secT_; secAcc_ = 0; secT_ -= 1.0f; absS_ += 1.0f;
       { const float bq = bin * 2.0f + 0.5f; binU_[binHead_] = static_cast<uint8_t>(bq > 255.0f ? 255.0f : (bq < 0.0f ? 0.0f : bq)); }
       if (firstPowerAbs_ < 0.0f && bin > 1.0f) firstPowerAbs_ = absS_;
-#ifdef V2_DUMP
-      std::printf("BIN %.0f %.2f %.3f\n", absS_, bin, std::isfinite(pv_) ? pv_ : 0.0f);
-#endif
       const uint16_t td = static_cast<uint16_t>(tdPrime() + 0.5f);
       const uint16_t idx = static_cast<uint16_t>((binHead_ + BIN_N - td) % BIN_N);   // the bin that leaves the transport delay now
       binHead_ = static_cast<uint16_t>((binHead_ + 1) % BIN_N);
@@ -219,13 +261,14 @@ class Controller {
         ring10_ = 0;
         for (uint8_t i = 0; i + 1 < RING_N; ++i) { pvRing_[i] = pvRing_[i + 1]; paRing_[i] = paRing_[i + 1]; }
         pvRing_[RING_N - 1] = std::isfinite(pv_) ? pv_ : 0.0f; paRing_[RING_N - 1] = lag_;
-        pvH_[histHead_] = pvRing_[RING_N - 1]; teH_[histHead_] = std::isfinite(Te_) ? Te_ : pvRing_[RING_N - 1];
+        pvH_[histHead_] = pvRing_[RING_N - 1];
+        for (uint8_t j = 0; j < 3; ++j) teH_[j][histHead_] = std::isfinite(teJ_[j]) ? teJ_[j] : pvRing_[RING_N - 1];
         histHead_ = static_cast<uint8_t>((histHead_ + 1) % HIST_N); if (histCount_ < HIST_N) ++histCount_; lastPushAbs_ = absS_;
-        if (in.permit && firstPowerAbs_ >= 0.0f && batchStage_ < 2 && absS_ - firstPowerAbs_ >= (batchStage_ == 0 ? BATCH1_S : BATCH2_S)) batchDue_ = true;
         if (ringCount_ < RING_N) ++ringCount_;
-        if (!in.permit) { ringCount_ = 0; rlsHold_ = SLOPE_N + 1; histCount_ = 0; }
+        if (in.permit && firstPowerAbs_ >= 0.0f && batchStage_ < 2 && absS_ - firstPowerAbs_ >= (batchStage_ == 0 ? BATCH1_S : BATCH2_S)) batchDue_ = true;
+        if (!in.permit) { ringCount_ = 0; rlsHold_ = SLOPE_N + 1; histCount_ = 0; batchDue_ = false; }
         else if (rlsHold_ > 0) --rlsHold_;
-        else { rlsUpdate(); levelUpdate(); }
+        else { eggObserver(); rlsUpdate(); levelUpdate(); }
       } else ++ring10_;
     }
   }
@@ -240,137 +283,179 @@ class Controller {
   // Level anchor: in a FLAT window the power that arrives equals the demand whatever k is, so the model's level is pulled to it (slowly).  The same amount
   // is taken out of I, so the pair (model level, I) changes by nothing but where the number lives.
   void levelUpdate() {
-    if (!idDone_ || ringCount_ < RING_N) return;
+    if (!idDone_ || ringCount_ < RING_N || batchActive_) return;
     const float rise = pvRing_[RING_N - 1] - pvRing_[0];
     if (std::fabs(rise) > LEVEL_FLAT_C) return;
     float pa = 0, pvm = 0; for (uint8_t i = 0; i < RING_N; ++i) { pa += paRing_[i]; pvm += pvRing_[i]; }
     pa /= RING_N; pvm /= RING_N;
-    const float err = pa - demandAt(pvm);
-    const float step = LEVEL_GAIN * err;
+    const float step = LEVEL_GAIN * (pa - demandAt(pvm));
     dBias_ += step; I_ -= step;
     if (dBias_ > 40.0f) dBias_ = 40.0f; else if (dBias_ < -40.0f) dBias_ = -40.0f;
     if (I_ > I_MAX) I_ = I_MAX; else if (I_ < -I_MAX) I_ = -I_MAX;
   }
 
-  // ---- the single learner: slope(mK/s) = a*La/100 - b1 - b2*x   with theta = [a, b1, b2] ----
-  void rlsUpdate() {
-    if (kFrozen_ && batchStage_ >= RLS_OFF_AFTER_STAGE) return;                       // after the batch fits the structure is fixed; the integral carries the residual
-    if (ringCount_ < SLOPE_N || (!idDone_ && idPhase_ == 1)) return;               // the delay must be known before P_air means anything
-    const uint8_t n = SLOPE_N; float sx = 0, sy = 0, sxx = 0, sxy = 0, pa = 0, xm = 0;
+  // Egg observer: Te is a STATE (a tray swap, warm eggs after a power cut move it in one step), the coefficients are parameters.  The innovation of the
+  // 60 s slope against the model is turned into a correction of Te: slope has +ce*Te, so a slope lower than predicted means colder eggs than modelled.
+  // It runs only where the innovation does not depend on an uncertain k: after the first batch fit, or while (almost) no heater power arrives.
+  void eggObserver() {
+    if (!EGG_OBSERVER || batchActive_ || ringCount_ < SLOPE_N || !haveSample_) return;
+    const uint8_t n = SLOPE_N; float sx = 0, sy = 0, sxx = 0, sxy = 0, pa = 0, pvm = 0;
     for (uint8_t i = 0; i < n; ++i) {
       const float t = i * 10.0f, y = pvRing_[RING_N - n + i];
-      sx += t; sy += y; sxx += t * t; sxy += t * y; pa += paRing_[RING_N - n + i]; xm += y - Te_;
+      sx += t; sy += y; sxx += t * t; sxy += t * y; pa += paRing_[RING_N - n + i]; pvm += y;
     }
-    const float den = n * sxx - sx * sx;
-    const float slopeMks = 1000.0f * (n * sxy - sx * sy) / den;
-    pa /= n; xm /= n;
-    const float pvm = xm + Te_;
-    const float phi[4] = {pa * 0.01f, -1.0f, -(pvm - P0), (Te_ - P0)};
-#ifdef V2_DUMP
-    std::printf("DUMP %.0f %.4f %.4f %.4f %.4f %.0f %d\n", absS_, slopeMks, pa, pvm, Te_, theta_, int(idPhase_));
-#endif
-    float Pphi[4], s2 = SLOPE_STD_MKS * SLOPE_STD_MKS;
-    for (int i = 0; i < 4; ++i) { Pphi[i] = 0; for (int j = 0; j < 4; ++j) Pphi[i] += P_[i][j] * phi[j] / FORGET; }
-    for (int i = 0; i < 4; ++i) s2 += phi[i] * Pphi[i];
-    float err = slopeMks; for (int i = 0; i < 4; ++i) err -= phi[i] * th_[i];
+    pa /= n; pvm /= n;
+    if (!(batchStage_ > 0 || pa < OBS_MAX_LA_PRIOR)) return;
+    const float slopeMks = 1000.0f * (n * sxy - sx * sy) / (n * sxx - sx * sx);
+    const float pred = th_[0] * pa * 0.01f - (th_[1] + th_[2] * (pvm - P0) - th_[3] * (Te_ - P0) - th_[4] * wEgg());
+    float nu = slopeMks - pred;                                       // mK/s
+    const float ce = th_[3] > 0.5f ? th_[3] : 0.5f;
+    if (std::fabs(nu) < OBS_DEADBAND_MKS || std::fabs(nu) > OBS_GATE_MKS) return;      // a step of the AIR (door, vent) is not an egg change
+    float dTe = OBS_GAIN * nu / ce;
+    if (dTe > OBS_STEP_MAX_C) dTe = OBS_STEP_MAX_C; else if (dTe < -OBS_STEP_MAX_C) dTe = -OBS_STEP_MAX_C;
+    for (auto &t : teJ_) t += dTe;
+    Te_ = teJ_[tauEsel_];
+  }
+
+  // ---- the running learner: slope(mK/s) = a*La/100 - c0 - cp*(PV-P0) + ce*(Te-P0) + c3*w   (theta = [a, c0, cp, ce, c3]) ----
+  void rlsUpdate() {
+    if (RLS_NEEDS_BATCH && batchStage_ == 0) return;                                              // before the first batch fit the data cannot separate the unknowns: priors only
+    if (batchActive_ || ringCount_ < SLOPE_N || (!idDone_ && idPhase_ == 1)) return;              // the delay must be known before P_air means anything
+    const uint8_t n = SLOPE_N; float sx = 0, sy = 0, sxx = 0, sxy = 0, pa = 0, pvm = 0;
+    for (uint8_t i = 0; i < n; ++i) {
+      const float t = i * 10.0f, y = pvRing_[RING_N - n + i];
+      sx += t; sy += y; sxx += t * t; sxy += t * y; pa += paRing_[RING_N - n + i]; pvm += y;
+    }
+    const float slopeMks = 1000.0f * (n * sxy - sx * sy) / (n * sxx - sx * sx);
+    pa /= n; pvm /= n;
+    const float phi[NP] = {pa * 0.01f, -1.0f, -(pvm - P0), (Te_ - P0), wEgg()};
+    float Pphi[NP], s2 = SLOPE_STD_MKS * SLOPE_STD_MKS;
+    for (int i = 0; i < NP; ++i) { Pphi[i] = 0; for (int j = 0; j < NP; ++j) Pphi[i] += P_[i][j] * phi[j]; }
+    for (int i = 0; i < NP; ++i) s2 += phi[i] * Pphi[i];
+    float err = slopeMks; for (int i = 0; i < NP; ++i) err -= phi[i] * th_[i];
     if (err * err > GATE_SIGMAS * GATE_SIGMAS * s2) return;           // outlier (door, tray, vent): not a slope of this plant
-    float g[4]; for (int i = 0; i < 4; ++i) g[i] = Pphi[i] / s2;
-    for (int i = 0; i < 4; ++i) th_[i] += g[i] * err;
-    for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) P_[i][j] = P_[i][j] / FORGET - g[i] * Pphi[j];
-    for (int i = 0; i < 4; ++i) for (int j = i + 1; j < 4; ++j) { const float m = 0.5f * (P_[i][j] + P_[j][i]); P_[i][j] = P_[j][i] = m; }
-    if (!kFrozen_ && P_[0][0] < P_FLOOR_A * P_FLOOR_A) P_[0][0] = P_FLOOR_A * P_FLOOR_A;
-    if (P_[1][1] < P_FLOOR_B1 * P_FLOOR_B1) P_[1][1] = P_FLOOR_B1 * P_FLOOR_B1;
-    if (P_[2][2] < P_FLOOR_B2 * P_FLOOR_B2) P_[2][2] = P_FLOOR_B2 * P_FLOOR_B2;
-    if (P_[3][3] < P_FLOOR_B2 * P_FLOOR_B2) P_[3][3] = P_FLOOR_B2 * P_FLOOR_B2;
+    float g[NP]; for (int i = 0; i < NP; ++i) g[i] = Pphi[i] / s2;
+    for (int i = 0; i < NP; ++i) th_[i] += g[i] * err;
+    for (int i = 0; i < NP; ++i) for (int j = 0; j < NP; ++j) P_[i][j] -= g[i] * Pphi[j];
+    for (int i = 0; i < NP; ++i) for (int j = i + 1; j < NP; ++j) { const float m = 0.5f * (P_[i][j] + P_[j][i]); P_[i][j] = P_[j][i] = m; }
+    for (int i = 1; i < NP; ++i) if (P_[i][i] < P_FLOOR_B * P_FLOOR_B) P_[i][i] = P_FLOOR_B * P_FLOOR_B;
+    if (!kFrozen_ && P_[0][0] < 1.0f) P_[0][0] = 1.0f;
+    clampTheta();
+  }
+  void clampTheta() {
     if (th_[2] < 0.5f) th_[2] = 0.5f; else if (th_[2] > 9.0f) th_[2] = 9.0f;                  // physical: loss + exchange coefficient
     if (th_[3] < 0.2f) th_[3] = 0.2f; else if (th_[3] > th_[2]) th_[3] = th_[2];               // exchange cannot exceed the total coefficient
+    if (th_[4] > C3_MAX) th_[4] = C3_MAX; else if (th_[4] < -C3_MAX) th_[4] = -C3_MAX;
     if (th_[0] < K_MIN * 1e5f) th_[0] = K_MIN * 1e5f; else if (th_[0] > K_MAX_EST * 1e5f) th_[0] = K_MAX_EST * 1e5f;
   }
 
-  // ---- batch identification: search the delay and the lag on the stored history, solve the rest by (ridge) least squares ----
-  float binAbs(float sec) const {                                 // delivered % in second `sec` (absolute); 0 outside the stored history
-    const float age = absS_ - sec;
+  // ---- batch identification, resumable: one (delay, lag, egg time constant) candidate per call of step() ----
+  float binAt(float sec) const {                                  // delivered % in absolute second `sec`, as of the moment the batch started; 0 outside the history
+    const float age = absRef_ - sec;
     if (age < 0.0f || age >= BIN_N) return 0.0f;
-    return binU_[(binHead_ + BIN_N - 1 - static_cast<uint16_t>(age)) % BIN_N] * 0.5f;
+    return binU_[(binHeadRef_ + BIN_N - 1 - static_cast<uint16_t>(age)) % BIN_N] * 0.5f;
   }
-  // replay the heater path (delay td, lag tau) over the history window; fills bla_ with P_air at every stored point, returns P_air at absS_
+  // replay the heater path (delay td, lag tau) over the stored points; fills bla_ with P_air at every point, returns P_air at absRef_
   float replayWindow(float td, float tau, uint8_t ns) {
-    const float t0 = lastPushAbs_ - 10.0f * (ns - 1), alpha = 1.0f - std::exp(-1.0f / tau);
-    float y = binAbs(t0 - td); bla_[0] = y;
+    const float t0 = lastPushRef_ - 10.0f * (ns - 1), alpha = 1.0f - std::exp(-1.0f / tau);
+    float y = binAt(t0 - td); bla_[0] = y;
     const int total = 10 * (ns - 1);
-    for (int sidx = 1; sidx <= total; ++sidx) { y += (binAbs(t0 + sidx - td) - y) * alpha; if (sidx % 10 == 0) bla_[sidx / 10] = y; }
-    float yEnd = y;
-    for (float t = lastPushAbs_ + 1.0f; t <= absS_ + 0.5f; t += 1.0f) yEnd += (binAbs(t - td) - yEnd) * alpha;
-    return yEnd;
+    for (int s = 1; s <= total; ++s) { y += (binAt(t0 + s - td) - y) * alpha; if (s % 10 == 0) bla_[s / 10] = y; }
+    for (float t = lastPushRef_ + 1.0f; t <= absRef_ + 0.5f; t += 1.0f) y += (binAt(t - td) - y) * alpha;
+    return y;
   }
-  // 4x4 ridge solve + inverse (double, Gauss-Jordan with partial pivoting); false if singular
-  static bool solve4(double A[4][4], const double b[4], double x[4], double inv[4][4]) {
-    double M[4][8];
-    for (int i = 0; i < 4; ++i) { for (int j = 0; j < 4; ++j) { M[i][j] = A[i][j]; M[i][4 + j] = (i == j) ? 1.0 : 0.0; } }
-    for (int c = 0; c < 4; ++c) {
-      int piv = c; for (int r = c + 1; r < 4; ++r) if (std::fabs(M[r][c]) > std::fabs(M[piv][c])) piv = r;
+  // NPxNP ridge solve + inverse (double, Gauss-Jordan with partial pivoting); false if singular
+  static bool solveNP(double A[NP][NP], const double b[NP], double x[NP], double inv[NP][NP]) {
+    double M[NP][2 * NP];
+    for (int i = 0; i < NP; ++i) { for (int j = 0; j < NP; ++j) { M[i][j] = A[i][j]; M[i][NP + j] = (i == j) ? 1.0 : 0.0; } }
+    for (int c = 0; c < NP; ++c) {
+      int piv = c; for (int r = c + 1; r < NP; ++r) if (std::fabs(M[r][c]) > std::fabs(M[piv][c])) piv = r;
       if (std::fabs(M[piv][c]) < 1e-12) return false;
-      if (piv != c) for (int j = 0; j < 8; ++j) { const double t = M[c][j]; M[c][j] = M[piv][j]; M[piv][j] = t; }
-      const double d = M[c][c]; for (int j = 0; j < 8; ++j) M[c][j] /= d;
-      for (int r = 0; r < 4; ++r) if (r != c) { const double f = M[r][c]; for (int j = 0; j < 8; ++j) M[r][j] -= f * M[c][j]; }
+      if (piv != c) for (int j = 0; j < 2 * NP; ++j) { const double t = M[c][j]; M[c][j] = M[piv][j]; M[piv][j] = t; }
+      const double d = M[c][c]; for (int j = 0; j < 2 * NP; ++j) M[c][j] /= d;
+      for (int r = 0; r < NP; ++r) if (r != c) { const double f = M[r][c]; for (int j = 0; j < 2 * NP; ++j) M[r][j] -= f * M[c][j]; }
     }
-    for (int i = 0; i < 4; ++i) { for (int j = 0; j < 4; ++j) inv[i][j] = M[i][4 + j]; }
-    for (int i = 0; i < 4; ++i) { x[i] = 0; for (int j = 0; j < 4; ++j) x[i] += inv[i][j] * b[j]; }
+    for (int i = 0; i < NP; ++i) { for (int j = 0; j < NP; ++j) inv[i][j] = M[i][NP + j]; }
+    for (int i = 0; i < NP; ++i) { x[i] = 0; for (int j = 0; j < NP; ++j) x[i] += inv[i][j] * b[j]; }
     return true;
   }
-  void batchIdentify() {
+  void batchBegin() {
     batchDue_ = false;
-    const uint8_t ns = histCount_;
-    if (ns < BATCH_MIN_POINTS) return;
-    const uint8_t first = static_cast<uint8_t>((histHead_ + HIST_N - ns) % HIST_N);
-    const double s2 = static_cast<double>(SLOPE_STD_MKS) * SLOPE_STD_MKS;
-    // first batch: the wide prior of the oven family; later batches: the previous result is the prior (a settled hold cannot overturn what a climb measured)
-    double th0[4] = {A0, C0_0, CP_0, CE_0}, sd[4] = {A0_STD, C0_STD, CP_STD, CE_STD};
+    if (histCount_ < BATCH_MIN_POINTS || !idDoneOrProbe()) { return; }
+    bns_ = histCount_;
+    bfirst_ = static_cast<uint8_t>((histHead_ + HIST_N - bns_) % HIST_N);
+    absRef_ = absS_; binHeadRef_ = binHead_; lastPushRef_ = lastPushAbs_;
+    // first fit: the wide prior of the oven family; later fits: the previous result is the prior (a settled hold cannot overturn what a climb measured)
+    const double th0[NP] = {A0, C0_0, CP_0, CE_0, C3_0}, sd0[NP] = {A0_STD, C0_STD, CP_STD, CE_STD, C3_STD};
+    for (int p = 0; p < NP; ++p) { bth0_[p] = th0[p]; bsd_[p] = sd0[p]; }
     if (batchStage_ > 0) {
-      for (int p = 0; p < 4; ++p) th0[p] = th_[p];
-      sd[0] = kStdB_ * 1e5f > 1.0f ? kStdB_ * 1e5f : 1.0f;
-      for (int p = 1; p < 4; ++p) { const double v = P_[p][p] > P_FLOOR_B1 * P_FLOOR_B1 ? P_[p][p] : P_FLOOR_B1 * P_FLOOR_B1; sd[p] = std::sqrt(v) * 2.0; }
+      for (int p = 0; p < NP; ++p) bth0_[p] = th_[p];
+      bsd_[0] = kStdB_ * 1e5f > 1.0f ? kStdB_ * 1e5f : 1.0f;
+      for (int p = 1; p < NP; ++p) { const double v = P_[p][p] > P_FLOOR_B * P_FLOOR_B ? P_[p][p] : P_FLOOR_B * P_FLOOR_B; bsd_[p] = std::sqrt(v) * 2.0; }
     }
-    const float taus[4] = {25.0f, 35.0f, 45.0f, 55.0f};
-    double bestRms = 1e30, bestTh[4] = {0, 0, 0, 0}, bestInv[4][4]; float bestTd = -1, bestTau = tau_; bool have = false;
-    for (float td = TD_MIN_S; td <= TD_MAX_S + 0.1f; td += TD_STEP_S) {
-      for (int ti = 0; ti < 4; ++ti) {
-        replayWindow(td, taus[ti], ns);
-        double A[4][4] = {{0}}, b[4] = {0, 0, 0, 0}; int rows = 0;
-        for (uint8_t j = 5; j < ns; ++j) {
-          float pa = 0, pvm = 0, num = 0;
-          for (int i = 0; i < 6; ++i) { const uint8_t h = static_cast<uint8_t>((first + j - 5 + i) % HIST_N); pa += bla_[j - 5 + i]; pvm += pvH_[h]; num += (i - 2.5f) * pvH_[h]; }
-          pa /= 6.0f; pvm /= 6.0f;
-          const float slope = num / 17.5f / 10.0f * 1000.0f;
-          const float tem = teH_[(first + j) % HIST_N];
-          bx_[rows][0] = pa * 0.01f; bx_[rows][1] = -1.0f; bx_[rows][2] = -(pvm - P0); bx_[rows][3] = tem - P0; bx_[rows][4] = slope;
-          for (int p = 0; p < 4; ++p) { for (int q = 0; q < 4; ++q) A[p][q] += static_cast<double>(bx_[rows][p]) * bx_[rows][q]; b[p] += static_cast<double>(bx_[rows][p]) * slope; }
-          ++rows;
-        }
-        for (int p = 0; p < 4; ++p) { A[p][p] += s2 / (sd[p] * sd[p]); b[p] += s2 / (sd[p] * sd[p]) * th0[p]; }
-        double x[4], inv[4][4];
-        if (!solve4(A, b, x, inv)) continue;
-        if (x[0] < K_MIN * 1e5f || x[0] > K_MAX_EST * 1e5f) continue;
-        double ss = 0; for (int r = 0; r < rows; ++r) { double e = bx_[r][4]; for (int p = 0; p < 4; ++p) e -= x[p] * bx_[r][p]; ss += e * e; }
-        const double rms = std::sqrt(ss / rows);
-        if (rms < bestRms) { bestRms = rms; bestTd = td; bestTau = taus[ti]; for (int p = 0; p < 4; ++p) { bestTh[p] = x[p]; for (int q = 0; q < 4; ++q) bestInv[p][q] = inv[p][q]; } have = true; }
+    bestRms_ = 1e30; bestFound_ = false; bidx_ = 0; bsub_ = 0; batchActive_ = true;
+  }
+  bool idDoneOrProbe() const { return true; }
+  // One candidate = three calls, so that no call of step() does more than a few hundred microseconds of work on the target:
+  //   sub 0: replay of the heater path (float);  sub 1: regression rows and normal equations;  sub 2: 5x5 ridge solve (double) and residual.
+  void batchStep() {
+    const uint16_t total = static_cast<uint16_t>(TD_N * 4 * 3);
+    if (bidx_ >= total) { batchApply(); return; }
+    const uint16_t i = bidx_;
+    const uint8_t ti = static_cast<uint8_t>(i % 3), li = static_cast<uint8_t>((i / 3) % 4), di = static_cast<uint8_t>(i / 12);
+    const float td = TD_MIN_S + TD_STEP_S * di, tau = TAU_L_C[li];
+    if (bsub_ == 0) { replayWindow(td, tau, bns_); bsub_ = 1; return; }
+    if (bsub_ == 1) {
+      for (int p = 0; p < NP; ++p) { bb_[p] = 0; for (int q = 0; q < NP; ++q) bA_[p][q] = 0; }
+      brows_ = 0;
+      for (uint8_t j = 5; j < bns_; ++j) {
+        float pa = 0, pvm = 0, num = 0;
+        for (int q = 0; q < 6; ++q) { const uint8_t h = static_cast<uint8_t>((bfirst_ + j - 5 + q) % HIST_N); pa += bla_[j - 5 + q]; pvm += pvH_[h]; num += (q - 2.5f) * pvH_[h]; }
+        pa /= 6.0f; pvm /= 6.0f;
+        const float slope = num / 17.5f / 10.0f * 1000.0f;
+        const float tj = lastPushRef_ - 10.0f * (bns_ - 1 - j);
+        float* r = bx_[brows_];
+        r[0] = pa * 0.01f; r[1] = -1.0f; r[2] = -(pvm - P0); r[3] = teH_[ti][(bfirst_ + j) % HIST_N] - P0; r[4] = std::exp(-tj / TAU_E_C[ti]); r[NP] = slope;
+        for (int p = 0; p < NP; ++p) { for (int q = p; q < NP; ++q) bA_[p][q] += r[p] * r[q]; bb_[p] += r[p] * slope; }   // float sums, upper triangle only
+        ++brows_;
       }
+      bsub_ = 2; return;
     }
-    ++batchStage_;
-    if (!have) return;
-    tau_ = bestTau; setDelay(bestTd);
-    for (int p = 0; p < 4; ++p) th_[p] = static_cast<float>(bestTh[p]);
-    for (int p = 0; p < 4; ++p) for (int q = 0; q < 4; ++q) P_[p][q] = static_cast<float>(s2 * bestInv[p][q]);
-    if (th_[2] < 0.5f) th_[2] = 0.5f; else if (th_[2] > 9.0f) th_[2] = 9.0f;
-    if (th_[3] < 0.2f) th_[3] = 0.2f; else if (th_[3] > th_[2]) th_[3] = th_[2];
-    lag_ = replayWindow(bestTd, bestTau, ns);                       // P_air state and the last ring entries now follow the identified path
-    for (int m = 0; m < RING_N && m < ns; ++m) paRing_[RING_N - 1 - m] = bla_[ns - 1 - m];
-    // k and the path are properties of the oven measured with excitation; a steady hold cannot separate k from the loss coefficients, so the
-    // running learner is not allowed to move k (its covariance row/column is cleared); the next batch may.
-    kStdB_ = static_cast<float>(std::sqrt(s2 * bestInv[0][0])) * 1e-5f;
+    // sub 2
+    bsub_ = 0; ++bidx_;
+    const double s2 = static_cast<double>(SLOPE_STD_MKS) * SLOPE_STD_MKS;
+    double A[NP][NP], b[NP];
+    for (int p = 0; p < NP; ++p) { for (int q = 0; q < NP; ++q) A[p][q] = (q >= p) ? bA_[p][q] : bA_[q][p]; b[p] = bb_[p]; }
+    for (int p = 0; p < NP; ++p) { A[p][p] += s2 / (bsd_[p] * bsd_[p]); b[p] += s2 / (bsd_[p] * bsd_[p]) * bth0_[p]; }
+    double x[NP], inv[NP][NP];
+    if (!solveNP(A, b, x, inv)) return;
+    if (x[0] < K_MIN * 1e5f || x[0] > K_MAX_EST * 1e5f) return;
+    float ss = 0; for (uint8_t r = 0; r < brows_; ++r) { float e = bx_[r][NP]; for (int p = 0; p < NP; ++p) e -= static_cast<float>(x[p]) * bx_[r][p]; ss += e * e; }
+    const double rms = std::sqrt(static_cast<double>(ss) / brows_);
+    if (rms < bestRms_) {
+      bestRms_ = rms; bestTd_ = td; bestTau_ = tau; bestTe_ = ti; bestFound_ = true;
+      for (int p = 0; p < NP; ++p) { bestTh_[p] = x[p]; for (int q = 0; q < NP; ++q) bestInv_[p][q] = inv[p][q]; }
+    }
+  }
+  void batchApply() {
+    batchActive_ = false; ++batchStage_;
+    if (!bestFound_) return;
+    const double s2 = static_cast<double>(SLOPE_STD_MKS) * SLOPE_STD_MKS;
+    tau_ = bestTau_; setDelay(bestTd_);
+    tauEsel_ = bestTe_; Te_ = teJ_[tauEsel_];
+    for (int p = 0; p < NP; ++p) th_[p] = static_cast<float>(bestTh_[p]);
+    for (int p = 0; p < NP; ++p) for (int q = 0; q < NP; ++q) P_[p][q] = static_cast<float>(s2 * bestInv_[p][q]);
+    clampTheta();
+    // the arriving-power state and the last ring entries now follow the identified path (history replayed up to the moment the batch began, then to now)
+    lag_ = replayWindow(bestTd_, bestTau_, bns_);
+    { const float alpha = 1.0f - std::exp(-1.0f / tau_); const uint16_t tdI = static_cast<uint16_t>(bestTd_ + 0.5f);
+      for (float t = absRef_ + 1.0f; t <= absS_ + 0.5f; t += 1.0f) { const uint16_t age = static_cast<uint16_t>(absS_ - t + tdI); lag_ += ((age < BIN_N ? binU_[(binHead_ + BIN_N - 1 - age) % BIN_N] * 0.5f : 0.0f) - lag_) * alpha; } }
+    for (int m = 0; m < RING_N && m < bns_; ++m) paRing_[RING_N - 1 - m] = bla_[bns_ - 1 - m];
+    // k is a property of the oven measured with excitation; a steady hold cannot separate it from the loss coefficients, so the running learner may not move it
+    kStdB_ = static_cast<float>(std::sqrt(s2 * bestInv_[0][0])) * 1e-5f;
     if (kStdB_ < 0.03f * kRaw()) kStdB_ = 0.03f * kRaw();
-    kFrozen_ = true;
-    for (int q = 0; q < 4; ++q) { P_[0][q] = 0.0f; P_[q][0] = 0.0f; }
+    kFrozen_ = true; dBias_ = 0.0f;                                   // the fitted model carries the level now
+    for (int q = 0; q < NP; ++q) { P_[0][q] = 0.0f; P_[q][0] = 0.0f; }
     rlsHold_ = 0; idDone_ = true; idPhase_ = 3;
   }
 
@@ -384,6 +469,7 @@ class Controller {
       lag_ += (x - lag_) * a;
     }
   }
+  // The look found the air rising with the heater off (warm eggs) ... handled by the batch fit (c3); nothing is assumed here.
   void identify(const Input &in) {
     if (idDone_) return;
     if (!in.permit) { idPhase_ = 0; return; }
@@ -414,14 +500,16 @@ class Controller {
   float idPower_ = 100.0f, idT0_ = 0, idPv0_ = 0, idTTheta_ = 0;
   bool idDone_ = false; uint8_t idPhase_ = 0, rlsHold_ = 0;
   uint8_t binU_[BIN_N];
-  float pvH_[HIST_N], teH_[HIST_N], bla_[HIST_N], bx_[HIST_N][5];
-  uint8_t histCount_ = 0, histHead_ = 0, batchStage_ = 0; bool batchDue_ = false;
-  bool kFrozen_ = false; float kStdB_ = 0, dBias_ = 0;
+  float pvH_[HIST_N], teH_[3][HIST_N], bla_[HIST_N], bx_[HIST_N][NP + 1], teJ_[3];
+  uint8_t histCount_ = 0, histHead_ = 0, batchStage_ = 0, tauEsel_ = TAU_E_PRIOR; bool batchDue_ = false, batchActive_ = false;
+  uint8_t bns_ = 0, bfirst_ = 0, bsub_ = 0, brows_ = 0; float bA_[NP][NP], bb_[NP]; uint16_t bidx_ = 0; uint16_t binHeadRef_ = 0; float absRef_ = 0, lastPushRef_ = 0;
+  double bth0_[NP], bsd_[NP], bestRms_ = 1e30, bestTh_[NP], bestInv_[NP][NP]; float bestTd_ = 0, bestTau_ = TAU_LAG_S; uint8_t bestTe_ = TAU_E_PRIOR; bool bestFound_ = false;
+  bool kFrozen_ = false; float kStdB_ = 0, dBias_ = 0, sigPred_ = 1.0f;
   float lastPushAbs_ = 0, firstPowerAbs_ = -1.0f, tau_ = TAU_LAG_S;
   float pvRing_[RING_N], paRing_[RING_N];
   uint16_t binHead_; uint8_t ringCount_, ring10_;
   float secT_, secAcc_, lag_, absS_;
-  float th_[4], P_[4][4];
+  float th_[NP], P_[NP][NP];
   bool far_ = false;
   float tdEst_ = 150.0f, thetaMeas_ = 0, pvAtTheta_ = 0; bool thetaSeen_ = false;
   float theta_, I_, Te_, pv_, spNow_, pvPred_ = 0, lastU_, lostS_;
