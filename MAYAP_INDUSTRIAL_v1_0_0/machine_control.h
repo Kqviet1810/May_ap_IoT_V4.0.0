@@ -4997,6 +4997,26 @@ class MachineController {
     snprintf(detail.resultId, sizeof(detail.resultId), "%s", techResultId_);
     MayapTech::publishDetail(detail);
   }
+  // Read-only PID monitor. Numbers come from the controller that is running; the 60 s mean is of the arbiter's REAL SSR state.
+  void publishPidMonitor(uint32_t now) {
+    const uint32_t dtMs = std::min<uint32_t>(elapsedMs(now, pidMonAt_), 1000UL);
+    pidMonAt_ = now;
+    const bool on = outputs_.state().heaterSsr && outputs_.state().heatMaster;
+    pidMonActual_ += ((on ? 100.0f : 0.0f) - pidMonActual_) * std::min(1.0f, static_cast<float>(dtMs) / 60000.0f);
+    if (on) pidMonSsrOnMs_ += dtMs;   // cumulative heater-on time (read by the LOG AI snapshot only)
+    PidMonitorData &m = runtime_.pidMon;
+    m.valid = sensorUsable_ && isfinite(temperature_);
+    m.error = m.valid ? config_.targetTemp - temperature_ : 0.0f;
+    m.requestPct = runtime_.heaterPower;
+    m.actualAvgPct = pidMonActual_;
+    m.cycleLastUs = cycleLastUs_; m.cycleMaxUs = cycleMaxUs_;
+    const thermalv2::Controller &v2 = thermalV2_.controller();
+    m.predictedC = v2.predicted();
+    m.phase = !v2.identified() ? 0U : static_cast<uint8_t>(1U + std::min<uint8_t>(v2.batchesDone(), 2U));
+    m.suspect = v2.responseSuspect();
+    m.slotLastUs = slotLastUs_; m.slotMaxUs = slotMaxUs_;
+  }
+
   // ---- Thermal V2 slot glue (the host rig compiles buildThermalV2SlotIn() textually from here) ----
   float thermalV2SensorStepC() const {                          // the step of the value the controller sees: the locked sensor format decides, an unlocked one is treated as the coarse 0.1
     const SensorProfile p = sensor_.sensorProfile();
@@ -5023,26 +5043,6 @@ class MachineController {
     if (slotLastUs_ > slotMaxUs_) slotMaxUs_ = slotLastUs_;
     return u;
   }
-  // Read-only PID monitor. Numbers come from the controller that is running; the 60 s mean is of the arbiter's REAL SSR state.
-  void publishPidMonitor(uint32_t now) {
-    const uint32_t dtMs = std::min<uint32_t>(elapsedMs(now, pidMonAt_), 1000UL);
-    pidMonAt_ = now;
-    const bool on = outputs_.state().heaterSsr && outputs_.state().heatMaster;
-    pidMonActual_ += ((on ? 100.0f : 0.0f) - pidMonActual_) * std::min(1.0f, static_cast<float>(dtMs) / 60000.0f);
-    if (on) pidMonSsrOnMs_ += dtMs;   // cumulative heater-on time (read by the LOG AI snapshot only)
-    PidMonitorData &m = runtime_.pidMon;
-    m.valid = sensorUsable_ && isfinite(temperature_);
-    m.error = m.valid ? config_.targetTemp - temperature_ : 0.0f;
-    m.requestPct = runtime_.heaterPower;
-    m.actualAvgPct = pidMonActual_;
-    m.cycleLastUs = cycleLastUs_; m.cycleMaxUs = cycleMaxUs_;
-    const thermalv2::Controller &v2 = thermalV2_.controller();
-    m.predictedC = v2.predicted();
-    m.phase = !v2.identified() ? 0U : static_cast<uint8_t>(1U + std::min<uint8_t>(v2.batchesDone(), 2U));
-    m.suspect = v2.responseSuspect();
-    m.slotLastUs = slotLastUs_; m.slotMaxUs = slotMaxUs_;
-  }
-
   bool startBatch(uint32_t now, const char *&message) {
     if (!mayapBootOperationsReady()) { message = "DANG KHOI DONG"; return false; }
     if (mayapFirmwareMaintenanceActive()) { message = "DANG CAP NHAT FIRMWARE"; return false; }
