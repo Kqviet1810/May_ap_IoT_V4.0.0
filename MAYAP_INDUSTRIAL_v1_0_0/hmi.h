@@ -2961,8 +2961,8 @@ void advSelect() {
   }
 }
 
-constexpr uint8_t MON_ITEM_COUNT = 26U;     // PID Monitor: 12 muc PID, 5 muc "Lo" (do tren lo nay, muc 20..24), 6 muc ho so (12..17), 3 muc "Du doan" (25..27)
-uint8_t monItemIndex(uint8_t k) { return k < 12U ? k : (k < 17U ? static_cast<uint8_t>(20U + k - 12U) : (k < 23U ? static_cast<uint8_t>(k - 5U) : static_cast<uint8_t>(25U + k - 23U))); }
+constexpr uint8_t MON_ITEM_COUNT = 34U;     // PID Monitor: 12 muc PID, 5 muc "Lo" (do tren lo nay, muc 20..24), 6 muc ho so (12..17), 3 muc "Du doan" (25..27)
+uint8_t monItemIndex(uint8_t k) { return k < 12U ? k : (k < 17U ? static_cast<uint8_t>(20U + k - 12U) : (k < 23U ? static_cast<uint8_t>(k - 5U) : (k < 26U ? static_cast<uint8_t>(25U + k - 23U) : static_cast<uint8_t>(28U + k - 26U)))); }
 constexpr uint8_t PROFILE_FIRST = 12U, PROFILE_COUNT = 8U;   // Ho so nhiet: muc 12..19
 // Mot muc thong tin chi-doc (nhan + gia tri). Du lieu lay tu bo dieu khien dang chay, khong co so gia.
 void infoItem(uint8_t i, const char *&label, char *v, size_t n) {
@@ -3009,6 +3009,18 @@ void infoItem(uint8_t i, const char *&label, char *v, size_t n) {
     }
     case 26: label = "Du doan: sai so mh"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.3fC", m.predRms); break;
     case 27: label = "Du doan: trung"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.2fC", m.predEggTemp); break;
+    case 28: label = "Du doan: yeu cau"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.1f%%", m.predRequest); break;
+    case 29: label = "Du doan: hold"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.1f%%", m.predHold); break;
+    case 30: label = "Du doan: tre/qt"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.0f/%.0fs", m.predDead, m.predTau); break;
+    case 31: label = "Du doan: k / a"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.1f/%.2f", m.predK, m.predA); break;
+    case 32: label = "Du doan: loi gan"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.3fC", m.predInnov); break;
+    case 33: {
+      static const char *const WHY[] = {"OK", "THIEU DL", "SAI LON", "CAM BIEN", "QUA SP", "MH KEM"};
+      label = "Du doan: ly do"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%s", WHY[m.predWhy < 6U ? m.predWhy : 0U]);
+      break;
+    }
+    case 34: label = "Du doan: lui/ph"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%ux %lum", static_cast<unsigned>(m.predFallbacks), static_cast<unsigned long>(m.predActiveS / 60UL)); break;
+    case 35: label = "Chu ky DK us"; if (m.valid) snprintf(v, n, "%lu/%lu", static_cast<unsigned long>(m.cycleLastUs), static_cast<unsigned long>(m.cycleMaxUs)); break;
     default: label = "Loi du bao"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%.2fC", r.thermalPredictionError); break;
   }
   if (!v[0]) snprintf(v, n, "--");

@@ -18,7 +18,7 @@ struct Oven {
   double Pw = 20000, Cf = 0.5e6, Ce = 1.9e6, hA = 1000, fan = 1500, eggEnd = 0, dead = 60, lag = 40, ventG = 200, amb = 25;
   double UA() const { return (0.03 * Pw + fan + eggEnd) / 12.5; }
 };
-struct Result { double over = -9, under = 9, maxDoorOver = -9, doorRecoverS = 0; int fallbacks = 0, high = 0; double activeAtS = -1; double minReq = 1e9, maxReq = -1e9; bool finite = true; };
+struct Result { double over = -9, under = 9, maxDoorOver = -9, doorRecoverS = 0; int fallbacks = 0, high = 0; double activeAtS = -1; double minReq = 1e9, maxReq = -1e9; bool finite = true; unsigned telActiveS = 0, telFallbacks = 0; };
 
 // kind 0: cold start (air and eggs 28 C) for `hours`; kind 1: the same, then a door opening (air -3 C) after 3 h
 static Result run(const Oven &o, int kind, double hours, bool fixedBadSensor = false) {
@@ -68,6 +68,7 @@ static Result run(const Oven &o, int kind, double hours, bool fixedBadSensor = f
     if (Ta >= 38.2) ++r.high;
   }
   r.doorRecoverS = doorLastOut;
+  { const Telemetry tel = ctl.telemetry(); r.telActiveS = tel.activeS; r.telFallbacks = tel.fallbacks; }
   return r;
 }
 
@@ -110,6 +111,8 @@ static void coldStartAndDoor() {
     CHECK(a.finite);
     CHECK(a.activeAtS > 0 && a.activeAtS < 900);          // in control within 15 minutes of the first heat
     CHECK(a.fallbacks == 0);
+    CHECK(a.telFallbacks == static_cast<unsigned>(a.fallbacks));      // the PID monitor's counters agree with what happened
+    CHECK(a.telActiveS > 1800);                            // and say how long the planner drove the heater (3 h run, in control after ~10 min)
     CHECK(a.high == 0);
     CHECK(a.over < 0.30);                                  // never more than 0.3 C above SP once warm (the legacy controller reaches 0.5-1.7 C)
     CHECK(a.minReq >= 0.0 && a.maxReq <= 100.0);

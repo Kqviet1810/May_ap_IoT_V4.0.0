@@ -3952,6 +3952,7 @@ class MachineController {
 
   const MachineConfig &config() const { return config_; }
   const MachineRuntime &runtime() const { return runtime_; }
+  void setCycleStats(uint32_t lastUs, uint32_t maxUs) { cycleLastUs_ = lastUs; cycleMaxUs_ = maxUs; }   // called by the control task after each cycle
   const OutputState &outputs() const { return outputs_.state(); }
 
  private:
@@ -5064,7 +5065,9 @@ class MachineController {
     m.launchCap = startupHeat_.lastCeiling();
     m.launchIdleOver = startupHeat_.idleOverC();
     { const MayapPredictive::Telemetry pt = thermalPredictive_.telemetry();
-      m.predState = static_cast<float>(static_cast<uint8_t>(pt.state)); m.predRms = pt.rms; m.predEggTemp = pt.te; m.predDist = pt.d; }
+      m.predState = static_cast<float>(static_cast<uint8_t>(pt.state)); m.predRms = pt.rms; m.predEggTemp = pt.te; m.predDist = pt.d;
+      m.predRequest = pt.request; m.predHold = pt.hold; m.predDead = pt.m.dead; m.predTau = pt.m.tau; m.predK = pt.m.k; m.predA = pt.m.a; m.predInnov = pt.innov;
+      m.predWhy = pt.why; m.predFallbacks = pt.fallbacks; m.predActiveS = pt.activeS; m.cycleLastUs = cycleLastUs_; m.cycleMaxUs = cycleMaxUs_; }
   }
 
   bool startBatch(uint32_t now, const char *&message) {
@@ -8591,6 +8594,7 @@ class MachineController {
   bool previousFanCommand_ = false;
   uint32_t fanOnSince_ = 0;
   MayapThermal::LaunchPlan launchPlan_{};
+  uint32_t cycleLastUs_ = 0, cycleMaxUs_ = 0;       // control-task cycle time, reported to the PID monitor (set by the control task)
   MayapPredictive::Controller thermalPredictive_;
   MayapPredictive::StoredModel predictiveSeed_;
   bool predictiveWasActive_ = false;

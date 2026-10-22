@@ -70,6 +70,10 @@ struct Telemetry {
   uint16_t windowBins = 0;
   bool cooling = false;
   bool modelOk = false;
+  float hold = 0;           // power the model says holds SP now [%]
+  uint8_t why = 0;          // last reason the model was not trusted (0 none, 1 too little data, 2 large miss, 3 sensor, 4 above SP, 5 fit not trusted)
+  uint16_t fallbacks = 0;   // times this batch the controller fell back to the legacy PID
+  uint32_t activeS = 0;     // seconds this batch the planner drove the heater
 };
 
 // Persistent summary of the model fitted on the last batch (a prior for the next one).
@@ -535,7 +539,7 @@ class Controller {
     hist_.reset(); ident_.reset(stored);
     stored_ = stored; started_ = false; binStartMs_ = 0; onMs_ = 0; elapsedMs_ = 0; pvSum_ = 0; pvN_ = 0; ventSum_ = 0;
     lastPv_ = NAN; hl_ = 0; request_ = 0; cooling_ = false; state_ = enabled_ ? State::Learning : State::Off;
-    fallbackUntilBin_ = 0; healthyBins_ = 0; badBins_ = 0; plan_ = PlanChoice{}; planner_ = Planner{}; planStartBin_ = 0; pendingStartBin_ = -1000;
+    fallbackUntilBin_ = 0; healthyBins_ = 0; fallbacks_ = 0; activeBins_ = 0; badBins_ = 0; plan_ = PlanChoice{}; planner_ = Planner{}; planStartBin_ = 0; pendingStartBin_ = -1000;
     readySince_ = 0; model_ = stored.valid ? stored.m : Model{}; modelOk_ = false; sensorGapMs_ = 0; firstHeatBin_ = -1; lastSampleMs_ = 0;
     planOnTop_ = false; trim_ = 0.0f; lastUpdateMs_ = 0; coolUntilMs_ = 0; slopeValid_ = false; slope_ = 0.0f; needMove_ = false; lastPinned_ = false; lastJudgedBin_ = 0;
   }
@@ -597,6 +601,7 @@ class Controller {
     if (unhealthy) lastWhy_ = why;
     const bool newBin = bins != lastJudgedBin_;     // the verdict advances once per 10 s bin, whatever the sensor rate
     lastJudgedBin_ = bins;
+    if (newBin && state_ == State::Active) ++activeBins_;
     if (state_ == State::Learning) {
       // The model must have been checked against a real move of the heater inside its window (a quiet hold cannot tell one oven from another:
       // plants agree in steady state and differ only in how they answer a change of power), and after a stand-down against a recent one
@@ -608,7 +613,7 @@ class Controller {
         if (untrusted && !unhealthy) lastWhy_ = 5;
         badBins_ = (unhealthy || untrusted) ? badBins_ + (unhealthy && (ident_.recentRms() > SevereMiss || ident_.recentPeak() > SeverePeak) ? BadBinsToFallback : 1U) : 0U;
       }
-      if (badBins_ >= BadBinsToFallback) { state_ = State::Fallback; fallbackUntilBin_ = bins + 120U; badBins_ = 0; needMove_ = true; }
+      if (badBins_ >= BadBinsToFallback) { state_ = State::Fallback; fallbackUntilBin_ = bins + 120U; badBins_ = 0; needMove_ = true; if (fallbacks_ < 65535U) ++fallbacks_; }
     } else if (state_ == State::Fallback) {
       if (bins >= fallbackUntilBin_) state_ = State::Learning;
     }
@@ -665,6 +670,7 @@ class Controller {
     t.state = state_; t.rms = ident_.rms(); t.innov = ident_.recentRms(); t.te = ident_.endState().te; t.w = ident_.w0(); t.d = ident_.dEffective();
     t.request = request_; t.m = model_; t.windowBins = static_cast<uint16_t>(hist_.count() > HistBins ? HistBins : hist_.count());
     t.cooling = cooling_; t.modelOk = modelOk_;
+    t.hold = holdPct_; t.why = lastWhy_; t.fallbacks = fallbacks_; t.activeS = activeBins_ * static_cast<uint32_t>(BinSec);
     return t;
   }
   // What to keep for the next batch (only a model that fitted well).
@@ -759,6 +765,8 @@ class Controller {
   float slope_ = 0.0f, slopePv_ = 0.0f;
   static constexpr float OvershootKnee = 0.35f;
   uint8_t lastWhy_ = 0, phase_ = 0;
+  uint16_t fallbacks_ = 0;
+  uint32_t activeBins_ = 0;
   uint32_t lastJudgedBin_ = 0;
   int pvN_ = 0;
   bool cooling_ = false;

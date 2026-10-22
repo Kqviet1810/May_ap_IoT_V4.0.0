@@ -1246,6 +1246,10 @@ struct PidMonitorData {
   float launchIdleOver = 0;           // PV stood this far above SP with the heater idle and no heat on its way [C] (the oven cannot cool by itself)
   // Thermal Predictive V1: 0 off, 1 learning the model, 2 in control, 3 fell back to the legacy controller
   float predState = 0, predRms = 0, predEggTemp = 0, predDist = 0;   // identifier residual [C], estimated egg temperature [C], air-side net power [%]
+  // Field-trial readout of Thermal Predictive V1: its request and the hold it believes in [%], the model's delay / lag [s] and air-egg coupling / loss [%/C],
+  // the recent miss [C], why it last distrusted itself, fallbacks and seconds in control this batch, and the control-task cycle time [us] (CPU check).
+  float predRequest = 0, predHold = 0, predDead = 0, predTau = 0, predK = 0, predA = 0, predInnov = 0;
+  uint8_t predWhy = 0; uint16_t predFallbacks = 0; uint32_t predActiveS = 0, cycleLastUs = 0, cycleMaxUs = 0;
 };
 
 struct MachineRuntime {
