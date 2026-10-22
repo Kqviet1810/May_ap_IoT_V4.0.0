@@ -17,11 +17,12 @@ struct Mini {
     Ta += (heater - UA * (Ta - Tamb)) * dt / Cf;
   }
 };
-static float quant(double v) { return static_cast<float>(std::floor(v / 0.1 + 0.5) * 0.1); }
+static double g_q = 0.1;                                      // sensor step of the test
+static float quant(double v) { return static_cast<float>(std::floor(v / g_q + 0.5) * g_q); }
 
 struct Run { float maxU = 0, minU = 1e9f, peak = -1e9f, last = 0; bool nan = false; };
 static Run simulate(Controller &c, Mini &p, double hours, float sp, float cap, double spStepAt = -1, float spAfter = 0, bool permit = true) {
-  Run r; double acc = 0; Input in; in.sp = sp; in.capPct = cap; in.dtS = 0.1f; in.permit = permit; float u = 0;
+  Run r; double acc = 0; Input in; in.sp = sp; in.capPct = cap; in.dtS = 0.1f; in.permit = permit; in.dQ = static_cast<float>(g_q); float u = 0;
   const int n = static_cast<int>(hours * 36000);
   for (int k = 0; k < n; ++k) {
     if (spStepAt >= 0 && k == static_cast<int>(spStepAt * 10)) in.sp = spAfter;
@@ -108,6 +109,22 @@ int main() {
       p.step(in.deliveredPct > 0 ? 1.0 : 0.0, 0.1);
     }
     (void)total; CHECK(!bad, "fuzz 11 h: output always finite, within [0, cap], zero without permit"); }
+  g_q = 0.01;                                                                                  // fine sensor: the egg observer is active
+  { Controller c; Mini p; Run r = simulate(c, p, 3.0, 37.5f, 100.0f);
+    CHECK(!r.nan && r.minU >= 0.0f && r.maxU <= 100.0f && r.peak < 38.5f, "fine sensor, cold start 3 h: finite, in [0, 100], peak below 38.5 degC");
+    CHECK(std::fabs(p.Ta - 37.5) < 0.4, "fine sensor, cold start 3 h: ends within 0.4 degC of SP"); }
+  { Controller c; Mini p; bool bad = false; unsigned rng = 777; Input in; in.sp = 37.5f; in.capPct = 100.0f; in.dtS = 0.1f; in.permit = true; in.dQ = 0.01f; float u = 0;
+    for (int k = 0; k < 400000; ++k) {                                                          // tray / door style air steps and sensor noise on a fine sensor
+      rng = rng * 1664525u + 1013904223u; const unsigned r = rng >> 8;
+      if (k > 60000 && k % 40000 == 0) p.Ta -= 0.5 + (r % 30) / 10.0;
+      in.pv = quant(p.Ta + ((r % 100) - 50) * 0.0006); in.newSample = (k % 20) == 0;
+      in.deliveredPct = ((k % 30) < static_cast<int>(u * 0.3f + 0.5f)) ? 100.0f : 0.0f;
+      const Output o = c.step(in); u = o.powerPct;
+      if (!std::isfinite(u) || u < 0.0f || u > 100.0f + 1e-3f || !std::isfinite(c.teModel())) bad = true;
+      p.step(in.deliveredPct > 0 ? 1.0 : 0.0, 0.1);
+    }
+    CHECK(!bad && p.Ta < 38.6, "fine sensor, 11 h with air steps and noise: output and egg model stay finite, no runaway"); }
+  g_q = 0.1;
   std::printf("%s (%d failure(s))\n", fails ? "UNIT FAILED" : "UNIT PASSED", fails);
   return fails ? 1 : 0;
 }

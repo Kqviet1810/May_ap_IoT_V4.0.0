@@ -66,16 +66,17 @@ constexpr uint8_t TD_N = 25;               // (260-20)/10 + 1
 constexpr uint8_t BATCH_MIN_POINTS = 40;
 constexpr uint8_t BATCH_GUARD_POINTS = 12;  // newest points pushed while a batch runs overwrite this many of the oldest: they are not used
 // ---- law ----
-constexpr bool EGG_OBSERVER_FINE = false;   // the egg observer needs a slope that is not a 0.1 degC staircase: it runs only when the sensor step is <= 0.02
+constexpr bool EGG_OBSERVER_FINE = true;   // the egg observer needs a slope that is not a 0.1 degC staircase: it runs only when the sensor step is <= 0.02
 constexpr bool RLS_NEEDS_BATCH = false;
 constexpr float TAUI_FACTOR = 8.0f;        // tau_I = factor * theta (SIMC: 4*(tau_c+theta) = 12 theta; 6 after the sweep on set A)
 constexpr float KUP = 1.0f;                // proportional gain below SP, in units of Kc
 constexpr float ASYM = 20.0f;               // gain above SP relative to below (G0: 2)
 constexpr float DEADZONE_FRAC = 0.0f;     // of the sensor step dQ
 constexpr float OBS_GAIN = 0.15f;          // fraction of the innovation applied per 10 s (time constant ~70 s)
-constexpr float OBS_DEADBAND_MKS = 0.6f;   // mK/s: below this the 0.1 degC staircase explains the innovation
+constexpr float OBS_DEADBAND_MKS = 0.5f;   // mK/s: below this the 0.1 degC staircase explains the innovation
+constexpr uint8_t OBS_PERSIST_N = 12;          // 10 s updates a large innovation must last before it is an egg change
 constexpr float OBS_GATE_MKS = 8.0f;       // mK/s: larger innovations are disturbances of the air
-constexpr float OBS_STEP_MAX_C = 0.5f;     // degC per update
+constexpr float OBS_STEP_MAX_C = 1.0f;     // degC per update
 constexpr float OBS_MAX_LA_PRIOR = 5.0f;   // % : 'almost no heater power' before the first batch fit
 constexpr float Z_SIGMA = 1.5f;            // far mode ends when the predicted deficit is below Z sigma_pred (overshoot budget 0.2 degC by construction)
 constexpr float E_ON_MIN = 0.25f;          // degC: never switch to full power for a smaller predicted deficit
@@ -386,7 +387,12 @@ class Controller {
     const float pred = th_[0] * pa * 0.01f - (th_[1] + th_[2] * (pvm - P0) - th_[3] * (Te_ - P0) - th_[4] * wEgg());
     float nu = slopeMks - pred;                                       // mK/s
     const float ce = th_[3] > 0.5f ? th_[3] : 0.5f;
-    if (std::fabs(nu) < OBS_DEADBAND_MKS || std::fabs(nu) > OBS_GATE_MKS) return;      // a step of the AIR (door, vent) is not an egg change
+    if (std::fabs(nu) < OBS_DEADBAND_MKS) { bigNu_ = 0; return; }
+    if (std::fabs(nu) > OBS_GATE_MKS) {                                  // a step of the AIR (door, vent) recovers within minutes; a cold tray does not
+      if (bigNu_ < 255) ++bigNu_;
+      if (bigNu_ < OBS_PERSIST_N) return;
+      nu = nu > 0.0f ? OBS_GATE_MKS : -OBS_GATE_MKS;
+    } else bigNu_ = 0;
     float dTe = OBS_GAIN * nu / ce;
     if (dTe > OBS_STEP_MAX_C) dTe = OBS_STEP_MAX_C; else if (dTe < -OBS_STEP_MAX_C) dTe = -OBS_STEP_MAX_C;
     for (auto &t : teJ_) t += dTe;
@@ -597,7 +603,7 @@ class Controller {
   }
 
   float idPower_ = 100.0f, idT0_ = 0, idPv0_ = 0, idTTheta_ = 0;
-  bool fineSensor_ = false; bool idDone_ = false; uint8_t idPhase_ = 0, rlsHold_ = 0;
+  uint8_t bigNu_ = 0; bool fineSensor_ = false; bool idDone_ = false; uint8_t idPhase_ = 0, rlsHold_ = 0;
   uint8_t binU_[BIN_N];
   float pvH_[HIST_N], teH_[3][HIST_N], bla_[HIST_N], bx_[HIST_N][NP + 1], teJ_[3];
   bool histOk_[HIST_N];

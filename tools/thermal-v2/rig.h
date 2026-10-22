@@ -6,6 +6,7 @@
 //   the sensor filter, sensor acceptance/usable, High/Emergency alarm, E115 accounting, ConditionTimer, MachineConfig.
 // What is host code: the plant, the sensor chain (probe lag, quantisation, offset, faults), the scenario script, the metrics, and the
 // controller object plugged into the single slot `rigSlot()` (the production line `float commandedPower = 0.0f;`).
+#include <random>
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -59,6 +60,13 @@ enum class TurnPhase { Idle, MovingLeft, MovingRight };
 
 namespace v2 {
 static double g_truthDemandPct = 0;
+// robustness runs only (V2_JIT = relative sigma of the slot time): the production slot is not a perfect 100 ms
+static double jitterFactor() {
+  static const double sg = std::getenv("V2_JIT") ? std::atof(std::getenv("V2_JIT")) : 0.0;
+  if (sg <= 0) return 1.0;
+  static std::mt19937 rng(777); static std::normal_distribution<double> nd(0.0, 1.0);
+  const double f = 1.0 + sg * nd(rng); return f < 0.2 ? 0.2 : (f > 3.0 ? 3.0 : f);
+}
 
 // ------------------------------------------------------------------------------------------------------------------------------------------
 // Plant: two thermal nodes (air+steel Cf, eggs Ce) coupled by hA, loss UA to ambient, transport delay td and first-order lag tl on the heater
@@ -133,7 +141,7 @@ struct V2Ctl : Controller {            // the V2 law; the cap / NaN / negative c
   float step(const CtlIn &in) override {
     thermalv2::Input i;
     i.pv = in.pv; i.sp = in.sp; i.dQ = std::getenv("V2_DQ") ? static_cast<float>(std::atof(std::getenv("V2_DQ"))) : 0.1f; i.headroomC = in.headroomC; i.alarmHeadroomC = in.alarmHeadroomC; i.capPct = in.capPct; i.deliveredPct = in.deliveredPct;
-    i.e115Frac = in.e115Frac; i.dtS = static_cast<float>(in.dt); i.newSample = in.newSample; i.permit = in.permit;
+    i.e115Frac = in.e115Frac; i.dtS = static_cast<float>(in.dt * jitterFactor()); i.newSample = in.newSample; i.permit = in.permit;
     last = c.step(i);
     static const bool dbg = std::getenv("V2DBG") != nullptr;
     if (dbg && (in.now % 30000U) < 100U)
