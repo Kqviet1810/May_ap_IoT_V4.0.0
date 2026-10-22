@@ -1,6 +1,6 @@
 // REAL MachineController technical-access glue (sliced from machine_control.h by tools/test_tech_access.py) on fakes.
 // Covers: PIN right/wrong/lock-out on HMI and Web (one shared counter), Web hidden/shown/revoked, Web request -> HMI yes / no /
-// timeout / network loss, safety re-check at execution (batch, resume, autotune, storage), no write when nothing changed, undo
+// timeout / network loss, safety re-check at execution (batch, resume, storage), no write when nothing changed, undo
 // record before every apply, restore + undo, power cut during the old-record write, remote callers cannot reach HMI-only commands.
 #include <algorithm>
 #include <cassert>
@@ -72,22 +72,19 @@ struct FakeHistory {
 };
 struct FakeStore { unsigned saves = 0; bool failSave = false;
   bool saveConfig(const MachineConfig &c, MachineConfig &readback) { if (failSave) return false; ++saves; readback = c; return true; } };
-struct FakeAutoTune { bool run = false; bool running() const { return run; } };
 struct FakeRuntime { bool networkConnected = true; TechStatus tech; };
 
 struct Ctl {
   MachineConfig config_;
   FakeRuntime runtime_;
   FakeStore store_;
-  FakeAutoTune autotune_;
   FakeAuth auth_;
   FakeHistory hist_;
   TechAccess::Gate<FakeAuth> techGate_{auth_};
   AdvancedHistory::Ring<FakeHistory> history_{hist_};
   bool batchRunning_ = false, resumePending_ = false, batchClearPending_ = false, safetyJournalFaultLatched_ = false;
   bool storageFaultLatched_ = false, storageDegraded_ = false;
-  int autoTuneStarts = 0, commits = 0;
-  bool startAutoTune(uint32_t, const char *&message) { ++autoTuneStarts; message = "DA KHOI DONG"; return true; }
+  int commits = 0;
   void commitSavedConfig(uint32_t, const MachineConfig &, const MachineConfig &readback) { config_ = readback; ++commits; }
   void latchStorageFault(const char *) { storageFaultLatched_ = true; }
   void clearStorageDegraded(uint32_t) { storageDegraded_ = false; }
@@ -223,11 +220,7 @@ int main() {
     c.batchRunning_ = false; c.resumePending_ = true;                      // pending recovery counts as a running batch
     CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_KP, 9.0}}, "req-resume", c.config_));
     CHECK(!c.run(now + 2000, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "BATCH_LOCKED");
-    c.resumePending_ = false; c.autotune_.run = true; c.storageDegraded_ = false;
-    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_KP, 9.0}}, "req-tune", c.config_));
-    CHECK(c.run(now + 3000, HmiCommandType::TechRequestSubmit, true, 0, m));
-    CHECK(!c.run(now + 3100, HmiCommandType::TechDecision, false, 1, m) && m == "AUTO TUNE DANG CHAY");
-    c.autotune_.run = false;
+    c.resumePending_ = false; c.storageDegraded_ = false;
     for (int which = 0; which < 4; ++which) {                              // storage / safety-journal faults block the apply too
       c.batchClearPending_ = which == 0; c.safetyJournalFaultLatched_ = which == 1; c.storageFaultLatched_ = which == 2; c.storageDegraded_ = which == 3;
       CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_KP, 9.0}}, "req-fault", c.config_));
@@ -260,22 +253,10 @@ int main() {
     CHECK(c.run(now, HmiCommandType::TechLock, true, 0, m) && !c.runtime_.tech.webSession && c.runtime_.tech.hmiUnlocked);
   }
 
-  // 10. Smart AutoTune request: parked, started only on HMI yes, never twice.
+  // 10. Thermal Control V2.0.0: the Auto Tune request kind no longer exists, so it is refused before anything is parked.
   { Ctl c; fresh(c, now); grantWeb(c, now);
     CHECK(stage(MayapTech::Kind::AutoTune, {}, "req-tune", c.config_));
-    CHECK(c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "PENDING_HMI" && c.runtime_.tech.pendingKind == 2);
-    CHECK(c.autoTuneStarts == 0);
-    CHECK(c.run(now + 100, HmiCommandType::TechDecision, false, 1, m) && c.autoTuneStarts == 1);
-    CHECK(!c.run(now + 200, HmiCommandType::TechDecision, false, 1, m) && c.autoTuneStarts == 1);
-    // No on a tune request
-    CHECK(stage(MayapTech::Kind::AutoTune, {}, "req-tune2", c.config_));
-    CHECK(c.run(now + 300, HmiCommandType::TechRequestSubmit, true, 0, m));
-    CHECK(c.run(now + 400, HmiCommandType::TechDecision, false, 0, m) && c.autoTuneStarts == 1);
-    // Web session ended before "yes": not started
-    CHECK(stage(MayapTech::Kind::AutoTune, {}, "req-tune3", c.config_));
-    CHECK(c.run(now + 500, HmiCommandType::TechRequestSubmit, true, 0, m));
-    c.run(now + 600, HmiCommandType::TechLock, true, 0, m);
-    CHECK(!c.run(now + 700, HmiCommandType::TechDecision, false, 1, m) && c.autoTuneStarts == 1);
+    CHECK(!c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "UNSUPPORTED" && c.runtime_.tech.pendingKind == 0);
   }
 
   // 11. Nothing changed => nothing is written; invalid PID is refused before any record; the same values never fill the history.

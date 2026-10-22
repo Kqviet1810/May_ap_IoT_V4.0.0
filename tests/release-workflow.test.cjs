@@ -22,7 +22,7 @@ test('release button: main only, green CI required, no overwrite of a tag, build
 test('a signed tag run does not publish the test artifacts, and the release steps stay tag-only', () => {
   const b = read('build-firmware.yml');
   assert.match(b, /name: Luu firmware test\n\s*if: \(github\.event_name == 'workflow_dispatch' && !startsWith\(github\.ref, 'refs\/tags\/'\)\)/);
-  assert.match(b, /Luu firmware Smart ON[^\n]*\n\s*if: github\.event_name == 'workflow_dispatch' && !startsWith\(github\.ref, 'refs\/tags\/'\)/);
+  assert.doesNotMatch(b, /SMART-ON-TEST-ONLY|MAYAP_SMART_THERMAL/, 'Thermal Control V2.0.0: no Smart Thermal build variants');
   for (const step of ['Ky so firmware', 'Tao GitHub Release']) {
     const i = b.indexOf('- name: ' + step);
     assert.match(b.slice(i, i + 200), /if: startsWith\(github\.ref, 'refs\/tags\/'\)/, step);

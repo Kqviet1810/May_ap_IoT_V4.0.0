@@ -93,7 +93,6 @@ static void techTests(){
  // hidden: every technical entry is refused before anything is staged or queued
  reset();techState(false,false);
  { JsonDocument d=techCommand("tech_request");d["kind"]="config";d["fields"]["kp"]=9.0;handleCommandMessage(d);assert(acks.back()=="rejected");assert(commandCount==0);MayapTech::Staged s;assert(!MayapTech::take(s)); }
- { JsonDocument d=techCommand("autotune_start");handleCommandMessage(d);assert(acks.back()=="rejected"&&commandCount==0);MayapTech::Staged s;assert(!MayapTech::take(s)); }
  // permission ON but Web not unlocked: still refused
  reset();techState(true,false);
  { JsonDocument d=techCommand("tech_request");d["kind"]="config";d["fields"]["kp"]=9.0;handleCommandMessage(d);assert(acks.back()=="rejected"&&commandCount==0); }
@@ -116,11 +115,10 @@ static void techTests(){
    if(variant==0)d["fields"]["kp"]=500.0;else if(variant==1)d["fields"]["notAField"]=1;else if(variant==2)d["fields"]["kp"]="9";
    else if(variant==3)d["fields"]["maxHeaterPower"]=70.5;else d["kind"]="bogus";
    handleCommandMessage(d);assert(acks.back()=="invalid"&&commandCount==0);MayapTech::Staged s;assert(!MayapTech::take(s)); }
- // a legacy autotune_start is only a request now
+ // Thermal Control V2.0.0: the Auto Tune is gone. Neither the old action nor the old request kind parks or queues anything.
  reset();techState(true,true);
- { JsonDocument d=techCommand("autotune_start");handleCommandMessage(d);assert(acks.back()=="accepted"&&commandCount==1);
-   assert(lastQueued().type==HmiCommandType::TechRequestSubmit&&lastQueued().type!=HmiCommandType::AutoTuneStart);
-   MayapTech::Staged s;assert(MayapTech::take(s)&&s.kind==MayapTech::Kind::AutoTune); }
+ { JsonDocument d=techCommand("autotune_start");handleCommandMessage(d);assert(acks.back()=="unsupported"&&commandCount==0);MayapTech::Staged s;assert(!MayapTech::take(s)); }
+ { JsonDocument d=techCommand("tech_request");d["kind"]="autotune";handleCommandMessage(d);assert(acks.back()=="invalid"&&commandCount==0);MayapTech::Staged s;assert(!MayapTech::take(s)); }
  // saturation: a full tracker / full queue leaves nothing parked
  reset();techState(true,true);for(auto &p:pendingCommands)p.used=true;
  { JsonDocument d=techCommand("tech_request");d["kind"]="config";d["fields"]["kp"]=9.0;handleCommandMessage(d);assert(acks.back()=="busy");MayapTech::Staged s;assert(!MayapTech::take(s)); }

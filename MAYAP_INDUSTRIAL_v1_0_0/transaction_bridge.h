@@ -448,16 +448,6 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
   r["sirenOn"] = rt.sirenOn;
   r["turnState"] = static_cast<uint8_t>(rt.turnState);
   r["nextTurnMinutes"] = rt.nextTurnMinutes;
-  r["autoTuneState"] = static_cast<uint8_t>(rt.autoTuneState);
-  r["autoTuneProgress"] = rt.autoTuneProgress;
-  JsonObject adapt=r["adaptiveThermal"].to<JsonObject>();
-  adapt["enabled"]=rt.adaptiveEnabled;adapt["state"]=rt.adaptiveState;
-  adapt["confidence"]=rt.adaptiveConfidence;adapt["loadIndex"]=rt.adaptiveLoadIndex;
-  adapt["coastRiseC"]=rt.adaptiveCoastRiseC;adapt["coastTimeSec"]=rt.adaptiveCoastTimeSec;
-  adapt["holdPowerPct"]=rt.adaptiveHoldPowerPct;adapt["effectiveMaxPowerPct"]=rt.effectiveMaxPowerPct;
-  adapt["approachBandC"]=rt.adaptiveApproachBandC;adapt["selfHeating"]=rt.adaptiveSelfHeating;
-  adapt["coolingDemand"]=rt.adaptiveCoolingDemand;adapt["validWindows"]=rt.observerValidWindows;
-  adapt["reason"]=rt.lastAdaptiveReason;
   r["resumeConfirmationRequired"] = rt.resumeConfirmationRequired;
   r["batchOverdueConfirmationPending"] = rt.batchOverdueConfirmationPending;
   // Danh sach loi dang active, da sap xep theo displayPriority giam dan boi
@@ -476,7 +466,7 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
   tech["sessionS"] = rt.tech.webSessionRemainingS;
   tech["lockS"] = rt.tech.lockRemainingS;
   tech["pinSet"] = rt.tech.pinSet;
-  tech["pending"] = rt.tech.pendingKind;          // 0 none, 1 config, 2 Smart AutoTune: waiting for the HMI
+  tech["pending"] = rt.tech.pendingKind;          // 0 none, 1 config: waiting for the HMI
   tech["pendingS"] = rt.tech.pendingRemainingS;
   tech["result"] = static_cast<uint8_t>(rt.tech.resultState);
   {
@@ -484,28 +474,13 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
     MayapTech::readDetail(detail);
     tech["resultId"] = detail.resultId;
   }
-  // Smart AutoTune progress for the Web: stage, result and the reason a candidate was refused (names are resolved by the Web).
-  r["autoTunePhase"] = rt.autoTunePhase;
-  r["autoTuneReason"] = rt.autoTuneReason;
-  r["autoTuneRejection"] = rt.autoTuneRejection;
-  // PID monitor numbers only while a Web client asked for them (lease flag "mon"): one extra ~200 B object at the lease cadence.
+  // Heater monitor numbers only while a Web client asked for them (lease flag "mon"): one small extra object at the lease cadence.
   if (monitorWanted(millis())) {
     JsonObject m = r["pidMon"].to<JsonObject>();
     m["sp"] = rt.temperature + rt.pidMon.error;      // error = SP - PV
     m["err"] = rt.pidMon.error;
-    m["corr"] = rt.pidMon.pidCorrection;
-    m["hold"] = rt.pidMon.holdFf;
-    m["vent"] = rt.pidMon.ventFf;
-    m["lo"] = rt.pidMon.limitLo;
-    m["hi"] = rt.pidMon.limitHi;
     m["req"] = rt.pidMon.requestPct;
     m["act"] = rt.pidMon.actualAvgPct;
-    m["conf"] = rt.thermalConfidence;
-    m["gain"] = rt.thermalGain;
-    m["delay"] = rt.thermalDelaySec;
-    m["coast"] = rt.thermalCoastC;
-    m["holdPct"] = rt.thermalHoldPct;
-    m["ventGain"] = rt.thermalVentGain;
     m["valid"] = rt.pidMon.valid;
   }
   return publishJson("snapshot", doc, false);
@@ -733,8 +708,6 @@ inline HmiCommandType mapCommandAction(const char *action) {
   if (!strcmp(action, "batch_stop")) return HmiCommandType::BatchStop;
   if (!strcmp(action, "resume_yes")) return HmiCommandType::ResumeYes;
   if (!strcmp(action, "resume_no")) return HmiCommandType::ResumeNo;
-  if (!strcmp(action, "autotune_start")) return HmiCommandType::AutoTuneStart;
-  if (!strcmp(action, "autotune_cancel")) return HmiCommandType::AutoTuneCancel;
   // Technical access: the PIN is verified on the ESP32 (shared with the HMI); a request only PARKS values until the HMI answers Yes/No.
   if (!strcmp(action, "tech_unlock")) return HmiCommandType::TechPinVerify;
   if (!strcmp(action, "tech_lock")) return HmiCommandType::TechLock;
@@ -924,14 +897,14 @@ inline void handleCommandMessage(const JsonDocument &doc) {
 
   // ---- technical access (PIN / PID engineering) -------------------------------------------------------------------------
   // The Web never applies anything here. tech_unlock sends the PIN digits to the ESP32 (verified there, shared with the HMI, one
-  // lock-out counter); tech_request / autotune_start only PARK the values until the HMI answers Yes/No (60 s). The ESP32 re-checks
+  // lock-out counter); tech_request only PARKS the values until the HMI answers Yes/No (60 s). The ESP32 re-checks
   // permission, session and every safety condition again when the request is parked and when the HMI says Yes.
   uint32_t techParam = 0U;
   if (type == HmiCommandType::TechPinVerify) {
     const char *pin = doc["pin"] | "";
     if (!TechAccess::pinFormatValid(pin)) { publishAck(requestId, "invalid", "INVALID_PIN"); return; }
     techParam = static_cast<uint32_t>((pin[0] - '0') * 1000 + (pin[1] - '0') * 100 + (pin[2] - '0') * 10 + (pin[3] - '0'));
-  } else if (type == HmiCommandType::AutoTuneStart || type == HmiCommandType::TechRequestSubmit) {
+  } else if (type == HmiCommandType::TechRequestSubmit) {
     // Early, cheap refusal from the mirrored state (the control task decides again): hidden / not unlocked Web never parks anything.
     bool allowed = false, session = false, haveRuntime = false;
     AdvancedHistory::Snapshot known;
@@ -944,14 +917,12 @@ inline void handleCommandMessage(const JsonDocument &doc) {
     portEXIT_CRITICAL(&realtimeMux);
     if (!haveRuntime || !allowed) { publishAck(requestId, "rejected", "WEB_HIDDEN"); return; }
     if (!session) { publishAck(requestId, "rejected", "WEB_LOCKED"); return; }
-    MayapTech::Kind kind = MayapTech::Kind::AutoTune;
+    MayapTech::Kind kind = MayapTech::Kind::Config;
     uint16_t mask = 0U;
     AdvancedHistory::Snapshot values = known;
-    if (type == HmiCommandType::TechRequestSubmit) {
+    {
       const char *kindText = doc["kind"] | "";
-      if (!strcmp(kindText, "autotune")) {
-        kind = MayapTech::Kind::AutoTune;
-      } else if (!strcmp(kindText, "config")) {
+      if (!strcmp(kindText, "config")) {
         kind = MayapTech::Kind::Config;
         if (!haveConfig) { publishAck(requestId, "invalid", "CHUA CO CAU HINH GOC"); return; }
         JsonVariantConst fieldsVar = doc["fields"];
@@ -976,7 +947,6 @@ inline void handleCommandMessage(const JsonDocument &doc) {
       }
     }
     if (!MayapTech::stage(kind, mask, values, requestId)) { publishAck(requestId, "busy", "TECH_BUSY"); return; }
-    type = HmiCommandType::TechRequestSubmit;     // a legacy autotune_start is now just a request too
   }
 
   // Rollback thay doi firmware dang boot. Kenh realtime hien dung credential
@@ -1001,8 +971,7 @@ inline void handleCommandMessage(const JsonDocument &doc) {
   }
 
   uint32_t commandId = 0U;
-  const uint16_t validForMs = type == HmiCommandType::AutoTuneStart
-      ? COMMAND_AUTOTUNE_VALID_MS : COMMAND_DEFAULT_VALID_MS;
+  const uint16_t validForMs = COMMAND_DEFAULT_VALID_MS;
   // F-09: danh dau lenh nay den tu realtime (tu xa) - AlarmAck se tu choi rieng
   // 2 hanh dong can xac nhan vat ly (xoa loi dao/tat coi khan cap) neu nguon
   // la Remote, xem case HmiCommandType::AlarmAck trong processHmiTransactions().

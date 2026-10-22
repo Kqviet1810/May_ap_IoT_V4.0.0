@@ -33,12 +33,13 @@ test('MQTT bypass: config/set can never change a technical field (checked before
   assert.match(body(machine, 'void processHmiTransactions('), /saveAllowed = !safetySaveBlocked && !techLocked/);
 });
 
-test('MQTT bypass: a remote autotune_start / PIN set / permission / decision / restore never executes', () => {
+test('MQTT bypass: a remote PIN set / permission / decision / restore never executes; autotune_start no longer exists', () => {
   const mapper = body(bridge, 'inline HmiCommandType mapCommandAction(');
   for (const hmiOnly of ['tech_pin_set', 'tech_web_set', 'tech_decision', 'advanced_restore', 'tech_restore'])
     assert.doesNotMatch(mapper, new RegExp(hmiOnly), `${hmiOnly} must not be reachable from the Web`);
   const process = body(machine, 'void processHmiTransactions(');
-  assert.match(process, /case HmiCommandType::AutoTuneStart:\s*\/\/[^\n]*\n\s*if \(command\.source == HmiCommandSource::Remote\) \{ message = "TECH_VIA_HMI_APPROVAL"; break; \}/);
+  assert.doesNotMatch(mapper, /autotune_start|autotune_cancel/, 'Thermal Control V2.0.0: the Web has no Auto Tune action');
+  assert.match(process, /case HmiCommandType::AutoTuneStart:\s*case HmiCommandType::AutoTuneCancel:\s*message = "AUTO TUNE DA GO BO"; break;/);
   const tech = body(machine, 'bool handleTechCommand(');
   for (const kind of ['TechPinSet', 'TechWebSet', 'TechDecision', 'AdvancedRestore'])
     assert.match(tech.slice(tech.indexOf(`case HmiCommandType::${kind}:`), tech.indexOf(`case HmiCommandType::${kind}:`) + 260), /if \(remote\)/, kind);
@@ -47,7 +48,7 @@ test('MQTT bypass: a remote autotune_start / PIN set / permission / decision / r
 
 test('Web request is only parked; every safety condition is re-checked when the HMI says yes', () => {
   const submit = body(machine, 'bool submitTechRequest(');
-  assert.doesNotMatch(submit, /saveConfig|applyAdvancedSnapshot|startAutoTune/);
+  assert.doesNotMatch(submit, /saveConfig|applyAdvancedSnapshot/);
   const execute = body(machine, 'bool executeTechPending(');
   assert.match(execute, /RequestTtlMs|timeReached\(now, request\.deadline\)/);
   assert.match(execute, /webAllowed\(\) \|\| !techGate_\.webSessionActive\(now\)/);

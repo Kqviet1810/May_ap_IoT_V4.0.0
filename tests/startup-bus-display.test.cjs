@@ -13,7 +13,7 @@ test('startup permission follows a non-splash LCD transfer and successful presen
   assert.match(render, /if \(!startupFrameOk\)[\s\S]*?return;/);
   assert.match(render, /startupFrameOk = splashActive \|\| mayapBootOperationsReady\(\) \|\|\s*probeLcdUnlocked\(\)/);
   const machine = read(dir + 'machine_control.h');
-  for (const action of ['startBatch', 'startAutoTune', 'enterTestMode'])
+  for (const action of ['startBatch', 'enterTestMode'])
     assert.match(machine, new RegExp(`bool ${action}\\([^)]*\\) \\{\\s*if \\(!mayapBootOperationsReady\\(\\)\\)`));
   assert.match(machine, /mayapApplyStartupOutputPolicy\(request, mayapBootOperationsReady\(\)/);
   assert.match(machine, /const bool operationsReady = mayapBootOperationsReady\(\);[\s\S]*?if \(operationsReady\) \{[\s\S]*?processResume\(now\);[\s\S]*?updateTurning\(now\);/);

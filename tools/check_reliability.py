@@ -243,7 +243,7 @@ require(security, "handleSecureRegister", "security register gate")
 require(wrapper, "return worker.fetch(request, env, ctx);", "delegate to security wrapper")
 
 # Thermal final-hardening tripwires.
-require(machine, "autotune_.running() || testModeActive_", "High/Emergency stay active during heater Test Mode")
+require(machine, "batchRunning_ ||\n                                    testModeActive_", "High/Emergency stay active during heater Test Mode")
 require_re(
     machine,
     r'\{FaultCode::HighTemperature,\s*FaultSeverity::Stop,.*?false,\s*true,\s*true,\s*true,\s*true,\s*true,\s*"TEMP HIGH"\}',

@@ -2,7 +2,6 @@
 #include "thermal-fixture.h"
 #include <deque>
 #include <cstddef>
-#include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_control.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/heater_burst_scheduler.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/startup_output_policy.h"
 static uint32_t clockMs=0;

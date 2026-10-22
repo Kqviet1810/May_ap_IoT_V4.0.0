@@ -191,9 +191,8 @@ test('viewer cannot change devices via API',async()=>{
 });
 test('protected EEPROM, thermal and ATtiny sources match the V3 baseline',()=>{
   const {execFileSync}=require('node:child_process');
-  // thermal_control.h was intentionally changed by Adaptive Thermal Control V1 (optional Assist/StartupHint
-  // inputs; default == legacy). It stays pinned by tests/runtime-preservation.json (reviewed 2026-10-07)
-  // and by tests/thermal-adaptive-unit.cpp, so it is no longer required to be byte-identical to V3.
+  // thermal_control.h was deleted by Thermal Control V2.0.0 (see tests/runtime-preservation.json review note); the EEPROM history and
+  // ATtiny bus sources below stay byte-identical to V3.
   for(const file of ['history_store.h','attiny_bus.h']){
     const source=`MAYAP_INDUSTRIAL_v1_0_0/${file}`;
     assert.equal(fs.readFileSync(source,'utf8').replace(/\r\n/g,'\n'),
