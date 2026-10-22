@@ -65,12 +65,12 @@ Nhánh `thermal-control-v2.0.0`, cắt từ `main` (e8b557e, firmware 1.1.15). P
 
 | Build | Chỉ tiêu | Trước (main e8b557e) | Sau (nhánh V2) | Chênh |
 |---|---|---:|---:|---:|
-| DEV (có lệnh serial chẩn đoán) | RAM tĩnh (Global variables) | 167 224 B | _điền sau CI_ | |
-| DEV | Flash (Sketch) | 1 479 529 B | _điền sau CI_ | |
-| PROD | RAM tĩnh | 166 304 B | _điền sau CI_ | |
-| PROD | Flash | 1 445 025 B | _điền sau CI_ | |
+| DEV (có lệnh serial chẩn đoán) | RAM tĩnh (Global variables) | 167 224 B | 156 464 B | −10 760 B (−6,4 %) |
+| DEV | Flash (Sketch) | 1 479 529 B | 1 396 485 B | −83 044 B (−5,6 %) |
+| PROD | RAM tĩnh | 166 304 B | 155 544 B | −10 760 B |
+| PROD | Flash | 1 445 025 B | 1 369 109 B | −75 916 B |
 
-Ngưỡng CI: Flash ≤ 1 480 000 B, RAM tĩnh ≤ 167 500 B (trước khi xoá DEV chỉ còn 471 B dư Flash và 276 B dư RAM). RAM tĩnh là phần cố định lúc biên dịch; RAM heap còn lại lúc chạy phải đo trên lò thật (không đo được ở CI).
+Dư sau khi xoá (DEV): Flash 83 515 B, RAM tĩnh 11 036 B; RAM còn cho biến cục bộ/heap 171 216 B (trước: 160 456 B). Ngưỡng CI: Flash ≤ 1 480 000 B, RAM tĩnh ≤ 167 500 B (trước khi xoá DEV chỉ còn 471 B dư Flash và 276 B dư RAM). RAM tĩnh là phần cố định lúc biên dịch; RAM heap còn lại lúc chạy phải đo trên lò thật (không đo được ở CI).
 
 ## 5. Kiểm tra sau khi xoá
 
