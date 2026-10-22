@@ -58,7 +58,7 @@ constexpr uint8_t HEATER_GROUP_COUNT = 1;
 enum class TurnPhase { Idle, MovingLeft, MovingRight };
 
 namespace v2 {
-inline double g_truthDemandPct = 0;
+static double g_truthDemandPct = 0;
 
 // ------------------------------------------------------------------------------------------------------------------------------------------
 // Plant: two thermal nodes (air+steel Cf, eggs Ce) coupled by hA, loss UA to ambient, transport delay td and first-order lag tl on the heater
