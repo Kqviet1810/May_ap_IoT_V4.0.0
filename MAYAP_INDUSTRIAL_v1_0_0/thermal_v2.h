@@ -66,7 +66,7 @@ constexpr uint8_t TD_N = 25;               // (260-20)/10 + 1
 constexpr uint8_t BATCH_MIN_POINTS = 40;
 constexpr uint8_t BATCH_GUARD_POINTS = 12;  // newest points pushed while a batch runs overwrite this many of the oldest: they are not used
 // ---- law ----
-constexpr bool EGG_OBSERVER = false;
+constexpr bool EGG_OBSERVER_FINE = false;   // the egg observer needs a slope that is not a 0.1 degC staircase: it runs only when the sensor step is <= 0.02
 constexpr bool RLS_NEEDS_BATCH = false;
 constexpr float TAUI_FACTOR = 6.0f;        // tau_I = factor * theta (SIMC: 4*(tau_c+theta) = 12 theta; 6 after the sweep on set A)
 constexpr float ASYM = 3.0f;               // gain above SP relative to below (G0: 2)
@@ -170,6 +170,7 @@ class Controller {
     const bool pvOk = std::isfinite(in.pv) && in.pv > PV_MIN_C && in.pv < PV_MAX_C;
     const bool spOk = std::isfinite(in.sp) && in.sp > SP_MIN_C && in.sp < SP_MAX_C;
     const float dQ = (std::isfinite(in.dQ) && in.dQ >= 0.001f && in.dQ <= 1.0f) ? in.dQ : 0.1f;
+    fineSensor_ = dQ <= 0.02f;
     if (pvOk) pvBadS_ = 0.0f; else pvBadS_ += dt;
     advanceClock(in, dt);
     if (!in.permit && lostS_ > GAP_KEEP_S) batchActive_ = false;   // a long loss of permit: the history is not a fit window
@@ -357,7 +358,7 @@ class Controller {
   // 60 s slope against the model is turned into a correction of Te: slope has +ce*Te, so a slope lower than predicted means colder eggs than modelled.
   // It runs only where the innovation does not depend on an uncertain k: after the first batch fit, or while (almost) no heater power arrives.
   void eggObserver() {
-    if (!EGG_OBSERVER || batchActive_ || ringCount_ < SLOPE_N || !haveSample_) return;
+    if (!EGG_OBSERVER_FINE || !fineSensor_ || batchActive_ || ringCount_ < SLOPE_N || !haveSample_) return;
     const uint8_t n = SLOPE_N; float sx = 0, sy = 0, sxx = 0, sxy = 0, pa = 0, pvm = 0;
     for (uint8_t i = 0; i < n; ++i) {
       const float t = i * 10.0f, y = pvRing_[RING_N - n + i];
@@ -580,7 +581,7 @@ class Controller {
   }
 
   float idPower_ = 100.0f, idT0_ = 0, idPv0_ = 0, idTTheta_ = 0;
-  bool idDone_ = false; uint8_t idPhase_ = 0, rlsHold_ = 0;
+  bool fineSensor_ = false; bool idDone_ = false; uint8_t idPhase_ = 0, rlsHold_ = 0;
   uint8_t binU_[BIN_N];
   float pvH_[HIST_N], teH_[3][HIST_N], bla_[HIST_N], bx_[HIST_N][NP + 1], teJ_[3];
   bool histOk_[HIST_N];

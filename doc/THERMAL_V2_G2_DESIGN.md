@@ -69,3 +69,9 @@ Chưa đạt: R2.over 54/84, R3.band01.cold 19/48, R3.band01.warm 7/12, R3.band0
 
 ## 8. Việc đo ở G5
 `CPU.slot` ≤ 2 ms trên ESP32-S3: ước tính theo số phép tính, mỗi lần gọi ≤ ~0,5 ms (một ứng viên batch = 3 lần gọi: dựng lại đường heater ~960 bước float; hàng hồi quy + phương trình chuẩn; giải 5×5 double). Phải đo thật bằng `esp_timer` ở G5.
+
+## 9. G3b — độ phân giải cảm biến và bộ quan sát trứng (mô phỏng)
+- Cảm biến thật: mô-đun SHT485 (SHT30 qua RS485), firmware hỗ trợ X10 (0,1 °C) và X100 (0,01 °C), chọn ở HMI "DPG cam bien" hoặc tự nhận dạng. Repo không cho biết mô-đun thật đang xuất định dạng nào ⇒ phải đọc trên máy (xem báo cáo G3b). Bộ lọc trung vị-3 + IIR 3/8 làm mịn dưới bậc cảm biến.
+- Chạy tập A với bậc 0,01 (`V2_DQ=0.01`): R2.over 64/84, R3.band01 lạnh 25/48, ấm 9/12, R7.settle 12/12, bốn cổng an toàn 132/132; R5.door 9/12 (kém hơn 12/12 ở bậc 0,1). Số liệu: `tools/thermal-v2/g3b_dq001_results.txt`. ⇒ Độ phân giải giải thích phần nhỏ; phần lớn sai lệch là động học khay trứng/quạt vent và mô hình trứng (ha, Te) nhận dạng yếu.
+- Thử trong G3b (đều trên tập A, hai độ phân giải, đo lại toàn lưới): neo mức nhanh hơn/rộng hơn (LEVEL_GAIN 0,10; LEVEL_FLAT_C 0,30), giữ bộ học khi innovation cùng dấu liên tiếp, trần mềm ở đường vent: không có cải thiện rõ hoặc xấu hơn ⇒ bỏ.
+- Bộ quan sát trứng chỉ bật khi dQ ≤ 0,02 (`EGG_OBSERVER_FINE`): bậc 0,01 cho R2.over 74/84, band01 lạnh 32/48, R5.door 11/12, nhưng GATE.high 131/132 (A10/S5b, đỉnh 38,315 °C trong 181 s, không Emergency). Thử giảm hệ số, giảm bước, bỏ trong chế độ xa: cổng High vẫn 130–131/132. Giữ **tắt** (`false`) vì cổng High là cổng cứng; chờ quyết định của chủ dự án.
