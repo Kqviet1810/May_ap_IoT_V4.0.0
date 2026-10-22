@@ -67,7 +67,11 @@ class Sim {
       if (k == static_cast<unsigned>(s_.eventAt / dt)) {
         if (s_.door != 0) Ta += s_.door;
         if (s_.trayFrac > 0) Te -= s_.trayFrac * (Te - s_.trayTemp);
-        if (s_.spStep != 0) rig.config_.targetTemp += static_cast<float>(s_.spStep);
+        if (s_.spStep != 0) {            // the HMI / production shift the whole alarm envelope with the target (machine_control.h legacyDefaultEnvelope, hmi.h)
+          const float d = static_cast<float>(s_.spStep);
+          rig.config_.targetTemp += d; rig.config_.lowTempAlarm += d; rig.config_.highTempAlarm += d; rig.config_.emergencyTemp += d;
+          rig.config_.ventOnTemp += d; rig.config_.ventOffTemp += d;
+        }
       }
       pathLost = s_.permitLossAt >= 0 && t >= s_.permitLossAt && t < s_.permitLossAt + s_.permitLossFor;
       // S7 is only meaningful where the oven CAN reject the embryo heat: cap it at 60 % of the loss capacity at the end ambient (documented in acceptance.json)
@@ -126,7 +130,7 @@ class Sim {
       m.energy_kWh += delivered * dt / 3.6e6;
       // ---- 1 Hz records ----
       if ((k % 10U) == 0U) {
-        airTrace.push_back(static_cast<float>(Ta + p_.sensorOffset)); sensTrace.push_back(rig.temperature_);   // scored in the frame the owner sees; High/Emergency below use TRUE air
+        airTrace.push_back(static_cast<float>(Ta)); sensTrace.push_back(rig.temperature_);   // scored on the TRUE air (acceptance.json); a calibration offset (set C8) is the controller's job through config tempOffset
         const bool hi = Ta >= rig.config_.highTempAlarm, em = Ta >= rig.config_.emergencyTemp;
         if (hi) { m.sec_high += 1; if (!prevHigh) ++m.high_samples; }
         if (em) { m.sec_emergency += 1; if (!prevEmerg) ++m.emergency_samples; }

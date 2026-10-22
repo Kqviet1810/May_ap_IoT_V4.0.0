@@ -110,7 +110,9 @@ def grade(rows, refs, acc):
                 if ref is None or ref <= 0: put(cid + '.NOREF', False, case); continue
                 lim = c['max_vs_physical']['factor'] * ref + c['max_vs_physical']['add_s']
                 put(cid, f(r, 'recov_s') >= 0 and f(r, 'recov_s') <= lim, case)
-            elif m == 'over_c': put(cid, f(r, 'over_c') <= c['max'], case)
+            elif m == 'over_c':
+                put(cid, f(r, 'over_c') <= c['max'], case)
+                if 'settle_0p1_s_max' in c: put(cid + '.settle', 0 <= f(r, 'settle_0p1_s') <= c['settle_0p1_s_max'], case)
             elif m == 'under_c': put(cid, f(r, 'under_c') >= c['min'], case)
             elif m == 'high_samples': put(cid, int(r['high_samples']) <= c['max'], case)
             elif m == 'settle_0p3_s': put(cid, 0 <= f(r, 'settle_0p3_s') <= c['max'], case)
@@ -119,6 +121,7 @@ def grade(rows, refs, acc):
             elif m == 'tail_in_0p3_pct': put(cid, f(r, 'tail03') >= c['min'], case)
             elif m == 'unsafe_command_ticks': put(cid, int(r['unsafe_ticks']) <= c['max'], case)
         put('GATE.emergency', int(r['emergency_samples']) == 0, case)
+        put('GATE.high', int(r['high_samples']) == 0, case)
         put('GATE.e115', int(r['e115']) == 0, case)
         put('GATE.unsafe', int(r['unsafe_ticks']) == 0, case)
     return res
