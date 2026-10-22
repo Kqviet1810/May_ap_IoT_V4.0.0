@@ -58,7 +58,10 @@ constexpr float Prior::sd[NP];
 constexpr float Prior::lo[NP];
 constexpr float Prior::hi[NP];
 
-enum class State : uint8_t { Off = 0, Learning = 1, Active = 2, Fallback = 3 };
+// Learning: no trusted model yet (the launch controller of the machine drives). Active: the planner drives. Degraded (value 3): the model is not
+// trusted for planning any more, but THIS controller still drives with a robust PI built on the hold power of the model; the legacy PID never
+// takes power back once a batch has been under this controller.
+enum class State : uint8_t { Off = 0, Learning = 1, Active = 2, Degraded = 3 };
 
 struct Telemetry {
   State state = State::Off;
@@ -535,7 +538,7 @@ class Controller {
     hist_.reset(); ident_.reset(stored);
     stored_ = stored; started_ = false; binStartMs_ = 0; onMs_ = 0; elapsedMs_ = 0; pvSum_ = 0; pvN_ = 0; ventSum_ = 0;
     lastPv_ = NAN; hl_ = 0; request_ = 0; cooling_ = false; state_ = enabled_ ? State::Learning : State::Off;
-    fallbackUntilBin_ = 0; healthyBins_ = 0; badBins_ = 0; plan_ = PlanChoice{}; planner_ = Planner{}; planStartBin_ = 0; pendingStartBin_ = -1000;
+    healthyBins_ = 0; degStart_ = false; iDeg_ = 0.0f; det_ = 1.0f; osc_ = 0; lastSign_ = 0; ampSince_ = 0.0f; lastCrossMs_ = 0; badBins_ = 0; plan_ = PlanChoice{}; planner_ = Planner{}; planStartBin_ = 0; pendingStartBin_ = -1000;
     readySince_ = 0; model_ = stored.valid ? stored.m : Model{}; modelOk_ = false; sensorGapMs_ = 0; firstHeatBin_ = -1; lastSampleMs_ = 0;
     planOnTop_ = false; trim_ = 0.0f; lastUpdateMs_ = 0; coolUntilMs_ = 0; slopeValid_ = false; slope_ = 0.0f; needMove_ = false; lastPinned_ = false; lastJudgedBin_ = 0;
   }
@@ -597,7 +600,7 @@ class Controller {
     if (unhealthy) lastWhy_ = why;
     const bool newBin = bins != lastJudgedBin_;     // the verdict advances once per 10 s bin, whatever the sensor rate
     lastJudgedBin_ = bins;
-    if (state_ == State::Learning) {
+    if (state_ == State::Learning || state_ == State::Degraded) {
       // The model must have been checked against a real move of the heater inside its window (a quiet hold cannot tell one oven from another:
       // plants agree in steady state and differ only in how they answer a change of power), and after a stand-down against a recent one
       if (modelOk_ && !unhealthy && heaterSwing_(bins, static_cast<uint32_t>(HistBins)) >= ProbeSwingPct && (!needMove_ || heaterSwing_(bins, 90U) >= ProbeSwingPct)) { needMove_ = false; state_ = State::Active; readySince_ = bins; badBins_ = 0; trim_ = 0.0f; }
@@ -608,11 +611,9 @@ class Controller {
         if (untrusted && !unhealthy) lastWhy_ = 5;
         badBins_ = (unhealthy || untrusted) ? badBins_ + (unhealthy && (ident_.recentRms() > SevereMiss || ident_.recentPeak() > SeverePeak) ? BadBinsToFallback : 1U) : 0U;
       }
-      if (badBins_ >= BadBinsToFallback) { state_ = State::Fallback; fallbackUntilBin_ = bins + 120U; badBins_ = 0; needMove_ = true; }
-    } else if (state_ == State::Fallback) {
-      if (bins >= fallbackUntilBin_) state_ = State::Learning;
+      if (badBins_ >= BadBinsToFallback) { state_ = State::Degraded; badBins_ = 0; needMove_ = true; degStart_ = true; }
     }
-    if (state_ != State::Active) { request_ = 0.0f; cooling_ = false; return; }
+    if (state_ != State::Active && state_ != State::Degraded) { request_ = 0.0f; cooling_ = false; return; }
     // proposal ------------------------------------------------------------------------------------------------------------------
     const float limit = clampf(in.limitPct, 0.0f, 100.0f);
     const float vent = fmaxf(in.ventOn ? 1.0f : 0.0f, in.vent.at(model_.dead));   // the fan the heater power sent now will meet
@@ -626,6 +627,7 @@ class Controller {
     lastUpdateMs_ = in.now;
     const float err = in.sp - st.ta;
     const float theta = model_.dead + model_.tau;
+    if (state_ == State::Degraded) { degradedStep_(in, st, err, theta, limit, dtSec); return; }
     // Integral gain of the SIMC rule: Ti = tau1 with tau1 = cf / (a + k) the air's own time constant, Kc = cf / tau_c with tau_c >= 2 theta
     // -> ki = Kc / Ti = (a + k) / tau_c; the planner's own pull uses tau_c = 2 theta at least, so ki = (a + k) / (4 theta) keeps a 2x margin.
     const float ki = (model_.a + model_.k) / (4.0f * theta);
@@ -656,7 +658,8 @@ class Controller {
     lastPinned_ = request_ <= 0.0f || request_ >= limit;
   }
   State state() const { return state_; }
-  bool active() const { return enabled_ && state_ == State::Active; }
+  bool active() const { return enabled_ && (state_ == State::Active || state_ == State::Degraded); }       // drives the heater
+  bool planning() const { return enabled_ && state_ == State::Active; }
   float request() const { return request_; }
   float holdEstimate() const { return holdPct_; }       // the power the model says holds SP now (for a bumpless hand-back)
   bool coolingRequest() const { return cooling_; }
@@ -674,7 +677,7 @@ class Controller {
     return true;
   }
   bool wantsPlan() const {
-    return enabled_ && hist_.count() >= 24U && !planner_.running() && static_cast<int64_t>(hist_.count()) - pendingStartBin_ >= PlanDtSec / BinSec;
+    return enabled_ && state_ != State::Degraded && hist_.count() >= 24U && !planner_.running() && static_cast<int64_t>(hist_.count()) - pendingStartBin_ >= PlanDtSec / BinSec;
   }
   void beginPlan(const Inputs &in) {
     planner_.bind(reinterpret_cast<uint16_t *>(scratch_));
@@ -708,6 +711,37 @@ class Controller {
     st.te = clampf(ident_.endState().te, st.ta - 15.0f, st.ta + 3.0f); st.w = ident_.w0(); st.d = ident_.dEffective(); st.hl = ident_.endState().hl;
     (void)mhe;
     return st;
+  }
+  // Degraded: an own PI that does not trust the model beyond the steady-state gain. Bumpless from the last request, integrator in absolute %
+  // (the model's hold power is exactly what is wrong when we get here). The loop gain Kc*K is 0.6 (K = 1/(a+k)); Ti = max(3 (delay + lag), 300 s).
+  // Sustained oscillation (gain or delay wrong) detunes it by half each time, quiet time retunes it slowly: the same adaptive-on-oscillation idea
+  // as the vendors' controllers. No cut-back on the slope here: with a long transport delay a hard cut is itself the oscillator (relay + delay),
+  // so only a far-above-SP safety cut remains (High/Emergency layers sit below).
+  void degradedStep_(const Inputs &in, const Planner::State &st, float err, float theta, float limit, float dtSec) {
+    cooling_ = false;
+    const float K = 1.0f / fmaxf(model_.a + model_.k, 0.3f);
+    if (degStart_) {            // bumpless from the last request
+      degStart_ = false; det_ = 1.0f; osc_ = 0; lastSign_ = 0; ampSince_ = 0.0f;
+      iDeg_ = request_ - 0.6f * det_ / K * err;
+    }
+    const float Kc = 0.6f * det_ / K, Ti = fmaxf(3.0f * theta, 300.0f);
+    // oscillation monitor: error sign flips with a real amplitude
+    const int sign = err > 0.0f ? 1 : -1;
+    if (std::fabs(err) > ampSince_) ampSince_ = std::fabs(err);
+    if (sign != lastSign_ && lastSign_ != 0) {
+      if (ampSince_ > 0.25f) { if (in.now - lastCrossMs_ > 1200000U) osc_ = 0; ++osc_; lastCrossMs_ = in.now; if (osc_ >= 3) { det_ = fmaxf(0.15f, det_ * 0.5f); osc_ = 0; } }
+      ampSince_ = 0.0f;
+    }
+    lastSign_ = sign;
+    if (det_ < 1.0f) det_ = fminf(1.0f, det_ + 0.002f * dtSec / 60.0f);
+    float u = Kc * err + iDeg_;
+    const bool pinned = (u >= limit && err > 0.0f) || (u <= 0.0f && err < 0.0f);
+    if (!pinned) iDeg_ = clampf(iDeg_ + Kc / Ti * err * dtSec, 0.0f, limit);
+    u = Kc * err + iDeg_;
+    if (finitef(in.pv) && in.pv > in.sp + 0.6f) u = 0.0f;
+    request_ = clampf(u, 0.0f, limit);
+    lastPinned_ = request_ <= 0.0f || request_ >= limit;
+    (void)st;
   }
   void closeBin(uint32_t now) {
     const float frac = elapsedMs_ > 0U ? static_cast<float>(onMs_) / static_cast<float>(elapsedMs_) : 0.0f;
@@ -750,11 +784,14 @@ class Controller {
   Model model_;
   bool started_ = false, modelOk_ = false, planOnTop_ = false;
   uint32_t binStartMs_ = 0, lastTick_ = 0, onMs_ = 0, ventMs_ = 0, elapsedMs_ = 0, lastSampleMs_ = 0;
-  uint32_t fallbackUntilBin_ = 0, healthyBins_ = 0, badBins_ = 0, readySince_ = 0, sensorGapMs_ = 0;
+  uint32_t healthyBins_ = 0, badBins_ = 0, readySince_ = 0, sensorGapMs_ = 0;
   int64_t firstHeatBin_ = -1, planStartBin_ = 0, pendingStartBin_ = -1000;
   float holdPct_ = 0, pvSum_ = 0, lastPv_ = NAN, ventSum_ = 0, hl_ = 0, request_ = 0, trim_ = 0;
   uint32_t lastUpdateMs_ = 0, coolUntilMs_ = 0;
-  bool lastPinned_ = false, slopeValid_ = false, needMove_ = false;
+  bool lastPinned_ = false, slopeValid_ = false, needMove_ = false, degStart_ = false;
+  float iDeg_ = 0.0f, det_ = 1.0f, ampSince_ = 0.0f;
+  int osc_ = 0, lastSign_ = 0;
+  uint32_t lastCrossMs_ = 0;
   uint32_t slopeMs_ = 0;
   float slope_ = 0.0f, slopePv_ = 0.0f;
   static constexpr float OvershootKnee = 0.35f;

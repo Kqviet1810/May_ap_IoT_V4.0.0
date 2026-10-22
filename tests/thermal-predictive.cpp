@@ -44,7 +44,7 @@ static Result run(const Oven &o, int kind, double hours, bool fixedBadSensor = f
       duty = ctl.active() ? ctl.request() : std::fmin(40.0, std::fmax(0.0, 15.0 * (37.5 - sensed)));   // a plain P controller stands in for the legacy one
       if (!std::isfinite(duty) || duty < -1e-9 || duty > 100.0 + 1e-9) r.finite = false;
       if (ctl.active()) { if (r.activeAtS < 0) r.activeAtS = t; r.minReq = std::fmin(r.minReq, ctl.request()); r.maxReq = std::fmax(r.maxReq, ctl.request()); }
-      if (prev == State::Active && ctl.state() == State::Fallback) ++r.fallbacks;
+      if (prev == State::Active && ctl.state() == State::Degraded) ++r.fallbacks;
       prev = ctl.state();
       if (ctl.coolingRequest() || sensed >= 38.0) { ventOn = true; ventHold = t + 120; }
       else if (ventOn && t >= ventHold && sensed <= 37.6) ventOn = false;
