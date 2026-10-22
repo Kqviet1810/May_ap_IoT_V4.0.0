@@ -184,23 +184,26 @@ struct Rig {
     in.e115Frac = static_cast<float>(heaterStuckAccumOnMs_) / (static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f);
     in.dt = dt_;
     last_ = in; lastPermit_ = in.permit;
-    float u = ctl_ ? ctl_->step(in) : 0.0f;
-    if (!isfinite(u) || u < 0) u = 0;
-    lastUnclamped_ = u;
-    u = std::min(u, static_cast<float>(config_.maxHeaterPower));
-    lastCommand_ = u; return u;
+    // No clamp here on purpose: the cap / NaN / negative handling is the job of the production adapter (G2 puts it in machine_control.h).
+    const float u = ctl_ ? ctl_->step(in) : 0.0f;
+    lastUnclamped_ = u; lastCommand_ = u; return u;
   }
 #include "actual-heating.inc"
   void pathAccept(uint32_t now, float candidateTemp, bool frameValid) {
 #include "actual-sensor-accept.inc"
   }
-  void pathUsable() {
+  void pathUsable(uint32_t now) {
+    const bool wasUsable = sensorUsable_;
 #include "actual-sensor-usable.inc"
+    if (wasUsable != sensorUsable_) {      // production processSensor(): checked verbatim by make_includes.py
+      heatRestartNotBefore_ = now + HEAT_RESTART_LOCKOUT_MS;
+      if (!sensorUsable_) postCoolUntil_ = now + POST_COOL_MS;
+    }
   }
   void pathAlarms(uint32_t now) {
 #include "actual-safety-alarm.inc"
-    (void)wasHigh; (void)wasEmergency;
 #include "actual-vent-temp.inc"
+#include "actual-alarm-edges.inc"
   }
   void pathEvidence(uint32_t now) {
 #include "actual-heater-evidence.inc"

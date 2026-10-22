@@ -72,7 +72,8 @@ def git(*a): return subprocess.run(['git', '-C', str(ROOT)] + list(a), capture_o
 
 def held_out_guard(sets, ctl, spec):
     if not (set(sets) & {'B', 'C'}): return
-    dirty = [l for l in git('status', '--porcelain', '--untracked-files=no').splitlines() if l.strip()]
+    dirty = [l for l in git('status', '--porcelain', '--untracked-files=all', '--', 'tools/thermal-v2', 'tools/thermal-research', 'MAYAP_INDUSTRIAL_v1_0_0').splitlines() if l.strip() and 'bc_runs.log' not in l]
+    if CTL_SRC.exists() and not git('ls-files', str(CTL_SRC)): sys.exit('REFUSED: thermal_v2.h is not tracked by git')
     if dirty: sys.exit('REFUSED: sets B/C only run on a clean tree (commit first). Dirty: ' + '; '.join(dirty[:6]))
     sha = hashlib.sha256(CTL_SRC.read_bytes()).hexdigest() if CTL_SRC.exists() else 'none'
     head = git('rev-parse', 'HEAD')
@@ -100,12 +101,12 @@ def grade(rows, refs, acc):
             if 'scn' not in c or sid not in c['scn'] and base not in c['scn']: continue
             m = c['metric']; cid = c['id']
             if m == 'reach_s' and 'max_vs_fastest' in c:
-                if ref is None or ref <= 0: continue
+                if ref is None or ref <= 0: put(cid + '.NOREF', False, case); continue
                 lim = c['max_vs_fastest']['factor'] * ref + c['max_vs_fastest']['add_s']
                 if sid in ('S1', 'S2'): lim += c['max_vs_fastest'].get('first_batch_extra_s', 0)
                 put(cid, f(r, 'reach_s') >= 0 and f(r, 'reach_s') <= lim, case)
             elif m == 'recov_s' and 'max_vs_physical' in c:
-                if ref is None: continue
+                if ref is None or ref <= 0: put(cid + '.NOREF', False, case); continue
                 lim = c['max_vs_physical']['factor'] * ref + c['max_vs_physical']['add_s']
                 put(cid, f(r, 'recov_s') >= 0 and f(r, 'recov_s') <= lim, case)
             elif m == 'over_c': put(cid, f(r, 'over_c') <= c['max'], case)
@@ -150,7 +151,10 @@ def main():
         for cid, (p, t, bad) in sorted(res.items()):
             print(f'  {cid:<22} {p:>4}/{t:<4} {"PASS" if p == t else "FAIL"}' + ('' if p == t else '   e.g. ' + ', '.join(bad[:4])))
             worst += (t - p)
-        print('ALL CRITERIA PASS' if worst == 0 else f'{worst} case-criteria failed')
-        sys.exit(0 if worst == 0 else 1)
+        want = {c['id'] for c in acc['criteria'] if c['id'] != 'GATE'} if a.scn.count(',') >= 10 else set()
+        missing = sorted(w for w in want if w not in res)
+        for w in missing: print(f'  {w:<22} NOT EVALUATED')
+        print('ALL CRITERIA PASS' if worst == 0 and not missing else f'{worst} case-criteria failed, {len(missing)} not evaluated')
+        sys.exit(1 if worst else (3 if missing else 0))
 
 if __name__ == '__main__': main()

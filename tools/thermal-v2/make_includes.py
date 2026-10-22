@@ -49,6 +49,10 @@ iir = '\n'.join(re.search(r'constexpr [^;]*\b' + n + r'\s*=[^;]*;', machine)[0] 
     between(machine, '    const bool transportValid = sensor_.dataValid()',
             'sensorUsable_ = transportValid && !sensorSuspect_ &&\n                    isfinite(temperature_) &&\n                    goodSensorStreak_ >= SENSOR_RECOVERY_GOOD_SAMPLES;', True).replace('sensor_.dataValid()', 'pathDataValid_'))
 (out / 'actual-safety-alarm.inc').write_text(between(machine, '    const float safetyTemp = isfinite(rawTemperature_)', '    if (emergencyActive_) highTemperatureActive_ = true;', True))
+(out / 'actual-alarm-edges.inc').write_text(between(machine, '    if ((!wasHigh && highTemperatureActive_) ||', '      sirenMutedUntil_ = 0;\n    }', True))
+# the sensor-usable edge: rig.h re-states these 3 statements (the rest of the block only logs); fail loudly if production changes them
+edge = between(machine, '    if (wasUsable != sensorUsable_) {', '      if (!sensorUsable_) postCoolUntil_ = now + POST_COOL_MS;', True)
+assert 'heatRestartNotBefore_ = now + HEAT_RESTART_LOCKOUT_MS;' in edge and 'if (!sensorUsable_) postCoolUntil_ = now + POST_COOL_MS;' in edge
 (out / 'actual-vent-temp.inc').write_text(between(machine, '    if (!ventTemperatureActive_ && validSafety &&', '    if (!validSafety) ventTemperatureActive_ = false;', True))
 (out / 'actual-frozen.inc').write_text(between(machine, '    const uint32_t frozenEvidenceOnMs = std::max<uint32_t>', '    faults_.set(FaultCode::SensorFrozen, sensorFrozenActive'))
 cls = machine.index('class ConditionTimer {')
@@ -65,7 +69,7 @@ assert initializer == 'HeaterBurstScheduler heaterBurst_{HEATER_GROUP_COUNT, HEA
 
 # ---- constants used by the production route ----
 cn = ['CIRC_FAN_BATCH_START_STAGGER_MS', 'POST_COOL_MS', 'VENT_SCHEDULE_MAX_RUNS', 'FAN_PRESTART_MS', 'MANUAL_FAN_CAN_DISABLE_HEATING', 'HUMIDIFIER_HYSTERESIS_RH',
-      'HEATER_BURST_QUANTUM_MS', 'WARMUP_VENT_HOLD_ERR_C', 'WARMUP_VENT_RELEASE_ERR_C', 'WARMUP_VENT_HOLD_MAX_MS', 'HEAT_RESTART_LOCKOUT_MS', 'CONTROL_TASK_PERIOD_MS']
+      'HEATER_BURST_QUANTUM_MS', 'WARMUP_VENT_HOLD_ERR_C', 'WARMUP_VENT_RELEASE_ERR_C', 'WARMUP_VENT_HOLD_MAX_MS', 'HEAT_RESTART_LOCKOUT_MS', 'CONTROL_TASK_PERIOD_MS', 'SENSOR_STARTUP_GRACE_MS']
 
 # ---- config struct + helpers ----
 cfg_start = config.index('struct MachineConfig {'); cfg_struct = config[cfg_start:body_end(config, cfg_start) + 1]

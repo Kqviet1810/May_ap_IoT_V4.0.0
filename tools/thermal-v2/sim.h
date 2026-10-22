@@ -33,6 +33,7 @@ class Sim {
   Metrics run() {
     Rig rig; rig_ = &rig; rig.ctl_ = &ctl_;
     configure(rig);
+    rig.sensorStartupGraceUntil_ = 1000U + SENSOR_STARTUP_GRACE_MS;      // production sets this at boot; without it the rig forces a 120 s vent at t=0
     ActualSensorFilter filter;
     const double dt = 0.1; rig.dt_ = dt;
     const unsigned stepMs = 100;
@@ -51,7 +52,7 @@ class Sim {
     airTrace.reserve(static_cast<size_t>(s_.duration) + 2);
     bool prevHigh = false, prevEmerg = false, pathLost = false;
     double cmdSum = 0; unsigned cmdN = 0; uint32_t lastCmdTick = 0;
-    double dutyEma = 0;
+    double deliveredNow = 0, d60 = 0;
     unsigned filterSamples = 0;
     float held = static_cast<float>(Ta);
     rig.temperature_ = held; rig.rawTemperature_ = held;
@@ -68,7 +69,10 @@ class Sim {
         if (s_.spStep != 0) rig.config_.targetTemp += static_cast<float>(s_.spStep);
       }
       pathLost = s_.permitLossAt >= 0 && t >= s_.permitLossAt && t < s_.permitLossAt + s_.permitLossFor;
-      double embryo = s_.embryoMax * std::min(1.0, t / s_.duration);
+      // S7 is only meaningful where the oven CAN reject the embryo heat: cap it at 60 % of the loss capacity at the end ambient (documented in acceptance.json)
+      const double endAmb = isfinite(s_.ambientTo) ? s_.ambientTo : p_.Tamb;
+      const double embryoCap = std::min(s_.embryoMax, 0.6 * p_.UA * std::max(0.0, s_.SP - endAmb));
+      double embryo = embryoCap * std::min(1.0, t / s_.duration);
       if (isfinite(s_.ambientTo)) Tamb = p_.Tamb + (s_.ambientTo - p_.Tamb) * std::min(1.0, t / s_.duration);
       // ---- sensor chain at 0.5 Hz ----
       const bool sampleTick = (k % 20U) == 0U;
@@ -76,30 +80,31 @@ class Sim {
       rig.pathDataValid_ = !pathLost; rig.latestFrameValid_ = !pathLost;
       rig.newSensorSample_ = false;
       if (sampleTick && !pathLost) {
-        const float reported = static_cast<float>(std::round(sensPhys / p_.stepC) * p_.stepC);
+        const float reported = static_cast<float>(std::round((sensPhys + p_.sensorOffset) / p_.stepC) * p_.stepC);   // C8: the SENSOR reads low, the controller is not told
         filter.updateFilter(reported, 60);
         const float filtered = filter.value();
         rig.rawTemperature_ = std::max(reported, reported + rig.config_.tempOffset);
         rig.pathAccept(now, filtered + rig.config_.tempOffset, true);
         ++filterSamples;
       }
-      rig.pathUsable();
+      rig.pathUsable(now);
       rig.pathAlarms(now);
       rig.pathEvidence(now);
       rig.applyFaults();
       if (rig.heaterNotHeatingActive_) m.e115 = true;
-      rig.deliveredPct_ = static_cast<float>(dutyEma);
+      rig.deliveredPct_ = static_cast<float>(deliveredNow);
       rig.updateHeatingAndOutputs(now);
       const auto st = rig.outputs_.state();
       const bool on = st.heaterSsr && st.heatMaster;
       if (on && (rig.faults_.inhibit || rig.faults_.drop)) ++m.unsafe_ticks;
       if (on && m.first_on_s < 0) m.first_on_s = t;
-      dutyEma = (on ? 100.0 : 0.0);             // instantaneous; the controller integrates it with its own window
+      deliveredNow = (on ? 100.0 : 0.0);        // instantaneous 0/100 of the last step; the controller integrates it with its own window
+      d60 += ((on ? 1.0 : 0.0) - d60) * dt / 60.0;
       cmdSum += rig.lastCommand_; ++cmdN; m.max_cmd = std::max<double>(m.max_cmd, rig.lastCommand_);
       // ---- plant ----
       double sag = 1.0;
       const double sagD = std::max(p_.sagPerDuty, s_.sagPerDuty);
-      if (sagD > 0) sag -= sagD * std::min(1.0, cmdSum / std::max(1u, cmdN) / 100.0);
+      if (sagD > 0) sag -= sagD * d60;          // supply sag follows the DELIVERED duty over ~60 s, as plants.json C7 says
       if (p_.sagStepAtS >= 0 && t >= p_.sagStepAtS) sag *= (1.0 - p_.sagStep);
       const double delivered = on ? p_.Pmax * p_.gainScale * sag : 0.0;
       const double delayed = pipe[cur]; pipe[cur] = delivered; cur = (cur + 1) % pipe.size();
@@ -118,7 +123,7 @@ class Sim {
       m.energy_kWh += delivered * dt / 3.6e6;
       // ---- 1 Hz records ----
       if ((k % 10U) == 0U) {
-        airTrace.push_back(static_cast<float>(Ta)); sensTrace.push_back(rig.temperature_);
+        airTrace.push_back(static_cast<float>(Ta + p_.sensorOffset)); sensTrace.push_back(rig.temperature_);   // scored in the frame the owner sees; High/Emergency below use TRUE air
         const bool hi = Ta >= rig.config_.highTempAlarm, em = Ta >= rig.config_.emergencyTemp;
         if (hi) { m.sec_high += 1; if (!prevHigh) ++m.high_samples; }
         if (em) { m.sec_emergency += 1; if (!prevEmerg) ++m.emergency_samples; }
@@ -177,7 +182,7 @@ class Sim {
  private:
   void configure(Rig &rig) {
     rig.config_.targetTemp = static_cast<float>(s_.SP);
-    rig.config_.tempOffset = isfinite(tempOffsetCfg) ? tempOffsetCfg : static_cast<float>(p_.sensorOffset);
+    rig.config_.tempOffset = isfinite(tempOffsetCfg) ? tempOffsetCfg : 0.0f;
     rig.batchRunning_ = s_.batchRunning;
     rig.inputs_.in.heaterEnable = true;
     if (s_.ventAt >= 0 && s_.ventKnown != 0) {              // scheduled vent through the production schedule logic
