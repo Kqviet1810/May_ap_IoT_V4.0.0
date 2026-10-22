@@ -1,21 +1,21 @@
 controller=v2 sets=A cases=132  (SIMULATION ONLY)
   GATE.e115               132/132  PASS
   GATE.emergency          132/132  PASS
-  GATE.high               131/132  FAIL   e.g. A10/S3
+  GATE.high               132/132  PASS
   GATE.unsafe             132/132  PASS
-  R1.reach                 24/24   PASS
-  R1.reach.restart          8/12   FAIL   e.g. A2/S3, A5/S3, A11/S3, A12/S3
-  R2.high                 131/132  FAIL   e.g. A10/S3
-  R2.over                  54/84   FAIL   e.g. A9/S1, A10/S1, A10/S2, A12/S2
-  R3.band01.cold           23/48   FAIL   e.g. A10/S1, A12/S1, A3/S2, A1/S5a
-  R3.band01.warm            6/12   FAIL   e.g. A1/S3, A2/S3, A8/S3, A10/S3
-  R3.band03                22/24   FAIL   e.g. A10/S1, A10/S2
-  R4.tail                  11/12   FAIL   e.g. A7/S7
-  R4.under                 11/12   FAIL   e.g. A9/S7
-  R5.door                   7/12   FAIL   e.g. A1/S4, A3/S4, A7/S4, A9/S4
+  R1.reach                 23/24   FAIL   e.g. A8/S2
+  R1.reach.restart          0/12   FAIL   e.g. A1/S3, A2/S3, A3/S3, A4/S3
+  R2.high                 132/132  PASS
+  R2.over                  54/84   FAIL   e.g. A3/S1, A9/S1, A10/S1, A7/S2
+  R3.band01.cold           19/48   FAIL   e.g. A7/S1, A7/S2, A8/S2, A9/S2
+  R3.band01.warm            7/12   FAIL   e.g. A1/S3, A5/S3, A6/S3, A9/S3
+  R3.band03                23/24   FAIL   e.g. A10/S2
+  R4.tail                  12/12   PASS
+  R4.under                 12/12   PASS
+  R5.door                  12/12   PASS
   R5.tray                  24/24   PASS
   R7.spstep                12/12   PASS
-  R7.spstep.settle          8/12   FAIL   e.g. A3/S8, A4/S8, A9/S8, A12/S8
+  R7.spstep.settle         11/12   FAIL   e.g. A4/S8
   CPU.slot               NOT EVALUATED
   R6.protect             NOT EVALUATED
-80 case-criteria failed, 2 not evaluated
+79 case-criteria failed, 2 not evaluated

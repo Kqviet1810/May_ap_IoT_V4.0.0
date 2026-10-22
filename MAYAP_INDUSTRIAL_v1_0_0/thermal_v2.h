@@ -64,6 +64,7 @@ constexpr float BATCH1_S = 600.0f, BATCH2_S = 1500.0f;   // batch fits this long
 constexpr float TD_MIN_S = 20.0f, TD_MAX_S = 260.0f, TD_STEP_S = 10.0f;
 constexpr uint8_t TD_N = 25;               // (260-20)/10 + 1
 constexpr uint8_t BATCH_MIN_POINTS = 40;
+constexpr uint8_t BATCH_GUARD_POINTS = 12;  // newest points pushed while a batch runs overwrite this many of the oldest: they are not used
 // ---- law ----
 constexpr bool EGG_OBSERVER = false;
 constexpr bool RLS_NEEDS_BATCH = false;
@@ -90,6 +91,18 @@ constexpr float LIM_H_LO = 12.0f;          // lowest hold power seen
 constexpr float LIM_NEW_S = 60.0f;         // horizon over which a newly commanded % is priced
 constexpr float LIM_MARGIN_C = 0.4f;       // below the Emergency line
 constexpr float PERMIT_RECOMPUTE_S = 120.0f;
+constexpr float PV_BAD_FREEZE_S = 10.0f;   // a missing / absurd sensor value for longer than this: no power (the arbiter has its own sensor supervision; this block does not heat on a stale reading)
+constexpr float PV_MIN_C = -20.0f, PV_MAX_C = 100.0f, SP_MIN_C = 20.0f, SP_MAX_C = 50.0f;
+constexpr float FIT_RMS_MAX_MKS = 1.5f;    // mK/s: a fit that explains the slopes worse than this is not accepted (typical good fit 0.3..0.7)
+constexpr float FIT_RMS_WORSE = 2.0f;      // a later fit worse than this factor times the previous one is not accepted
+constexpr uint8_t FIT_RETRIES = 3;         // rejected first fits are retried this many times, every FIT_RETRY_S
+constexpr float FIT_RETRY_S = 300.0f;
+constexpr float GAP_KEEP_S = 0.0f;         // gaps in permit / sensor restart the learning window (0 = any gap). Keeping short gaps with held values made S3 worse (set A): left at 0, see G2 report
+constexpr bool SOFT_CEILING = false;
+constexpr bool UNIDENTIFIED_CAP = true;     // before the first accepted fit the power is capped by what is safe for the fastest oven of the family
+constexpr float LIM_SOFT_MARGIN_C = 0.1f;  // soft ceiling for the limiter: the nearer of the vent and High lines, minus this
+constexpr float BATCH_MAX_SPAN_S = 150.0f; // a batch fit that takes longer than this (slow call rate) is discarded: the history it reads would have moved
+constexpr float TIME_REBASE_S = 1.0e6f;    // absolute seconds are rebased before float resolution (1 s at 2^24) becomes a problem
 
 enum State : uint8_t { StIdle = 0, StClimb = 1, StTrack = 2, StFrozen = 3, StE115 = 4 };
 
@@ -109,11 +122,18 @@ class Controller {
   Controller() { reset(); }
   void reset() {
     for (auto &b : binU_) b = 0;
+    for (auto &x : pvH_) x = 0.0f;
+    for (auto &b : histOk_) b = false;
+    for (auto &x : bla_) x = 0.0f;
+    for (auto &t : teJ_) t = 0.0f;
+    for (auto &r : teH_) for (auto &x : r) x = 0.0f;
+    for (auto &r : bx_) for (auto &x : r) x = 0.0f;
+    idPower_ = 100.0f; bidx_ = 0; bsub_ = 0; brows_ = 0; pvBadS_ = 0.0f; idT0_ = idPv0_ = idTTheta_ = 0.0f; lastPushAbs_ = 0.0f;
     for (auto &x : pvRing_) x = 0.0f;
     for (auto &x : paRing_) x = 0.0f;
     binHead_ = 0; ringCount_ = 0; secT_ = 0; secAcc_ = 0; ring10_ = 0; lag_ = 0; absS_ = 0;
     tau_ = TAU_LAG_S; setDelay(THETA_PRIOR_S - THETA_PICKUP_S);
-    histCount_ = 0; histHead_ = 0; firstPowerAbs_ = -1.0f; batchStage_ = 0; batchDue_ = false; batchActive_ = false; kFrozen_ = false; kStdB_ = 0; dBias_ = 0;
+    histCount_ = 0; histHead_ = 0; firstPowerAbs_ = -1.0f; batchStage_ = 0; batchDue_ = false; batchActive_ = false; kFrozen_ = false; kStdB_ = 0; dBias_ = 0; fitRejects_ = 0; prevFitRms_ = 0.0f;
     I_ = 0; Te_ = NAN; pv_ = NAN; spNow_ = 37.5f; far_ = false; tauEsel_ = TAU_E_PRIOR; sigPred_ = 1.0f;
     idDone_ = false; idPhase_ = 0; rlsHold_ = SLOPE_N + 1; thetaSeen_ = false;
     th_[0] = A0; th_[1] = C0_0; th_[2] = CP_0; th_[3] = CE_0; th_[4] = C3_0;
@@ -137,23 +157,37 @@ class Controller {
   float teModel() const { return Te_; }
   float dNow() const { return demandAt(pv_); }
   uint8_t batchesDone() const { return batchStage_; }
+  float clockS() const { return absS_; }
+  uint8_t fitRejects() const { return fitRejects_; }
+  float fitRms() const { return prevFitRms_; }
+  float lastCandRms() const { return static_cast<float>(bestRms_); }
   bool batchRunning() const { return batchActive_; }
 
   Output step(const Input &in) {
     Output out;
-    const float dt = in.dtS < 0.001f ? 0.001f : (in.dtS > 1.0f ? 1.0f : in.dtS);
+    const float dt = !std::isfinite(in.dtS) ? 0.1f : (in.dtS < 0.001f ? 0.001f : (in.dtS > 1.0f ? 1.0f : in.dtS));
     const float cap = (std::isfinite(in.capPct) && in.capPct > 0.0f) ? (in.capPct > 100.0f ? 100.0f : in.capPct) : 0.0f;
+    const bool pvOk = std::isfinite(in.pv) && in.pv > PV_MIN_C && in.pv < PV_MAX_C;
+    const bool spOk = std::isfinite(in.sp) && in.sp > SP_MIN_C && in.sp < SP_MAX_C;
+    const float dQ = (std::isfinite(in.dQ) && in.dQ >= 0.001f && in.dQ <= 1.0f) ? in.dQ : 0.1f;
+    if (pvOk) pvBadS_ = 0.0f; else pvBadS_ += dt;
     advanceClock(in, dt);
-    if (batchDue_ && !batchActive_) batchBegin();
-    if (batchActive_) batchStep();
-    if (std::isfinite(in.pv)) {
+    if (!in.permit && lostS_ > GAP_KEEP_S) batchActive_ = false;   // a long loss of permit: the history is not a fit window
+    if (batchDue_ && !batchActive_ && in.permit && histCount_ >= BATCH_MIN_POINTS) batchBegin();
+    if (batchActive_) { if (absS_ - absRef_ > BATCH_MAX_SPAN_S) batchActive_ = false; else batchStep(); }
+    if (pvOk) {
       if (!haveSample_) { for (auto &t : teJ_) t = in.pv; Te_ = in.pv; haveSample_ = true; }
-      if (in.newSample) { for (uint8_t j = 0; j < 3; ++j) teJ_[j] += (in.pv - teJ_[j]) * (2.0f / TAU_E_C[j]); Te_ = teJ_[tauEsel_]; identify(in); }
+      if (in.newSample) {
+        for (uint8_t j = 0; j < 3; ++j) teJ_[j] += (in.pv - teJ_[j]) * (2.0f / TAU_E_C[j]);
+        Te_ = teJ_[tauEsel_];
+        if (spOk && in.permit) { Input ci = in; ci.dQ = dQ; identify(ci); }
+      }
       pv_ = in.pv;
     }
-    if (!in.permit || !haveSample_ || !std::isfinite(pv_) || cap <= 0.0f || !std::isfinite(in.sp)) {
+    if (!in.permit || !haveSample_ || !pvOk || pvBadS_ > PV_BAD_FREEZE_S || cap <= 0.0f || !spOk) {
       lostS_ += dt;
       if (lostS_ > PERMIT_RECOMPUTE_S) { I_ = 0; if (!idDone_) idPhase_ = 0; }
+      if (lostS_ > 1.0e6f) lostS_ = 1.0e6f;
       lastU_ = 0.0f; out.state = StFrozen; return out;
     }
     lostS_ = 0; spNow_ = in.sp;
@@ -184,6 +218,16 @@ class Controller {
       I_ += Kc / tauI * e * dt;
       if (I_ > I_MAX) I_ = I_MAX; else if (I_ < -I_MAX) I_ = -I_MAX;
     }
+    if (idPhase_ == 1 || idPhase_ == 2) {                           // blind / probe phase: power from the CURRENT room below SP, never above the safe level
+      float pp = H_LO + ID_SAFETY * (in.sp - pv_ - ID_RISE_C) / (K_FAST * T_MAX_S);
+      if (!(pp >= ID_P_MIN)) pp = ID_P_MIN;
+      idPower_ = pp; u = pp < cap ? pp : cap; out.state = StClimb; far_ = false;
+    }
+    if (UNIDENTIFIED_CAP && batchStage_ == 0 && idPhase_ != 1 && idPhase_ != 2) {   // no accepted fit yet and no probe running (priors path, e.g. a restart): never above the family-safe power
+      float pp = H_LO + ID_SAFETY * (in.sp - pv_ - ID_RISE_C) / (K_FAST * T_MAX_S);
+      if (!(pp >= ID_P_MIN)) pp = ID_P_MIN;
+      if (u > pp) { u = pp; far_ = false; }
+    }
     // Last-resort limiter, independent of the learner and of the law: only the measured PV, its measured 120 s rise carried over one worst-case delay,
     // and the fixed constants above.  It can only lower u, and it only acts near the Emergency line (the controller's own prediction guards High).
     {
@@ -193,17 +237,20 @@ class Controller {
         inflight = rise / (10.0f * (RING_N - 1)) * LIM_THETA_S;
         if (inflight < 0.0f) inflight = 0.0f;
       }
-      const float ceilC = in.sp + (in.alarmHeadroomC > LIM_MARGIN_C ? in.alarmHeadroomC - LIM_MARGIN_C : 0.0f);
+      float ceilC = in.sp + (in.alarmHeadroomC > LIM_MARGIN_C ? in.alarmHeadroomC - LIM_MARGIN_C : 0.0f);
+      const float soft = in.sp + (in.headroomC > LIM_SOFT_MARGIN_C + 0.1f ? in.headroomC - LIM_SOFT_MARGIN_C : 0.1f);     // vent / High line (control sensor frame)
+      if (SOFT_CEILING && std::isfinite(in.headroomC) && soft < ceilC) ceilC = soft;
       const float uLim = LIM_H_LO + (ceilC - pv_ - inflight) / (LIM_K_HI * LIM_NEW_S);
       if (pv_ >= in.sp && uLim < u) { u = uLim > 0.0f ? uLim : 0.0f; far_ = false; }       // above SP only: a deep dip must be allowed to climb back at full power
     }
     out.state = StTrack;
     if (!idDone_ && idPhase_ == 0 && ringCount_ < LOOK_RING) { u = 0.0f; far_ = false; }       // first look: nothing is commanded
-    if (idPhase_ == 1 || idPhase_ == 2) { u = idPower_ < cap ? idPower_ : cap; out.state = StClimb; }
     if (in.e115Frac >= E115_CLIMB_FRAC && pv_ < in.sp) {          // heater on for long without the air rising 0.3: ask for more, in proportion
       const float boost = E115_BOOST_MAX * (in.e115Frac - E115_CLIMB_FRAC) / (1.0f - E115_CLIMB_FRAC);
       const float ub = u + boost; u = ub > cap ? cap : ub; out.state = StE115;
     } else if (u >= cap && e > 0.0f) out.state = StClimb;
+    if (!(u >= 0.0f)) u = 0.0f;                                     // also catches NaN
+    if (u > cap) u = cap;
     out.powerLimited = (u >= cap) && cap < 100.0f;
     out.powerPct = u; lastU_ = u;
     return out;
@@ -248,9 +295,15 @@ class Controller {
   }
 
   void advanceClock(const Input &in, float dt) {
-    secAcc_ += (in.permit && std::isfinite(in.deliveredPct) ? in.deliveredPct : 0.0f) * dt; secT_ += dt;
+    const float dl = (in.permit && std::isfinite(in.deliveredPct)) ? (in.deliveredPct < 0.0f ? 0.0f : (in.deliveredPct > 100.0f ? 100.0f : in.deliveredPct)) : 0.0f;
+    secAcc_ += dl * dt; secT_ += dt;
     while (secT_ >= 1.0f) {
       const float bin = secAcc_ / secT_; secAcc_ = 0; secT_ -= 1.0f; absS_ += 1.0f;
+      if (absS_ >= TIME_REBASE_S) {                                  // keep float time exact: only differences of absolute seconds are ever used
+        absS_ -= TIME_REBASE_S; lastPushAbs_ -= TIME_REBASE_S; idT0_ -= TIME_REBASE_S; idTTheta_ -= TIME_REBASE_S;
+        if (firstPowerAbs_ >= 0.0f) firstPowerAbs_ -= TIME_REBASE_S;
+        batchActive_ = false;
+      }
       { const float bq = bin * 2.0f + 0.5f; binU_[binHead_] = static_cast<uint8_t>(bq > 255.0f ? 255.0f : (bq < 0.0f ? 0.0f : bq)); }
       if (firstPowerAbs_ < 0.0f && bin > 1.0f) firstPowerAbs_ = absS_;
       const uint16_t td = static_cast<uint16_t>(tdPrime() + 0.5f);
@@ -259,16 +312,22 @@ class Controller {
       lag_ += (binU_[idx] * 0.5f - lag_) * (1.0f - std::exp(-1.0f / tau_));
       if (ring10_ >= 9) {
         ring10_ = 0;
-        for (uint8_t i = 0; i + 1 < RING_N; ++i) { pvRing_[i] = pvRing_[i + 1]; paRing_[i] = paRing_[i + 1]; }
-        pvRing_[RING_N - 1] = std::isfinite(pv_) ? pv_ : 0.0f; paRing_[RING_N - 1] = lag_;
-        pvH_[histHead_] = pvRing_[RING_N - 1];
-        for (uint8_t j = 0; j < 3; ++j) teH_[j][histHead_] = std::isfinite(teJ_[j]) ? teJ_[j] : pvRing_[RING_N - 1];
-        histHead_ = static_cast<uint8_t>((histHead_ + 1) % HIST_N); if (histCount_ < HIST_N) ++histCount_; lastPushAbs_ = absS_;
-        if (ringCount_ < RING_N) ++ringCount_;
-        if (in.permit && firstPowerAbs_ >= 0.0f && batchStage_ < 2 && absS_ - firstPowerAbs_ >= (batchStage_ == 0 ? BATCH1_S : BATCH2_S)) batchDue_ = true;
-        if (!in.permit) { ringCount_ = 0; rlsHold_ = SLOPE_N + 1; histCount_ = 0; batchDue_ = false; }
-        else if (rlsHold_ > 0) --rlsHold_;
-        else { eggObserver(); rlsUpdate(); levelUpdate(); }
+        const bool gap = !in.permit || pvBadS_ > 0.0f;
+        if (!haveSample_ || !std::isfinite(pv_) || (gap && (lostS_ > GAP_KEEP_S || pvBadS_ > GAP_KEEP_S))) {      // nothing valid for too long: the learning window restarts
+          ringCount_ = 0; rlsHold_ = SLOPE_N + 1; histCount_ = 0; batchDue_ = false;
+        } else {
+          if (gap) rlsHold_ = SLOPE_N + 1;                                // short gap: held values keep the 10 s grid, nothing is learned from them
+          for (uint8_t i = 0; i + 1 < RING_N; ++i) { pvRing_[i] = pvRing_[i + 1]; paRing_[i] = paRing_[i + 1]; }
+          pvRing_[RING_N - 1] = pv_; paRing_[RING_N - 1] = lag_;
+          pvH_[histHead_] = pv_;
+          for (uint8_t j = 0; j < 3; ++j) teH_[j][histHead_] = std::isfinite(teJ_[j]) ? teJ_[j] : pv_;
+          histOk_[histHead_] = !gap;
+          histHead_ = static_cast<uint8_t>((histHead_ + 1) % HIST_N); if (histCount_ < HIST_N) ++histCount_; lastPushAbs_ = absS_;
+          if (ringCount_ < RING_N) ++ringCount_;
+          if (!batchActive_ && firstPowerAbs_ >= 0.0f && batchStage_ < 2 && absS_ - firstPowerAbs_ >= (batchStage_ == 0 ? BATCH1_S : BATCH2_S)) batchDue_ = true;
+          if (rlsHold_ > 0 && !gap) --rlsHold_;
+          else if (!gap) { eggObserver(); rlsUpdate(); levelUpdate(); }
+        }
       } else ++ring10_;
     }
   }
@@ -320,7 +379,7 @@ class Controller {
   // ---- the running learner: slope(mK/s) = a*La/100 - c0 - cp*(PV-P0) + ce*(Te-P0) + c3*w   (theta = [a, c0, cp, ce, c3]) ----
   void rlsUpdate() {
     if (RLS_NEEDS_BATCH && batchStage_ == 0) return;                                              // before the first batch fit the data cannot separate the unknowns: priors only
-    if (batchActive_ || ringCount_ < SLOPE_N || (!idDone_ && idPhase_ == 1)) return;              // the delay must be known before P_air means anything
+    if (batchActive_ || !haveSample_ || ringCount_ < SLOPE_N || (!idDone_ && idPhase_ == 1)) return;              // the delay must be known before P_air means anything
     const uint8_t n = SLOPE_N; float sx = 0, sy = 0, sxx = 0, sxy = 0, pa = 0, pvm = 0;
     for (uint8_t i = 0; i < n; ++i) {
       const float t = i * 10.0f, y = pvRing_[RING_N - n + i];
@@ -333,7 +392,7 @@ class Controller {
     for (int i = 0; i < NP; ++i) { Pphi[i] = 0; for (int j = 0; j < NP; ++j) Pphi[i] += P_[i][j] * phi[j]; }
     for (int i = 0; i < NP; ++i) s2 += phi[i] * Pphi[i];
     float err = slopeMks; for (int i = 0; i < NP; ++i) err -= phi[i] * th_[i];
-    if (err * err > GATE_SIGMAS * GATE_SIGMAS * s2) return;           // outlier (door, tray, vent): not a slope of this plant
+    if (!std::isfinite(err) || !std::isfinite(s2) || !(err * err <= GATE_SIGMAS * GATE_SIGMAS * s2)) return;           // outlier (door, tray, vent) or garbage: not a slope of this plant
     float g[NP]; for (int i = 0; i < NP; ++i) g[i] = Pphi[i] / s2;
     for (int i = 0; i < NP; ++i) th_[i] += g[i] * err;
     for (int i = 0; i < NP; ++i) for (int j = 0; j < NP; ++j) P_[i][j] -= g[i] * Pphi[j];
@@ -382,7 +441,7 @@ class Controller {
   void batchBegin() {
     batchDue_ = false;
     if (histCount_ < BATCH_MIN_POINTS || !idDoneOrProbe()) { return; }
-    bns_ = histCount_;
+    bns_ = histCount_ > HIST_N - BATCH_GUARD_POINTS ? static_cast<uint8_t>(HIST_N - BATCH_GUARD_POINTS) : histCount_;
     bfirst_ = static_cast<uint8_t>((histHead_ + HIST_N - bns_) % HIST_N);
     absRef_ = absS_; binHeadRef_ = binHead_; lastPushRef_ = lastPushAbs_;
     // first fit: the wide prior of the oven family; later fits: the previous result is the prior (a settled hold cannot overturn what a climb measured)
@@ -410,7 +469,9 @@ class Controller {
       brows_ = 0;
       for (uint8_t j = 5; j < bns_; ++j) {
         float pa = 0, pvm = 0, num = 0;
-        for (int q = 0; q < 6; ++q) { const uint8_t h = static_cast<uint8_t>((bfirst_ + j - 5 + q) % HIST_N); pa += bla_[j - 5 + q]; pvm += pvH_[h]; num += (q - 2.5f) * pvH_[h]; }
+        bool ok = true;
+        for (int q = 0; q < 6; ++q) { const uint8_t h = static_cast<uint8_t>((bfirst_ + j - 5 + q) % HIST_N); if (!histOk_[h]) ok = false; pa += bla_[j - 5 + q]; pvm += pvH_[h]; num += (q - 2.5f) * pvH_[h]; }
+        if (!ok) continue;                                       // a window that touches a gap (permit or sensor lost) is not a slope of the plant
         pa /= 6.0f; pvm /= 6.0f;
         const float slope = num / 17.5f / 10.0f * 1000.0f;
         const float tj = lastPushRef_ - 10.0f * (bns_ - 1 - j);
@@ -437,9 +498,32 @@ class Controller {
       for (int p = 0; p < NP; ++p) { bestTh_[p] = x[p]; for (int q = 0; q < NP; ++q) bestInv_[p][q] = inv[p][q]; }
     }
   }
+  // P_air at the times of the CURRENT ring slots and at now, from the bins as they are now (the history moved while the batch ran)
+  void rebuildRing(float td, float tau) {
+    absRef_ = absS_; binHeadRef_ = binHead_;
+    const float alpha = 1.0f - std::exp(-1.0f / tau), t0 = lastPushAbs_ - 10.0f * (RING_N - 1) - 150.0f;       // 150 s run-in (> 3 lags)
+    float y = binAt(t0 - td);
+    const int n = static_cast<int>(absS_ - t0 + 0.5f);
+    for (int sidx = 1; sidx <= n; ++sidx) {
+      const float tt = t0 + sidx; y += (binAt(tt - td) - y) * alpha;
+      const int back = static_cast<int>(lastPushAbs_ - tt + 0.5f);
+      if (back >= 0 && back % 10 == 0 && back / 10 < RING_N) paRing_[RING_N - 1 - back / 10] = y;
+    }
+    lag_ = y;
+  }
   void batchApply() {
-    batchActive_ = false; ++batchStage_;
-    if (!bestFound_) return;
+    batchActive_ = false;
+    // a fit is accepted only if it is inside the searched family and explains the data: not on the delay grid edge, k not on its clamp, residual small
+    const bool edge = bestTd_ <= TD_MIN_S + 0.1f || bestTd_ >= TD_MAX_S - 0.1f;
+    const bool kEdge = bestTh_[0] <= K_MIN * 1e5f * 1.02 || bestTh_[0] >= K_MAX_EST * 1e5f * 0.98;
+    const bool bad = !bestFound_ || edge || kEdge || bestRms_ > FIT_RMS_MAX_MKS || (batchStage_ > 0 && prevFitRms_ > 0.0f && bestRms_ > FIT_RMS_WORSE * prevFitRms_);
+    if (bad) {
+      ++fitRejects_;
+      if (batchStage_ == 0 && fitRejects_ <= FIT_RETRIES) firstPowerAbs_ = absS_ - BATCH1_S + FIT_RETRY_S;   // try again later with more data
+      else ++batchStage_;
+      return;
+    }
+    ++batchStage_; prevFitRms_ = static_cast<float>(bestRms_);
     const double s2 = static_cast<double>(SLOPE_STD_MKS) * SLOPE_STD_MKS;
     tau_ = bestTau_; setDelay(bestTd_);
     tauEsel_ = bestTe_; Te_ = teJ_[tauEsel_];
@@ -447,10 +531,7 @@ class Controller {
     for (int p = 0; p < NP; ++p) for (int q = 0; q < NP; ++q) P_[p][q] = static_cast<float>(s2 * bestInv_[p][q]);
     clampTheta();
     // the arriving-power state and the last ring entries now follow the identified path (history replayed up to the moment the batch began, then to now)
-    lag_ = replayWindow(bestTd_, bestTau_, bns_);
-    { const float alpha = 1.0f - std::exp(-1.0f / tau_); const uint16_t tdI = static_cast<uint16_t>(bestTd_ + 0.5f);
-      for (float t = absRef_ + 1.0f; t <= absS_ + 0.5f; t += 1.0f) { const uint16_t age = static_cast<uint16_t>(absS_ - t + tdI); lag_ += ((age < BIN_N ? binU_[(binHead_ + BIN_N - 1 - age) % BIN_N] * 0.5f : 0.0f) - lag_) * alpha; } }
-    for (int m = 0; m < RING_N && m < bns_; ++m) paRing_[RING_N - 1 - m] = bla_[bns_ - 1 - m];
+    rebuildRing(bestTd_, bestTau_);
     // k is a property of the oven measured with excitation; a steady hold cannot separate it from the loss coefficients, so the running learner may not move it
     kStdB_ = static_cast<float>(std::sqrt(s2 * bestInv_[0][0])) * 1e-5f;
     if (kStdB_ < 0.03f * kRaw()) kStdB_ = 0.03f * kRaw();
@@ -484,6 +565,7 @@ class Controller {
       return;
     }
     if (idPhase_ == 1) {
+      if (in.sp - in.pv < ID_ROOM_C * 0.5f) { idDone_ = true; idPhase_ = 3; return; }       // the room has gone (SP lowered, or the air rose by itself)
       if (in.pv < idPv0_) idPv0_ = in.pv;                          // running minimum: the air may still be cooling while the first heat is in the delay
       if (in.pv - idPv0_ >= 2.0f * in.dQ) {
         const float th = absS_ - idT0_;
@@ -501,10 +583,12 @@ class Controller {
   bool idDone_ = false; uint8_t idPhase_ = 0, rlsHold_ = 0;
   uint8_t binU_[BIN_N];
   float pvH_[HIST_N], teH_[3][HIST_N], bla_[HIST_N], bx_[HIST_N][NP + 1], teJ_[3];
+  bool histOk_[HIST_N];
   uint8_t histCount_ = 0, histHead_ = 0, batchStage_ = 0, tauEsel_ = TAU_E_PRIOR; bool batchDue_ = false, batchActive_ = false;
   uint8_t bns_ = 0, bfirst_ = 0, bsub_ = 0, brows_ = 0; float bA_[NP][NP], bb_[NP]; uint16_t bidx_ = 0; uint16_t binHeadRef_ = 0; float absRef_ = 0, lastPushRef_ = 0;
   double bth0_[NP], bsd_[NP], bestRms_ = 1e30, bestTh_[NP], bestInv_[NP][NP]; float bestTd_ = 0, bestTau_ = TAU_LAG_S; uint8_t bestTe_ = TAU_E_PRIOR; bool bestFound_ = false;
-  bool kFrozen_ = false; float kStdB_ = 0, dBias_ = 0, sigPred_ = 1.0f;
+  uint8_t fitRejects_ = 0; float prevFitRms_ = 0.0f;
+  bool kFrozen_ = false; float kStdB_ = 0, dBias_ = 0, sigPred_ = 1.0f, pvBadS_ = 0.0f;
   float lastPushAbs_ = 0, firstPowerAbs_ = -1.0f, tau_ = TAU_LAG_S;
   float pvRing_[RING_N], paRing_[RING_N];
   uint16_t binHead_; uint8_t ringCount_, ring10_;

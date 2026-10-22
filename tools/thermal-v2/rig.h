@@ -137,7 +137,7 @@ struct V2Ctl : Controller {            // the V2 law; the cap / NaN / negative c
     last = c.step(i);
     static const bool dbg = std::getenv("V2DBG") != nullptr;
     if (dbg && (in.now % 30000U) < 100U)
-      std::fprintf(stderr, "t=%6.0f pv=%.2f pred=%.2f u=%.1f k=%.2e th=%.0f dloss=%.1f I=%.1f Te=%.2f st=%d dnow=%.1f truth=%.1f td=%.0f tl=%.0f te=%.0f ha=%.1f sg=%.2f\n", (in.now - 1000) / 1000.0, in.pv, c.predicted(), last.powerPct, c.kAir(), c.thetaHat(), c.dLoss(), c.integral(), c.teModel(), last.state, c.dNow(), g_truthDemandPct, c.tdHat(), c.tauHat(), c.tauEggHat(), c.haPct(), c.sigmaPred());
+      std::fprintf(stderr, "t=%6.0f pv=%.2f pred=%.2f u=%.1f k=%.2e th=%.0f dloss=%.1f I=%.1f Te=%.2f st=%d dnow=%.1f truth=%.1f td=%.0f tl=%.0f te=%.0f ha=%.1f sg=%.2f rj=%d rms=%.2f\n", (in.now - 1000) / 1000.0, in.pv, c.predicted(), last.powerPct, c.kAir(), c.thetaHat(), c.dLoss(), c.integral(), c.teModel(), last.state, c.dNow(), g_truthDemandPct, c.tdHat(), c.tauHat(), c.tauEggHat(), c.haPct(), c.sigmaPred(), c.fitRejects(), c.fitRms());
     float u = last.powerPct;
     if (!(u > 0.0f)) u = 0.0f;
     return std::min(u, in.capPct);

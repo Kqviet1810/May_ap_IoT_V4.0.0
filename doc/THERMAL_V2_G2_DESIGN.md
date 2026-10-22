@@ -48,9 +48,24 @@ Giữ nguyên cấu hình sản phẩm (`ventOnTemp` 38,0 °C, High 38,2 °C, Em
 | Vùng chết trên tác động tỉ lệ vì cảm biến 0,1 °C | kém hơn |
 | Giới hạn công suất theo năng lượng đang bay (hằng số xấu nhất) | làm chậm mọi lần lên nhiệt, R1 từ 24/24 xuống 4/24 |
 
-## 7. Kết quả set A (mô phỏng, xem `tools/thermal-v2/g2_results.txt`)
-Đạt: cổng an toàn (0 Emergency/E115/lệnh sưởi không an toàn trên 132 ca), R1.reach 24/24, R5.tray 24/24, R7 12/12, R3.band03 22/24, R4 (11/12 và 11/12).
-Chưa đạt: R1.reach.restart 8/12, R2.over 54/84, R3.band01.cold 23/48, R3.band01.warm 6/12, R5.door 7/12, R2.high 131/132 (A10/S3). Nguyên nhân và giới hạn: xem báo cáo G2.
+## 7. Kết quả set A cuối G2 (mô phỏng; số liệu trong `tools/thermal-v2/g2_results.txt`)
+Đạt: bốn cổng an toàn 132/132 (không Emergency, không E115, không High, không lệnh sưởi không an toàn), R1.reach 23/24, R2.high 132/132, R4 12/12 (tail và under), R5.door 12/12, R5.tray 24/24, R7.spstep 12/12.
+Chưa đạt: R2.over 54/84, R3.band01.cold 19/48, R3.band01.warm 7/12, R3.band03 23/24, R1.reach.restart 0/12 (viết đúng đặc tả; 12/12 nếu nới +720 s), R7.spstep.settle 11/12. CPU.slot và R6 chưa đánh giá (G4/G5).
+
+## 7b. Thay đổi sau rà soát độc lập (3 lượt)
+- Cổng kiểm tính hợp lý kết quả batch fit (mép lưới, k ngoài khoảng, rms) + thử lại 3 lần/300 s; không chấp nhận thì giữ tiên nghiệm.
+- `UNIDENTIFIED_CAP`: chưa có batch fit được chấp nhận thì công suất bị chặn ở mức thăm dò an toàn (đổi lại: R1.reach.restart không đạt trong 40 phút vì không có NVS).
+- Kiểm tra đầu vào (NaN/Inf, dt, sp/pv bất thường) và làm sạch đầu ra; sửa lỗi batch kích hoạt hai lần, lệch vòng đệm, công suất thăm dò, thành viên chưa khởi tạo.
+- Test đơn vị 21 kiểm tra (`run_grid.py unit`, chạy trong CI).
+- Đã thử và hoàn nguyên: giữ lịch sử qua khoảng mất permit ngắn, cờ khoảng hợp lệ (S3/emergency xấu đi); trần mềm ở đường vent (chậm leo nhiệt); `LIM_THETA_S` 300 (không sửa được ca ngoài họ, làm R3.band03 và R7 xấu hơn) → giữ 180.
+
+## 7c. Giới hạn thật (không khắc phục được trong G2)
+1. Lượng tử hoá cảm biến 0,1 °C + đường vent chỉ cách SP 0,5 °C: vọt >0,5 °C kích hoạt vent; R2.over/R3.band01 bị chặn bởi phân giải, không phải bởi luật.
+2. Khởi động lại không có NVS: phải học lại ~10 phút trước khi công suất mở hết ⇒ R1.reach.restart. Hướng: lưu tham số học vào NVS (G5) hoặc nới tiêu chí.
+3. Lò ngoài họ (trễ 250 s, ví dụ `X_td250`) ở S3 vẫn chạm High/Emergency khi mất permit lặp lại: bộ học không đủ dữ liệu, bộ giới hạn cuối chỉ có hằng số RG144.
+4. Mất permit lặp lại làm batch không chạy được ⇒ chạy bằng tiên nghiệm bảo thủ.
+5. `ha` và `τe` nhận dạng yếu; nhiễu bước của trứng (đổi xe) không mô hình hoá.
+6. Set A là tập thiết kế; bằng chứng tổng quát hoá chỉ có ở B/C (G3). Rig chưa có nhiễu cảm biến/jitter.
 
 ## 8. Việc đo ở G5
 `CPU.slot` ≤ 2 ms trên ESP32-S3: ước tính theo số phép tính, mỗi lần gọi ≤ ~0,5 ms (một ứng viên batch = 3 lần gọi: dựng lại đường heater ~960 bước float; hàng hồi quy + phương trình chuẩn; giải 5×5 double). Phải đo thật bằng `esp_timer` ở G5.

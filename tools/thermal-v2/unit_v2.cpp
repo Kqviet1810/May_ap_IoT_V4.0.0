@@ -62,6 +62,52 @@ int main() {
     Input in; in.sp = 37.5f; in.permit = false; in.pv = quant(p.Ta); in.dtS = 0.1f; float last = 1;
     for (int k = 0; k < 3000; ++k) { in.newSample = (k % 20) == 0; last = c.step(in).powerPct; }
     CHECK(last == 0.0f, "permit lost for 300 s: output stays 0 (no wind-up into a command)"); }
+  // ---- findings of the independent review (each one failed before the fix) ----
+  { Controller c; Mini p; simulate(c, p, 0.4, 37.5f, 100.0f);          // valid samples first, then the sensor goes NaN for 10 minutes
+    Input in; in.sp = 37.5f; in.permit = true; in.pv = NAN; in.dtS = 0.1f; in.capPct = 100.0f; float last = 1.0f; bool nan = false;
+    for (int k = 0; k < 6000; ++k) { in.newSample = (k % 20) == 0; const Output o = c.step(in); last = o.powerPct; if (!std::isfinite(last)) nan = true; }
+    CHECK(!nan && last == 0.0f, "sensor NaN for 10 min: no power after the freeze time, never NaN");
+    in.pv = quant(p.Ta); for (int k = 0; k < 3000; ++k) { in.newSample = (k % 20) == 0; const Output o = c.step(in); if (!std::isfinite(o.powerPct)) nan = true; }
+    CHECK(!nan, "sensor back after the dropout: output finite"); }
+  { Controller c; Input in; in.sp = 37.5f; in.permit = true; in.dtS = 0.1f; in.capPct = 100.0f; bool bad = false;   // no sample for 100 s at the start, then valid data
+    in.pv = NAN; for (int k = 0; k < 1000; ++k) { in.newSample = (k % 20) == 0; if (!std::isfinite(c.step(in).powerPct)) bad = true; }
+    in.pv = 33.0f; for (int k = 0; k < 20000; ++k) { in.newSample = (k % 20) == 0; const Output o = c.step(in); if (!std::isfinite(o.powerPct) || o.powerPct < 0 || o.powerPct > 100.0f) bad = true; }
+    CHECK(!bad, "no sample at the start: learner stays finite (was a permanent NaN)"); }
+  { Controller c; Input in; in.sp = 37.5f; in.permit = true; in.dtS = 0.1f; in.capPct = 100.0f; in.pv = 33.0f; bool full = false;   // NaN setpoint exactly when the look ends
+    for (int k = 0; k < 2000; ++k) { in.newSample = (k % 20) == 0; in.sp = (k >= 900 && k < 1100) ? NAN : 37.5f; const Output o = c.step(in); if (k >= 900 && k < 1100 && o.powerPct > 0.0f) full = true; }
+    CHECK(!full, "NaN setpoint around the end of the look: no heat while it lasts");
+    bool over = false; for (int k = 2000; k < 6000; ++k) { in.newSample = (k % 20) == 0; if (c.step(in).powerPct > 45.0f) over = true; }
+    CHECK(!over, "identification power stays at the safe level after a NaN setpoint (was 100 %)"); }
+  { Controller c; Input in; in.sp = 37.5f; in.permit = true; in.pv = 33.0f; in.capPct = 100.0f; bool bad = false;       // NaN / huge dtS
+    for (int k = 0; k < 300; ++k) { in.dtS = 0.1f; in.newSample = (k % 20) == 0; c.step(in); }
+    in.dtS = NAN; c.step(in); in.dtS = 1e30f; c.step(in); in.dtS = -5.0f; c.step(in);
+    const float t0 = c.clockS(); in.dtS = 0.1f; for (int k = 0; k < 3000; ++k) { in.newSample = (k % 20) == 0; if (!std::isfinite(c.step(in).powerPct)) bad = true; }
+    CHECK(!bad && c.clockS() > t0 + 250.0f, "NaN / negative / huge dtS: the clock keeps running afterwards (was frozen for good)"); }
+  { Controller c; Input in; in.sp = 37.5f; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f; bool bad = false;          // absurd pv
+    in.pv = 33.0f; for (int k = 0; k < 600; ++k) { in.newSample = (k % 20) == 0; c.step(in); }
+    in.pv = 3e38f; for (int k = 0; k < 400; ++k) { in.newSample = (k % 20) == 0; const Output o = c.step(in); if (!std::isfinite(o.powerPct) || o.powerPct != 0.0f) bad = true; }
+    in.pv = 33.0f; for (int k = 0; k < 3000; ++k) { in.newSample = (k % 20) == 0; if (!std::isfinite(c.step(in).powerPct)) bad = true; }
+    CHECK(!bad, "pv = 3e38 for 40 s: no power, no NaN afterwards"); }
+  { Controller c; Mini p; Run r = simulate(c, p, 0.35, 37.5f, 100.0f);                 // SP lowered 12 degC below the air in the middle of the identification climb
+    Input in; in.sp = 25.0f; in.permit = true; in.pv = quant(p.Ta); in.capPct = 100.0f; in.dtS = 0.1f; float mx = 0;
+    for (int k = 0; k < 4000; ++k) { in.newSample = (k % 20) == 0; mx = std::fmax(mx, c.step(in).powerPct); }
+    CHECK(mx < 5.0f, "SP lowered far below the air during identification: no probe power left over"); (void)r; }
+  { Controller c; Mini p; simulate(c, p, 0.9, 37.5f, 100.0f);
+    CHECK(c.batchesDone() == 2, "both batch fits run (the second one 1500 s after the first power)"); }
+  { Controller c; Mini p; simulate(c, p, 1.0, 37.5f, 100.0f); c.reset();
+    CHECK(c.batchesDone() == 0 && c.clockS() == 0.0f && std::fabs(c.kEst() - A0 * 1e-5f) < 1e-9f && c.integral() == 0.0f, "reset restores the priors and the clock"); }
+  { Controller c; Mini p; Run total; bool bad = false; unsigned rng = 12345;               // fuzz: permit toggling, cap changes, SP steps, dropouts
+    Input in; in.sp = 37.5f; in.capPct = 100.0f; in.dtS = 0.1f; in.permit = true; float u = 0;
+    for (int k = 0; k < 400000; ++k) {
+      rng = rng * 1664525u + 1013904223u; const unsigned r = rng >> 8;
+      if (k % 5000 == 0) { in.permit = (r % 7) != 0; in.capPct = 20.0f + (r % 81); in.sp = 36.0f + (r % 30) / 10.0f; }
+      in.pv = (r % 50000 == 0) ? NAN : quant(p.Ta); in.newSample = (k % 20) == 0;
+      in.deliveredPct = ((k % 30) < static_cast<int>(u * 0.3f + 0.5f)) ? 100.0f : 0.0f;
+      const Output o = c.step(in); u = o.powerPct;
+      if (!std::isfinite(u) || u < 0.0f || u > in.capPct + 1e-3f || (!in.permit && u != 0.0f)) bad = true;
+      p.step(in.deliveredPct > 0 ? 1.0 : 0.0, 0.1);
+    }
+    (void)total; CHECK(!bad, "fuzz 11 h: output always finite, within [0, cap], zero without permit"); }
   std::printf("%s (%d failure(s))\n", fails ? "UNIT FAILED" : "UNIT PASSED", fails);
   return fails ? 1 : 0;
 }
