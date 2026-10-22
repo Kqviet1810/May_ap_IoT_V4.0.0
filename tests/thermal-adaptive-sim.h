@@ -434,7 +434,7 @@ inline Result run(const Plant &base, const Scenario &sc) {
     if (tick % 10U == 0U && sc.mode == Mode::Predictive) {
       const auto ps = h->thermalPredictive_.state();
       if (ps == MayapPredictive::State::Active) { r.predActiveS += 1.0; if (r.predFirstActiveS < 0) r.predFirstActiveS = t; }
-      if (ps == MayapPredictive::State::Degraded && predPrev == MayapPredictive::State::Active) ++r.predFallbacks;
+      if (ps == MayapPredictive::State::Fallback && predPrev == MayapPredictive::State::Active) ++r.predFallbacks;
       predPrev = ps; r.predState = static_cast<int>(ps); r.predRms = h->thermalPredictive_.telemetry().rms;
       if (std::getenv("PREDDBG") && tick % static_cast<unsigned>(std::getenv("PREDDT") ? std::atoi(std::getenv("PREDDT")) : 3000) == 0U && t >= (std::getenv("PREDT0") ? std::atof(std::getenv("PREDT0")) : 0.0)) {
         const auto &id = h->thermalPredictive_.identifier(); const auto tl = h->thermalPredictive_.telemetry();

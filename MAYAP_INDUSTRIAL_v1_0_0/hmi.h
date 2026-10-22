@@ -3002,7 +3002,7 @@ void infoItem(uint8_t i, const char *&label, char *v, size_t n) {
     case 24: label = "Lo: troi len"; if (m.valid && m.launchIdleOver > 0.0f) snprintf(v, n, "+%.2fC", m.launchIdleOver); break;
     case 25: {
       label = "Du doan: che do";
-      static const char *const PRED_STATE[] = {"TAT", "DANG HOC", "DIEU KHIEN", "PI AN TOAN"};
+      static const char *const PRED_STATE[] = {"TAT", "DANG HOC", "DIEU KHIEN", "LUI VE PID"};
       const uint8_t st = static_cast<uint8_t>(m.predState + 0.5f);
       if (m.valid) snprintf(v, n, "%s", PRED_STATE[st < 4U ? st : 0U]);
       break;
