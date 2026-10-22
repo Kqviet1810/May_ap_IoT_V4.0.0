@@ -1,5 +1,6 @@
 #pragma once
 // Thermal V2 digital-twin simulation loop + metrics (G1).  SIMULATION ONLY.  See rig.h for what is production text.
+#include <random>
 #include "rig.h"
 #include <fstream>
 #include <functional>
@@ -86,7 +87,10 @@ class Sim {
       rig.newSensorSample_ = false;
       if (sampleTick && !pathLost) {
         const double stepC = std::getenv("V2_DQ") ? std::atof(std::getenv("V2_DQ")) : p_.stepC;
-        const float reported = static_cast<float>(std::round((sensPhys + p_.sensorOffset) / stepC) * stepC);   // C8: the SENSOR reads low, the controller is not told
+        static std::mt19937 noiseRng(12345);
+        static const double noiseC = std::getenv("V2_NOISE") ? std::atof(std::getenv("V2_NOISE")) : 0.0;   // robustness runs only: sensor noise sigma, C
+        const double noise = noiseC > 0 ? std::normal_distribution<double>(0.0, noiseC)(noiseRng) : 0.0;
+        const float reported = static_cast<float>(std::round((sensPhys + p_.sensorOffset + noise) / stepC) * stepC);   // C8: the SENSOR reads low, the controller is not told
         filter.updateFilter(reported, 60);
         const float filtered = filter.value();
         rig.rawTemperature_ = std::max(reported, reported + rig.config_.tempOffset);
