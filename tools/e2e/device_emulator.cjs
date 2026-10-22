@@ -28,8 +28,8 @@ const CONFIG_DEFAULTS = {
   autotuneBandC: 0.3, manualTurnReanchorsSchedule: false, sirenSelfTestEnabled: true,
 };
 
-const COMMANDS = new Set(['batch_start', 'batch_stop', 'resume_yes', 'resume_no', 'autotune_start',
-  'autotune_cancel', 'firmware_check_now', 'firmware_rollback', 'light_toggle', 'alarm_ack',
+const COMMANDS = new Set(['batch_start', 'batch_stop', 'resume_yes', 'resume_no',
+  'firmware_check_now', 'firmware_rollback', 'light_toggle', 'alarm_ack',
   'batch_overdue_continue']);
 
 // transaction_bridge.h ackCode()/ackFriendlyMessage() for the codes this emulator emits.
@@ -59,7 +59,7 @@ function startDeviceEmulator({ url, deviceId, password, commandKeyHex, activeInt
     runtime: { temperature: 37.5, humidity: 55, machineState: 'Không có tác vụ đang chạy', batchRunning: false,
       currentDay: 0, heaterOn: false, heaterPower: 0, circulationFanOn: true, ventFanOn: false,
       humidifierOn: false, lightOn: false, sirenOn: false, turnState: 3, nextTurnMinutes: 90,
-      autoTuneState: 0, autoTuneProgress: 0, resumeConfirmationRequired: false,
+      resumeConfirmationRequired: false,
       batchOverdueConfirmationPending: false, activeFaults: [] },
   };
   const leases = new Map();

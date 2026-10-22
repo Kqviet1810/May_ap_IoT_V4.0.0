@@ -254,16 +254,6 @@
 <p class="settingFootnote" id="pmLegend">Đỏ: nhiệt độ · xanh: giá trị đặt · cam: công suất yêu cầu · tím nét đứt: SSR thực tế (TB 60 s) · dải xám: quạt hút chạy</p>
 </div>
 </details>
-<details class="settingCard">
-<summary><span class="settingIcon"><svg fill="none" height="22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="22"><line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="1" x2="7" y1="14" y2="14"/><line x1="9" x2="15" y1="8" y2="8"/><line x1="17" x2="23" y1="16" y2="16"/></svg></span><span class="settingSummary"><strong>Smart AutoTune</strong><small id="pidSummary">Máy tự tìm và lưu thông số</small></span><span aria-hidden="true" class="disclosure"></span></summary>
-<div class="settingBody">
-<p class="settingFootnote">Máy tự đo đáp ứng nhiệt rồi tính và kiểm chứng PID. Chỉ chạy khi không có mẻ. Yêu cầu bắt đầu phải được xác nhận bằng nút CÓ trên màn hình máy.</p>
-<div class="tuneState"><span id="tuneText">Sẵn sàng</span><div><i id="tuneBar"></i></div></div>
-<p class="settingFootnote" id="tuneDetail" role="status"></p>
-<p class="settingFootnote" id="tuneGate"></p>
-<button class="primary full" id="startTune" type="button">Gửi yêu cầu tự dò</button>
-</div>
-</details>
 <details class="settingCard" id="techCard" hidden>
 <summary><span class="settingIcon"><svg fill="none" height="22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="22"><rect height="11" rx="2" width="16" x="4" y="11"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><span class="settingSummary"><strong>Kỹ thuật PID</strong><small id="techSummary">Cần mã kỹ thuật 4 số</small></span><span aria-hidden="true" class="disclosure"></span></summary>
 <div class="settingBody">
@@ -277,13 +267,8 @@
 </div>
 <form id="advancedForm" hidden>
 <div class="techSession" id="techSessionNote" role="status"></div>
-<div class="notificationLine"><div><strong>Tự cân bằng nhiệt</strong><small>Máy tự điều chỉnh mức gia nhiệt và làm mát theo phản ứng nhiệt thực tế của buồng.</small></div><label class="toggle"><input id="adaptiveThermalBalanceEnabled" type="checkbox" disabled/><i></i></label></div>
-<p class="settingFootnote" id="adaptiveThermalStatus" role="status">Kết nối firmware hỗ trợ để bật tính năng.</p>
-<p class="settingFootnote"><strong>PID thủ công</strong></p>
+<p class="settingFootnote"><strong>Gia nhiệt</strong></p>
 <div class="tempGrid">
-<label class="compactTile"><span>Hệ số Kp</span><input id="advKp" max="100" min="0" step="0.1" type="number"/></label>
-<label class="compactTile"><span>Hệ số Ki</span><input id="advKi" max="20" min="0" step="0.01" type="number"/></label>
-<label class="compactTile"><span>Hệ số Kd</span><input id="advKd" max="200" min="0" step="0.1" type="number"/></label>
 <label class="compactTile"><span>Trần công suất nhiệt</span><div class="unit"><input id="advMaxHeaterPower" max="100" min="10" step="1" type="number"/><b>%</b></div></label>
 </div>
 <hr class="settingDivider"/>
@@ -302,14 +287,6 @@
 <label class="compactTile"><span>Bù nhiệt độ</span><div class="unit"><input id="tempOffset" max="5" min="-5" step="0.1" type="number" value="0"/><b>°C</b></div></label>
 <label class="compactTile"><span>Bù độ ẩm</span><div class="unit"><input id="humidityOffset" max="20" min="-20" step="0.1" type="number" value="0"/><b>%RH</b></div></label>
 </div>
-<details class="settingHintNote">
-<summary>Relay cũ · không dùng cho Smart AutoTune</summary>
-<p class="settingFootnote">Chỉ còn để tương thích bản ghi cũ. Smart AutoTune V1 tự chọn công suất kích thích an toàn.</p>
-<div class="tempGrid">
-<label class="compactTile"><span>Công suất relay</span><div class="unit"><input id="advAutotuneRelayPowerPercent" max="80" min="10" step="1" type="number"/><b>%</b></div></label>
-<label class="compactTile"><span>Dải xác nhận</span><div class="unit"><input id="advAutotuneBandC" max="1" min="0.05" step="0.05" type="number"/><b>°C</b></div></label>
-</div>
-</details>
 <p class="settingFootnote">Web không tự lưu. Nút bên dưới chỉ gửi yêu cầu; máy hiện giá trị cũ/mới trên màn hình và chờ bạn bấm CÓ hoặc KHÔNG trong 60 giây. Không có mẻ đang chạy mới áp dụng được.</p>
 <p class="formError" id="advancedFormError" role="alert"></p>
 <p class="settingFootnote" id="techRequestStatus" role="status"></p>

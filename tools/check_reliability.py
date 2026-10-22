@@ -252,8 +252,6 @@ require_re(
 require(machine, "std::max(rawSensorTemp, candidateRawCorrected)", "negative temperature calibration cannot weaken overheat safety")
 require(machine, "tempOscillationLastWindowCrossCount_", "TemperatureUnstable preserves triggering detail")
 require(machine, "thermalEnvelopeFollowsTarget", "batch setpoint keeps thermal safety envelope")
-require(machine, "mayapPidHasAuthority(requested)", "firmware rejects zero-authority PID")
-require(config, "inline bool mayapPidHasAuthority", "shared PID authority invariant")
 require(machine, "cfg.sensorTimeoutSec = defaults.sensorTimeoutSec;", "legacy sensor timeout normalized in controller")
 require(hmi, "cfg.sensorTimeoutSec = defaults.sensorTimeoutSec;", "legacy sensor timeout normalized in UI/realtime sanitizer")
 if 'id="sensorTimeout"' in index:
@@ -261,7 +259,6 @@ if 'id="sensorTimeout"' in index:
 require(index, 'id="tempOffset" max="5" min="-5"', "web temperature calibration matches firmware")
 require(index, 'id="highAlarm" max="42"', "web High bound matches firmware")
 require(index, 'id="emergencyTemp" max="45"', "web Emergency bound matches firmware")
-require(app, "kp === 0 && ki === 0 && kd === 0", "web rejects zero-authority PID")
 
 # Safety consistency: SensorFrozen requires actual heater-on evidence and remains fail-safe.
 require(machine, "heaterStuckAccumOnMs_ >= frozenEvidenceOnMs", "SensorFrozen heater evidence")

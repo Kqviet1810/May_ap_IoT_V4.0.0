@@ -81,10 +81,12 @@ test('FRAME packet worst cases stay within budgets', () => {
   const techSource = webSource.split('const TECH_FIELDS = Object.freeze([')[1]?.split(']);')[0];
   assert.ok(techSource, 'technical field table not found');
   const techKeys = [...techSource.matchAll(/\['([A-Za-z0-9]+)',\s*'[A-Za-z0-9]+'\]/g)].map((match) => match[1]);
-  assert.deepEqual([...techKeys, 'adaptiveThermalBalanceEnabled'].sort(),
-    Object.keys(advanced).filter((key) => key !== 'pidCycleSec').concat(['tempOffset', 'humidityOffset']).sort());
+  // Thermal Control V2.0.0: the old controller's fields stay in the legacy config readback but are no longer technical request fields.
+  const retired = ['kp', 'ki', 'kd', 'autotuneRelayPowerPercent', 'autotuneBandC', 'adaptiveThermalBalanceEnabled'];
+  assert.deepEqual([...techKeys].sort(),
+    Object.keys(advanced).filter((key) => key !== 'pidCycleSec' && !retired.includes(key)).concat(['tempOffset', 'humidityOffset']).sort());
   assert.ok(webSource.includes("'pidCycleSec'"), 'legacy full-config readback remains supported');
-  const fields = Object.fromEntries([...techKeys, 'adaptiveThermalBalanceEnabled'].map((key) => [key, 3600.1234]));
+  const fields = Object.fromEntries(techKeys.map((key) => [key, 3600.1234]));
   const techRequest = { ...base, bootId: 4294967295, expiresAt: 1780000000, action: 'tech_request', kind: 'config', fields };
   assert.ok(wireBytes('command', techRequest) < PacketPolicy.CHUNK_TARGET, `tech_request ${wireBytes('command', techRequest)} B`);
   assert.ok(wireBytes('command', { ...base, bootId: 4294967295, expiresAt: 1780000000, action: 'tech_unlock', pin: '0427' }) < PacketPolicy.SMALL_TARGET);

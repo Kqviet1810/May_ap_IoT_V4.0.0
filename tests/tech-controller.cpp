@@ -36,7 +36,6 @@ static void sanitizeMachineConfig(MachineConfig &c) {
   c.kp = std::min(100.0f, std::max(0.0f, c.kp));
   c.maxHeaterPower = static_cast<uint8_t>(std::min<int>(100, std::max<int>(10, c.maxHeaterPower)));
 }
-static bool mayapPidHasAuthority(const MachineConfig &c) { return c.kp > 0 || c.ki > 0 || c.kd > 0; }
 static bool timeReached(uint32_t now, uint32_t deadline) { return static_cast<int32_t>(now - deadline) >= 0; }
 
 static unsigned checks = 0;
@@ -259,13 +258,11 @@ int main() {
     CHECK(!c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "UNSUPPORTED" && c.runtime_.tech.pendingKind == 0);
   }
 
-  // 11. Nothing changed => nothing is written; invalid PID is refused before any record; the same values never fill the history.
+  // 11. Nothing changed => nothing is written; the same values never fill the history.
   { Ctl c; fresh(c, now); grantWeb(c, now);
     const AdvancedHistory::Snapshot same = AdvancedHistory::fromConfig(c.config_);
     const char *msg = "";
     CHECK(c.applyAdvancedSnapshot(now, same, msg) && std::string(msg) == "KHONG DOI" && c.store_.saves == 0 && c.hist_.writes == 0);
-    AdvancedHistory::Snapshot zero = same; zero.kp = zero.ki = zero.kd = 0;
-    CHECK(!c.applyAdvancedSnapshot(now, zero, msg) && std::string(msg) == "PID KHONG HOP LE" && c.store_.saves == 0 && c.hist_.writes == 0);
     CHECK(!c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m));      // empty staging
     CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_KP, 5.0}}, "req-same", c.config_));
     CHECK(!c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "NO_CHANGE");

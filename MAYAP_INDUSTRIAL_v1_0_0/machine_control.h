@@ -4472,7 +4472,6 @@ class MachineController {
       const bool thermalEnvelopeViolation = targetChanged
           ? !thermalEnvelopeFollowsTarget
           : directSafetyThresholdChange;
-      const bool pidAuthorityValid = mayapPidHasAuthority(requested);
       // Technical fields (PID, protection, calibration, tune relay) change only inside an unlocked HMI "Nang cao" session, or through a
       // Web request the HMI approved (that path saves directly, not through here). A Web config patch can never reach this far.
       const AdvancedHistory::Snapshot beforeAdvanced = AdvancedHistory::fromConfig(config_);
@@ -4508,7 +4507,7 @@ class MachineController {
       MachineConfig readback{};
       const bool safetySaveBlocked = batchClearPending_ || safetyJournalFaultLatched_;
       const bool saveAllowed = !safetySaveBlocked && !techLocked &&
-          !protectedBatchChange && pidAuthorityValid;
+          !protectedBatchChange;
       // The previous advanced values are kept as a history record BEFORE the new ones are written, so a restore can always undo this
       // save. A failed backup does not stop the save itself (the chip is probably failing anyway: the save below reports that).
       if (saveAllowed && advancedChange) (void)pushHistory(beforeAdvanced);
@@ -4520,15 +4519,13 @@ class MachineController {
       }
       if (ok) clearStorageDegraded(now);
       hmiConfirmConfigSave(transactionId, ok, ok ? &readback : nullptr);
-      const char *configFailureReason = !pidAuthorityValid ? "INVALID_PID_GAINS"
-          : techLocked ? "CONFIG_TECH_LOCKED"
+      const char *configFailureReason = techLocked ? "CONFIG_TECH_LOCKED"
           : protectedBatchChange ? "CONFIG_BATCH_LOCKED"
           : safetySaveBlocked ? "CONFIG_SAFETY_BLOCK"
           : "CONFIG_EEPROM_ERROR";
       mayapRealtimeConfirmConfigSave(transactionId, ok, ok ? &readback : nullptr,
                                 configFailureReason);
       const char *configFailureTag = ok ? ""
-          : !pidAuthorityValid ? "(INVALID_PID)"
           : techLocked ? "(TECH_LOCK)"
           : protectedBatchChange ? "(BATCH_LOCK)"
           : safetySaveBlocked ? "(SAFETY_BLOCK)" : "(EEPROM)";
@@ -4941,7 +4938,6 @@ class MachineController {
     MachineConfig candidate = config_;
     AdvancedHistory::applyTo(candidate, target);
     sanitizeMachineConfig(candidate);
-    if (!mayapPidHasAuthority(candidate)) { message = "PID KHONG HOP LE"; return false; }
     if (!pushHistory(current)) { message = "LOI LUU BAN GHI CU"; return false; }
     const MachineConfig previousConfig = config_;
     MachineConfig readback{};

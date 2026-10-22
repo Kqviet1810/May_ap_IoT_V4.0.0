@@ -1125,13 +1125,6 @@ struct MachineConfig {
   bool sirenSelfTestEnabled = false;
 };
 
-// PID la che do dieu khien san pham: it nhat mot he so phai co authority.
-// Kp-only / Ki-only / Kd-only van duoc phep cho commissioning; ca ba bang 0
-// thi bo dieu khien khong the tao cong suat ben vung va phai bi tu choi.
-inline bool mayapPidHasAuthority(const MachineConfig &cfg) {
-  return cfg.kp > 0.0f || cfg.ki > 0.0f || cfg.kd > 0.0f;
-}
-
 
 
 struct NetworkStatus {

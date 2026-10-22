@@ -1179,9 +1179,6 @@
     for (const formId of ['quickForm', 'temperatureForm', 'ventForm', 'turningForm',
       'lightAlarmForm', 'humidifierForm', 'advancedForm']) {
       $(formId)?.querySelectorAll('input,select').forEach(input => {
-        const unsupportedAdaptive = input.id === 'adaptiveThermalBalanceEnabled' &&
-          typeof device?.config?.adaptiveThermalBalanceEnabled !== 'boolean';
-        if (unsupportedAdaptive) { input.disabled = true; return; }
         if (input.type === 'checkbox' || input.tagName === 'SELECT') input.disabled = !device?.config;
         else input.readOnly = !device?.config;
       });
@@ -1523,51 +1520,10 @@
     }
     renderBatchAction(device, runtime);
 
-    if (runtime.adaptiveThermal && $('adaptiveThermalStatus')) {
-      const names = ['Tắt', 'Đang học', 'Đã đủ dữ liệu', 'Đang cân bằng', 'Đang tự làm mát', 'Đang học lại', 'Tạm ngưng'];
-      const adapt = runtime.adaptiveThermal;
-      $('adaptiveThermalStatus').textContent = names[Number(adapt.state)] || 'Tạm ngưng';
-    }
-    const autoTuneState = Number(runtime.autoTuneState || 0);
-    const autoTuneProgress = Math.max(0, Math.min(100, Number(runtime.autoTuneProgress || 0)));
-    $('tuneBar').style.width = `${autoTuneProgress}%`;
-    const phaseName = AUTOTUNE_PHASES[Number(runtime.autoTunePhase)] || '';
-    const reasonName = AUTOTUNE_REASONS[Number(runtime.autoTuneReason)] || '';
-    const gate = techGateInfo(runtime);
-    if (autoTuneState === 1) {
-      $('tuneText').textContent = `Đang chạy · ${autoTuneProgress}%`;
-      $('tuneDetail').textContent = phaseName ? `Giai đoạn: ${phaseName}` : '';
-      $('pidSummary').textContent = `Đang tự dò · ${autoTuneProgress}%${phaseName ? ` · ${phaseName}` : ''}`;
-      $('startTune').disabled = false;
-      $('startTune').textContent = 'Hủy tự dò PID';
-      $('startTune').classList.remove('primary');
-      $('startTune').classList.add('dangerButton');
-    } else {
-      $('startTune').disabled = !gate.session;
-      $('startTune').textContent = 'Gửi yêu cầu tự dò';
-      $('startTune').classList.remove('dangerButton');
-      $('startTune').classList.add('primary');
-      if (autoTuneState === 2) {
-        $('tuneText').textContent = 'Hoàn tất · thông số đã được máy kiểm chứng và lưu';
-        $('tuneDetail').textContent = '';
-        $('pidSummary').textContent = 'Đã hoàn tất và tự lưu';
-      } else if (autoTuneState === 3) {
-        $('tuneText').textContent = 'Tự dò không hoàn tất · PID cũ được giữ nguyên';
-        $('tuneDetail').textContent = reasonName ? `Lý do: ${reasonName}` : '';
-        $('pidSummary').textContent = reasonName ? `Thất bại · ${reasonName}` : 'Tự dò thất bại';
-      } else {
-        $('tuneText').textContent = 'Sẵn sàng';
-        $('tuneDetail').textContent = '';
-        $('pidSummary').textContent = 'Máy tự tìm và lưu thông số';
-      }
-    }
-    $('tuneGate').textContent = gate.text;
     renderTech(device, runtime);
     renderPidMonitor(device, runtime);
 
-    if (autoTuneState === 1) {
-      setCurrentActivity('Đang tự dò PID', `Tiến độ ${autoTuneProgress}%`, 'warning');
-    } else if (turn === 1 || turn === 2) {
+    if (turn === 1 || turn === 2) {
       setCurrentActivity(`Đang đảo trứng sang ${turn === 1 ? 'trái' : 'phải'}`, 'Đang chờ công tắc hành trình', 'active');
     } else if (runtime.ventFanOn) {
       setCurrentActivity('Quạt thông gió đang chạy', `Nhiệt độ ${numberVi(runtime.temperature)}°C`, 'active');
@@ -1818,24 +1774,13 @@
     check('lightAlarmForm', 'lightAfterBatchAlarmEnabled', config.lightAfterBatchAlarmEnabled);
     check('lightAlarmForm', 'sirenSelfTestEnabled', config.sirenSelfTestEnabled);
 
-    assign('advancedForm', 'advKp', config.kp);
-    assign('advancedForm', 'advKi', config.ki);
-    assign('advancedForm', 'advKd', config.kd);
     assign('advancedForm', 'advMaxHeaterPower', config.maxHeaterPower);
-    const adaptiveSupported = typeof config.adaptiveThermalBalanceEnabled === 'boolean';
-    $('adaptiveThermalBalanceEnabled').disabled = !adaptiveSupported;
-    check('advancedForm', 'adaptiveThermalBalanceEnabled', config.adaptiveThermalBalanceEnabled === true);
-    $('adaptiveThermalStatus').textContent = adaptiveSupported
-      ? (config.adaptiveThermalBalanceEnabled ? 'Bật · máy sẽ học trước khi điều chỉnh.' : 'Tắt · sử dụng PID hiện tại.')
-      : 'Firmware hiện tại chưa hỗ trợ Tự cân bằng nhiệt.';
     assign('advancedForm', 'advTempRateLimitC', config.tempRateLimitC);
     assign('advancedForm', 'advTempRateWindowSec', config.tempRateWindowSec);
     assign('advancedForm', 'advTempOscillationCrossLimit', config.tempOscillationCrossLimit);
     assign('advancedForm', 'advTempOscillationWindowSec', config.tempOscillationWindowSec);
     assign('advancedForm', 'advHeaterStuckMinRiseC', config.heaterStuckMinRiseC);
     assign('advancedForm', 'advHeaterStuckDurationSec', config.heaterStuckDurationSec);
-    assign('advancedForm', 'advAutotuneRelayPowerPercent', config.autotuneRelayPowerPercent);
-    assign('advancedForm', 'advAutotuneBandC', config.autotuneBandC);
 
     ['quickForm', 'batchForm', 'temperatureForm', 'ventForm', 'turningForm', 'lightAlarmForm', 'humidifierForm', 'advancedForm'].forEach((formId) => {
       if (force || !hasDirtyForm(formId)) setFormState(formId, 'saved', 'Đã nhận cài đặt từ máy');
@@ -2407,8 +2352,6 @@
     'DA THOAT TEST': 'Đã thoát chế độ kiểm tra',
     'DA TAT THIET BI': 'Đã tắt thiết bị đang kiểm tra',
     'DA HUY KIEM TRA': 'Đã hủy kiểm tra',
-    'DA HUY AUTO TUNE': 'Đã hủy tự dò PID',
-    'AUTO TUNE KHONG CHAY': 'Không có quá trình tự dò PID đang chạy',
     'DA DONG CONG WIFI': 'Đã đóng cổng đổi Wi-Fi',
     'DA GUI YEU CAU DAT LAI PIN': 'Đã gửi yêu cầu đặt lại mã PIN lên máy chủ',
     'DANG TAI FIRMWARE...': 'Máy đang tải phần mềm mới - không tắt nguồn',
@@ -2424,10 +2367,8 @@
     'LOI BO NHO CAU HINH': 'Lỗi bộ nhớ cấu hình - cần kiểm tra máy',
     'HAY XAC NHAN RESET LOI': 'Hãy xác nhận lỗi khởi động lại bất thường trên máy trước',
     'DUNG ME CU TRUOC': 'Hãy dừng mẻ cũ trước',
-    'AUTO TUNE DANG CHAY': 'Tự dò đang chạy, không thể thực hiện',
     'HAY CHUYEN SANG AUTO': 'Hãy chuyển công tắc trên máy sang chế độ Tự động trước',
     'CAM BIEN CHUA SAN SANG': 'Cảm biến nhiệt độ/độ ẩm chưa sẵn sàng',
-    'INVALID_PID_GAINS': 'PID không hợp lệ: Kp, Ki và Kd không được đồng thời bằng 0.',
     'RTC CHUA HOP LE': 'Đồng hồ thời gian thực (RTC) chưa hợp lệ',
     'LOI 2 HANH TRINH': 'Lỗi cả 2 công tắc hành trình cùng tác động',
     'DANG CO LOI DAO': 'Đang có lỗi cơ cấu đảo trứng, cần xử lý trước',
@@ -2440,7 +2381,6 @@
     'KHONG CO ME DANG CHAY': 'Không có mẻ nào đang chạy',
     'DUNG ME TRUOC': 'Hãy dừng mẻ đang chạy trước',
     'KHOANG NHIET KHONG DU': 'Khoảng nhiệt độ hiện tại không đủ rộng để chạy tự dò',
-    'AUTO TUNE DA BAT DAU': 'Đã bắt đầu tự dò',
     'DANG CO ME - KHONG TEST DUOC': 'Đang có mẻ ấp chạy, không vào được chế độ kiểm tra',
     'DANG QUA NHIET KHAN CAP': 'Đang quá nhiệt khẩn cấp, không thể thực hiện',
     'DA VAO CHE DO TEST': 'Đã vào chế độ kiểm tra thiết bị',
@@ -3110,23 +3050,15 @@
   let connectingDeviceId = '';
 
 
-  // ---- Smart AutoTune stage names / technical PID (gated by the HMI) / PID Monitor ----------------------------------------
-  const AUTOTUNE_PHASES = ['Sẵn sàng', 'Làm nóng', 'Gia nhiệt', 'Làm nguội', 'Kiểm chứng', 'Hoàn thành', 'Thất bại',
-    'Đo nền', 'Kích thích', 'Trượt nhiệt', 'Kích thích lần 2', 'Tiến sát SV', 'Gần SV', 'Ổn định', 'Tính PID'];
-  const AUTOTUNE_REASONS = ['', 'Bảo vệ nhiệt kích hoạt', 'Lỗi cảm biến', 'Đổi chế độ máy', 'Quá giờ làm nóng', 'Quá giờ giai đoạn',
-    'Quá giờ tổng', 'Kết quả không lặp lại', 'Biên độ quá nhỏ', 'Chu kỳ quá ngắn', 'Ku không hợp lệ', 'Hệ số không hợp lệ',
-    'Lỗi lưu cấu hình', 'Thành công', 'Không đủ công suất dự trữ', 'Nhiệt nền không ổn định', 'Buồng không đáp ứng',
-    'Mô hình không hợp lệ', 'Bị giới hạn công suất', 'Quá giờ tiến sát SV', 'Relay thất bại', 'Ứng viên PID không hợp lệ',
-    'Kiểm chứng không đạt'];
+  // ---- Technical settings (gated by the HMI) / heater monitor ----------------------------------------
   const TECH_RESULTS = { 2: 'Máy đã xác nhận và áp dụng', 3: 'Người vận hành đã từ chối trên máy',
     4: 'Hết 60 giây không ai xác nhận · yêu cầu đã hủy', 5: 'Máy không thực hiện được (kiểm tra an toàn hoặc lưu thất bại)',
     6: 'Quyền Web đã bị thu hồi trên máy' };
   const TECH_FIELDS = Object.freeze([
-    ['kp', 'advKp'], ['ki', 'advKi'], ['kd', 'advKd'], ['maxHeaterPower', 'advMaxHeaterPower'],
+    ['maxHeaterPower', 'advMaxHeaterPower'],
     ['heaterStuckMinRiseC', 'advHeaterStuckMinRiseC'], ['heaterStuckDurationSec', 'advHeaterStuckDurationSec'],
     ['tempRateLimitC', 'advTempRateLimitC'], ['tempRateWindowSec', 'advTempRateWindowSec'],
     ['tempOscillationCrossLimit', 'advTempOscillationCrossLimit'], ['tempOscillationWindowSec', 'advTempOscillationWindowSec'],
-    ['autotuneRelayPowerPercent', 'advAutotuneRelayPowerPercent'], ['autotuneBandC', 'advAutotuneBandC'],
     ['tempOffset', 'tempOffset'], ['humidityOffset', 'humidityOffset']]);
   const techUi = { requestId: '' };
 
@@ -3135,7 +3067,7 @@
     const tech = runtime?.tech;
     if (!tech || typeof tech.allowed !== 'boolean') return { allowed: false, session: false, text: '' };
     if (!tech.allowed) return { allowed: false, session: false,
-      text: 'Yêu cầu từ Web đang bị tắt. Bật “Quyền Web PID” trong Nâng cao trên máy, hoặc chạy tự dò trực tiếp trên máy.' };
+      text: 'Yêu cầu từ Web đang bị tắt. Bật “Quyền Web PID” trong Nâng cao trên máy.' };
     if (!tech.session) return { allowed: true, session: false, text: 'Mở khóa mục “Kỹ thuật PID” bằng mã kỹ thuật để gửi yêu cầu.' };
     return { allowed: true, session: true, text: '' };
   }
@@ -3149,10 +3081,6 @@
       const value = Number($(id)?.value);
       if (!Number.isFinite(value) || typeof config[key] !== 'number') continue;
       if (Math.abs(value - config[key]) > 1e-6) fields[key] = value;
-    }
-    if (typeof config.adaptiveThermalBalanceEnabled === 'boolean') {
-      const on = Boolean($('adaptiveThermalBalanceEnabled')?.checked);
-      if (on !== config.adaptiveThermalBalanceEnabled) fields.adaptiveThermalBalanceEnabled = on ? 1 : 0;
     }
     return fields;
   }
@@ -3221,13 +3149,10 @@
     $('techSendBtn').disabled = Boolean(pending) || !controlReady(device) || Boolean(runtime?.batchRunning);
   }
 
-  // PID Monitor: read-only. Only measured numbers; a missing value stays "—".
+  // Heater monitor: read-only. Only measured numbers; a missing value stays "—".
   const PM_ITEMS = Object.freeze([
-    ['pv', 'PV nhiệt độ', '°C', 2], ['sp', 'SP đặt', '°C', 2], ['err', 'Sai số (SP−PV)', '°C', 2], ['corr', 'PID P+I+D', '%', 1],
-    ['hold', 'Hold FF', '%', 1], ['vent', 'Vent FF', '%', 1], ['limit', 'Giới hạn Adaptive', '%', 0], ['req', 'Yêu cầu cuối', '%', 1],
-    ['act', 'SSR thực tế TB 60 s', '%', 1], ['kp', 'Kp', '', 2], ['ki', 'Ki', '', 3], ['kd', 'Kd', '', 1],
-    ['conf', 'Profile Confidence', '%', 0], ['gain', 'Heater Gain', '', 3], ['delay', 'Heater Delay', 's', 0],
-    ['coast', 'Coast', '°C', 2], ['holdPct', 'Hold Power', '%', 1], ['ventGain', 'Vent Gain', '', 3]]);
+    ['pv', 'PV nhiệt độ', '°C', 2], ['sp', 'SP đặt', '°C', 2], ['err', 'Sai số (SP−PV)', '°C', 2],
+    ['req', 'Yêu cầu cuối', '%', 1], ['act', 'SSR thực tế TB 60 s', '%', 1]]);
   const PM_MAX_POINTS = 900;
   const PM_SAMPLE_MS = 2000;
   const pidMon = { open: false, deviceId: '', bootId: 0, series: [], lastAt: 0, cells: null, raf: 0 };
@@ -3250,23 +3175,13 @@
 
   function pmValues(device, runtime) {
     const m = runtime?.pidMon;
-    const config = device?.config || {};
     const ok = Boolean(m && m.valid);
     const v = {};
     v.pv = ok ? Number(runtime.temperature) : NaN;
     v.sp = ok ? Number(m.sp) : NaN;
     v.err = ok ? Number(m.err) : NaN;
-    v.corr = ok ? Number(m.corr) : NaN;
-    v.hold = ok ? Number(m.hold) : NaN;
-    v.vent = ok ? Number(m.vent) : NaN;
-    v.limit = ok ? `${Number(m.lo).toFixed(0)}–${Number(m.hi).toFixed(0)}` : '';
     v.req = ok ? Number(m.req) : NaN;
     v.act = ok ? Number(m.act) : NaN;
-    v.kp = Number(config.kp); v.ki = Number(config.ki); v.kd = Number(config.kd);
-    const learning = Boolean(runtime?.adaptiveThermal?.enabled) && m;
-    v.conf = learning ? Number(m.conf) : NaN; v.gain = learning ? Number(m.gain) : NaN;
-    v.delay = learning ? Number(m.delay) : NaN; v.coast = learning ? Number(m.coast) : NaN;
-    v.holdPct = learning ? Number(m.holdPct) : NaN; v.ventGain = learning ? Number(m.ventGain) : NaN;
     return v;
   }
 
@@ -3698,16 +3613,13 @@
       if (label && note) addToggle(label, note);
     });
     const footnotes = {
-      'startTune': 'Điều kiện tự dò PID',
       'advancedForm': 'Lưu ý cài đặt nâng cao',
       'renameDeviceForm': 'Phạm vi đổi tên',
       'changePinForm': 'Yêu cầu mã PIN'
     };
     for (const [parentId, label] of Object.entries(footnotes)) {
       const parent = $(parentId);
-      const note = parentId === 'startTune'
-        ? parent?.parentElement?.querySelector(':scope > .settingFootnote')
-        : parent?.querySelector(':scope > .settingFootnote');
+      const note = parent?.querySelector(':scope > .settingFootnote');
       if (!note || note.querySelector('strong')) continue;
       const details = document.createElement('details');
       details.className = 'settingHintNote';
@@ -3778,9 +3690,6 @@
   function validateAdvancedForm() {
     clearInvalid('advancedForm');
     if (!validateSensorForm()) return false;
-    const kp = Number($('advKp').value);
-    const ki = Number($('advKi').value);
-    const kd = Number($('advKd').value);
     const maxHeaterPower = Number($('advMaxHeaterPower').value);
     const tempRateLimitC = Number($('advTempRateLimitC').value);
     const tempRateWindowSec = Number($('advTempRateWindowSec').value);
@@ -3788,12 +3697,6 @@
     const tempOscillationWindowSec = Number($('advTempOscillationWindowSec').value);
     const heaterStuckMinRiseC = Number($('advHeaterStuckMinRiseC').value);
     const heaterStuckDurationSec = Number($('advHeaterStuckDurationSec').value);
-    const autotuneRelayPowerPercent = Number($('advAutotuneRelayPowerPercent').value);
-    const autotuneBandC = Number($('advAutotuneBandC').value);
-    if (!(kp >= 0 && kp <= 100)) return invalidate('advancedForm', 'advKp', 'Hệ số Kp phải từ 0 đến 100.');
-    if (!(ki >= 0 && ki <= 20)) return invalidate('advancedForm', 'advKi', 'Hệ số Ki phải từ 0 đến 20.');
-    if (!(kd >= 0 && kd <= 200)) return invalidate('advancedForm', 'advKd', 'Hệ số Kd phải từ 0 đến 200.');
-    if (kp === 0 && ki === 0 && kd === 0) return invalidate('advancedForm', 'advKp', 'Kp, Ki và Kd không được đồng thời bằng 0.');
     if (!(maxHeaterPower >= 10 && maxHeaterPower <= 100)) return invalidate('advancedForm', 'advMaxHeaterPower', 'Trần công suất phải từ 10 đến 100%.');
     if (!(tempRateLimitC >= 0.1 && tempRateLimitC <= 10)) return invalidate('advancedForm', 'advTempRateLimitC', 'Ngưỡng tốc độ phải từ 0,1 đến 10°C.');
     if (!(tempRateWindowSec >= 30 && tempRateWindowSec <= 1800)) return invalidate('advancedForm', 'advTempRateWindowSec', 'Khung thời gian phải từ 30 đến 1800 giây.');
@@ -3801,8 +3704,6 @@
     if (!(tempOscillationWindowSec >= 60 && tempOscillationWindowSec <= 3600)) return invalidate('advancedForm', 'advTempOscillationWindowSec', 'Khung thời gian phải từ 60 đến 3600 giây.');
     if (!(heaterStuckMinRiseC >= 0.05 && heaterStuckMinRiseC <= 5)) return invalidate('advancedForm', 'advHeaterStuckMinRiseC', 'Ngưỡng tăng tối thiểu phải từ 0,05 đến 5°C.');
     if (!(heaterStuckDurationSec >= 60 && heaterStuckDurationSec <= 3600)) return invalidate('advancedForm', 'advHeaterStuckDurationSec', 'Thời gian xác nhận phải từ 60 đến 3600 giây.');
-    if (!(autotuneRelayPowerPercent >= 10 && autotuneRelayPowerPercent <= 80)) return invalidate('advancedForm', 'advAutotuneRelayPowerPercent', 'Công suất relay tự dò phải từ 10 đến 80%.');
-    if (!(autotuneBandC >= 0.05 && autotuneBandC <= 1)) return invalidate('advancedForm', 'advAutotuneBandC', 'Dải xác nhận tự dò phải từ 0,05 đến 1°C.');
     return true;
   }
 
@@ -4241,27 +4142,6 @@
       pidMon.open = $('pidMonitorCard').open;
       if (state.selectedId) sendSession(state.selectedId, true, pidMon.open);
       if (pidMon.open) renderPidMonitor(currentDevice());
-    });
-
-    $('startTune').addEventListener('click', async () => {
-      const runtime = currentDevice()?.snapshot?.runtime;
-      if (Number(runtime?.autoTuneState || 0) === 1) {
-        const ok = await confirmAction({
-          title: 'Hủy Smart AutoTune?',
-          message: 'Dừng ngay quá trình tự dò hiện tại. Các thông số PID cũ vẫn được giữ nguyên.',
-          accept: 'Hủy tự dò'
-        });
-        if (ok) await sendCommand('autotune_cancel');
-        return;
-      }
-      if (!techSession(runtime)) return toast('Cần bật Quyền Web PID trên máy và nhập mã kỹ thuật ở mục Kỹ thuật PID', 5000);
-      if (runtime?.batchRunning) return toast('Không thể tự dò khi mẻ đang chạy');
-      const ok = await confirmAction({
-        title: 'Gửi yêu cầu Smart AutoTune?',
-        message: 'Máy sẽ hiện yêu cầu trên màn hình và chờ bạn bấm CÓ trong 60 giây. Chỉ chạy khi khoang ấp trống.',
-        accept: 'Gửi yêu cầu'
-      });
-      if (ok) await requestTech({ kind: 'autotune' });
     });
 
     $('themeToggle').querySelectorAll('button').forEach((button) => {

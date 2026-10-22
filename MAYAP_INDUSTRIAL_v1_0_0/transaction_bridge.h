@@ -1176,10 +1176,6 @@ inline void handleConfigSetMessage(const JsonDocument &doc) {
       return;
     }
   }
-  if (!mayapPidHasAuthority(candidate)) {
-    publishAck(requestId, "invalid", "INVALID_PID_GAINS");
-    return;
-  }
   if (!isfinite(candidate.targetTemp) || !isfinite(candidate.highTempAlarm) ||
       !isfinite(candidate.emergencyTemp) ||
       candidate.lowTempAlarm >= candidate.targetTemp ||
