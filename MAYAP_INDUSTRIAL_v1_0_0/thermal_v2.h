@@ -52,12 +52,19 @@ constexpr float BETA = 0.7f;
 constexpr float I_MAX = 30.0f;
 constexpr float E115_CLIMB_FRAC = 0.4f;
 constexpr float E115_BOOST_MAX = 25.0f;
+// ---- independent in-flight limiter (fixed worst-case numbers from the RG144 study, NOT tuned to this controller; it can only lower u) ----
+constexpr float LIM_K_HI = 2.5e-4f;        // degC/s per % : 0.02 degC/s of net rise at ~80 % net power, the steepest of RG144
+constexpr float LIM_THETA_S = 180.0f;      // longest delay of RG144: energy delivered in this window may still be on its way
+constexpr float LIM_H_LO = 12.0f;          // lowest hold power seen: what the oven loses while that energy arrives
+constexpr float LIM_NEW_S = 60.0f;         // horizon over which a newly commanded % is priced
+constexpr float LIM_MARGIN_C = 0.4f;       // below the Emergency line
 constexpr float PERMIT_RECOMPUTE_S = 120.0f;
 
 enum State : uint8_t { StIdle = 0, StClimb = 1, StTrack = 2, StFrozen = 3, StE115 = 4 };
 
 struct Input {
-  float pv = NAN, sp = 37.5f, dQ = 0.1f, headroomC = 0.7f, capPct = 100.0f, deliveredPct = 0.0f, e115Frac = 0.0f, dtS = 0.1f;
+  float pv = NAN, sp = 37.5f, dQ = 0.1f, headroomC = 0.7f, alarmHeadroomC = 0.7f,   // headroomC: to the vent line; alarmHeadroomC: to the Emergency line (both in the control sensor's frame)
+  capPct = 100.0f, deliveredPct = 0.0f, e115Frac = 0.0f, dtS = 0.1f;
   bool newSample = false, permit = false;
 };
 struct Output {
@@ -128,6 +135,19 @@ class Controller {
       I_ += Kc / tauI * e * dt;
       if (I_ > I_MAX) I_ = I_MAX; else if (I_ < -I_MAX) I_ = -I_MAX;
     }
+    // Last-resort limiter, independent of the learner and of the law: only the measured PV, its measured 120 s rise carried over one worst-case delay,
+    // and the fixed constants above.  It can only lower u, and it only acts near the Emergency line (the controller's own prediction guards High).
+    {
+      float inflight = 0.0f;
+      if (ringCount_ >= RING_N) {
+        const float rise = pvRing_[RING_N - 1] - pvRing_[0];
+        inflight = rise / (10.0f * (RING_N - 1)) * LIM_THETA_S;
+        if (inflight < 0.0f) inflight = 0.0f;
+      }
+      const float ceilC = in.sp + (in.alarmHeadroomC > LIM_MARGIN_C ? in.alarmHeadroomC - LIM_MARGIN_C : 0.0f);
+      const float uLim = LIM_H_LO + (ceilC - pv_ - inflight) / (LIM_K_HI * LIM_NEW_S);
+      if (pv_ >= in.sp && uLim < u) { u = uLim > 0.0f ? uLim : 0.0f; far_ = false; }       // above SP only: a deep dip must be allowed to climb back at full power
+    }
     out.state = StTrack;
     if (idPhase_ == 1 || idPhase_ == 2) { u = idPower_ < cap ? idPower_ : cap; out.state = StClimb; }
     if (in.e115Frac >= E115_CLIMB_FRAC && pv_ < in.sp) {          // heater on for long without the air rising 0.3: ask for more, in proportion
@@ -180,7 +200,7 @@ class Controller {
 
   // ---- the single learner: slope(mK/s) = a*La/100 - b1 - b2*x   with theta = [a, b1, b2] ----
   void rlsUpdate() {
-    if (ringCount_ < SLOPE_N || !idDone_ && idPhase_ == 1) return;               // the delay must be known before P_air means anything
+    if (ringCount_ < SLOPE_N || (!idDone_ && idPhase_ == 1)) return;               // the delay must be known before P_air means anything
     const uint8_t n = SLOPE_N; float sx = 0, sy = 0, sxx = 0, sxy = 0, pa = 0, xm = 0;
     for (uint8_t i = 0; i < n; ++i) {
       const float t = i * 10.0f, y = pvRing_[RING_N - n + i];

@@ -159,6 +159,9 @@ jobs:
       - name: Thermal V2 digital-twin rig self-test (analytic closed forms, burst accuracy, protection layers, E115; simulation only)
         run: python3 tools/thermal-v2/run_grid.py selftest
 
+      - name: Thermal V2 controller host unit tests (contract of thermal_v2.h: permit, NaN, cap, SP step, determinism)
+        run: python3 tools/thermal-v2/run_grid.py unit
+
       - name: Technical PIN, Web permission, HMI-approved requests and old records (host tests of the real controller code)
         run: python3 tools/test_tech_access.py --sanitize
 

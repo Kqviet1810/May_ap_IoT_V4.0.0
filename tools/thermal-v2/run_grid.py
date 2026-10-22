@@ -2,6 +2,7 @@
 """Thermal V2 digital-twin grid runner + grader (G1).  SIMULATION ONLY: a pass here is NOT proof for the real oven (lesson L6).
 
   run_grid.py selftest                         build the rig and run its self-tests (analytic closed forms, burst accuracy, protection, E115)
+  run_grid.py unit                             host unit tests of thermal_v2.h alone
   run_grid.py plants A|B|C                      print the plant CSV generated from plants.json
   run_grid.py grid --ctl NAME [--sets A,B,C] [--scn S1,S2,...] [--out DIR]
                                                 run the sets, grade against tools/thermal-research/acceptance.json
@@ -123,11 +124,16 @@ def grade(rows, refs, acc):
     return res
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument('cmd', choices=['selftest', 'plants', 'grid']); ap.add_argument('arg', nargs='?')
+    ap = argparse.ArgumentParser(); ap.add_argument('cmd', choices=['selftest', 'unit', 'plants', 'grid']); ap.add_argument('arg', nargs='?')
     ap.add_argument('--ctl', default='fastest'); ap.add_argument('--sets', default='A'); ap.add_argument('--scn', default='S1,S2,S3,S4,S5a,S5b,S6a,S6b,S7,S8,S9')
     ap.add_argument('--out', default=None); a = ap.parse_args()
     spec = json.loads((TV2 / 'plants.json').read_text()); acc = json.loads(ACC.read_text())
     if a.cmd == 'plants': sys.stdout.write(plants_csv(a.arg or 'A', spec)); return
+    if a.cmd == 'unit':
+        with tempfile.TemporaryDirectory(prefix='v2unit-') as td:
+            exe = Path(td) / 'unit_v2'
+            sh(['g++', '-std=c++14', '-O2', '-Wall', str(TV2 / 'unit_v2.cpp'), '-o', str(exe)])
+            sys.exit(subprocess.run([str(exe)]).returncode)
     with tempfile.TemporaryDirectory(prefix='v2grid-') as td:
         work = Path(td); exe = build(work)
         if a.cmd == 'selftest':

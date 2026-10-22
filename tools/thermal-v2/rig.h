@@ -104,7 +104,7 @@ struct CtlIn {
   bool newSample = false;
   uint32_t sampleSeq = 0;
   bool permit = false, fanStable = false, fanVent = false, ventHold = false;
-  float capPct = 100, headroomC = 0.7f, deliveredPct = 0, e115Frac = 0;
+  float capPct = 100, headroomC = 0.7f, alarmHeadroomC = 0.7f, deliveredPct = 0, e115Frac = 0;
   double dt = 0.1;
 };
 struct Controller {
@@ -132,7 +132,7 @@ struct V2Ctl : Controller {            // the V2 law; the cap / NaN / negative c
   const char *name() const override { return "v2"; }
   float step(const CtlIn &in) override {
     thermalv2::Input i;
-    i.pv = in.pv; i.sp = in.sp; i.dQ = 0.1f; i.headroomC = in.headroomC; i.capPct = in.capPct; i.deliveredPct = in.deliveredPct;
+    i.pv = in.pv; i.sp = in.sp; i.dQ = 0.1f; i.headroomC = in.headroomC; i.alarmHeadroomC = in.alarmHeadroomC; i.capPct = in.capPct; i.deliveredPct = in.deliveredPct;
     i.e115Frac = in.e115Frac; i.dtS = static_cast<float>(in.dt); i.newSample = in.newSample; i.permit = in.permit;
     last = c.step(i);
     static const bool dbg = std::getenv("V2DBG") != nullptr;
@@ -201,6 +201,7 @@ struct Rig {
     in.sampleSeq = sampleSeq_; in.permit = normalSsrPermit && actuatorReady; in.fanStable = fanStable;
     in.fanVent = req.ventFan; in.ventHold = warmupVentHold_; in.capPct = config_.maxHeaterPower;
     in.headroomC = std::min(config_.highTempAlarm, config_.ventOnTemp) - std::max(0.0f, -config_.tempOffset) - config_.targetTemp;
+    in.alarmHeadroomC = config_.emergencyTemp - std::max(0.0f, -config_.tempOffset) - config_.targetTemp;
     in.deliveredPct = deliveredPct_;
     in.e115Frac = static_cast<float>(heaterStuckAccumOnMs_) / (static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f);
     in.dt = dt_;
