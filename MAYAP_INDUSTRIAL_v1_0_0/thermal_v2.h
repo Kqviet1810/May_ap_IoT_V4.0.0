@@ -153,7 +153,7 @@ class Controller {
     binHead_ = 0; ringCount_ = 0; secT_ = 0; secAcc_ = 0; ring10_ = 0; lag_ = 0; absS_ = 0;
     tau_ = TAU_LAG_S; setDelay(THETA_PRIOR_S - THETA_PICKUP_S);
     histCount_ = 0; histHead_ = 0; firstPowerAbs_ = -1.0f; batchStage_ = 0; batchDue_ = false; batchActive_ = false; kFrozen_ = false; kStdB_ = 0; dBias_ = 0; fitRejects_ = 0; prevFitRms_ = 0.0f;
-    lastFitOk_ = false; fitSerial_ = 0;
+    lastFitOk_ = false; trusted_ = false; wDead_ = false; fitSerial_ = 0;
     respPv_ = NAN; respT_ = 0.0f; respE_ = 0.0f; respSuspect_ = false;
     I_ = 0; Te_ = NAN; pv_ = NAN; spNow_ = 37.5f; far_ = false; tauEsel_ = TAU_E_PRIOR; sigPred_ = 1.0f;
     idDone_ = false; idPhase_ = 0; rlsHold_ = SLOPE_N + 1; thetaSeen_ = false;
@@ -200,13 +200,14 @@ class Controller {
     if (!std::isfinite(p.td) || !std::isfinite(p.tau) || !std::isfinite(p.kStd) || !std::isfinite(p.rms)) return false;
     if (p.th[0] < K_MIN * 1e5f * 1.02f || p.th[0] > K_MAX_EST * 1e5f * 0.98f) return false;
     if (p.th[2] < 0.5f || p.th[2] > 9.0f || p.th[3] < 0.2f || p.th[3] > p.th[2]) return false;
+    if (p.th[1] < -10.0f || p.th[1] > 40.0f || p.kStd > K_MAX_EST || p.rms > 20.0f) return false;
     if (p.td < TD_MIN_S + 0.1f || p.td > TD_MAX_S - 0.1f || p.tau < 10.0f || p.tau > 120.0f || p.kStd < 0.0f || p.rms < 0.0f || p.tauEsel >= 3) return false;
     for (int i = 0; i < NP; ++i) th_[i] = p.th[i];
     th_[4] = 0.0f;                                                  // the egg start offset belonged to that start
     tau_ = p.tau; setDelay(p.td); tauEsel_ = p.tauEsel;
     kStdB_ = p.kStd; if (kStdB_ < 0.15f * kRaw()) kStdB_ = 0.15f * kRaw();
     kFrozen_ = true; for (int q = 0; q < NP; ++q) { P_[0][q] = 0.0f; P_[q][0] = 0.0f; }
-    prevFitRms_ = p.rms; batchStage_ = 1; dBias_ = 0.0f; idDone_ = true; idPhase_ = 3; rlsHold_ = SLOPE_N + 1;
+    prevFitRms_ = p.rms; batchStage_ = 1; trusted_ = true; dBias_ = 0.0f; idDone_ = true; idPhase_ = 3; rlsHold_ = SLOPE_N + 1;
     return true;
   }
 
@@ -271,7 +272,7 @@ class Controller {
       if (!(pp >= ID_P_MIN)) pp = ID_P_MIN;
       idPower_ = pp; u = pp < cap ? pp : cap; out.state = StClimb; far_ = false;
     }
-    if (UNIDENTIFIED_CAP && batchStage_ == 0 && idPhase_ != 1 && idPhase_ != 2) {   // no accepted fit yet and no probe running (priors path, e.g. a restart): never above the family-safe power
+    if (UNIDENTIFIED_CAP && !trusted_ && idPhase_ != 1 && idPhase_ != 2) {   // no accepted fit yet and no probe running (priors path, e.g. a restart): never above the family-safe power
       float pp = H_LO + ID_SAFETY * (in.sp - pv_ - ID_RISE_C) / (K_FAST * T_MAX_S);
       if (!(pp >= ID_P_MIN)) pp = ID_P_MIN;
       if (u > pp) { u = pp; far_ = false; }
@@ -311,7 +312,7 @@ class Controller {
   // cautious k: estimate plus one standard deviation (a larger k means a smaller gain and an earlier stop)
   float kUsed() const { const float k = kRaw() + kStd(); return k > K_MAX_EST ? K_MAX_EST : k; }
   float aSafe() const { return th_[0] > 1.0f ? th_[0] : 1.0f; }
-  float wEgg() const { return std::exp(-absS_ / TAU_E_C[tauEsel_]); }
+  float wEgg() const { return wDead_ ? 0.0f : std::exp(-absS_ / TAU_E_C[tauEsel_]); }       // after 25000 s (> 11 time constants) the start offset is gone for good, whatever the clock rebase does
   float haOf() const { return 100.0f * th_[3] / aSafe(); }                                   // egg exchange, % of bank per degC
   float demandAt(float pv) const {                                                            // demand if the air were at pv
     const float d = 100.0f * (th_[1] + th_[2] * (pv - P0) - th_[3] * (Te_ - P0) - th_[4] * wEgg()) / aSafe() + dBias_;
@@ -348,9 +349,10 @@ class Controller {
     secAcc_ += dl * dt; secT_ += dt;
     while (secT_ >= 1.0f) {
       const float bin = secAcc_ / secT_; secAcc_ = 0; secT_ -= 1.0f; absS_ += 1.0f;
+      if (absS_ > 25000.0f) wDead_ = true;
       if (absS_ >= TIME_REBASE_S) {                                  // keep float time exact: only differences of absolute seconds are ever used
         absS_ -= TIME_REBASE_S; lastPushAbs_ -= TIME_REBASE_S; idT0_ -= TIME_REBASE_S; idTTheta_ -= TIME_REBASE_S;
-        if (firstPowerAbs_ >= 0.0f) firstPowerAbs_ -= TIME_REBASE_S;
+        if (firstPowerAbs_ >= 0.0f) { firstPowerAbs_ -= TIME_REBASE_S; if (firstPowerAbs_ < 0.0f) firstPowerAbs_ = 0.0f; }
         batchActive_ = false;
       }
       { const float bq = bin * 2.0f + 0.5f; binU_[binHead_] = static_cast<uint8_t>(bq > 255.0f ? 255.0f : (bq < 0.0f ? 0.0f : bq)); }
@@ -358,7 +360,7 @@ class Controller {
       const uint16_t td = static_cast<uint16_t>(tdPrime() + 0.5f);
       const uint16_t idx = static_cast<uint16_t>((binHead_ + BIN_N - td) % BIN_N);   // the bin that leaves the transport delay now
       if (RESP_WATCHDOG && in.permit && pvBadS_ <= 0.0f) {
-        const bool known = batchStage_ > 0;                                              // after an accepted fit the account uses what was learned, with margins
+        const bool known = trusted_;                                              // after an accepted fit the account uses what was learned, with margins
         float mature = RESP_MATURE_S, loss = RESP_LOSS_PCT;
         if (known) {
           mature = tdPrime() + 2.0f * tau_ + 10.0f; if (mature < 60.0f) mature = 60.0f; if (mature > RESP_MATURE_S) mature = RESP_MATURE_S;
@@ -423,11 +425,13 @@ class Controller {
       pvm = 0; for (uint8_t i = RING_N - n; i < RING_N; ++i) pvm += pvRing_[i]; pvm /= n;
     }
     const float err = meas - demandAt(pvm);
-    if (!flat && std::fabs(err) > LEVEL_SLOPE_GATE) return;
-    const float step = (flat ? LEVEL_GAIN : LEVEL_SLOPE_GAIN) * err;
-    dBias_ += step; I_ -= step;
-    if (dBias_ > 40.0f) dBias_ = 40.0f; else if (dBias_ < -40.0f) dBias_ = -40.0f;
-    if (I_ > I_MAX) I_ = I_MAX; else if (I_ < -I_MAX) I_ = -I_MAX;
+    if (std::fabs(err) > LEVEL_SLOPE_GATE) return;                   // a mismatch this large is a door / vent / dead heater, not the demand
+    float step = (flat ? LEVEL_GAIN : LEVEL_SLOPE_GAIN) * err;
+    float nb = dBias_ + step; if (nb > 40.0f) nb = 40.0f; else if (nb < -40.0f) nb = -40.0f;
+    step = nb - dBias_;
+    float ni = I_ - step; if (ni > I_MAX) ni = I_MAX; else if (ni < -I_MAX) ni = -I_MAX;
+    step = I_ - ni;                                                  // what I_ could take is all that moves: the pair (model level, I) stays conserved
+    dBias_ += step; I_ = ni;
   }
 
   // Egg observer: Te is a STATE (a tray swap, warm eggs after a power cut move it in one step), the coefficients are parameters.  The innovation of the
@@ -441,7 +445,7 @@ class Controller {
       sx += t; sy += y; sxx += t * t; sxy += t * y; pa += paRing_[RING_N - n + i]; pvm += y;
     }
     pa /= n; pvm /= n;
-    if (!(batchStage_ > 0 || pa < OBS_MAX_LA_PRIOR)) return;
+    if (!(trusted_ || pa < OBS_MAX_LA_PRIOR)) return;
     const float slopeMks = 1000.0f * (n * sxy - sx * sy) / (n * sxx - sx * sx);
     const float pred = th_[0] * pa * 0.01f - (th_[1] + th_[2] * (pvm - P0) - th_[3] * (Te_ - P0) - th_[4] * wEgg());
     float nu = slopeMks - pred;                                       // mK/s
@@ -598,14 +602,14 @@ class Controller {
     // a fit is accepted only if it is inside the searched family and explains the data: not on the delay grid edge, k not on its clamp, residual small
     const bool edge = bestTd_ <= TD_MIN_S + 0.1f || bestTd_ >= TD_MAX_S - 0.1f;
     const bool kEdge = bestTh_[0] <= K_MIN * 1e5f * 1.02 || bestTh_[0] >= K_MAX_EST * 1e5f * 0.98;
-    const bool bad = !bestFound_ || edge || kEdge || bestRms_ > FIT_RMS_MAX_MKS || (batchStage_ > 0 && prevFitRms_ > 0.0f && bestRms_ > FIT_RMS_WORSE * prevFitRms_);
+    const bool bad = !bestFound_ || respSuspect_ || edge || kEdge || bestRms_ > FIT_RMS_MAX_MKS || (batchStage_ > 0 && prevFitRms_ > 0.0f && bestRms_ > FIT_RMS_WORSE * prevFitRms_);
     if (bad) {
       ++fitRejects_;
       if (batchStage_ == 0 && fitRejects_ <= FIT_RETRIES) firstPowerAbs_ = absS_ - BATCH1_S + FIT_RETRY_S;   // try again later with more data
       else ++batchStage_;
       return;
     }
-    ++batchStage_; prevFitRms_ = static_cast<float>(bestRms_); lastFitOk_ = true; ++fitSerial_;
+    ++batchStage_; prevFitRms_ = static_cast<float>(bestRms_); lastFitOk_ = true; trusted_ = true; ++fitSerial_;
     const double s2 = static_cast<double>(SLOPE_STD_MKS) * SLOPE_STD_MKS;
     tau_ = bestTau_; setDelay(bestTd_);
     tauEsel_ = bestTe_; Te_ = teJ_[tauEsel_];
@@ -662,7 +666,7 @@ class Controller {
   }
 
   float idPower_ = 100.0f, idT0_ = 0, idPv0_ = 0, idTTheta_ = 0;
-  uint8_t bigNu_ = 0; float respPv_ = NAN, respT_ = 0.0f, respE_ = 0.0f, respNeed_ = 3750.0f; bool respSuspect_ = false; bool lastFitOk_ = false; uint8_t fitSerial_ = 0; bool fineSensor_ = false; bool idDone_ = false; uint8_t idPhase_ = 0, rlsHold_ = 0;
+  uint8_t bigNu_ = 0; float respPv_ = NAN, respT_ = 0.0f, respE_ = 0.0f, respNeed_ = 3750.0f; bool respSuspect_ = false; bool lastFitOk_ = false, trusted_ = false, wDead_ = false; uint8_t fitSerial_ = 0; bool fineSensor_ = false; bool idDone_ = false; uint8_t idPhase_ = 0, rlsHold_ = 0;
   uint8_t binU_[BIN_N];
   float pvH_[HIST_N], teH_[3][HIST_N], bla_[HIST_N], bx_[HIST_N][NP + 1], teJ_[3];
   bool histOk_[HIST_N];

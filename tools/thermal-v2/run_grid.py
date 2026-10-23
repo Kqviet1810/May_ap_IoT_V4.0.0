@@ -198,7 +198,9 @@ def main():
         want = {c['id'] for c in acc['criteria'] if c['id'] != 'GATE'} if a.scn.count(',') >= 10 else set()
         missing = sorted(w for w in want if w not in res)
         for w in missing: print(f'  {w:<22} NOT EVALUATED')
-        print('ALL CRITERIA PASS' if worst == 0 and not missing else f'{worst} case-criteria failed, {len(missing)} not evaluated')
-        sys.exit(1 if worst else (3 if missing else 0))
+        full = a.scn.count(',') >= 10
+        if not full: print('PARTIAL RUN (a subset of the scenarios): criteria of the scenarios not run are UNKNOWN, not passed')
+        print(('ALL CRITERIA PASS' if full else 'NO FAILURE IN THE SCENARIOS RUN') if worst == 0 and not missing else f'{worst} case-criteria failed, {len(missing)} not evaluated')
+        sys.exit(1 if worst else (3 if missing else (0 if full else 4)))
 
 if __name__ == '__main__': main()

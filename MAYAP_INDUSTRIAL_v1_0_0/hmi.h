@@ -2893,7 +2893,7 @@ void infoItem(uint8_t i, const char *&label, char *v, size_t n) {
     case 5: label = "Chu ky DK us"; if (m.valid) snprintf(v, n, "%lu/%lu", static_cast<unsigned long>(m.cycleLastUs), static_cast<unsigned long>(m.cycleMaxUs)); break;
     case 6: label = "PV du doan"; if (ok) snprintf(v, n, "%.2fC", m.predictedC); break;
     case 7: {
-      static const char *const phaseText[4] = {"NHIN/DO", "DA NHAN DANG", "DA HOC 1", "DA HOC 2"};
+      static const char *const phaseText[4] = {"NHIN/DO", "DA BIET", "DA HOC 1", "DA HOC 2"};
       label = "Pha hoc V2";
       if (m.valid) snprintf(v, n, "%s%s", phaseText[m.phase < 4U ? m.phase : 3U], m.suspect ? " NGHI" : "");
       break;

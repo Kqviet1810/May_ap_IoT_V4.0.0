@@ -5514,7 +5514,7 @@ class MachineController {
         // Thermal V2 climbs and recovers at up to 0.02 degC/s with the heater mostly on: a RISE while the heater has been on more than half the last
         // minute is the expected answer to the request, not an anomaly. A fall, or a rise with the heater mostly off (welded SSR), still warns.
         const float rateDelta = temperature_ - tempRateRefValue_;
-        const bool expectedClimb = rateDelta > 0.0f && pidMonActual_ >= 50.0f;
+        const bool expectedClimb = rateDelta > 0.0f && pidMonActual_ >= 50.0f && temperature_ < config_.targetTemp;   // not once the air is above the target
         temperatureRateActive_ = fabsf(rateDelta) >= config_.tempRateLimitC && !expectedClimb;
       } else {
         temperatureRateActive_ = false;

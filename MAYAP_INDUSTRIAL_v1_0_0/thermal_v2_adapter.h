@@ -20,29 +20,43 @@ struct ThermalV2SlotIn {
   float dtOverrideS = NAN;            // host rigs only (jitter experiments); never set by the firmware
 };
 
+// The control task runs every 5 ms; the controller is designed and tested for a 100 ms step (the rig steps at 100 ms), and one learning step costs
+// milliseconds on the ESP32.  So the controller runs at most every STEP_PERIOD_MS while the permit stays true; in between the last answer is held
+// (clamped to the current cap).  A change of the permit, or a new sensor sample that has been waiting, is never held back.
 class ThermalV2Slot {
  public:
+  static constexpr uint32_t STEP_PERIOD_MS = 100U;
   float step(const ThermalV2SlotIn &in) {
+    const bool hold = haveLast_ && in.permit && lastPermit_ && !isfinite(in.dtOverrideS) &&
+                      static_cast<uint32_t>(in.nowMs - lastMs_) < STEP_PERIOD_MS;
+    if (hold) {
+      if (in.newSample) pendingSample_ = true;                                       // the next real step must see it
+      return clampOut(held_, in.capPct);
+    }
     float dt = 0.1f;
     if (isfinite(in.dtOverrideS)) dt = in.dtOverrideS;
     else if (haveLast_) dt = static_cast<float>(static_cast<uint32_t>(in.nowMs - lastMs_)) * 0.001f;     // unsigned difference: millis() roll-over safe
-    lastMs_ = in.nowMs; haveLast_ = true;
+    lastMs_ = in.nowMs; haveLast_ = true; lastPermit_ = in.permit;
     thermalv2::Input i;
     i.pv = in.pv; i.sp = in.sp; i.dQ = in.dQ; i.headroomC = in.headroomC; i.alarmHeadroomC = in.alarmHeadroomC; i.capPct = in.capPct;
-    i.deliveredPct = in.deliveredPct; i.e115Frac = in.e115Frac; i.dtS = dt; i.newSample = in.newSample; i.permit = in.permit;
+    i.deliveredPct = in.deliveredPct; i.e115Frac = in.e115Frac; i.dtS = dt; i.newSample = in.newSample || pendingSample_; i.permit = in.permit;
+    pendingSample_ = false;
     last_ = ctl_.step(i);
-    float u = last_.powerPct;
-    if (!(u > 0.0f)) u = 0.0f;                                                     // also catches NaN
-    const float cap = (isfinite(in.capPct) && in.capPct > 0.0f) ? in.capPct : 0.0f;
-    if (u > cap) u = cap;
-    return u > 100.0f ? 100.0f : u;
+    held_ = clampOut(last_.powerPct, in.capPct);
+    return held_;
   }
-  void reset() { ctl_.reset(); haveLast_ = false; last_ = thermalv2::Output(); }
+  void reset() { ctl_.reset(); haveLast_ = false; lastPermit_ = false; pendingSample_ = false; held_ = 0.0f; last_ = thermalv2::Output(); }
   const thermalv2::Output &last() const { return last_; }
   thermalv2::Controller &controller() { return ctl_; }
   const thermalv2::Controller &controller() const { return ctl_; }
  private:
+  static float clampOut(float u, float capPct) {
+    if (!(u > 0.0f)) return 0.0f;                                                  // also catches NaN
+    const float cap = (isfinite(capPct) && capPct > 0.0f) ? capPct : 0.0f;
+    if (u > cap) u = cap;
+    return u > 100.0f ? 100.0f : u;
+  }
   thermalv2::Controller ctl_;
   thermalv2::Output last_;
-  uint32_t lastMs_ = 0; bool haveLast_ = false;
+  uint32_t lastMs_ = 0; bool haveLast_ = false, lastPermit_ = false, pendingSample_ = false; float held_ = 0.0f;
 };

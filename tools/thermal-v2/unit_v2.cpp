@@ -147,6 +147,18 @@ int main() {
     CHECK(!a.importPrior(pr), "prior: a controller that already learned in this run refuses to be overwritten");
     Mini q; const Run r = simulate(b, q, 1.0, 37.5f, 100.0f);
     CHECK(!r.nan && r.minU >= 0.0f && r.maxU <= 100.0f, "prior: a controller started from a stored path stays finite and in [0, 100]"); }
+  { ThermalV2Slot a; Mini p; float u = 0; uint32_t now = 1000U; bool bad = false, permitCut = true; unsigned realSteps = 0; float lastBefore = -1;
+    for (int k = 0; k < 36000 * 40; ++k) {                                          // the firmware calls every 5 ms: the controller must run at its own 100 ms step
+      ThermalV2SlotIn in; in.nowMs = now; now += 5U; in.pv = quant(p.Ta); in.sp = 37.5f; in.capPct = 80.0f; in.dQ = 0.1f; in.permit = !(k > 36000 * 20 && k < 36000 * 20 + 40);
+      in.newSample = (k % 400) == 0; in.deliveredPct = ((k % 600) < static_cast<int>(u * 6.0f + 0.5f)) ? 100.0f : 0.0f;
+      const float before = a.controller().clockS(); u = a.step(in); if (a.controller().clockS() != before) ++realSteps; (void)lastBefore;
+      if (!in.permit && u != 0.0f) permitCut = false;
+      if (!(u >= 0.0f && u <= 80.0f + 1e-3f)) bad = true;
+      p.step(in.deliveredPct > 0 ? 1.0 : 0.0, 0.005);
+    }
+    CHECK(!bad, "adapter at a 5 ms call rate: output stays within [0, cap]");
+    CHECK(permitCut, "adapter at a 5 ms call rate: a lost permit gives 0 at once (never held)");
+    CHECK(std::fabs(p.Ta - 37.5) < 1.0, "adapter at a 5 ms call rate: the oven still reaches the target"); (void)realSteps; }
   g_q = 0.01;                                                                                  // fine sensor: the egg observer is active
   { Controller c; Mini p; Run r = simulate(c, p, 3.0, 37.5f, 100.0f);
     CHECK(!r.nan && r.minU >= 0.0f && r.maxU <= 100.0f && r.peak < 38.5f, "fine sensor, cold start 3 h: finite, in [0, 100], peak below 38.5 degC");
