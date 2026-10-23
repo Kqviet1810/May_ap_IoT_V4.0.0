@@ -3323,7 +3323,7 @@
     }
     while (pidMon.log.size > PM_LOG_MAX) pidMon.log.delete(pidMon.log.keys().next().value);
     const info = $('pmLogInfo');
-    if (info) info.textContent = `Đã nhận ${pidMon.log.size} / ${Math.min(720, head)} mẫu của máy (10 s một mẫu, tối đa 2 giờ). Giữ mục này mở ~2 phút để nhận đủ.`;
+    if (info) info.textContent = `Đã nhận ${pidMon.log.size} / ${Math.min(360, head)} mẫu của máy (10 s một mẫu, tối đa 1 giờ). Giữ mục này mở vài phút để nhận đủ.`;
     if ($('pmDownload')) $('pmDownload').disabled = pidMon.log.size === 0 && pidMon.series.length === 0;
   }
 
