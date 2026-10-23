@@ -177,6 +177,10 @@ struct Rig {
 #include "actual-burst-member.inc"
   struct { float heaterPower = 0; } runtime_;
   ConditionTimer highTripTimer_{}, highClearTimer_{}, emergencyClearTimer_{};
+  // Web output overrides (never set in the rig: the Web is not simulated)
+  bool webHeaterOff_ = false, webVentValue_ = false, webCircValue_ = false;
+  uint32_t webVentUntil_ = 0, webCircUntil_ = 0, webSirenUntil_ = 0;
+  bool webOverrideLive(uint32_t until, uint32_t now) const { return until != 0U && !timeReached(now, until); }
   bool testModeActive_ = false, lightWebOverrideActive_ = false, lightWebOverrideRefInput_ = false, lightWebOverrideValue_ = false;
   bool resumeConfirmationRequired_ = false, resumePending_ = false, batchRunning_ = true, prevBatchRunningForOutputs_ = false;
   bool sensorUsable_ = false, humidityLowActive_ = false, previousFanCommand_ = false;
