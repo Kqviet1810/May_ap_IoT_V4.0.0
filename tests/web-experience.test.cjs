@@ -325,7 +325,7 @@ test('Web output control: buttons exist, are gated by the HMI permissions, and o
   const src = fs.readFileSync(require.resolve('../app.js'), 'utf8');
   for (const id of ['outputHeaterBtn', 'outputCircBtn', 'outputVentBtn', 'turnLeftBtn', 'turnRightBtn', 'pmDownload'])
     assert.match(html, new RegExp(`id="${id}"`));
-  assert.match(src, /WEBCTL\s*=\s*\{heater:1,vent:2,circ:4,light:8,siren:16,turn:32\}/);
+  assert.match(src, /WEBCTL = Object\.freeze\(\{ heater: 1, vent: 2, circ: 4, light: 8, siren: 16, turn: 32 \}\)/);
   for (const act of ['vent_toggle', 'circ_toggle', 'heater_toggle', 'siren_toggle', 'turn_hold'])
     assert.ok(src.includes(act), act);
   // the Web never writes the permission mask: no command that sets it exists on the Web side
