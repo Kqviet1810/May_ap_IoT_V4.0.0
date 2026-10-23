@@ -103,6 +103,7 @@ struct Scenario {
   bool batchRunning = true;
   int fault = 0; double faultAt = -1;                    // S10 (G4): 1 frozen sensor, 2 drift low, 3 jump low, 4 jump high, 5 long dropout, 6 SSR stuck on, 7 SSR stuck off
   bool coldStart = false;                                // event scenarios run after a real cold start (identification climb), not from a settled state
+  double rampFrac = 0, rampFor = 600;                    // S14: a loss that RISES slowly and STAYS (share of Pmax at SP reached after rampFor s) - the owner's 23 Oct drift: the demand creeps up, nothing is opened
   double doorFrac = 0;                                   // S13: like doorG, but sized per plant as a share of Pmax at SP (a door left ajar: a LONG, moderate loss that the controller learns as the hold)
   double doorAt = -1, doorFor = 300, doorG = 0;          // S11: a door held open: a SUSTAINED extra loss (W/K) for doorFor seconds, felt through the plant's sensor lag
 };
