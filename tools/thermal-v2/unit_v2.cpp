@@ -185,6 +185,44 @@ int main() {
       p.step(in.deliveredPct > 0 ? 1.0 : 0.0, 0.1);
     }
     CHECK(!bad && p.Ta < 38.6, "fine sensor, 11 h with air steps and noise: output and egg model stay finite, no runaway"); }
+  // ---- G7: the owner's real-oven log (23 Oct): measured-slope prediction, coast learning, first-approach brake, shadow while the vent line blocks, door limiter ----
+  g_q = 0.1;
+  { Controller c; Mini p; simulate(c, p, 2.0, 37.5f, 100.0f);
+    CHECK(c.coastSamples() >= 1 && c.coastGain() >= 0.3f && c.coastGain() <= 2.0f, "G7: the coast of at least one cut of the power was measured, the learned ratio is bounded");
+    CHECK(c.brakeFinished() && !c.brakeRunning(), "G7: the first approach braked once and finished (nothing left running)"); }
+  { Controller c; Mini p; simulate(c, p, 2.0, 37.5f, 100.0f);                                // identified, holding SP
+    const float i0 = c.integral(); Input in; in.pv = quant(p.Ta); in.sp = 37.5f; in.capPct = 100.0f; in.dtS = 0.1f; in.dQ = 0.1f;
+    in.permit = false; in.shadow = true; bool allZero = true, shadowState = true; const float pred0 = c.predicted();
+    for (int k = 0; k < 3000; ++k) {                                                          // 300 s with the vent line blocking: far longer than PERMIT_RECOMPUTE_S
+      in.newSample = (k % 20) == 0; p.Ta -= 0.00003; in.pv = quant(p.Ta);
+      const Output o = c.step(in); if (o.powerPct != 0.0f) allZero = false; if (o.state != StShadow) shadowState = false; }
+    CHECK(allZero && shadowState && c.inShadow(), "G7 shadow: the vent line blocks the heater: the controller commands 0 and reports Shadow");
+    std::printf("      integral before %.2f after %.2f\n", i0, c.integral());
+    CHECK(std::isfinite(c.integral()) && std::fabs(c.integral()) <= I_MAX + 1e-3f && (std::fabs(i0) < 0.5f || c.integral() != 0.0f), "G7 shadow: the integral is not cleared by the 120 s rule (only the level anchor may move it, conserving the command)");
+    CHECK(std::fabs(c.predicted() - pred0) > 1e-4f || c.predicted() > 0.0f, "G7 shadow: the prediction keeps running (it is not a frozen number)");
+    in.shadow = false; Controller d = c; Output f = d.step(in);
+    CHECK(f.state == StFrozen && f.powerPct == 0.0f, "G7 shadow: the same block without the shadow flag is the old frozen state"); }
+  { ThermalV2Slot a; Mini p; uint32_t now = 1000U; bool ok = true; float u = 0, clk0 = 0, clk1 = 0;
+    for (int k = 0; k < 36000 * 20; ++k) {                                                    // 5 ms calls; shadow for 60 s in the middle
+      ThermalV2SlotIn in; in.nowMs = now; now += 5U; in.pv = quant(p.Ta); in.sp = 37.5f; in.capPct = 100.0f; in.dQ = 0.1f;
+      const bool sh = k > 36000 * 10 && k < 36000 * 10 + 12000; in.permit = !sh; in.shadow = sh; in.newSample = (k % 400) == 0;
+      in.deliveredPct = (!sh && (k % 600) < static_cast<int>(u * 6.0f + 0.5f)) ? 100.0f : 0.0f;
+      u = a.step(in);
+      if (sh && u != 0.0f) ok = false;
+      if (k == 36000 * 10 + 1) clk0 = a.controller().clockS();
+      if (k == 36000 * 10 + 11999) clk1 = a.controller().clockS();
+      p.step(in.deliveredPct > 0 ? 1.0 : 0.0, 0.005); }
+    CHECK(ok, "G7 adapter: shadow gives 0 at once and the controller keeps its own clock running at the 100 ms step (not at 5 ms)");
+    CHECK(clk1 - clk0 > 55.0f && clk1 - clk0 < 61.0f, "G7 adapter: during 60 s of shadow the controller's own clock advanced 60 s (it ran, it was not held out)"); }
+  { Controller c; Mini p; simulate(c, p, 2.0, 37.5f, 100.0f);
+    Input in; in.sp = 37.5f; in.capPct = 100.0f; in.dtS = 0.1f; in.permit = true; in.dQ = 0.1f; float u = 0; bool bad = false; double peak = 0;
+    for (int k = 0; k < 36000 * 3; ++k) {                                                     // a door held open 10 min (loss x20), then closed, 1 h of watching
+      const bool door = k >= 36000 / 6 && k < 36000 / 6 + 6000; const double ua = p.UA; if (door) p.UA = 1000.0;
+      in.pv = quant(p.Ta); in.newSample = (k % 20) == 0; in.deliveredPct = ((k % 30) < static_cast<int>(u * 0.3f + 0.5f)) ? 100.0f : 0.0f;
+      const Output o = c.step(in); u = o.powerPct; if (!std::isfinite(u) || u < 0.0f || u > 100.0f + 1e-3f) bad = true;
+      p.step(in.deliveredPct > 0 ? 1.0 : 0.0, 0.1); p.UA = ua; if (p.Ta > peak) peak = p.Ta; }
+    CHECK(!bad, "G7 door: output finite and in [0, 100] through a 10 min door and its recovery");
+    CHECK(peak < 38.6, "G7 door: the recovery after the door stays below the vent / High region"); }
   g_q = 0.1;
   std::printf("%s (%d failure(s))\n", fails ? "UNIT FAILED" : "UNIT PASSED", fails);
   return fails ? 1 : 0;

@@ -85,6 +85,7 @@ struct Plant {
   double sagPerDuty = 0, sagStepAtS = -1, sagStep = 0;   // C7
   double sensorOffset = 0;                       // C8 (calibration offset, applied like config_.tempOffset)
   double stepC = 0.1;                            // sensor quantisation
+  double tailFrac = 0, tailTauS = 120;           // E set: this fraction of the heater power arrives through a SLOWER lag (stored heat of the elements / ducts: the 'coast')
 };
 
 struct Scenario {
@@ -102,6 +103,7 @@ struct Scenario {
   bool batchRunning = true;
   int fault = 0; double faultAt = -1;                    // S10 (G4): 1 frozen sensor, 2 drift low, 3 jump low, 4 jump high, 5 long dropout, 6 SSR stuck on, 7 SSR stuck off
   bool coldStart = false;                                // event scenarios run after a real cold start (identification climb), not from a settled state
+  double doorAt = -1, doorFor = 300, doorG = 0;          // S11: a door held open: a SUSTAINED extra loss (W/K) for doorFor seconds, felt through the plant's sensor lag
 };
 
 // ------------------------------------------------------------------------------------------------------------------------------------------
@@ -146,8 +148,8 @@ struct V2Ctl : Controller {            // the V2 law behind the production adapt
     const float u = slot.step(si);
     const thermalv2::Controller &c = slot.controller();
     static const bool dbg = std::getenv("V2DBG") != nullptr;
-    if (dbg && (si.nowMs % 30000U) < 100U)
-      std::fprintf(stderr, "t=%6.0f pv=%.2f pred=%.2f u=%.1f k=%.2e th=%.0f dloss=%.1f I=%.1f Te=%.2f st=%d dnow=%.1f truth=%.1f td=%.0f tl=%.0f te=%.0f ha=%.1f sg=%.2f rj=%d rms=%.2f\n", (si.nowMs - 1000) / 1000.0, si.pv, c.predicted(), slot.last().powerPct, c.kAir(), c.thetaHat(), c.dLoss(), c.integral(), c.teModel(), slot.last().state, c.dNow(), g_truthDemandPct, c.tdHat(), c.tauHat(), c.tauEggHat(), c.haPct(), c.sigmaPred(), c.fitRejects(), c.fitRms());
+    if (dbg && (si.nowMs % 20000U) < 100U)
+      std::fprintf(stderr, "t=%6.0f pv=%.2f pred=%.2f u=%.1f k=%.2e th=%.0f dloss=%.1f I=%.1f Te=%.2f st=%d dnow=%.1f truth=%.1f td=%.0f tl=%.0f te=%.0f ha=%.1f sg=%.2f rj=%d rms=%.2f pm=%.2f sl=%.1f cg=%.2f/%d br=%d\n", (si.nowMs - 1000) / 1000.0, si.pv, c.predicted(), slot.last().powerPct, c.kAir(), c.thetaHat(), c.dLoss(), c.integral(), c.teModel(), slot.last().state, c.dNow(), g_truthDemandPct, c.tdHat(), c.tauHat(), c.tauEggHat(), c.haPct(), c.sigmaPred(), c.fitRejects(), c.fitRms(), c.predictedModel(), c.slopeMks(), c.coastGain(), (int)c.coastSamples(), (int)c.brakeRunning());
     return u;
   }
 };
@@ -208,9 +210,9 @@ struct Rig {
 
   float thermalV2SensorStepC() const { return std::getenv("V2_DQ") ? static_cast<float>(std::atof(std::getenv("V2_DQ"))) : 0.1f; }   // the rig has no decoder: the sensor step is a run parameter
 #include "actual-v2-builder.inc"
-  float rigSlot(uint32_t now, bool normalSsrPermit, bool actuatorReady, bool fanStable, const OutputRequest &req) {
+  float rigSlot(uint32_t now, bool normalSsrPermit, bool actuatorReady, bool fanStable, const OutputRequest &req, bool v2Shadow) {
     if (ctl_ && ctl_->usesAdapter()) {                       // production path: production builder text -> adapter -> controller
-      ThermalV2SlotIn si = buildThermalV2SlotIn(now, normalSsrPermit && actuatorReady);
+      ThermalV2SlotIn si = buildThermalV2SlotIn(now, normalSsrPermit && actuatorReady, v2Shadow);
       if (std::getenv("V2_JIT")) si.dtOverrideS = static_cast<float>(dt_ * jitterFactor());
       if (newSensorSample_) ++sampleSeq_;
       lastPermit_ = si.permit;

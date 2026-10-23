@@ -14,7 +14,7 @@ Web chỉ đọc các quyền này (`runtime.tech.webCtl`); không có lệnh n�
 | Đảo trứng | Hai nút trái/phải, **giữ để đảo, thả ra dừng** (lease 1,5 s gia hạn mỗi 0,9 s). Chỉ khi công tắc AUTO vật lý TẮT (chế độ tay). |
 
 ## Log từ xa
-Máy giữ vòng 360 mẫu × 10 s (1 giờ) trong RAM. Khi thẻ PID Monitor mở, mỗi snapshot mang kèm một khối 10 mẫu; Web ghép theo chỉ số và nút **Tải log** xuất CSV
+Máy giữ vòng 180 mẫu × 10 s (30 phút) trong RAM. Khi thẻ PID Monitor mở, mỗi snapshot mang kèm một khối 10 mẫu; Web ghép theo chỉ số và nút **Tải log** xuất CSV
 (`time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,source`).
 Giới hạn: chỉ thu được khi thẻ đang mở và máy online; mất điện thì mất vòng nhớ.
 

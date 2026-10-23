@@ -7,7 +7,7 @@
 #include <math.h>
 
 namespace MayapPidLog {
-constexpr uint16_t CAPACITY = 360U;      // 10 s per sample: 1 h (static RAM budget)
+constexpr uint16_t CAPACITY = 180U;      // 10 s per sample: 30 min (the owner asked for the whole climb + one disturbance; also keeps RAM for the network stack)
 constexpr uint8_t CHUNK = 10U;           // samples per snapshot
 constexpr uint32_t SAMPLE_PERIOD_MS = 10000U;
 
