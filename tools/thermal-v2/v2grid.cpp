@@ -41,6 +41,9 @@ static Scenario scenario(const std::string &id) {
   else if (id == "S11a" || id == "S11b" || id == "S11c") {            // a door held open 2 / 5 / 10 min: a sustained loss of ~1 kW/K (the owner's 5 min trial held 37.2 C at ~60 % of 20 kW)
     s.warm = true; s.eventAt = 5400; s.doorAt = 5400; s.doorG = 1000; s.doorFor = id == "S11a" ? 120 : (id == "S11b" ? 300 : 600); s.duration = 5400 + 2 * 3600;
   }
+  else if (id == "S13a" || id == "S13b" || id == "S13c") {            // the owner's 23 Oct log: a door left ajar 15 / 30 / 30 min (a loss of 30 / 30 / 45 % of Pmax at SP, learned as the hold), then closed: the demand falls in one step
+    s.warm = true; s.eventAt = 5400; s.doorAt = 5400; s.doorFrac = id == "S13c" ? 0.45 : 0.30; s.doorFor = id == "S13a" ? 900 : 1800; s.duration = 5400 + 2 * 3600;
+  }
   else if (id.rfind("S10", 0) == 0) {            // G4 protection: S10a..S10g = fault kinds 1..7, injected into a settled oven
     s.warm = true; s.eventAt = 5400; s.fault = id.size() > 3 ? id[3] - 'a' + 1 : 1; s.faultAt = 5400; s.duration = 5400 + 2 * 3600;
     if (id == "S10h") { s.warm = false; s.startAir = s.startEgg = 28; s.fault = 1; s.faultAt = 800; s.eventAt = 0; s.duration = 4 * 3600; }   // frozen sensor WHILE climbing (cold, far below SP)

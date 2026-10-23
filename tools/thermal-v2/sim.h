@@ -136,6 +136,7 @@ class Sim {
       if (p_.fanCoupling && std::fmod(t, 7200.0) < 1200.0) hA *= 0.6;
       const double q = hA * (Ta - Te);
       if (s_.doorG > 0 && s_.doorAt >= 0 && t >= s_.doorAt && t < s_.doorAt + s_.doorFor) extraLoss += s_.doorG;           // S11: door held open
+      if (s_.doorFrac > 0 && s_.doorAt >= 0 && t >= s_.doorAt && t < s_.doorAt + s_.doorFor) extraLoss += s_.doorFrac * p_.Pmax * p_.gainScale / std::max(5.0, s_.SP - p_.Tamb);   // S13
       double dTa = heaterEff - p_.UA * (Ta - Tamb) - q - ventG * vent * (Ta - Tamb) - extraLoss * (Ta - Tamb) + p_.fanW;
       if (p_.thirdC > 0) { const double qs = p_.thirdG * (Ta - Ts); dTa -= qs; Ts += qs * dt / p_.thirdC; }
       g_truthDemandPct = 100.0 * (p_.UA * (Ta - Tamb) + q + ventG * vent * (Ta - Tamb) + extraLoss * (Ta - Tamb) - p_.fanW) / (p_.Pmax * p_.gainScale);
