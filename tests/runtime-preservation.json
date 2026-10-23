@@ -58,12 +58,12 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "09be9b5362c93d308310dc44a6547cb73f5ee740b2af7c54c19a0f15b0fb29f8",
+      "sha256": "0fa8a09381b4a2544da8470ee0bdba42f58b7e270d46b3ab9c31953598adc30c",
       "filter": "config"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "4125ec0752632a7035bca99f005b3ae9c755e222d68af7a954e9c5fd991352dd",
+      "sha256": "13625678987ea0457e4b4104928dcb91abae5cb827556b1b8c70c777f1bca3eb",
       "signature": "class MachineController {"
     },
     {

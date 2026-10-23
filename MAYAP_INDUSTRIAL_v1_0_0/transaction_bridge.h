@@ -489,6 +489,7 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
     m["ph"] = rt.pidMon.phase;
     m["sus"] = rt.pidMon.suspect;
     m["sl"] = rt.pidMon.slotMaxUs;
+    m["stt"] = rt.pidMon.v2State;
     m["valid"] = rt.pidMon.valid;
     // The log ring, a few samples per snapshot, cycling from the oldest to the newest and around again: "h" = how many samples the machine ever took
     // (the newest has index h-1, 10 s apart), "s" = index of the first sample here, "d" = 6 numbers per sample. Only while the frame has room.
@@ -504,7 +505,7 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
         JsonArray d = lg["d"].to<JsonArray>();
         for (uint8_t i = 0U; i < n; ++i) {
           d.add(chunk[i].pv100); d.add(chunk[i].sp100); d.add(chunk[i].pred100);
-          d.add(chunk[i].req2); d.add(chunk[i].act2); d.add(chunk[i].flags);
+          d.add(chunk[i].req2); d.add(chunk[i].act2); d.add(chunk[i].flags); d.add(chunk[i].spare);
         }
       }
     }

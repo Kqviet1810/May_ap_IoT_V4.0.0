@@ -43,12 +43,12 @@ class Sim {
     std::vector<double> pipe(dly, 0.0); size_t cur = 0;
     const bool settledInit = s_.warm && !s_.coldStart;
     double Ta = settledInit ? s_.SP : s_.startAir, Te = settledInit ? s_.SP : s_.startEgg, Ts = Ta;
-    double heater = 0, vent = 0, sensPhys = Ta;
+    double heater = 0, heater2 = 0, vent = 0, sensPhys = Ta;
     const double ventG = p_.ventW / 12.5;
     double Tamb = p_.Tamb;
     if (settledInit) {          // settled, so the controller starts as after a reboot of a running incubator
       const double hold = p_.UA * (s_.SP - Tamb);
-      heater = hold; std::fill(pipe.begin(), pipe.end(), hold);
+      heater = hold; heater2 = hold; std::fill(pipe.begin(), pipe.end(), hold);
     }
     Metrics m; std::vector<float> airTrace, sensTrace;       // 1 Hz
     airTrace.reserve(static_cast<size_t>(s_.duration) + 2);
@@ -127,13 +127,18 @@ class Sim {
       const double delivered = plantOn ? p_.Pmax * p_.gainScale * sag : 0.0;
       const double delayed = pipe[cur]; pipe[cur] = delivered; cur = (cur + 1) % pipe.size();
       heater += (delayed - heater) * dt / std::max(0.1, p_.tl);
+      if (p_.tailFrac > 0) heater2 += (delayed - heater2) * dt / std::max(0.1, p_.tailTauS);
+      const double heaterEff = p_.tailFrac > 0 ? (1.0 - p_.tailFrac) * heater + p_.tailFrac * heater2 : heater;
       vent += ((st.ventFan ? 1.0 : 0.0) - vent) * dt / 8.0;
       double extraLoss = 0;
       if (s_.ventAt >= 0 && s_.ventKnown == 0 && t >= s_.ventAt && t < s_.ventAt + s_.ventFor) extraLoss = ventG;   // unscheduled loss
       double hA = p_.hA;
       if (p_.fanCoupling && std::fmod(t, 7200.0) < 1200.0) hA *= 0.6;
       const double q = hA * (Ta - Te);
-      double dTa = heater - p_.UA * (Ta - Tamb) - q - ventG * vent * (Ta - Tamb) - extraLoss * (Ta - Tamb) + p_.fanW;
+      if (s_.doorG > 0 && s_.doorAt >= 0 && t >= s_.doorAt && t < s_.doorAt + s_.doorFor) extraLoss += s_.doorG;           // S11: door held open
+      if (s_.rampFrac > 0 && s_.doorAt >= 0 && t >= s_.doorAt) extraLoss += s_.rampFrac * std::min(1.0, (t - s_.doorAt) / s_.rampFor) * p_.Pmax * p_.gainScale / std::max(5.0, s_.SP - p_.Tamb);   // S14
+      if (s_.doorFrac > 0 && s_.doorAt >= 0 && t >= s_.doorAt && t < s_.doorAt + s_.doorFor) extraLoss += s_.doorFrac * p_.Pmax * p_.gainScale / std::max(5.0, s_.SP - p_.Tamb);   // S13
+      double dTa = heaterEff - p_.UA * (Ta - Tamb) - q - ventG * vent * (Ta - Tamb) - extraLoss * (Ta - Tamb) + p_.fanW;
       if (p_.thirdC > 0) { const double qs = p_.thirdG * (Ta - Ts); dTa -= qs; Ts += qs * dt / p_.thirdC; }
       g_truthDemandPct = 100.0 * (p_.UA * (Ta - Tamb) + q + ventG * vent * (Ta - Tamb) + extraLoss * (Ta - Tamb) - p_.fanW) / (p_.Pmax * p_.gainScale);
       Ta += dTa * dt / p_.Cf;

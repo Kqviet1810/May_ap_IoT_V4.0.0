@@ -5038,6 +5038,7 @@ class MachineController {
     m.predictedC = v2.predicted();
     m.phase = !v2.identified() ? 0U : static_cast<uint8_t>(1U + std::min<uint8_t>(v2.batchesDone(), 2U));
     m.suspect = v2.responseSuspect();
+    m.v2State = thermalV2_.last().state;
     m.slotLastUs = slotLastUs_; m.slotMaxUs = slotMaxUs_;
     if (m.valid && elapsedMs(now, pidLogAt_) >= MayapPidLog::SAMPLE_PERIOD_MS) {          // one sample per 10 s into the log ring (the Web page downloads it as CSV)
       pidLogAt_ = now;
@@ -5048,6 +5049,7 @@ class MachineController {
       s.flags = static_cast<uint8_t>((m.phase & MayapPidLog::FlPhaseMask) | (m.suspect ? MayapPidLog::FlSuspect : 0U) | (o.ventFan ? MayapPidLog::FlVentFan : 0U) |
           (o.heaterSsr ? MayapPidLog::FlSsr : 0U) | (o.heatMaster ? MayapPidLog::FlMaster : 0U) | (batchRunning_ ? MayapPidLog::FlBatch : 0U) |
           (sensorUsable_ ? MayapPidLog::FlSensorOk : 0U));
+      s.spare = m.v2State;
       MayapPidLog::ring().push(s);
     }
   }
@@ -5057,9 +5059,9 @@ class MachineController {
     const SensorProfile p = sensor_.sensorProfile();
     return (p == SensorProfile::X100RhX10 || p == SensorProfile::Sht30Native) ? 0.01f : 0.1f;
   }
-  ThermalV2SlotIn buildThermalV2SlotIn(uint32_t now, bool permit) const {
+  ThermalV2SlotIn buildThermalV2SlotIn(uint32_t now, bool permit, bool shadow = false) const {
     ThermalV2SlotIn si;
-    si.nowMs = now; si.pv = temperature_; si.sp = config_.targetTemp; si.newSample = newSensorSample_; si.permit = permit;
+    si.nowMs = now; si.pv = temperature_; si.sp = config_.targetTemp; si.newSample = newSensorSample_; si.permit = permit; si.shadow = shadow && !permit;
     si.capPct = static_cast<float>(config_.maxHeaterPower);
     const float offsetDown = std::max(0.0f, -config_.tempOffset);
     si.headroomC = std::min(config_.highTempAlarm, config_.ventOnTemp) - offsetDown - config_.targetTemp;
@@ -5071,9 +5073,9 @@ class MachineController {
     si.dQ = thermalV2SensorStepC();
     return si;
   }
-  float thermalV2Command(uint32_t now, bool permit) {
+  float thermalV2Command(uint32_t now, bool permit, bool shadow) {
     const uint32_t t0 = static_cast<uint32_t>(esp_timer_get_time());
-    const float u = thermalV2_.step(buildThermalV2SlotIn(now, permit));
+    const float u = thermalV2_.step(buildThermalV2SlotIn(now, permit, shadow));
     slotLastUs_ = static_cast<uint32_t>(esp_timer_get_time()) - t0;
     if (slotLastUs_ > slotMaxUs_) slotMaxUs_ = slotLastUs_;
     return u;
@@ -6394,7 +6396,8 @@ class MachineController {
     // heater request in percent. Protection (High / Emergency / sensor / contactor / SSR inhibit) is decided above
     // and below it and never reads this value. The request is clamped to [0, cap] by the adapter and then goes through
     // the burst scheduler and the output arbiter like any other request.
-    float commandedPower = thermalV2Command(now, normalSsrPermit && actuatorReady);
+    const bool v2Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && ventTemperatureActive_ && actuatorReady;   // blocked ONLY by the vent line
+    float commandedPower = thermalV2Command(now, normalSsrPermit && actuatorReady, v2Shadow);
     // ====================================================================================================
     newSensorSample_ = false;
 

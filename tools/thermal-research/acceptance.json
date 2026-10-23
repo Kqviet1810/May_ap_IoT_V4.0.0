@@ -1,22 +1,179 @@
 {
-  "note": "V2.0.0 acceptance criteria (G0, 2026-10-22), approved by the owner. Measured on the TRUE simulated air temperature unless it says 'sensor'. Simulation only: passing is NOT proof for the real oven (lesson L6); the real-oven trial (G7) closes the loop.",
-  "fastest_ref": "time for the air to reach SP-0.3 C with the heater at 100 % of Pmax from t0 and no control, same oven, same start",
-  "gate": {"high_samples": 0, "emergency_samples": 0, "e115_trips": 0, "unsafe_command_ticks": 0},
-  "criteria": [
-    {"id":"R1.reach",  "scn":["S1","S2"], "metric":"reach_s", "max_vs_fastest": {"factor":1.3,"add_s":120, "first_batch_extra_s":720}},
-    {"id":"R1.reach.restart", "scn":["S3"], "metric":"reach_s", "max_vs_fastest": {"factor":1.3,"add_s":120}},
-    {"id":"R2.over",   "scn":["S1","S2","S3","S4","S5","S8"], "metric":"over_c",  "max":0.2},
-    {"id":"R2.high",   "scn":["S1","S2","S3","S4","S5","S6","S7","S8","S9"], "metric":"high_samples", "max":0},
-    {"id":"R3.band03", "scn":["S1","S2"], "metric":"settle_0p3_s", "max":600, "from":"reach"},
-    {"id":"R3.band01.warm", "scn":["S3"], "metric":"settle_0p1_s", "max":900, "from":"reach"},
-    {"id":"R3.band01.cold", "scn":["S1","S2","S5"], "metric":"settle_0p1_s", "max":1800, "from":"reach"},
-    {"id":"R4.tail",   "scn":["S7"], "metric":"tail_in_0p1_pct_avg60", "min":95, "window":"last 3600 s"},
-    {"id":"R4.under",  "scn":["S7"], "metric":"under_c", "min":-0.2},
-    {"id":"R5.door",   "scn":["S4"], "metric":"recov_s", "max_vs_physical": {"factor":1.3,"add_s":60}, "to":"within 0.3 C of SP for good"},
-    {"id":"R5.tray",   "scn":["S5"], "metric":"tail_in_0p3_pct", "min":100, "window":"last 3600 s", "what":"cold tray: never stuck below SP"},
-    {"id":"R6.protect","scn":["S10"], "metric":"unsafe_command_ticks", "max":0, "what":"no heating command while the protection layer is blocking"},
-    {"id":"R7.spstep", "scn":["S8"], "metric":"over_c", "max":0.2, "settle_0p1_s_max":1800},
-    {"id":"CPU.slot",  "metric":"slot_us_max", "max":2000, "what":"controller slot per call on the ESP32, measured by esp_timer in G5"}
+ "note": "V2.0.0 acceptance criteria (G0, 2026-10-22), approved by the owner. Measured on the TRUE simulated air temperature unless it says 'sensor'. Simulation only: passing is NOT proof for the real oven (lesson L6); the real-oven trial (G7) closes the loop.",
+ "fastest_ref": "time for the air to reach SP-0.3 C with the heater at 100 % of Pmax from t0 and no control, same oven, same start",
+ "gate": {
+  "high_samples": 0,
+  "emergency_samples": 0,
+  "e115_trips": 0,
+  "unsafe_command_ticks": 0
+ },
+ "criteria": [
+  {
+   "id": "R1.reach",
+   "scn": [
+    "S1",
+    "S2"
+   ],
+   "metric": "reach_s",
+   "max_vs_fastest": {
+    "factor": 1.3,
+    "add_s": 120,
+    "first_batch_extra_s": 720
+   }
+  },
+  {
+   "id": "R1.reach.restart",
+   "scn": [
+    "S3"
+   ],
+   "metric": "reach_s",
+   "max_vs_fastest": {
+    "factor": 1.3,
+    "add_s": 120
+   }
+  },
+  {
+   "id": "R2.over",
+   "scn": [
+    "S1",
+    "S2",
+    "S3",
+    "S4",
+    "S5",
+    "S8"
+   ],
+   "metric": "over_c",
+   "max": 0.2
+  },
+  {
+   "id": "R2.over.door",
+   "scn": [
+    "S11a",
+    "S11b",
+    "S11c"
+   ],
+   "metric": "over_c",
+   "max": 0.3,
+   "what": "S0: after a door held open 2/5/10 min the air must not overshoot more than 0.3 C when it is closed"
+  },
+  {
+   "id": "R2.high",
+   "scn": [
+    "S1",
+    "S2",
+    "S3",
+    "S4",
+    "S5",
+    "S6",
+    "S7",
+    "S8",
+    "S9",
+    "S11a",
+    "S11b",
+    "S11c"
+   ],
+   "metric": "high_samples",
+   "max": 0
+  },
+  {
+   "id": "R3.band03",
+   "scn": [
+    "S1",
+    "S2"
+   ],
+   "metric": "settle_0p3_s",
+   "max": 600,
+   "from": "reach"
+  },
+  {
+   "id": "R3.band01.warm",
+   "scn": [
+    "S3"
+   ],
+   "metric": "settle_0p1_s",
+   "max": 900,
+   "from": "reach"
+  },
+  {
+   "id": "R3.band01.cold",
+   "scn": [
+    "S1",
+    "S2",
+    "S5"
+   ],
+   "metric": "settle_0p1_s",
+   "max": 1800,
+   "from": "reach"
+  },
+  {
+   "id": "R4.tail",
+   "scn": [
+    "S7"
+   ],
+   "metric": "tail_in_0p1_pct_avg60",
+   "min": 95,
+   "window": "last 3600 s"
+  },
+  {
+   "id": "R4.under",
+   "scn": [
+    "S7"
+   ],
+   "metric": "under_c",
+   "min": -0.2
+  },
+  {
+   "id": "R5.door",
+   "scn": [
+    "S4"
+   ],
+   "metric": "recov_s",
+   "max_vs_physical": {
+    "factor": 1.3,
+    "add_s": 60
+   },
+   "to": "within 0.3 C of SP for good"
+  },
+  {
+   "id": "R5.tray",
+   "scn": [
+    "S5"
+   ],
+   "metric": "tail_in_0p3_pct",
+   "min": 100,
+   "window": "last 3600 s",
+   "what": "cold tray: never stuck below SP"
+  },
+  {
+   "id": "R6.protect",
+   "scn": [
+    "S10"
+   ],
+   "metric": "unsafe_command_ticks",
+   "max": 0,
+   "what": "no heating command while the protection layer is blocking"
+  },
+  {
+   "id": "R7.spstep",
+   "scn": [
+    "S8"
+   ],
+   "metric": "over_c",
+   "max": 0.2,
+   "settle_0p1_s_max": 1800
+  },
+  {
+   "id": "CPU.slot",
+   "metric": "slot_us_max",
+   "max": 2000,
+   "what": "controller slot per call on the ESP32, measured by esp_timer in G5"
+  }
+ ],
+ "structure_grid": {
+  "sets": [
+   "B",
+   "C"
   ],
-  "structure_grid": {"sets":["B","C"], "must": "same gate; R2.over and R2.high on every case, otherwise report the case and the cause (no per-case threshold)"}
+  "must": "same gate; R2.over and R2.high on every case, otherwise report the case and the cause (no per-case threshold)"
+ }
 }

@@ -20,15 +20,15 @@ TV2 = ROOT / 'tools' / 'thermal-v2'
 ACC = ROOT / 'tools' / 'thermal-research' / 'acceptance.json'
 CTL_SRC = ROOT / 'MAYAP_INDUSTRIAL_v1_0_0' / 'thermal_v2.h'
 BC_LOG = TV2 / 'bc_runs.log'
-COLS = ['id', 'Pmax', 'Cf', 'Ce', 'hA', 'UA', 'td', 'tl', 'Tamb', 'thirdC', 'thirdG', 'sensorLag', 'gain', 'fanCoupling', 'sagPerDuty', 'sagStepAt', 'sagStep', 'offset']
+COLS = ['id', 'Pmax', 'Cf', 'Ce', 'hA', 'UA', 'td', 'tl', 'Tamb', 'thirdC', 'thirdG', 'sensorLag', 'gain', 'fanCoupling', 'sagPerDuty', 'sagStepAt', 'sagStep', 'offset', 'tailFrac', 'tailTau']
 
 def sh(cmd, **kw): return subprocess.run(cmd, check=True, **kw)
 
 def plant_row(p, **over):
-    d = dict(Ce=1900000, Tamb=28, thirdC=0, thirdG=0, sensorLag=0, gain=1, fanCoupling=0, sagPerDuty=0, sagStepAt=-1, sagStep=0, offset=0)
+    d = dict(Ce=1900000, Tamb=28, thirdC=0, thirdG=0, sensorLag=0, gain=1, fanCoupling=0, sagPerDuty=0, sagStepAt=-1, sagStep=0, offset=0, tailFrac=0, tailTau=120)
     d.update(p); d.update(over)
     return [d['id'], d['Pmax'], d['Cf'], d['Ce'], d['hA'], d['UA'], d['td'], d['tl'], d['Tamb'], d['thirdC'], d['thirdG'], d['sensorLag'], d['gain'],
-            d['fanCoupling'], d['sagPerDuty'], d['sagStepAt'], d['sagStep'], d['offset']]
+            d['fanCoupling'], d['sagPerDuty'], d['sagStepAt'], d['sagStep'], d['offset'], d['tailFrac'], d['tailTau']]
 
 def xorshift32(seed):
     x = seed & 0xFFFFFFFF
@@ -42,10 +42,11 @@ def gen_plants(which, spec):
     rows = []
     if which == 'A':
         for p in spec['A']: rows.append(plant_row(p, Ce=common['Ce'], Tamb=common['Tamb']))
-    elif which in ('B', 'D'):
+    elif which in ('B', 'D', 'E'):
         b = spec[which]; r = xorshift32(b['seed']); rg = b['ranges']; n = 0
+        keys = ['Pmax', 'Cf', 'Ce', 'hA', 'UA', 'td', 'tl'] + (['tailFrac', 'tailTau', 'sensorLag'] if which == 'E' else [])
         while len(rows) < b['count']:
-            vals = {k: rg[k][0] + next(r) * (rg[k][1] - rg[k][0]) for k in ['Pmax', 'Cf', 'Ce', 'hA', 'UA', 'td', 'tl']}
+            vals = {k: rg[k][0] + next(r) * (rg[k][1] - rg[k][0]) for k in keys}
             if vals['UA'] * 9.5 / vals['Pmax'] > 0.9: continue          # rejection rule in plants.json
             n += 1
             rows.append(plant_row(dict(id=which + '%02d' % n, **{k: round(v, 3) for k, v in vals.items()}), Tamb=common['Tamb']))
@@ -67,7 +68,7 @@ def build(work):
     inc = work / 'inc'
     sh([sys.executable, str(TV2 / 'make_includes.py'), str(inc)], stdout=subprocess.DEVNULL)
     exe = work / 'v2grid'
-    sh(['g++', '-std=c++14', '-O2', '-Wall', '-Wno-unused-variable', '-I', str(inc), str(TV2 / 'v2grid.cpp'), '-o', str(exe)])
+    sh(['g++', '-std=c++14', '-O2', '-Wall', '-Wno-unused-variable'] + os.environ.get('V2_CXXFLAGS', '').split() + ['-I', str(inc), str(TV2 / 'v2grid.cpp'), '-o', str(exe)])
     return exe
 
 def git(*a): return subprocess.run(['git', '-C', str(ROOT)] + list(a), capture_output=True, text=True, check=True).stdout.strip()

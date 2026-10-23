@@ -11,6 +11,7 @@ struct ThermalV2SlotIn {
   float pv = NAN, sp = NAN;           // control temperature (offset applied) and target [degC]
   bool newSample = false;             // a new accepted sensor sample arrived since the last call
   bool permit = false;                // production decided the SSR may conduct (all protection, interlocks and actuator readiness)
+  bool shadow = false;                // permit is false ONLY because the vent line blocks the heater: the controller keeps running and commands 0
   float capPct = 0.0f;                // configured heater power ceiling [%]
   float headroomC = 0.0f;             // from the target to the vent / High line, in the control sensor frame
   float alarmHeadroomC = 0.0f;        // from the target to the Emergency line
@@ -27,7 +28,8 @@ class ThermalV2Slot {
  public:
   static constexpr uint32_t STEP_PERIOD_MS = 100U;
   float step(const ThermalV2SlotIn &in) {
-    const bool hold = haveLast_ && in.permit && lastPermit_ && !isfinite(in.dtOverrideS) &&
+    const bool live = in.permit || in.shadow;
+    const bool hold = haveLast_ && live && lastLive_ && in.permit == lastPermit_ && !isfinite(in.dtOverrideS) &&
                       static_cast<uint32_t>(in.nowMs - lastMs_) < STEP_PERIOD_MS;
     if (hold) {
       if (in.newSample) pendingSample_ = true;                                       // the next real step must see it
@@ -36,16 +38,16 @@ class ThermalV2Slot {
     float dt = 0.1f;
     if (isfinite(in.dtOverrideS)) dt = in.dtOverrideS;
     else if (haveLast_) dt = static_cast<float>(static_cast<uint32_t>(in.nowMs - lastMs_)) * 0.001f;     // unsigned difference: millis() roll-over safe
-    lastMs_ = in.nowMs; haveLast_ = true; lastPermit_ = in.permit;
+    lastMs_ = in.nowMs; haveLast_ = true; lastPermit_ = in.permit; lastLive_ = live;
     thermalv2::Input i;
     i.pv = in.pv; i.sp = in.sp; i.dQ = in.dQ; i.headroomC = in.headroomC; i.alarmHeadroomC = in.alarmHeadroomC; i.capPct = in.capPct;
-    i.deliveredPct = in.deliveredPct; i.e115Frac = in.e115Frac; i.dtS = dt; i.newSample = in.newSample || pendingSample_; i.permit = in.permit;
+    i.deliveredPct = in.deliveredPct; i.e115Frac = in.e115Frac; i.dtS = dt; i.newSample = in.newSample || pendingSample_; i.permit = in.permit; i.shadow = in.shadow;
     pendingSample_ = false;
     last_ = ctl_.step(i);
     held_ = clampOut(last_.powerPct, in.capPct);
     return held_;
   }
-  void reset() { ctl_.reset(); haveLast_ = false; lastPermit_ = false; pendingSample_ = false; held_ = 0.0f; last_ = thermalv2::Output(); }
+  void reset() { ctl_.reset(); haveLast_ = false; lastPermit_ = false; lastLive_ = false; pendingSample_ = false; held_ = 0.0f; last_ = thermalv2::Output(); }
   const thermalv2::Output &last() const { return last_; }
   thermalv2::Controller &controller() { return ctl_; }
   const thermalv2::Controller &controller() const { return ctl_; }
@@ -58,5 +60,5 @@ class ThermalV2Slot {
   }
   thermalv2::Controller ctl_;
   thermalv2::Output last_;
-  uint32_t lastMs_ = 0; bool haveLast_ = false, lastPermit_ = false, pendingSample_ = false; float held_ = 0.0f;
+  uint32_t lastMs_ = 0; bool haveLast_ = false, lastPermit_ = false, lastLive_ = false, pendingSample_ = false; float held_ = 0.0f;
 };

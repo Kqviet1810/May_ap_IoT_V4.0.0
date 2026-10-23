@@ -33,5 +33,8 @@ Nạp một xe trứng. Chạy 24 giờ, ghi `LOG AI`. Với lô đầu, ngườ
 ## 7. Gửi cho tôi
 CSV `LOG AI`, ảnh PID Monitor (9 mục), số đọc tham chiếu, ghi chú bất thường (cảnh báo, âm thanh còi, vent). Từ đó tôi sửa `ha`/`τe`, ngưỡng bộ quan sát trứng, độ nhiễu thật.
 
+## 7b. Bài thử G7 (so với log 23/10)
+Lặp đúng bài đã làm: (a) lên nhiệt từ nguội, cửa đóng; (b) khi ổn định, mở cửa 5 phút rồi đóng. Với mỗi bài, mở thẻ PID Monitor trước vài phút rồi **Tải log CSV** (cột `v2_state`: `brake` = phanh lần đầu, `shadow` = quạt hút đang chặn sưởi, V2 chạy ngầm). So: đỉnh vọt (cũ +0,40 và +0,70), thời gian lên SP (sẽ chậm hơn khoảng 4–8 phút, đó là chủ ý), và xem yêu cầu có còn 40–60 % khi PV đã ≥ SP − 0,1.
+
 ## 8. Lùi lại
 Nếu V2 kẹt hoặc lạ: cắt công tắc tổng, nạp lại firmware 1.1.15 (còn nguyên ở `main`).

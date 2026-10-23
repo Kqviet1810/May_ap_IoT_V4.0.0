@@ -20,6 +20,7 @@ static std::vector<Plant> loadPlants(const char *path) {
     p.td = atof(col[6].c_str()); p.tl = atof(col[7].c_str()); p.Tamb = atof(col[8].c_str()); p.thirdC = atof(col[9].c_str()); p.thirdG = atof(col[10].c_str());
     p.sensorLagS = atof(col[11].c_str()); p.gainScale = atof(col[12].c_str()); p.fanCoupling = atoi(col[13].c_str()) != 0;
     p.sagPerDuty = atof(col[14].c_str()); p.sagStepAtS = atof(col[15].c_str()); p.sagStep = atof(col[16].c_str()); p.sensorOffset = atof(col[17].c_str());
+    if (col.size() >= 20) { p.tailFrac = atof(col[18].c_str()); p.tailTauS = atof(col[19].c_str()); }          // E set (optional columns)
     v.push_back(p);
   }
   return v;
@@ -37,6 +38,15 @@ static Scenario scenario(const std::string &id) {
   else if (id == "S7") { s.warm = true; s.eventAt = 0; s.duration = 24 * 3600; s.embryoMax = 1500; s.ambientTo = 20; s.sagPerDuty = 0.08; }
   else if (id == "S8") { s.warm = true; s.eventAt = 5400; s.spStep = 0.5; s.duration = 5400 + 2 * 3600; }
   else if (id == "S9") { s.warm = true; s.eventAt = 5400; s.permitLossAt = 5400; s.permitLossFor = 600; s.duration = 5400 + 2 * 3600; }
+  else if (id == "S11a" || id == "S11b" || id == "S11c") {            // a door held open 2 / 5 / 10 min: a sustained loss of ~1 kW/K (the owner's 5 min trial held 37.2 C at ~60 % of 20 kW)
+    s.warm = true; s.eventAt = 5400; s.doorAt = 5400; s.doorG = 1000; s.doorFor = id == "S11a" ? 120 : (id == "S11b" ? 300 : 600); s.duration = 5400 + 2 * 3600;
+  }
+  else if (id == "S13a" || id == "S13b" || id == "S13c") {            // the owner's 23 Oct log: a door left ajar 15 / 30 / 30 min (a loss of 30 / 30 / 45 % of Pmax at SP, learned as the hold), then closed: the demand falls in one step
+    s.warm = true; s.eventAt = 5400; s.doorAt = 5400; s.doorFrac = id == "S13c" ? 0.45 : 0.30; s.doorFor = id == "S13a" ? 900 : 1800; s.duration = 5400 + 2 * 3600;
+  }
+  else if (id == "S14a" || id == "S14b" || id == "S14c") {            // the owner's 23 Oct drift: the demand creeps up by 15 / 20 / 30 % of Pmax over 10 / 20 / 10 min and stays
+    s.warm = true; s.eventAt = 5400; s.doorAt = 5400; s.rampFrac = id == "S14a" ? 0.15 : (id == "S14b" ? 0.20 : 0.30); s.rampFor = id == "S14b" ? 1200 : 600; s.duration = 5400 + 2 * 3600;
+  }
   else if (id.rfind("S10", 0) == 0) {            // G4 protection: S10a..S10g = fault kinds 1..7, injected into a settled oven
     s.warm = true; s.eventAt = 5400; s.fault = id.size() > 3 ? id[3] - 'a' + 1 : 1; s.faultAt = 5400; s.duration = 5400 + 2 * 3600;
     if (id == "S10h") { s.warm = false; s.startAir = s.startEgg = 28; s.fault = 1; s.faultAt = 800; s.eventAt = 0; s.duration = 4 * 3600; }   // frozen sensor WHILE climbing (cold, far below SP)
@@ -138,6 +148,7 @@ int main(int argc, char **argv) {
       if (s.warm && cn != "fastest" && cn != "zero" && cn.rfind("const", 0) != 0) {      // a real controller meets its disturbances after a real cold start
         const double P = 4 * 3600.0; s.coldStart = true; s.startAir = s.startEgg = 33; s.eventAt += P; s.duration += P;
         if (s.ventAt >= 0) s.ventAt += P;
+        if (s.doorAt >= 0) s.doorAt += P;
         if (s.permitLossAt >= 0) s.permitLossAt += P;
         if (s.faultAt >= 0) s.faultAt += P;
       }

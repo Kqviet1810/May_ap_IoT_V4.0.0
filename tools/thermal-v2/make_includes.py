@@ -87,9 +87,10 @@ cfg_defined = {re.search(r'\b([A-Z][A-Z0-9_]+)\s*=', c)[1] for c in cc}
 # ---- the production heating route with the controller slot substituted ----
 start = machine.index('  void updateHeatingAndOutputs(')
 route = machine[start:body_end(machine, start)]
-slot = '    float commandedPower = thermalV2Command(now, normalSsrPermit && actuatorReady);\n'
+slot = ('    const bool v2Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && ventTemperatureActive_ && actuatorReady;   // blocked ONLY by the vent line\n'
+        '    float commandedPower = thermalV2Command(now, normalSsrPermit && actuatorReady, v2Shadow);\n')
 assert route.count(slot) == 1, 'controller slot line not found exactly once'
-route = route.replace(slot, '    float commandedPower = rigSlot(now, normalSsrPermit, actuatorReady, fanStable, req);   // <- the ONLY substitution (the slot)\n')
+route = route.replace(slot, '    const bool v2Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && ventTemperatureActive_ && actuatorReady;\n    float commandedPower = rigSlot(now, normalSsrPermit, actuatorReady, fanStable, req, v2Shadow);   // <- the ONLY substitution (the slot)\n')
 (out / 'actual-heating.inc').write_text(route)
 # the production adapter glue the rig reuses for the V2 controller: textual, so a change in machine_control.h changes what the digital twin runs
 (out / 'actual-v2-builder.inc').write_text(method('  ThermalV2SlotIn buildThermalV2SlotIn('))

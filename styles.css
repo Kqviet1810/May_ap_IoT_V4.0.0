@@ -320,10 +320,16 @@ input:disabled,select:disabled,textarea:disabled,.customSelectTrigger:disabled{o
 .outputStrip>button:active{transform:scale(.97)}
 .outputStrip>button.locked{opacity:.55;cursor:not-allowed}
 .outputStrip>button.webOverride{border-color:var(--primary)}
-.turnPad{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:-6px 0 10px}
-.turnPad button{min-height:56px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--tile);color:var(--ink);font:inherit;font-weight:700;touch-action:none;user-select:none;-webkit-user-select:none;cursor:pointer}
-.turnPad button:disabled{opacity:.5;cursor:not-allowed}
-.turnPad button.held{background:var(--wash);border-color:var(--primary)}
+.outputStrip>.turnTile{position:relative}
+.outputStrip>.turnTile.split{padding:0}
+.outputStrip>.turnTile.split>span,.outputStrip>.turnTile.split>strong{display:none}
+.turnSplit{display:grid;grid-template-columns:1fr 1px 1fr;align-items:stretch;min-height:68px;height:100%}
+.turnSplit[hidden]{display:none}
+.turnSplit i{background:var(--line);margin:12px 0}
+.turnSplit button{border:0;background:transparent;color:var(--ink);font:inherit;font-weight:700;touch-action:none;user-select:none;-webkit-user-select:none;cursor:pointer;border-radius:var(--radius-sm);-webkit-tap-highlight-color:transparent}
+.turnSplit button:active:not(:disabled){background:var(--tile-hot,rgba(0,0,0,.06))}
+.turnSplit button:disabled{opacity:.5;cursor:not-allowed}
+.turnSplit button.held{background:var(--wash)}
 .outputStrip>button.pending{opacity:.75;cursor:progress}
 .outputStrip>button:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 .outputStrip span,.outputStrip strong{display:block}
@@ -850,6 +856,14 @@ body[data-page="batch"] .telemetryCanvasWrap{flex:1 1 0;height:0;min-height:72px
 #profilePhotoDialog{width:min(360px,calc(100vw - 24px))}
 #profilePhotoDialog .googleLogin{margin:16px 0;display:flex;justify-content:center}
 
+.advOverview{display:grid;gap:8px}
+.advRow{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:11px 12px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--tile)}
+.advRow>div{min-width:0}
+.advRow strong{display:block;font-size:.92rem}
+.advRow span{display:block;color:var(--muted,inherit);font-size:.86rem;overflow-wrap:anywhere}
+.advRow em{flex:none;font-style:normal;font-size:.74rem;font-weight:700;padding:3px 8px;border-radius:999px;border:1px solid var(--line);white-space:nowrap}
+.advRow em.rw{border-color:var(--primary);color:var(--primary)}
+.advRow em.dev{opacity:.75}
 /* ---- Web 1.1.16: kieu hien thi "Hien dai" (html[data-ui="modern"], mac dinh) vs "Co ban" (giao dien cu) ---- */
 @media(max-width:800px),(max-height:500px){
   html[data-ui="modern"]{--navH:62px;--navGap:max(4px,calc(var(--safeBottomMax) - 12px))}
