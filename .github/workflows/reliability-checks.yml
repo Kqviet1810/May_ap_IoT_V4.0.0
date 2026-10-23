@@ -141,8 +141,8 @@ jobs:
             /tmp/mayap-fw-wss
           if-no-files-found: ignore
 
-  thermal:
-    name: thermal
+  heater-path:
+    name: heater-path
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -153,58 +153,20 @@ jobs:
       - name: AT24C512 driver regression
         run: python3 tools/test_single_eeprom.py --sanitize --check-regression
 
-      - name: Actual PID and autotune host tests
-        run: python3 tools/test_thermal_control.py --sanitize --report-dir /tmp/mayap-thermal-report
+      - name: Heater path host tests (GPIO arbiter, SSR burst scheduler, E115 evidence, config serializers, sensor filter, programme). No controller exists in V2.0.0.
+        run: python3 tools/test_heater_path.py --sanitize --report-dir /tmp/mayap-heater-path-report
 
-      - name: Sensor-path integrity suite (alarms/E115/E104 fed by the REPORTED temperature; simulation only)
-        run: python3 tools/test_thermal_sensor_path.py --sanitize --report-dir /tmp/mayap-sensor-path-report
+      - name: Thermal V2 digital-twin rig self-test (analytic closed forms, burst accuracy, protection layers, E115; simulation only)
+        run: python3 tools/thermal-v2/run_grid.py selftest
+
+      - name: "Thermal V2 controller host unit tests (contract of thermal_v2.h, learning, watchdog, adapter, fine sensor)"
+        run: python3 tools/thermal-v2/run_grid.py unit
+
+      - name: "Thermal V2 protection under injected faults (G4, simulation only; fails on a heating command while blocked or on a hazard from a fault the layers can see)"
+        run: V2_DQ=0.01 python3 tools/thermal-v2/run_grid.py protect --ctl v2,fastest --sets A
 
       - name: Technical PIN, Web permission, HMI-approved requests and old records (host tests of the real controller code)
         run: python3 tools/test_tech_access.py --sanitize
-
-      - name: Thermal control-only metrics and safety threshold qualification (physical performance unverified)
-        uses: actions/upload-artifact@v4
-        with:
-          name: thermal-old-new-metrics
-          path: /tmp/mayap-thermal-report
-
-  sim-gates:
-    name: sim-gates
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Adaptive Thermal V1 simulation gates (simulation only, physical validation required)
-        run: python3 tools/test_thermal_adaptive.py --report-dir /tmp/mayap-thermal-adaptive-report
-
-      - name: Smart AutoTune V1 simulation gates (simulation only, physical commissioning required)
-        run: python3 tools/test_smart_autotune.py --report-dir /tmp/mayap-smart-autotune-report
-
-      - name: Smart AutoTune V1 with MAYAP_SMART_THERMAL=1 and the post-tune oracle in Smart mode (ACCEPTED_BAD must stay 0; simulation only)
-        run: python3 tools/test_smart_autotune.py --smart-thermal --report-dir /tmp/mayap-smart-autotune-on-report
-
-      - name: Simulation summaries
-        uses: actions/upload-artifact@v4
-        with:
-          name: thermal-simulation-summaries
-          path: |
-            /tmp/mayap-thermal-adaptive-report/summary.md
-            /tmp/mayap-smart-autotune-report/summary.md
-
-  sim-ab:
-    name: sim-ab
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Smart Thermal A/B/C against the frozen baseline (simulation only; fails on more High/Emergency or a drifting baseline)
-        run: python3 tools/ab_smart_thermal.py --report-dir /tmp/mayap-ab-smart-report
 
   host:
     name: host
@@ -264,7 +226,7 @@ jobs:
   reliability:
     name: reliability
     if: always()
-    needs: [web, uplink, thermal, sim-gates, sim-ab, host]
+    needs: [web, uplink, heater-path, host]
     runs-on: ubuntu-latest
     steps:
       - name: All reliability jobs must be green

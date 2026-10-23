@@ -1,6 +1,6 @@
 // REAL MachineController technical-access glue (sliced from machine_control.h by tools/test_tech_access.py) on fakes.
 // Covers: PIN right/wrong/lock-out on HMI and Web (one shared counter), Web hidden/shown/revoked, Web request -> HMI yes / no /
-// timeout / network loss, safety re-check at execution (batch, resume, autotune, storage), no write when nothing changed, undo
+// timeout / network loss, safety re-check at execution (batch, resume, storage), no write when nothing changed, undo
 // record before every apply, restore + undo, power cut during the old-record write, remote callers cannot reach HMI-only commands.
 #include <algorithm>
 #include <cassert>
@@ -36,7 +36,6 @@ static void sanitizeMachineConfig(MachineConfig &c) {
   c.kp = std::min(100.0f, std::max(0.0f, c.kp));
   c.maxHeaterPower = static_cast<uint8_t>(std::min<int>(100, std::max<int>(10, c.maxHeaterPower)));
 }
-static bool mayapPidHasAuthority(const MachineConfig &c) { return c.kp > 0 || c.ki > 0 || c.kd > 0; }
 static bool timeReached(uint32_t now, uint32_t deadline) { return static_cast<int32_t>(now - deadline) >= 0; }
 
 static unsigned checks = 0;
@@ -72,25 +71,26 @@ struct FakeHistory {
 };
 struct FakeStore { unsigned saves = 0; bool failSave = false;
   bool saveConfig(const MachineConfig &c, MachineConfig &readback) { if (failSave) return false; ++saves; readback = c; return true; } };
-struct FakeAutoTune { bool run = false; bool running() const { return run; } };
 struct FakeRuntime { bool networkConnected = true; TechStatus tech; };
 
 struct Ctl {
   MachineConfig config_;
   FakeRuntime runtime_;
   FakeStore store_;
-  FakeAutoTune autotune_;
   FakeAuth auth_;
   FakeHistory hist_;
   TechAccess::Gate<FakeAuth> techGate_{auth_};
   AdvancedHistory::Ring<FakeHistory> history_{hist_};
   bool batchRunning_ = false, resumePending_ = false, batchClearPending_ = false, safetyJournalFaultLatched_ = false;
   bool storageFaultLatched_ = false, storageDegraded_ = false;
-  int autoTuneStarts = 0, commits = 0;
-  bool startAutoTune(uint32_t, const char *&message) { ++autoTuneStarts; message = "DA KHOI DONG"; return true; }
+  int commits = 0;
   void commitSavedConfig(uint32_t, const MachineConfig &, const MachineConfig &readback) { config_ = readback; ++commits; }
   void latchStorageFault(const char *) { storageFaultLatched_ = true; }
   void clearStorageDegraded(uint32_t) { storageDegraded_ = false; }
+  // Web output control lives outside the sliced tech region: these two stand in for the machine's overrides
+  uint8_t webRevoked = 0;
+  void webOutputsRevoke(uint32_t, uint8_t bits) { webRevoked = static_cast<uint8_t>(webRevoked | bits); }
+  uint8_t webOutputsActive(uint32_t) const { return 0; }
 #include "actual-tech-members.inc"
 #include "actual-tech-funcs.inc"
 
@@ -223,11 +223,7 @@ int main() {
     c.batchRunning_ = false; c.resumePending_ = true;                      // pending recovery counts as a running batch
     CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_KP, 9.0}}, "req-resume", c.config_));
     CHECK(!c.run(now + 2000, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "BATCH_LOCKED");
-    c.resumePending_ = false; c.autotune_.run = true; c.storageDegraded_ = false;
-    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_KP, 9.0}}, "req-tune", c.config_));
-    CHECK(c.run(now + 3000, HmiCommandType::TechRequestSubmit, true, 0, m));
-    CHECK(!c.run(now + 3100, HmiCommandType::TechDecision, false, 1, m) && m == "AUTO TUNE DANG CHAY");
-    c.autotune_.run = false;
+    c.resumePending_ = false; c.storageDegraded_ = false;
     for (int which = 0; which < 4; ++which) {                              // storage / safety-journal faults block the apply too
       c.batchClearPending_ = which == 0; c.safetyJournalFaultLatched_ = which == 1; c.storageFaultLatched_ = which == 2; c.storageDegraded_ = which == 3;
       CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_KP, 9.0}}, "req-fault", c.config_));
@@ -260,31 +256,38 @@ int main() {
     CHECK(c.run(now, HmiCommandType::TechLock, true, 0, m) && !c.runtime_.tech.webSession && c.runtime_.tech.hmiUnlocked);
   }
 
-  // 10. Smart AutoTune request: parked, started only on HMI yes, never twice.
+  // 10. Thermal Control V2.0.0: the Auto Tune request kind no longer exists, so it is refused before anything is parked.
   { Ctl c; fresh(c, now); grantWeb(c, now);
     CHECK(stage(MayapTech::Kind::AutoTune, {}, "req-tune", c.config_));
-    CHECK(c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "PENDING_HMI" && c.runtime_.tech.pendingKind == 2);
-    CHECK(c.autoTuneStarts == 0);
-    CHECK(c.run(now + 100, HmiCommandType::TechDecision, false, 1, m) && c.autoTuneStarts == 1);
-    CHECK(!c.run(now + 200, HmiCommandType::TechDecision, false, 1, m) && c.autoTuneStarts == 1);
-    // No on a tune request
-    CHECK(stage(MayapTech::Kind::AutoTune, {}, "req-tune2", c.config_));
-    CHECK(c.run(now + 300, HmiCommandType::TechRequestSubmit, true, 0, m));
-    CHECK(c.run(now + 400, HmiCommandType::TechDecision, false, 0, m) && c.autoTuneStarts == 1);
-    // Web session ended before "yes": not started
-    CHECK(stage(MayapTech::Kind::AutoTune, {}, "req-tune3", c.config_));
-    CHECK(c.run(now + 500, HmiCommandType::TechRequestSubmit, true, 0, m));
-    c.run(now + 600, HmiCommandType::TechLock, true, 0, m);
-    CHECK(!c.run(now + 700, HmiCommandType::TechDecision, false, 1, m) && c.autoTuneStarts == 1);
+    CHECK(!c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "UNSUPPORTED" && c.runtime_.tech.pendingKind == 0);
   }
 
-  // 11. Nothing changed => nothing is written; invalid PID is refused before any record; the same values never fill the history.
+
+  // 12. Web output control permissions: HMI only, needs the technician session, stored with the PIN record, revokes the overrides of what is taken away.
+  { Ctl c; fresh(c, now);
+    CHECK(c.techGate_.webCtlMask() == 30 && c.runtime_.tech.webCtlMask == 30);                               // default: vent, circulation, light, siren ON; heater and turning OFF
+    CHECK(c.run(now, HmiCommandType::WebCtlSet, false, 0x3F, m) && c.techGate_.webCtlMask() == 0x3F);
+    CHECK(c.webRevoked == 0);                                                                                  // nothing was taken away
+    CHECK(c.run(now, HmiCommandType::WebCtlSet, false, WebCtlLight | WebCtlTurn, m) && c.techGate_.webCtlMask() == (WebCtlLight | WebCtlTurn));
+    CHECK(c.webRevoked == (WebCtlHeater | WebCtlVent | WebCtlCirc | WebCtlSiren));                            // exactly the removed bits are revoked at once
+    CHECK(c.techGate_.webAllowed() == false);                                                                  // independent of the PID-engineering Web permission
+    CHECK(!c.run(now, HmiCommandType::WebCtlSet, true, 0x3F, m) && m == "CHI HMI DUOC DOI QUYEN");            // the Web can never grant itself anything
+    CHECK(c.techGate_.webCtlMask() == (WebCtlLight | WebCtlTurn));
+    CHECK(c.run(now, HmiCommandType::WebCtlSet, false, 0xFF, m) && c.techGate_.webCtlMask() == WebCtlAll);   // bits above the six are ignored
+    // the permission survives a restart (same record) and a new PIN keeps it
+    TechAccess::Gate<FakeAuth> again(c.auth_); again.begin(now + 10);
+    CHECK(again.webCtlMask() == WebCtlAll);
+    CHECK(c.run(now, HmiCommandType::TechPinSet, false, 4321, m) && c.techGate_.webCtlMask() == WebCtlAll);
+    // locked HMI session: refused, nothing changes
+    c.techGate_.lockHmi();
+    CHECK(!c.run(now + 5, HmiCommandType::WebCtlSet, false, 0, m) && c.techGate_.webCtlMask() == WebCtlAll);
+  }
+
+  // 11. Nothing changed => nothing is written; the same values never fill the history.
   { Ctl c; fresh(c, now); grantWeb(c, now);
     const AdvancedHistory::Snapshot same = AdvancedHistory::fromConfig(c.config_);
     const char *msg = "";
     CHECK(c.applyAdvancedSnapshot(now, same, msg) && std::string(msg) == "KHONG DOI" && c.store_.saves == 0 && c.hist_.writes == 0);
-    AdvancedHistory::Snapshot zero = same; zero.kp = zero.ki = zero.kd = 0;
-    CHECK(!c.applyAdvancedSnapshot(now, zero, msg) && std::string(msg) == "PID KHONG HOP LE" && c.store_.saves == 0 && c.hist_.writes == 0);
     CHECK(!c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m));      // empty staging
     CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_KP, 5.0}}, "req-same", c.config_));
     CHECK(!c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "NO_CHANGE");

@@ -1,0 +1,134 @@
+G3c — kết quả chốt (mô phỏng). Cấu hình: thermal_v2.h tại commit 77691b0; tinh chỉnh chỉ trên tập A và D; B (hạt giống mới 20261105) và C chỉ để chấm.
+
+== tập B, cảm biến 0.01 C ==
+controller=v2 sets=B cases=660  (SIMULATION ONLY)
+  GATE.e115               660/660  PASS
+  GATE.emergency          660/660  PASS
+  GATE.high               658/660  FAIL   e.g. B08/S2, B08/S5b
+  GATE.unsafe             660/660  PASS
+  R1.reach                120/120  PASS
+  R1.reach.restart          0/60   FAIL   e.g. B01/S3, B02/S3, B03/S3, B04/S3
+  R2.high                 658/660  FAIL   e.g. B08/S2, B08/S5b
+  R2.over                 368/420  FAIL   e.g. B01/S1, B08/S1, B30/S1, B43/S1
+  R3.band01.cold          211/240  FAIL   e.g. B01/S1, B02/S1, B08/S1, B15/S1
+  R3.band01.warm           46/60   FAIL   e.g. B01/S3, B02/S3, B07/S3, B08/S3
+  R3.band03               110/120  FAIL   e.g. B01/S1, B08/S1, B30/S1, B01/S2
+  R4.tail                  60/60   PASS
+  R4.under                 60/60   PASS
+  R5.door                  54/60   FAIL   e.g. B08/S4, B13/S4, B23/S4, B30/S4
+  R5.tray                 120/120  PASS
+  R7.spstep                60/60   PASS
+  R7.spstep.settle         60/60   PASS
+  CPU.slot               NOT EVALUATED
+  R6.protect             NOT EVALUATED
+175 case-criteria failed, 2 not evaluated
+
+== tập B, cảm biến 0.1 C ==
+controller=v2 sets=B cases=660  (SIMULATION ONLY)
+  GATE.e115               660/660  PASS
+  GATE.emergency          660/660  PASS
+  GATE.high               659/660  FAIL   e.g. B47/S7
+  GATE.unsafe             660/660  PASS
+  R1.reach                120/120  PASS
+  R1.reach.restart          0/60   FAIL   e.g. B01/S3, B02/S3, B03/S3, B04/S3
+  R2.high                 659/660  FAIL   e.g. B47/S7
+  R2.over                 342/420  FAIL   e.g. B02/S1, B04/S1, B08/S1, B15/S1
+  R3.band01.cold          149/240  FAIL   e.g. B01/S1, B02/S1, B04/S1, B08/S1
+  R3.band01.warm           38/60   FAIL   e.g. B01/S3, B02/S3, B04/S3, B05/S3
+  R3.band03               108/120  FAIL   e.g. B04/S1, B08/S1, B30/S1, B47/S1
+  R4.tail                  57/60   FAIL   e.g. B18/S7, B38/S7, B53/S7
+  R4.under                 60/60   PASS
+  R5.door                  49/60   FAIL   e.g. B01/S4, B04/S4, B08/S4, B15/S4
+  R5.tray                 120/120  PASS
+  R7.spstep                60/60   PASS
+  R7.spstep.settle         50/60   FAIL   e.g. B01/S8, B02/S8, B04/S8, B08/S8
+  CPU.slot               NOT EVALUATED
+  R6.protect             NOT EVALUATED
+289 case-criteria failed, 2 not evaluated
+
+== tập C, cảm biến 0.01 C ==
+controller=v2 sets=C cases=264  (SIMULATION ONLY)
+  GATE.e115               231/231  PASS
+  GATE.e115.C8cal          33/33   PASS
+  GATE.emergency          231/231  PASS
+  GATE.emergency.C8cal     33/33   PASS
+  GATE.high               231/231  PASS
+  GATE.high.C8cal          28/33   FAIL   e.g. A2C8/S5b, A2C8/S6a, A7C8/S6a, A2C8/S6b
+  GATE.unsafe             231/231  PASS
+  GATE.unsafe.C8cal        33/33   PASS
+  R1.reach                 39/42   FAIL   e.g. A4C1/S1, A4C3/S1, A4C7/S1
+  R1.reach.C8cal            6/6    PASS
+  R1.reach.restart          0/21   FAIL   e.g. A2C1/S3, A2C2/S3, A2C3/S3, A2C4/S3
+  R1.reach.restart.C8cal    0/3    FAIL   e.g. A2C8/S3, A4C8/S3, A7C8/S3
+  R2.high                 231/231  PASS
+  R2.high.C8cal            28/33   FAIL   e.g. A2C8/S5b, A2C8/S6a, A7C8/S6a, A2C8/S6b
+  R2.over                 131/147  FAIL   e.g. A7C7/S1, A4C3/S2, A7C3/S2, A2C3/S4
+  R2.over.C8cal             0/21   FAIL   e.g. A2C8/S1, A4C8/S1, A7C8/S1, A2C8/S2
+  R3.band01.cold           75/84   FAIL   e.g. A7C7/S1, A2C6/S5a, A4C3/S5a, A2C6/S5b
+  R3.band01.cold.C8cal      0/12   FAIL   e.g. A2C8/S1, A4C8/S1, A7C8/S1, A2C8/S2
+  R3.band01.warm           18/21   FAIL   e.g. A4C2/S3, A7C3/S3, A7C7/S3
+  R3.band01.warm.C8cal      0/3    FAIL   e.g. A2C8/S3, A4C8/S3, A7C8/S3
+  R3.band03                41/42   FAIL   e.g. A7C3/S1
+  R3.band03.C8cal           0/6    FAIL   e.g. A2C8/S1, A4C8/S1, A7C8/S1, A2C8/S2
+  R4.tail                  21/21   PASS
+  R4.tail.C8cal             0/3    FAIL   e.g. A2C8/S7, A4C8/S7, A7C8/S7
+  R4.under                 21/21   PASS
+  R4.under.C8cal            3/3    PASS
+  R5.door                  17/19   FAIL   e.g. A2C3/S4, A7C3/S4
+  R5.door.C8cal             0/2    FAIL   e.g. A2C8/S4, A4C8/S4
+  R5.door.NOREF             0/2    FAIL   e.g. A2C4/S4, A7C4/S4
+  R5.door.NOREF.C8cal       0/1    FAIL   e.g. A7C8/S4
+  R5.tray                  42/42   PASS
+  R5.tray.C8cal             0/6    FAIL   e.g. A2C8/S5a, A4C8/S5a, A7C8/S5a, A2C8/S5b
+  R7.spstep                20/21   FAIL   e.g. A7C3/S8
+  R7.spstep.C8cal           0/3    FAIL   e.g. A2C8/S8, A4C8/S8, A7C8/S8
+  R7.spstep.settle         21/21   PASS
+  R7.spstep.settle.C8cal    0/3    FAIL   e.g. A2C8/S8, A4C8/S8, A7C8/S8
+  CPU.slot               NOT EVALUATED
+  R6.protect             NOT EVALUATED
+131 case-criteria failed, 2 not evaluated
+
+== tập C, cảm biến 0.1 C ==
+controller=v2 sets=C cases=264  (SIMULATION ONLY)
+  GATE.e115               231/231  PASS
+  GATE.e115.C8cal          33/33   PASS
+  GATE.emergency          231/231  PASS
+  GATE.emergency.C8cal     33/33   PASS
+  GATE.high               219/231  FAIL   e.g. A2C3/S1, A2C3/S4, A4C3/S4, A7C3/S4
+  GATE.high.C8cal          27/33   FAIL   e.g. A2C8/S6a, A4C8/S6a, A7C8/S6a, A2C8/S6b
+  GATE.unsafe             231/231  PASS
+  GATE.unsafe.C8cal        33/33   PASS
+  R1.reach                 42/42   PASS
+  R1.reach.C8cal            6/6    PASS
+  R1.reach.restart          0/21   FAIL   e.g. A2C1/S3, A2C2/S3, A2C3/S3, A2C4/S3
+  R1.reach.restart.C8cal    0/3    FAIL   e.g. A2C8/S3, A4C8/S3, A7C8/S3
+  R2.high                 219/231  FAIL   e.g. A2C3/S1, A2C3/S4, A4C3/S4, A7C3/S4
+  R2.high.C8cal            27/33   FAIL   e.g. A2C8/S6a, A4C8/S6a, A7C8/S6a, A2C8/S6b
+  R2.over                 115/147  FAIL   e.g. A2C3/S1, A2C6/S1, A4C2/S1, A4C3/S1
+  R2.over.C8cal             0/21   FAIL   e.g. A2C8/S1, A4C8/S1, A7C8/S1, A2C8/S2
+  R3.band01.cold           34/84   FAIL   e.g. A2C3/S1, A7C2/S1, A7C3/S1, A7C4/S1
+  R3.band01.cold.C8cal      0/12   FAIL   e.g. A2C8/S1, A4C8/S1, A7C8/S1, A2C8/S2
+  R3.band01.warm           14/21   FAIL   e.g. A2C1/S3, A2C2/S3, A4C6/S3, A7C1/S3
+  R3.band01.warm.C8cal      0/3    FAIL   e.g. A2C8/S3, A4C8/S3, A7C8/S3
+  R3.band03                39/42   FAIL   e.g. A2C3/S1, A7C2/S1, A2C6/S2
+  R3.band03.C8cal           0/6    FAIL   e.g. A2C8/S1, A4C8/S1, A7C8/S1, A2C8/S2
+  R4.tail                  20/21   FAIL   e.g. A4C5/S7
+  R4.tail.C8cal             0/3    FAIL   e.g. A2C8/S7, A4C8/S7, A7C8/S7
+  R4.under                 21/21   PASS
+  R4.under.C8cal            3/3    PASS
+  R5.door                  13/19   FAIL   e.g. A2C3/S4, A4C2/S4, A4C3/S4, A4C5/S4
+  R5.door.C8cal             0/2    FAIL   e.g. A2C8/S4, A4C8/S4
+  R5.door.NOREF             0/2    FAIL   e.g. A2C4/S4, A7C4/S4
+  R5.door.NOREF.C8cal       0/1    FAIL   e.g. A7C8/S4
+  R5.tray                  42/42   PASS
+  R5.tray.C8cal             0/6    FAIL   e.g. A2C8/S5a, A4C8/S5a, A7C8/S5a, A2C8/S5b
+  R7.spstep                21/21   PASS
+  R7.spstep.C8cal           0/3    FAIL   e.g. A2C8/S8, A4C8/S8, A7C8/S8
+  R7.spstep.settle         13/21   FAIL   e.g. A4C1/S8, A4C3/S8, A4C6/S8, A7C1/S8
+  R7.spstep.settle.C8cal    0/3    FAIL   e.g. A2C8/S8, A4C8/S8, A7C8/S8
+  CPU.slot               NOT EVALUATED
+  R6.protect             NOT EVALUATED
+229 case-criteria failed, 2 not evaluated
+
+== tập phát triển A+D (tinh chỉnh) ==
+dq0.1 : tổng case-criteria hỏng 287 -> 169 ; dq0.01 : 205 -> 73 (bốn cổng an toàn 0 hỏng cả hai)

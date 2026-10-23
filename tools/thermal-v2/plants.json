@@ -1,0 +1,249 @@
+{
+ "note": "Plant sets for the V2 digital twin. SIMULATION ONLY. Set A is what the controller is DESIGNED on; B and C are only to GRADE (see doc/THERMAL_V2_CONSTANTS.md section 6). Units: Pmax W, Cf/Ce J/C, hA/UA W/C, td/tl s. Parameter ranges come from doc/THERMAL_REDESIGN_RESEARCH.md and doc/SLOW_OVEN_STUDY.md; A4 is derived from the owner's 15/10 log (hold 1.9 % of 16 kW, Kh 0.0133 C/s, theta 150+50 s).",
+ "common": {
+  "Ce": 1900000,
+  "Tamb": 28,
+  "sensorStepC": 0.1,
+  "samplePeriodS": 2,
+  "sensorFilter": "production median-3 + IIR 3/8",
+  "embryoWMax": 1500,
+  "ventW": 2500
+ },
+ "A": [
+  {
+   "id": "A1",
+   "Pmax": 16000,
+   "Cf": 300000,
+   "hA": 1700,
+   "UA": 350,
+   "td": 60,
+   "tl": 30
+  },
+  {
+   "id": "A2",
+   "Pmax": 16000,
+   "Cf": 500000,
+   "hA": 1300,
+   "UA": 250,
+   "td": 100,
+   "tl": 40
+  },
+  {
+   "id": "A3",
+   "Pmax": 16000,
+   "Cf": 1000000,
+   "hA": 1000,
+   "UA": 200,
+   "td": 150,
+   "tl": 50
+  },
+  {
+   "id": "A4",
+   "Pmax": 16000,
+   "Cf": 1200000,
+   "hA": 1000,
+   "UA": 31,
+   "td": 150,
+   "tl": 50,
+   "note": "owner-derived slow oven"
+  },
+  {
+   "id": "A5",
+   "Pmax": 20000,
+   "Cf": 500000,
+   "hA": 1300,
+   "UA": 250,
+   "td": 100,
+   "tl": 40
+  },
+  {
+   "id": "A6",
+   "Pmax": 20000,
+   "Cf": 300000,
+   "hA": 1700,
+   "UA": 350,
+   "td": 60,
+   "tl": 30
+  },
+  {
+   "id": "A7",
+   "Pmax": 16000,
+   "Cf": 800000,
+   "hA": 1000,
+   "UA": 300,
+   "td": 180,
+   "tl": 50
+  },
+  {
+   "id": "A8",
+   "Pmax": 16000,
+   "Cf": 300000,
+   "hA": 1000,
+   "UA": 200,
+   "td": 120,
+   "tl": 40
+  },
+  {
+   "id": "A9",
+   "Pmax": 20000,
+   "Cf": 1200000,
+   "hA": 1000,
+   "UA": 31,
+   "td": 150,
+   "tl": 50
+  },
+  {
+   "id": "A10",
+   "Pmax": 16000,
+   "Cf": 500000,
+   "hA": 1700,
+   "UA": 350,
+   "td": 180,
+   "tl": 30
+  },
+  {
+   "id": "A11",
+   "Pmax": 16000,
+   "Cf": 800000,
+   "hA": 1300,
+   "UA": 250,
+   "td": 60,
+   "tl": 50
+  },
+  {
+   "id": "A12",
+   "Pmax": 20000,
+   "Cf": 1000000,
+   "hA": 1700,
+   "UA": 200,
+   "td": 140,
+   "tl": 40
+  }
+ ],
+ "B": {
+  "count": 60,
+  "seed": 20261123,
+  "prng": "xorshift32: x^=x<<13; x^=x>>17; x^=x<<5 (uint32), u=x/2^32, draws in the order listed, one plant after another",
+  "ranges": {
+   "Pmax": [
+    14000,
+    22000
+   ],
+   "Cf": [
+    250000,
+    1300000
+   ],
+   "Ce": [
+    1000000,
+    2400000
+   ],
+   "hA": [
+    900,
+    1800
+   ],
+   "UA": [
+    30,
+    400
+   ],
+   "td": [
+    40,
+    200
+   ],
+   "tl": [
+    25,
+    55
+   ]
+  },
+  "rule": "uniform in each range; reject and redraw when held SP 37.5 would need > 90 % of Pmax at Te=SP, Tamb 28 (UA*9.5/Pmax > 0.9)",
+  "seedNote": "G6: seed changed from 20261105 (looked at twice, controller then changed: watchdog, adapter cadence, review fixes) to 20261123; tuning used A and D only. C keeps A2/A4/A7 as base ovens: it is a robustness set, NOT held-out for those ovens."
+ },
+ "C": {
+  "baseOvens": [
+   "A2",
+   "A4",
+   "A7"
+  ],
+  "modifiers": [
+   {
+    "id": "C1",
+    "what": "third thermal mass: extra slow node Cs=1.5 MJ/C coupled by 400 W/C to the air"
+   },
+   {
+    "id": "C2",
+    "what": "sensor lag +20 s (first-order) in addition to the production filter"
+   },
+   {
+    "id": "C3",
+    "what": "sensor lag +60 s"
+   },
+   {
+    "id": "C4",
+    "what": "heater gain -30 % (element derate / ageing), the controller is not told"
+   },
+   {
+    "id": "C5",
+    "what": "heater gain +30 %"
+   },
+   {
+    "id": "C6",
+    "what": "egg coupling hA changes with the circulation fan: x0.6 for 20 min every 2 h"
+   },
+   {
+    "id": "C7",
+    "what": "supply sag: Pmax*(1-0.12*duty_60s) and a 5 % step at hour 3"
+   },
+   {
+    "id": "C8",
+    "what": "calibration offset -0.5 C on the sensor (controller sees PV-0.5), 0.1 C quantisation"
+   }
+  ],
+  "combinations": 24
+ },
+ "scenarios": {
+  "S1": "first batch from 33 C, eggs at 33 C",
+  "S2": "first batch from 28 C, eggs at 28 C",
+  "S3": "restart: air 33 C, eggs 37 C (power loss / second batch)",
+  "S4": "door opens at settled state: air -3 C step at t0",
+  "S5": "cold tray: 25 % and 50 % of egg mass at 28 C inserted into a settled oven",
+  "S6": "vent fan 2.5 kW for 5 min, scheduled (known in advance) and unscheduled",
+  "S7": "24 h: embryo heat 0->1500 W ramp, ambient 28->20 C swing, supply sag",
+  "S8": "SP step +0.5 C",
+  "S9": "permit lost 10 min (sensor lost / contactor open) then returned",
+  "S10": "protection loop (G4): full-power request with sensor faults / SSR stuck"
+ },
+ "D": {
+  "count": 40,
+  "seed": 4242,
+  "note": "DEVELOPMENT set (G3c): same generator and ranges as B, different seed. Tuning is allowed on A and D; B and C only grade.",
+  "ranges": {
+   "Pmax": [
+    14000,
+    22000
+   ],
+   "Cf": [
+    250000,
+    1300000
+   ],
+   "Ce": [
+    1000000,
+    2400000
+   ],
+   "hA": [
+    900,
+    1800
+   ],
+   "UA": [
+    30,
+    400
+   ],
+   "td": [
+    40,
+    200
+   ],
+   "tl": [
+    25,
+    55
+   ]
+  }
+ }
+}

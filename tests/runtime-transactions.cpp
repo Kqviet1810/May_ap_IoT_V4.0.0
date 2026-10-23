@@ -19,6 +19,7 @@ void leave(int *p){if(p==&hmiApiMux)--hmiDepth;if(autoRun&&!hmiDepth&&!inControl
 #define portENTER_CRITICAL(p) enter(p)
 #define portEXIT_CRITICAL(p) leave(p)
 constexpr uint8_t COMMAND_QUEUE_SIZE=4;
+constexpr uint32_t WebCtlHeater=1,WebCtlVent=2,WebCtlCirc=4,WebCtlLight=8,WebCtlSiren=16,WebCtlTurn=32;
 constexpr size_t REALTIME_REQUEST_ID_CAPACITY=40;
 constexpr uint32_t AlarmNone=0,ALARM_KNOWN_MASK=0xffff,REALTIME_COMMAND_ACK_TIMEOUT_MS=8000,REALTIME_CONFIG_SAVE_ACK_TIMEOUT_MS=8000;
 constexpr uint16_t COMMAND_DEFAULT_VALID_MS=5000,COMMAND_AUTOTUNE_VALID_MS=5000;
@@ -40,7 +41,7 @@ void mayapRealtimeConfirmCommand(uint32_t,bool,const char*);
 namespace MayapRealtimeInternal {
 static bool activeAckKeyValid=true;static uint8_t activeAckKey[32]={7};static char activeOperation[40]="light.toggle";
 static uint32_t bootId=123,lastCommandSequence=0;static char lastCommandRequestId[40]="";
-static bool knownRuntimeValid=true;static struct{uint32_t alarmMask=0;struct{bool webAllowed=false,webSession=false;}tech;}knownRuntime;
+static bool knownRuntimeValid=true;static struct{uint32_t alarmMask=0;struct{bool webAllowed=false,webSession=false;uint32_t webCtlMask=63;}tech;}knownRuntime;
 static MachineConfig knownConfig;static bool knownConfigValid=true;
 static bool configDirty=false;
 static uint32_t realtimeConfigRevision=0,lastVerifiedConfigRevision=0;
@@ -93,7 +94,6 @@ static void techTests(){
  // hidden: every technical entry is refused before anything is staged or queued
  reset();techState(false,false);
  { JsonDocument d=techCommand("tech_request");d["kind"]="config";d["fields"]["kp"]=9.0;handleCommandMessage(d);assert(acks.back()=="rejected");assert(commandCount==0);MayapTech::Staged s;assert(!MayapTech::take(s)); }
- { JsonDocument d=techCommand("autotune_start");handleCommandMessage(d);assert(acks.back()=="rejected"&&commandCount==0);MayapTech::Staged s;assert(!MayapTech::take(s)); }
  // permission ON but Web not unlocked: still refused
  reset();techState(true,false);
  { JsonDocument d=techCommand("tech_request");d["kind"]="config";d["fields"]["kp"]=9.0;handleCommandMessage(d);assert(acks.back()=="rejected"&&commandCount==0); }
@@ -116,11 +116,10 @@ static void techTests(){
    if(variant==0)d["fields"]["kp"]=500.0;else if(variant==1)d["fields"]["notAField"]=1;else if(variant==2)d["fields"]["kp"]="9";
    else if(variant==3)d["fields"]["maxHeaterPower"]=70.5;else d["kind"]="bogus";
    handleCommandMessage(d);assert(acks.back()=="invalid"&&commandCount==0);MayapTech::Staged s;assert(!MayapTech::take(s)); }
- // a legacy autotune_start is only a request now
+ // Thermal Control V2.0.0: the Auto Tune is gone. Neither the old action nor the old request kind parks or queues anything.
  reset();techState(true,true);
- { JsonDocument d=techCommand("autotune_start");handleCommandMessage(d);assert(acks.back()=="accepted"&&commandCount==1);
-   assert(lastQueued().type==HmiCommandType::TechRequestSubmit&&lastQueued().type!=HmiCommandType::AutoTuneStart);
-   MayapTech::Staged s;assert(MayapTech::take(s)&&s.kind==MayapTech::Kind::AutoTune); }
+ { JsonDocument d=techCommand("autotune_start");handleCommandMessage(d);assert(acks.back()=="unsupported"&&commandCount==0);MayapTech::Staged s;assert(!MayapTech::take(s)); }
+ { JsonDocument d=techCommand("tech_request");d["kind"]="autotune";handleCommandMessage(d);assert(acks.back()=="invalid"&&commandCount==0);MayapTech::Staged s;assert(!MayapTech::take(s)); }
  // saturation: a full tracker / full queue leaves nothing parked
  reset();techState(true,true);for(auto &p:pendingCommands)p.used=true;
  { JsonDocument d=techCommand("tech_request");d["kind"]="config";d["fields"]["kp"]=9.0;handleCommandMessage(d);assert(acks.back()=="busy");MayapTech::Staged s;assert(!MayapTech::take(s)); }

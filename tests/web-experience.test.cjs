@@ -15,7 +15,7 @@ function browser(overrides = {}, initialStorage = {}) {
       buildConfig, validateTemperatureForm, validateSensorForm, validateVentForm,
       validateAdvancedForm, REQUIRED_CONFIG_KEYS, VENT_PROFILE_KEYS, createDevice,
 connectionStatus, pollServerAlerts, syncServerAlertPolling, serverConnectionDetail, renderServerAlarmBanner, setRealtimeStatus, SERVER_ALERT,
-      buildTechFields, techGateInfo, pmValues, PM_ITEMS, TECH_FIELDS, AUTOTUNE_PHASES, AUTOTUNE_REASONS });
+      buildTechFields, techGateInfo, pmValues, PM_ITEMS, TECH_FIELDS, pmIngestLog, pmCsv, pidMon });
   })();`);
   let now = 0, wall = Date.now(), timerId = 0;
   class BrowserDate extends Date { static now() { return wall; } }
@@ -57,10 +57,10 @@ test('advanced UI hides SSR cycle while preserving legacy protocol readback', ()
     h.device.config.pidCycleSec = pidCycleSec;
     h.elements.set('lightAfterBatchAlarmEnabled', { checked: false }); h.elements.set('sirenSelfTestEnabled', { checked: false });
     assert.equal(h.buildConfig('lightAlarm').pidCycleSec, pidCycleSec);         // echoed untouched
-    const values = { advKp:18, advKi:0.8, advKd:45, advMaxHeaterPower:100,
+    const values = { advMaxHeaterPower:100,
       advTempRateLimitC:1, advTempRateWindowSec:120, advTempOscillationCrossLimit:6,
       advTempOscillationWindowSec:600, advHeaterStuckMinRiseC:0.3,
-      advHeaterStuckDurationSec:900, advAutotuneRelayPowerPercent:30, advAutotuneBandC:0.2,
+      advHeaterStuckDurationSec:900,
       tempOffset:0, humidityOffset:0 };
     for (const [id,value] of Object.entries(values)) h.elements.set(id,{value});
     assert.equal(h.validateAdvancedForm(), true);
@@ -76,30 +76,29 @@ test('technical fields never travel through config/set: the Web only builds a te
   assert.match(webSource, /if \(options\.extra\) Object\.assign\(payload, options\.extra\)/);
   const h = browser();
   h.device.config = Object.fromEntries(h.REQUIRED_CONFIG_KEYS.map(key => [key, 0]));
-  Object.assign(h.device.config, { kp: 18, ki: 0.8, kd: 45, maxHeaterPower: 100, tempOffset: 0.1, humidityOffset: 0,
+  Object.assign(h.device.config, { maxHeaterPower: 100, tempOffset: 0.1, humidityOffset: 0,
     heaterStuckMinRiseC: 0.3, heaterStuckDurationSec: 900, tempRateLimitC: 1, tempRateWindowSec: 120,
-    tempOscillationCrossLimit: 6, tempOscillationWindowSec: 600, autotuneRelayPowerPercent: 30, autotuneBandC: 0.2 });
+    tempOscillationCrossLimit: 6, tempOscillationWindowSec: 600 });
   for (const [key, id] of h.TECH_FIELDS) h.elements.set(id, { value: h.device.config[key] });
   assert.deepEqual(JSON.parse(JSON.stringify(h.buildTechFields(h.device))), {});                         // nothing changed -> nothing to send
-  h.elements.get('advKp').value = 20.5;
+  h.elements.get('advMaxHeaterPower').value = 70;
   h.elements.get('tempOffset').value = 0.1000000001;                          // float noise is not a change
-  assert.deepEqual(JSON.parse(JSON.stringify(h.buildTechFields(h.device))), { kp: 20.5 });
+  assert.deepEqual(JSON.parse(JSON.stringify(h.buildTechFields(h.device))), { maxHeaterPower: 70 });
 });
 
-test('adaptive thermal setting is explicit opt-in and omitted for legacy firmware', () => {
+test('Thermal Control V2.0.0: the Web no longer offers Auto Tune, PID gains, balance switch or relay tuning', () => {
   const html=fs.readFileSync(require.resolve('../index.html'),'utf8');
-  assert.match(html,/Tự cân bằng nhiệt/);
-  assert.match(html,/id="adaptiveThermalBalanceEnabled" type="checkbox" disabled/);
   const webSource=fs.readFileSync(require.resolve('../app.js'),'utf8');
-  assert.match(webSource,/unsupportedAdaptive = input\.id === 'adaptiveThermalBalanceEnabled'/);
+  for (const gone of ['Tự cân bằng nhiệt', 'adaptiveThermalBalanceEnabled', 'id="startTune"', 'advKp', 'advKi', 'advKd', 'advAutotune', 'tuneBar']) {
+    assert.ok(!html.includes(gone), `${gone} must be gone from index.html`);
+  }
+  for (const gone of ['autotune_start', 'autotune_cancel', 'AUTOTUNE_PHASES', 'startTune', 'unsupportedAdaptive', "kind: 'autotune'"]) {
+    assert.ok(!webSource.includes(gone), `${gone} must be gone from app.js`);
+  }
   const h=browser();h.device.config=Object.fromEntries(h.REQUIRED_CONFIG_KEYS.map(key=>[key,0]));
   for (const [key, id] of h.TECH_FIELDS) h.elements.set(id, { value: h.device.config[key] });
-  h.elements.set('adaptiveThermalBalanceEnabled',{checked:true});
-  assert.equal(Object.hasOwn(h.buildTechFields(h.device),'adaptiveThermalBalanceEnabled'),false);   // legacy firmware: omitted
-  h.device.config.adaptiveThermalBalanceEnabled=false;
-  assert.equal(h.buildTechFields(h.device).adaptiveThermalBalanceEnabled,1);
-  h.elements.get('adaptiveThermalBalanceEnabled').checked=false;
-  assert.equal(Object.hasOwn(h.buildTechFields(h.device),'adaptiveThermalBalanceEnabled'),false);
+  assert.ok(!Object.hasOwn(h.buildTechFields(h.device),'adaptiveThermalBalanceEnabled'));
+  assert.ok(!h.TECH_FIELDS.some(([key]) => /^(kp|ki|kd|autotune)/.test(key)));
 });
 
 test('technical section is hidden unless the HMI grants it; unlocked only with a live device session', () => {
@@ -119,22 +118,35 @@ test('technical section is hidden unless the HMI grants it; unlocked only with a
   assert.doesNotMatch(webSource, /localStorage[^;\n]*techPin|(?:setItem|console\.\w+)\([^)]*\bpin\b/);             // PIN is not stored or logged
 });
 
-test('PID Monitor shows measured values only and lists every required figure', () => {
+test('Heater monitor shows measured values only and lists every figure the firmware still sends', () => {
   const h = browser();
   const keys = h.PM_ITEMS.map((item) => item[0]);
-  for (const key of ['pv', 'sp', 'err', 'corr', 'hold', 'vent', 'limit', 'req', 'act', 'kp', 'ki', 'kd', 'conf', 'gain', 'delay', 'coast', 'holdPct', 'ventGain'])
-    assert.ok(keys.includes(key), key);
-  const none = h.pmValues({ config: { kp: 18, ki: 0.8, kd: 45 } }, { temperature: 37.5 });          // firmware without pidMon: nothing invented
-  for (const key of ['pv', 'sp', 'err', 'corr', 'hold', 'vent', 'req', 'act', 'conf', 'gain']) assert.ok(Number.isNaN(none[key]), key);
-  assert.equal(none.limit, ''); assert.equal(none.kp, 18);
-  const live = h.pmValues({ config: {} }, { temperature: 37.4, adaptiveThermal: { enabled: true },
-    pidMon: { valid: true, sp: 37.5, err: 0.1, corr: 3, hold: 8, vent: 0, lo: 0, hi: 60, req: 11, act: 10.5, conf: 80, gain: 0.02, delay: 30, coast: 0.2, holdPct: 8, ventGain: 0.1 } });
-  assert.equal(live.pv, 37.4); assert.equal(live.sp, 37.5); assert.equal(live.limit, '0–60'); assert.equal(live.conf, 80);
-  const noLearn = h.pmValues({ config: {} }, { temperature: 37.4, pidMon: { valid: true, sp: 37.5, err: 0.1, corr: 3, hold: 8, vent: 0, lo: 0, hi: 60, req: 11, act: 10.5, conf: 0, gain: 0, delay: 0, coast: 0, holdPct: 0, ventGain: 0 } });
-  assert.ok(Number.isNaN(noLearn.conf));                                                           // adaptive profile off -> no fake zeros
+  assert.deepEqual(JSON.parse(JSON.stringify(keys)), ['pv', 'sp', 'err', 'req', 'act', 'pred', 'phase', 'slot']);
+  const none = h.pmValues({ config: {} }, { temperature: 37.5 });          // firmware without pidMon: nothing invented
+  for (const key of keys) assert.ok(key === 'phase' ? none[key] === '' : Number.isNaN(none[key]), key);
+  const live = h.pmValues({ config: {} }, { temperature: 37.4, pidMon: { valid: true, sp: 37.5, err: 0.1, req: 11, act: 10.5 } });
+  assert.equal(live.pv, 37.4); assert.equal(live.sp, 37.5); assert.equal(live.err, 0.1); assert.equal(live.req, 11); assert.equal(live.act, 10.5);
   const webSource = fs.readFileSync(require.resolve('../app.js'), 'utf8');
   assert.match(webSource, /\.\.\.\(mon \? \{ mon: true \} : \{\}\)/);                              // lease asks for pidMon only while the card is open
-  assert.equal(h.AUTOTUNE_PHASES.length, 15); assert.equal(h.AUTOTUNE_REASONS.length, 23);
+});
+
+test('PID log: chunks of the machine ring are assembled by index and saved as CSV', () => {
+  const h = browser();
+  h.pidMon.log = new Map(); h.pidMon.series = []; h.pidMon.logHead = 0;
+  h.pmIngestLog({ h: 30, s: 20, d: [3750, 3750, 3751, 40, 22, 0x41, 3752, 3750, 3752, 42, 23, 0x45] });       // samples 20 and 21
+  h.pmIngestLog({ h: 30, s: 20, d: [3750, 3750, 3751, 40, 22, 0x41] });                                          // a repeat changes nothing
+  h.pmIngestLog({ h: 30, s: 28, d: [3760, 3750, 3760, 0, 0, 0x03] });
+  assert.equal(h.pidMon.log.size, 3);
+  assert.equal(h.pidMon.log.get(21).pv, 37.52);
+  assert.equal(h.pidMon.log.get(21).req, 21);                                                                    // percent * 2 on the wire
+  h.pmIngestLog(null); h.pmIngestLog({ h: 'x', s: 1, d: [] });                                                   // garbage is ignored
+  const csv = h.pmCsv({ id: 'MAP-TEST', bootId: 7 });
+  const lines = csv.trim().split('\n');
+  assert.match(lines[0], /^# mayap pid log device=MAP-TEST boot=7/);
+  assert.equal(lines[1], 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,source');
+  assert.equal(lines.length, 5);
+  const second = lines[3].split(',');
+  assert.equal(second[1], '21'); assert.equal(second[7], '1'); assert.equal(second[8], '1'); assert.equal(second[14], 'machine');   // phase 1, suspect flag
 });
 
 test('fan config requires complete capabilities and preserves legacy schedules', () => {
@@ -165,17 +177,15 @@ test('swipe changes adjacent tabs only and rejects vertical, short, slow or edge
     ['device', -100, 90, 200], ['device', -100, 1, 900]]) assert.equal(h.swipeDestination(...args), null);
 });
 
-test('landing has no duplicated top nav and Auto Tune exposes cancel while running', () => {
+test('landing has no duplicated top nav', () => {
   const html = fs.readFileSync(require.resolve('../index.html'), 'utf8');
   const css = fs.readFileSync(require.resolve('../landing.css'), 'utf8');
   const app = fs.readFileSync(require.resolve('../app.js'), 'utf8');
   assert.doesNotMatch(html, /<nav class="landingNav"/);
   assert.match(css, /grid-template-rows:minmax\(0,1fr\) auto 30px/);
-  assert.match(app, /textContent = 'Hủy tự dò PID'/);
-  assert.match(app, /sendCommand\('autotune_cancel'\)/);
 });
 
-test('thermal final bounds match firmware and zero-authority PID is rejected', () => {
+test('thermal final bounds match firmware', () => {
   const html = fs.readFileSync(require.resolve('../index.html'), 'utf8');
   assert.doesNotMatch(html, /id="sensorTimeout"/);
   assert.match(html, /id="tempOffset" max="5" min="-5"/);
@@ -187,19 +197,18 @@ test('thermal final bounds match firmware and zero-authority PID is rejected', (
   for (const [id, value] of Object.entries({
     targetTemp:37.5, lowAlarm:36.5, highAlarm:38.2, emergencyTemp:39,
     tempOffset:0, humidityOffset:0,
-    advKp:0, advKi:0, advKd:0, advMaxHeaterPower:100,
+    advMaxHeaterPower:100,
     advTempRateLimitC:1, advTempRateWindowSec:120,
     advTempOscillationCrossLimit:6, advTempOscillationWindowSec:600,
-    advHeaterStuckMinRiseC:0.3, advHeaterStuckDurationSec:900,
-    advAutotuneRelayPowerPercent:30, advAutotuneBandC:0.2
+    advHeaterStuckMinRiseC:0.3, advHeaterStuckDurationSec:900
   })) h.elements.set(id, { value });
   assert.equal(h.validateTemperatureForm(), true);
   assert.equal(h.validateSensorForm(), true);
-  assert.equal(h.validateAdvancedForm(), false);
-  assert.equal(h.window.invalidField, 'advKp');
-
-  h.elements.get('advKp').value = 18;
   assert.equal(h.validateAdvancedForm(), true);
+  h.elements.get('advMaxHeaterPower').value = 9;
+  assert.equal(h.validateAdvancedForm(), false);
+  assert.equal(h.window.invalidField, 'advMaxHeaterPower');
+  h.elements.get('advMaxHeaterPower').value = 100;
   h.elements.get('tempOffset').value = -5.1;
   assert.equal(h.validateSensorForm(), false);
   assert.equal(h.window.invalidField, 'tempOffset');
@@ -309,4 +318,17 @@ test('server alert view never outlives its freshness window', () => {
   h.device.server = { ok: true, at: h.now() - h.SERVER_ALERT.pollMs * 3 - 1, serverTime: h.now(), lastSeen: h.now() - 500000, alarms: [], events: [] };
   h.state.realtimeConnected = false; h.state.realtimeLostAt = h.now() - 60000;
   assert.notEqual(h.connectionStatus(h.device), 'devicelost');            // stale copy is ignored: unknown beats wrong
+});
+
+test('Web output control: buttons exist, are gated by the HMI permissions, and offline temperature shows a dash', () => {
+  const html = fs.readFileSync(require.resolve('../index.html'), 'utf8');
+  const src = fs.readFileSync(require.resolve('../app.js'), 'utf8');
+  for (const id of ['outputHeaterBtn', 'outputCircBtn', 'outputVentBtn', 'turnLeftBtn', 'turnRightBtn', 'pmDownload'])
+    assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(src, /WEBCTL = Object\.freeze\(\{ heater: 1, vent: 2, circ: 4, light: 8, siren: 16, turn: 32 \}\)/);
+  for (const act of ['vent_toggle', 'circ_toggle', 'heater_toggle', 'siren_toggle', 'turn_hold'])
+    assert.ok(src.includes(act), act);
+  // the Web never writes the permission mask: no command that sets it exists on the Web side
+  assert.ok(!/webctl_set|WebCtlSet/.test(src));
+  assert.match(src, /\['online',\s*'reconnecting',\s*'degraded'\]/);
 });

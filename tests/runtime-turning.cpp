@@ -16,6 +16,7 @@ bool timeReached(uint32_t n,uint32_t t) { return int32_t(n-t)>=0; }
 void mayapSerialPrintf(bool,const char*,...) {}
 struct InputState { bool autoMode=true,limitLeft=true,limitRight=false,turnLeft=false,turnRight=false,circulationFan=true; };
 struct Controller {
+ uint8_t webTurnDir_=0; uint32_t webTurnUntil_=0; bool webOverrideLive(uint32_t u,uint32_t n) const { return u!=0U && (int32_t)(n-u)<0; }
  struct { uint32_t now=1000000; bool ok=true; bool valid() const { return ok; } uint32_t epoch() const { return now; } } rtc_;
  struct { InputState value; const InputState& state() const { return value; } } inputs_;
  struct { bool inhibit=false; bool turningInhibited() const { return inhibit; } } faults_;

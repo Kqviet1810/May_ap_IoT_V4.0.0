@@ -24,7 +24,7 @@ test('E503 uses bounded per-state synchronization, not stale cached flags', () =
 test('start/stop mark transitions and retain arm-before-disarm handoff', () => {
   const source = read(dir + 'machine_control.h');
   const start = source.slice(source.indexOf('  bool startBatch('), source.indexOf('  bool stopBatch('));
-  const stop = source.slice(source.indexOf('  bool stopBatch('), source.indexOf('  bool startAutoTune('));
+  const stop = source.slice(source.indexOf('  bool stopBatch('), source.indexOf('  void adjustResumeElapsedFromRtc('));
   assert.match(start, /attinyBatchSync_\.expect\(true, millis\(\)\)/);
   assert.match(stop, /attinyBatchSync_\.expect\(false, millis\(\)\)/);
   assert.ok(stop.indexOf('mayapAttinyBusRequest(ATTINY_MSG_ACTIVITY_ON)') < stop.indexOf('mayapAttinyBusRequest(ATTINY_MSG_BATCH_END)'));

@@ -1,3 +1,5 @@
+> **Đã gỡ khỏi firmware 2.0.0 (Thermal Control V2.0.0).** Tài liệu này mô tả hệ nhiệt cũ (≤ 1.1.15) đã bị xoá khỏi nhánh `thermal-control-v2.0.0`; chỉ còn giá trị lịch sử. Mã nguồn cũ nằm ở `main` (e8b557e) và nhánh `claude/gracious-hopper-zjvufg`. Xem `doc/THERMAL_V2_REMOVAL_REPORT.md`.
+
 # Nghiên cứu thay mới hệ nhiệt — lò ảo hai nút, trần vật lý, nguyên mẫu dự đoán
 
 Trạng thái: **nghiên cứu trên mô phỏng, chưa đụng firmware, chưa kiểm chứng trên lò thật.**

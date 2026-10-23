@@ -33,7 +33,9 @@ constexpr uint32_t CPU_SAMPLE_PERIOD_MS = 60000U;
 constexpr uint32_t GUARD_CYCLE_US = 100000U;         // a quarter of the supervisor's control-deadline trip
 constexpr uint8_t GUARD_STREAK = 3U;
 constexpr uintptr_t MIN_FREE_STACK = 2048U;         // the supervisor stack (4 KB) must have this much left before a line is formatted
-constexpr uint8_t AI_SCHEMA = 1U;
+constexpr uint8_t AI_SCHEMA = 2U;      // 2: the controller columns carry Thermal V2 values (integ = integral trim %, dnow = modelled demand at the PV %, dloss = demand with no air-egg difference %,
+                                       //    phase = 0 look/probe 1 identified 2 first fit 3 second fit (+4 response watchdog tripped), fits = accepted fits, kx1e3 = heater gain k*1000 degC/s/%,
+                                       //    tdel/tlag = identified delay / lag s, ha = egg exchange %/degC, sigma = prediction sigma degC, pred = predicted PV degC)
 
 // Flag bits of the "fl" column.
 enum : uint16_t { FlBatch = 1U << 0, FlAuto = 1U << 1, FlSensorOk = 1U << 2, FlSsrNow = 1U << 3, FlMaster = 1U << 4, FlCircFan = 1U << 5,
@@ -156,7 +158,7 @@ inline uint8_t crc8(const char *data, size_t length) {   // CRC-8, polynomial 0x
   return crc;
 }
 constexpr char AI_COLUMNS[] =
-    "seq,t,age,day,sp,pv,raw,rh,req,ssrms,avg60,fl,pid,hff,vff,lo,hi,ts,tc,tg,td,th,tk,tv,te,vp,al,fc,sc,at,ap,drop,crc\n";
+    "seq,t,age,day,sp,pv,raw,rh,req,ssrms,avg60,fl,integ,dnow,dloss,lo,hi,phase,fits,kx1e3,tdel,tlag,ha,sigma,pred,vp,al,fc,sc,at,ap,drop,crc\n";
 // One data line ending in ",<crc8 of everything before the last comma>\n". Returns the length, 0 if it did not fit.
 inline size_t formatAiLine(char *out, size_t capacity, uint32_t seq, uint32_t nowMs, const AiSample &s, uint32_t dropped) {
   const int32_t signedAge = static_cast<int32_t>(nowMs - s.stampMs);   // the control task may publish a moment after the supervisor read the clock

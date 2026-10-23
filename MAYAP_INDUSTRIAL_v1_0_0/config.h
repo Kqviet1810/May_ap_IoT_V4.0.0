@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "1.1.15";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.0.0";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -271,18 +271,11 @@ constexpr uint32_t HEATER_BURST_QUANTUM_MS = 300UL;
 
 // Paired T/RH Modbus profile: 0=AUTO, 1=X10/RH-X10, 2=X100/RH-X10,
 // 3=native SHT30 T+RH. An explicit profile is still verified every boot.
-// Service commissioning build: observe ON without actuator adaptation.
-#ifndef MAYAP_ADAPTIVE_OBSERVER_ONLY
-#define MAYAP_ADAPTIVE_OBSERVER_ONLY 0
-#endif
-static_assert(MAYAP_ADAPTIVE_OBSERVER_ONLY == 0 || MAYAP_ADAPTIVE_OBSERVER_ONLY == 1,
-              "Observer-only override must be 0 or 1");
 #ifndef MAYAP_SENSOR_PROFILE
 #define MAYAP_SENSOR_PROFILE 0
 #endif
 static_assert(MAYAP_SENSOR_PROFILE >= 0 && MAYAP_SENSOR_PROFILE <= 3,
               "Invalid RS485 sensor profile");
-constexpr float THERMAL_PID_BETA = 1.0f;
 // Chan 2 truoc day du phong (PULSE_SPARE), sau do gan LED xanh bao "dang co
 // me ap" - nay bo han tinh nang LED nay, chan 2 chuyen thanh coi HMI (xem
 // PIN_BUZZER ben duoi). GPIO41 (coi HMI cu) tung de trong, nay da dung lai
@@ -473,7 +466,6 @@ constexpr uint32_t WIFI_PORTAL_UI_IDLE_TIMEOUT_MS = 120000UL;
 constexpr uint32_t SAVE_CONFIRM_TIMEOUT_MS = 8000UL;
 constexpr uint32_t COMMAND_CONFIRM_TIMEOUT_MS = 8000UL;
 constexpr uint16_t COMMAND_DEFAULT_VALID_MS = 5000U;
-constexpr uint16_t COMMAND_AUTOTUNE_VALID_MS = 5000U;
 // Rut ngan hon truoc (2200/4200ms) - man HMI nho, de bi che noi dung neu
 // thanh thong bao hien qua lau o cuoi man.
 constexpr uint32_t TOAST_INFO_MS = 1400UL;
@@ -587,7 +579,7 @@ constexpr uint32_t TURN_DIRECTION_DEADTIME_MS = 500UL;
 constexpr uint32_t TURN_LIMIT_RELEASE_TIMEOUT_MS = 2500UL;
 constexpr uint32_t TURN_INPUT_CONFLICT_MS = 500UL;
 constexpr uint32_t SENSOR_RECOVERY_GOOD_SAMPLES = 3UL;
-// Mau nhiet giam dot ngot co the lam PID tang cong suat sai. Mau tang cao
+// Mau nhiet giam dot ngot bi chan (khong de bo dieu khien nhiet doc sai). Mau tang cao
 // van duoc chap nhan ngay de bao ve qua nhiet.
 constexpr float SENSOR_MAX_DOWN_STEP_C = 1.5f;
 constexpr float SENSOR_PLAUSIBILITY_MATCH_C = 0.30f;
@@ -600,8 +592,8 @@ constexpr uint32_t SENSOR_STARTUP_GRACE_MS = 20000UL; // chua bao coi trong 20 s
 // nhieu/troi nen it khi giu nguyen tuyet doi lau nhu vay).
 constexpr float SENSOR_FROZEN_EPSILON_C = 0.01f;
 constexpr uint32_t SENSOR_FROZEN_TIMEOUT_MS = 1200000UL; // 20 phut
-// Warm-up: profile / scheduled ventilation waits while PV is more than this far below SP (the fan takes heat away and Adaptive learns
-// nothing while it runs); released at the second threshold or after the maximum. Forced vents (High, sensor fault, cooling) are untouched.
+// Warm-up: profile / scheduled ventilation waits while PV is more than this far below SP (the fan takes heat away while the oven climbs);
+// released at the second threshold or after the maximum. Forced vents (High, sensor fault) are untouched.
 constexpr float WARMUP_VENT_HOLD_ERR_C = 1.0f;
 constexpr float WARMUP_VENT_RELEASE_ERR_C = 0.5f;
 constexpr uint32_t WARMUP_VENT_HOLD_MAX_MS = 1800000UL;   // 30 phut
@@ -697,10 +689,6 @@ constexpr uint32_t NETWORK_TASK_PERIOD_MS = 250UL;
 // alarm/heartbeat hay Wi-Fi. (ArduinoOTA da go bo; con lai chi la cac phien HTTPS tuan tu.)
 constexpr uint32_t OTA_TASK_PERIOD_MS = 30UL;
 // ESP-IDF tinh stack task theo byte. Tat ca buffer cap phat tinh, khong phan manh heap.
-// Thermal Predictive V1 heavy work per control cycle (one identifier evaluation, or three planner candidates, per call; about 0.3-0.6 ms)
-#ifndef MAYAP_PREDICTIVE_EVALS_PER_CYCLE
-#define MAYAP_PREDICTIVE_EVALS_PER_CYCLE 1
-#endif
 constexpr size_t CONTROL_TASK_STACK_BYTES = 8192U;
 constexpr size_t HMI_TASK_STACK_BYTES = 10240U;
 constexpr size_t SUPERVISOR_TASK_STACK_BYTES = 4096U;
@@ -834,23 +822,6 @@ constexpr uint16_t MAX_RELAY_TRANSITIONS_PER_HOUR = 1800U;
 constexpr uint32_t SSR_MIN_ON_MS = 300UL;
 constexpr uint32_t SSR_MIN_OFF_MS = 300UL;
 
-// Auto Tune relay co gioi han, khong chay khi dang co me.
-// [DA CHUYEN SANG MachineConfig, schema 8] Bien do relay % va dai xac nhan
-// °C tung la hang so cung (AUTOTUNE_RELAY_POWER_PERCENT/AUTOTUNE_BAND_C) - da
-// chuyen thanh MachineConfig::autotuneRelayPowerPercent/autotuneBandC de
-// nguoi dung tu chinh "nhe tay" hon khi Auto Tune tren dan nhiet cong suat
-// lon ma khong can nap lai firmware. Gia tri mac dinh giu nguyen y het.
-constexpr uint8_t AUTOTUNE_REQUIRED_CYCLES = 3;
-constexpr float AUTOTUNE_STABILITY_FRACTION = 0.20f;
-constexpr float PID_D_FILTER_TAU_SEC = 5.0f;
-// Bounded commissioning candidates; no power escalation or timeout extension.
-constexpr uint8_t AUTOTUNE_PREHEAT_POWER_PERCENT = 30U; // Provisional 4.8 kW average, capped by maxHeaterPower
-constexpr uint32_t AUTOTUNE_PREHEAT_MAX_MS = 900000UL; // 15 min separate preheat limit
-constexpr uint32_t AUTOTUNE_TOTAL_MAX_MS = 2700000UL; // 45 min INCLUDING preheat
-constexpr uint32_t AUTOTUNE_MAX_MS = AUTOTUNE_TOTAL_MAX_MS; // legacy host comparison alias
-constexpr uint32_t AUTOTUNE_PHASE_MAX_MS = 900000UL; // moi pha toi da 15 phut
-constexpr uint32_t AUTOTUNE_MIN_PERIOD_MS = 10000UL;
-constexpr float AUTOTUNE_MIN_AMPLITUDE_C = 0.10f;
 
 // LED RGB - do sang thap de khong nong/khong choi trong tu dien.
 constexpr uint8_t RGB_BRIGHTNESS_LOW = 6;
@@ -1009,10 +980,6 @@ enum class NetworkStateCode : uint8_t {
 enum class TurnState : uint8_t {
   Stopped = 0, Left = 1, Right = 2, Waiting = 3, Fault = 4
 };
-enum class AutoTuneState : uint8_t {
-  Idle = 0, Running = 1, Success = 2, Failed = 3
-};
-
 enum class MachineStateCode : uint8_t {
   Boot = 0, ReadyAuto, ReadyManual, ResumeWait, Prestart, Homing,
   RunningAuto, RunningManual, AutoTune,
@@ -1158,13 +1125,6 @@ struct MachineConfig {
   bool sirenSelfTestEnabled = false;
 };
 
-// PID la che do dieu khien san pham: it nhat mot he so phai co authority.
-// Kp-only / Ki-only / Kd-only van duoc phep cho commissioning; ca ba bang 0
-// thi bo dieu khien khong the tao cong suat ben vung va phai bi tu choi.
-inline bool mayapPidHasAuthority(const MachineConfig &cfg) {
-  return cfg.kp > 0.0f || cfg.ki > 0.0f || cfg.kd > 0.0f;
-}
-
 
 
 struct NetworkStatus {
@@ -1225,31 +1185,27 @@ struct TechStatus {
   bool pinSet = false, hmiUnlocked = false, webAllowed = false, webSession = false, storageError = false;
   uint16_t lockRemainingS = 0;
   uint16_t webSessionRemainingS = 0;
-  uint8_t pendingKind = 0;            // 0 none, 1 config change, 2 Smart AutoTune
+  uint8_t pendingKind = 0;            // 0 none, 1 config change (2 was Smart AutoTune: retired)
   uint8_t pendingRemainingS = 0;      // of the 60 s the HMI has to answer
   uint16_t pendingMask = 0;           // which snapshot fields the Web asked to change
+  uint8_t webCtlMask = 0;             // WebCtl* permission bits set on the HMI (read-only for the Web)
+  uint8_t webCtlActive = 0;           // WebCtl* bits whose output is currently overridden from the Web (heater: switched OFF remotely)
   uint8_t historyCount = 0;           // advanced-config records available on the HMI (0..3)
   TechResult resultState = TechResult::None;   // outcome of the last Web technical request
   // The heavy parts (old-record snapshots, requested values, request id) live in MayapTech::Detail (tech_request.h):
   // MachineRuntime is copied into many static mailboxes, so it only carries scalars.
 };
-// Read-only PID monitor. Every figure comes from the running controller (nothing is simulated); feed-forward is reported once.
+// Read-only heater monitor. Every figure is measured or commanded by the running firmware (nothing is simulated).
 struct PidMonitorData {
   bool valid = false;
   float error = 0;                    // SP - PV
-  float pidCorrection = 0;            // P + I + D only (feed-forwards excluded)
-  float holdFf = 0, ventFf = 0;       // learned hold feed-forward / vent feed-forward, each counted once
-  float limitLo = 0, limitHi = 100;   // adaptive authority corridor of the final request [%]
   float requestPct = 0;               // final heater request after every limit [%]
   float actualAvgPct = 0;             // moving average (60 s) of the REAL SSR ON share [%]
-  float launchGain = 0, launchDelay = 0, launchHold = 0, launchCap = 0;   // measured by the startup controller on this oven (0 = not yet); cap = its ceiling now [%]
-  float launchIdleOver = 0;           // PV stood this far above SP with the heater idle and no heat on its way [C] (the oven cannot cool by itself)
-  // Thermal Predictive V1: 0 off, 1 learning the model, 2 in control, 3 fell back to the legacy controller
-  float predState = 0, predRms = 0, predEggTemp = 0, predDist = 0;   // identifier residual [C], estimated egg temperature [C], air-side net power [%]
-  // Field-trial readout of Thermal Predictive V1: its request and the hold it believes in [%], the model's delay / lag [s] and air-egg coupling / loss [%/C],
-  // the recent miss [C], why it last distrusted itself, fallbacks and seconds in control this batch, and the control-task cycle time [us] (CPU check).
-  float predRequest = 0, predHold = 0, predDead = 0, predTau = 0, predK = 0, predA = 0, predInnov = 0;
-  uint8_t predWhy = 0; uint16_t predFallbacks = 0; uint32_t predActiveS = 0, cycleLastUs = 0, cycleMaxUs = 0;
+  uint32_t cycleLastUs = 0, cycleMaxUs = 0;   // control-task cycle time [us] (CPU budget check)
+  float predictedC = 0;               // V2: where the PV is heading with the power already on its way [degC]
+  uint8_t phase = 0;                  // V2 learning phase: 0 looking / probing, 1 identified, 2 first fit done, 3 second fit done
+  bool suspect = false;               // V2 response watchdog: power arrived but the PV did not move (request withdrawn)
+  uint32_t slotLastUs = 0, slotMaxUs = 0;     // V2 controller slot time [us] (esp_timer)
 };
 
 struct MachineRuntime {
@@ -1264,16 +1220,6 @@ struct MachineRuntime {
   bool batchLogAvailable = false;
   uint8_t currentDay = 0;
   float heaterPower = 0.0f;
-  bool adaptiveEnabled = false, adaptiveSelfHeating = false;
-  uint8_t adaptiveState = 0, lastAdaptiveReason = 0;
-  float adaptiveConfidence = 0, adaptiveLoadIndex = 0.5f, adaptiveCoastRiseC = 0;
-  float adaptiveCoastTimeSec = 0, adaptiveHoldPowerPct = 0;
-  float effectiveMaxPowerPct = 100, adaptiveApproachBandC = 0, adaptiveCoolingDemand = 0;
-  uint32_t observerValidWindows = 0;
-  // Adaptive Thermal V1 (read-only diagnostics; not part of any persisted/serialized record)
-  uint8_t thermalLearnState = 0, thermalConfidence = 0, thermalVentPhase = 0;
-  float thermalGain = 0, thermalDelaySec = 0, thermalCoastC = 0, thermalHoldPct = 0;
-  float thermalVentGain = 0, thermalPredictionError = 0;
   bool heaterOn = false;
   bool circulationFanOn = false;
   bool ventFanOn = false;
@@ -1292,11 +1238,6 @@ struct MachineRuntime {
   uint16_t turnCountToday = 0;
   uint32_t turnCountBatch = 0;
   uint32_t alarmMask = AlarmNone;
-  AutoTuneState autoTuneState = AutoTuneState::Idle;
-  uint8_t autoTuneProgress = 0;
-  uint8_t autoTunePhase = 0;     // AutoTunePhase of the running / last tune (Web shows the stage)
-  uint8_t autoTuneReason = 0;    // AutoTuneReason of the last result (why it failed / rejected the candidate)
-  uint8_t autoTuneRejection = 0; // the quality reason behind a rejection
   MachineStateCode stateCode = MachineStateCode::Boot;
   uint16_t primaryFaultCode = 0;
   uint8_t activeFaultCount = 0;
@@ -1356,7 +1297,7 @@ struct MachineRuntime {
 
 enum class HmiCommandType : uint8_t {
   None, BatchStart, BatchStop,
-  AlarmAck, AutoTuneStart, ResumeYes, ResumeNo,
+  AlarmAck, AutoTuneStart /* retired: the id stays so every later command keeps its number */, ResumeYes, ResumeNo,
   TestModeEnter, TestModeExit, TestOutputPulse, TestOutputStop, TestLimitStart, TestLimitCancel,
   WifiPortalStart, WifiPortalCancel, CloudPinReset, FirmwareWebApply, FirmwareWebCheckNow,
   FirmwareRollback, LightToggle,
@@ -1364,8 +1305,7 @@ enum class HmiCommandType : uint8_t {
   // cau coi + huy dem nguoc tu dong dung 12h cho me hien tai (khong can lam
   // gi them; dung "Ket thuc me" (BatchStop) da co san neu muon dung som hon).
   BatchOverdueContinue,
-  // User-requested stop of an Auto Tune already in progress. Appended to keep
-  // every existing command numeric value stable for queues/tests/protocol.
+  // Retired with the Auto Tune. Kept to keep every existing command numeric value stable for queues/tests/protocol.
   AutoTuneCancel,
   // Technical access (appended: every older value keeps its number). PIN digits travel as a number in alarmMask.
   TechPinVerify,      // Local: unlock the HMI session; Remote: unlock the Web session (only while the HMI permission is ON)
@@ -1373,9 +1313,16 @@ enum class HmiCommandType : uint8_t {
   TechLock,           // Local: end the HMI session; Remote: end the Web session
   TechWebSet,         // Local only: alarmMask 1 = Web may use technical features, 0 = hidden (revokes the session + pending request)
   TechDecision,       // Local only: alarmMask 1 = approve, 0 = decline the pending Web request
-  TechRequestSubmit,  // Remote only: the staged technical request (config values or Smart AutoTune)
-  AdvancedRestore     // Local only: alarmMask = rank 0..2 of the advanced-config record to restore
+  TechRequestSubmit,  // Remote only: the staged technical request (config values)
+  AdvancedRestore,    // Local only: alarmMask = rank 0..2 of the advanced-config record to restore
+  // Web output control (the HMI "Nang cao > Dieu khien Web" page decides which outputs the Web may touch; every one of these is Remote only and is refused
+  // unless the matching permission bit is set). Appended: every older value keeps its number.
+  WebCtlSet,          // Local only: alarmMask = permission bits (WebCtl* below) the Web may use
+  WebVentToggle, WebCircToggle, WebHeaterToggle, WebSirenToggle,
+  WebTurnHold         // Remote: alarmMask = direction (0 stop, 1 left, 2 right) | lease ms << 8 (the machine stops by itself when the lease ends)
 };
+// Permission bits of the Web output control (HMI Advanced). Heater, vent, circulation, light, siren, egg turning.
+enum : uint8_t { WebCtlHeater = 1, WebCtlVent = 2, WebCtlCirc = 4, WebCtlLight = 8, WebCtlSiren = 16, WebCtlTurn = 32, WebCtlAll = 63 };
 // F-09 (audit truoc phat hanh v3.7.1): AlarmAck truoc day khong phan biet
 // lenh den tu bang dieu khien vat ly (HMI) hay tu xa (MQTT/web) - mot nguoi
 // dung tu xa co the xoa loi dao trung (can kiem tra co khi that su) hoac tam

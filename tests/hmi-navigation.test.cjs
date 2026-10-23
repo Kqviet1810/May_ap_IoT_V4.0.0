@@ -49,10 +49,13 @@ test('all settings remain reachable exactly once in shorter groups', () => {
     .replace(/\/\/[^\n]*/g, '').match(/\d+/g).map(Number);
   const groups = [...hmi.matchAll(/\{"([^"\n]+)",\s*(\d+),\s*(\d+)\}/g)]
     .map((match) => ({ name: match[1], first: Number(match[2]), count: Number(match[3]) }));
-  assert.equal(indexes.length, 37);
-  assert.equal(new Set(indexes).size, 37);
+  // Thermal Control V2.0.0: the old controller's rows (15-17 Kp/Ki/Kd, 26-27 tune, 51 balance, 54 Smart Thermal, 55 Predictive) stay in the
+  // SETTINGS table (indexes and stored config keep their meaning) but no group lists them any more.
+  const hidden = [15, 16, 17, 26, 27, 51, 54, 55];
+  assert.equal(indexes.length, 29);
+  assert.equal(new Set(indexes).size, 29);
   assert.deepEqual([...indexes].sort((a, b) => a - b), [
-    ...Array.from({ length: 33 }, (_, i) => i).filter((i) => ![18, 33, 34, 35, 36, 37, 38, 39, 40, 41].includes(i)), 51, 52, 53, 54, 55,
+    ...Array.from({ length: 33 }, (_, i) => i).filter((i) => ![18, 33, 34, 35, 36, 37, 38, 39, 40, 41, ...hidden].includes(i)), 52, 53,
   ]);
   assert.equal(groups.length, 9);
   assert.equal(groups.at(-1).name, 'HIEU CHUAN');
@@ -77,12 +80,14 @@ test('repeated acknowledged alarms re-open the Alarm screen when the buzzer re-a
   assert.ok((hmi.match(/alarmPresentedMask\s*&=\s*~bit/g) || []).length >= 2);
 });
 
-test('running Auto Tune short press offers an explicit cancel confirmation', () => {
-  const open = bodyOf('void openAutoTuneConfirm()');
-  const execute = bodyOf('void executeConfirmation(bool accepted)');
-  assert.match(open, /AutoTuneState::Running[\s\S]*?ConfirmAction::AutoTuneCancel/);
-  assert.match(execute, /ConfirmAction::AutoTuneCancel[\s\S]*?HmiCommandType::AutoTuneCancel/);
-  assert.match(config, /BatchOverdueContinue,\s*[\s\S]*?AutoTuneCancel/);
+test('Thermal Control V2.0.0: the Auto Tune screens, confirmations and runtime hooks are gone from the HMI', () => {
+  for (const gone of ['openAutoTuneEntry', 'openAutoTuneConfirm', 'drawAutoTune', 'autoTuneStateText', 'AutoTuneState', 'ThermalProfile', 'drawThermalProfile']) {
+    assert.ok(!hmi.includes(gone), `${gone} must be gone`);
+  }
+  assert.doesNotMatch(hmi, /ConfirmAction::AutoTune|View::AutoTune/);
+  // the command ids stay (protocol/queue numbering) but nothing in the HMI can queue them
+  assert.doesNotMatch(hmi, /queueCommand\(HmiCommandType::AutoTune/);
+  assert.match(config, /AutoTuneCancel,/);
 });
 
 
@@ -94,8 +99,8 @@ test('PID, thermal protection and calibration live only under NANG CAO; operatin
     .map((m) => ({ name: m[1], first: Number(m[2]), count: Number(m[3]) }));
   const of = (name) => { const g = groups.find((x) => x.name === name); return idx.slice(g.first, g.first + g.count); };
   assert.deepEqual(of('NHIET DO'), [4, 5, 6, 8]);                 // low / high / emergency / out-of-batch: unchanged
-  assert.deepEqual(of('PID/GIA NHIET'), [15, 16, 17, 19, 51, 54, 55]);   // + Smart Thermal and Nhiet du doan switches (behind the technical PIN)
-  assert.deepEqual(of('BAO VE NHIET'), [20, 21, 22, 23, 24, 25, 26, 27]);
+  assert.deepEqual(of('GIA NHIET'), [19]);                       // only the power ceiling is left of the old PID group
+  assert.deepEqual(of('BAO VE NHIET'), [20, 21, 22, 23, 24, 25]);
   assert.deepEqual(of('HIEU CHUAN'), [7, 52, 32, 53]);      // + Bo tao am (hardware) and DPG cam bien, both behind the technical PIN
   assert.deepEqual(of('HE THONG'), [14, 29]);
   assert.match(hmi, /bool advGroup\(uint8_t group\) \{ return group == 4U \|\| group == 5U \|\| group == 8U; \}/);
@@ -163,12 +168,15 @@ test('old records are HMI-only and restore asks CO/KHONG', () => {
   assert.match(bodyOf('void drawAdvHistoryView()'), /KHOI PHUC/);
 });
 
-test('PID Monitor and thermal profile are read-only views fed by the running controller', () => {
+test('PID Monitor is a read-only view of what the firmware measured and commanded', () => {
   const info = bodyOf('void infoItem(');
-  for (const key of ['pidCorrection', 'holdFf', 'ventFf', 'limitLo', 'limitHi', 'requestPct', 'actualAvgPct', 'thermalConfidence',
-    'thermalGain', 'thermalDelaySec', 'thermalCoastC', 'thermalHoldPct', 'thermalVentGain', 'currentConfig.kp', 'currentConfig.ki', 'currentConfig.kd']) {
+  for (const key of ['temperature', 'targetTemp', 'm.error', 'requestPct', 'actualAvgPct', 'cycleLastUs', 'cycleMaxUs', 'predictedC', 'slotLastUs', 'slotMaxUs']) {
     assert.ok(info.includes(key), `${key} is shown`);
   }
+  for (const gone of ['pidCorrection', 'holdFf', 'ventFf', 'limitLo', 'limitHi', 'thermalConfidence', 'launchGain', 'predState', 'currentConfig.kp']) {
+    assert.ok(!info.includes(gone), `${gone} belonged to the old controller`);
+  }
+  assert.match(hmi, /constexpr uint8_t MON_ITEM_COUNT = 9U;/);
   assert.doesNotMatch(bodyOf('void drawInfoPage('), /queueCommand|startConfigSave/);
   const input = bodyOf('void handleInput()');
   const monCase = input.slice(input.indexOf('case View::PidMonitor:'), input.indexOf('case View::AdvHistory:'));
@@ -260,47 +268,30 @@ test('Bo tao am and DPG cam bien live under NANG CAO > HIEU CHUAN; the sensor re
   assert.match(controller, /sensor_\.setResolutionMode\(config_\.sensorResolutionMode\);\s*sensor_\.update\(\);/);
 });
 
-test('Smart Thermal is a run-time switch in NANG CAO, off by default, locked during a batch, and only acts with the adaptive balance', () => {
-  assert.match(hmi, /ITEM_BOOL\("Smart Thermal", smartThermalEnabled\)/);
+test('Thermal Control V2.0.0: Smart Thermal and Nhiet du doan switches are hidden from the menu and nothing in the controller reads them', () => {
+  const controller = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0/machine_control.h'), 'utf8');
+  // the stored fields and their packed bits stay (config schema 13 compatibility)
   assert.match(config, /bool smartThermalEnabled = false;/);
-  const controller = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0/machine_control.h'), 'utf8');
-  assert.match(controller, /!smartThermalInit_ \|\| \(!batchRunning_ && !resumePending_\)\) \{ smartThermalApplied_ = config_\.smartThermalEnabled/);
-  assert.match(controller, /smartThermalApplied_ && config_\.adaptiveThermalBalanceEnabled\) \|\| \(MAYAP_SMART_THERMAL != 0\)/);
-  assert.match(controller, /thermalV1_\.setSmartLearning\(smart\);\s*startupHeat_\.setSmart\(smart\);/);
-  assert.match(controller, /c\.smartThermalEnabled \? 8U : 0U/);
-  // not in the list of settings that may change during a batch
-  assert.doesNotMatch(bodyOf('bool settingLockedDuringBatch('), /smartThermalEnabled/);
-  // the Web can never change it: it is not part of the Web config schema
-  const bridge = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h'), 'utf8');
-  assert.doesNotMatch(bridge, /smartThermalEnabled/);
-});
-
-test('Nhiet du doan (Thermal Predictive V1) is a run-time switch in NANG CAO, ON by default (old records read ON), read at the start of a batch, and only acts with the adaptive balance', () => {
-  assert.match(hmi, /ITEM_BOOL\("Nhiet du doan", predictiveThermalEnabled\)/);
   assert.match(config, /bool predictiveThermalEnabled = true;/);
-  const controller = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0/machine_control.h'), 'utf8');
-  // inverted polarity in bit 4 of the schema-13 byte: a record saved before 1.1.15 has the bit clear and therefore reads ON
+  assert.match(controller, /c\.smartThermalEnabled \? 8U : 0U/);
   assert.match(controller, /\(c\.predictiveThermalEnabled \? 0U : 16U\)/);
   assert.match(controller, /c\.predictiveThermalEnabled = \(p\.adaptiveThermalBalanceEnabled & 16U\) == 0U;/);
-  assert.match(controller, /predictiveApplied_ = config_\.predictiveThermalEnabled && config_\.adaptiveThermalBalanceEnabled && config_\.controlMode == ControlMode::Pid;/);
-  // never changeable from the Web, not locked while a batch runs (it is only READ when a batch starts)
-  assert.doesNotMatch(bodyOf('bool settingLockedDuringBatch('), /predictiveThermalEnabled/);
+  // but no controller code consumes them
+  for (const gone of ['smartThermalApplied_', 'predictiveApplied_', 'thermalPredictive_', 'thermalV1_', 'adaptiveThermal_', 'startupHeat_', 'autotune_', 'pid_.', 'pidPower_']) {
+    assert.ok(!controller.includes(gone), `${gone} must be gone from machine_control.h`);
+  }
   const bridge = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h'), 'utf8');
-  assert.doesNotMatch(bridge, /predictiveThermalEnabled/);
-  // the monitor rows
-  assert.match(hmi, /constexpr uint8_t MON_ITEM_COUNT = 34U;/);
-  assert.match(hmi, /label = "Du doan: che do"/);
-  for (const label of ['Du doan: yeu cau', 'Du doan: hold', 'Du doan: tre/qt', 'Du doan: k / a', 'Du doan: loi gan', 'Du doan: ly do', 'Du doan: lui/ph', 'Chu ky DK us']) assert.ok(hmi.includes(`label = "${label}"`), label);
+  assert.doesNotMatch(bridge, /smartThermalEnabled|predictiveThermalEnabled/);
 });
 
 test('Che do 2 tai khoan: only in HMI Nang cao, needs Online, the machine asks the Worker with its own key, back returns to the Advanced list', () => {
   const cloud = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'cloud_alert_link.h'), 'utf8');
   // Advanced list: the item sits after "Quyen Web" and before "Doi ma ky thuat"; the screen belongs to the Advanced session (PIN keep-alive, lock on leave)
-  assert.match(hmi, /enum AdvItem : uint8_t \{[^}]*ADV_WEB, ADV_GUEST, ADV_PINCHG, ADV_EXIT \}/);
-  assert.match(hmi, /constexpr uint8_t ADV_ITEM_COUNT = 11U;/);
+  assert.match(hmi, /enum AdvItem : uint8_t \{[^}]*ADV_WEB, ADV_WEBCTL, ADV_GUEST, ADV_PINCHG, ADV_EXIT \}/);
+  assert.match(hmi, /constexpr uint8_t ADV_ITEM_COUNT = 10U;/);
   assert.match(bodyOf('bool viewInAdvanced('), /case View::GuestMode:/);
   assert.match(bodyOf('void advSelect()'), /case ADV_GUEST: openGuestMode\(\); break;/);
-  assert.match(bodyOf('void goBack()'), /case View::GuestMode: view = View::AdvMenu; advIndex = 8U;/);   // 8 = ADV_GUEST
+  assert.match(bodyOf('void goBack()'), /case View::GuestMode: view = View::AdvMenu; advIndex = ADV_GUEST;/);
   assert.match(bodyOf('void openGuestMode('), /CHI DUNG DUOC KHI ONLINE/);
   // not reachable from the normal menus (no GroupExtra / ConnItem entry)
   assert.doesNotMatch(bodyOf('const char *groupExtraLabelFor('), /GuestMode|2 tai khoan/);
@@ -316,12 +307,19 @@ test('Che do 2 tai khoan: only in HMI Nang cao, needs Online, the machine asks t
   assert.match(config, /void mayapRequestGuestMode\(uint8_t action\);/);
 });
 
-test('PID monitor shows what the launch measured on this oven (gain, delay, hold, brake ceiling), after the 12 PID rows', () => {
-  assert.match(hmi, /constexpr uint8_t MON_ITEM_COUNT = 34U;/);   // 12 PID + 5 Lo + 6 profile + 3 Du doan + 8 field-trial rows
-  assert.match(bodyOf('uint8_t monItemIndex('), /k < 12U \? k : \(k < 17U \?/);
-  assert.match(bodyOf('void drawPidMonitor()'), /monPage, true\)/);
-  const info = bodyOf('void infoItem(');
-  for (const label of ['Lo: gain do', 'Lo: tre do', 'Lo: hold do', 'Lo: tran phanh', 'Lo: troi len']) assert.ok(info.includes(`"${label}"`), label);
+test('Dieu khien Web: six permission switches only in HMI Nang cao; the Web reads the mask and cannot write it', () => {
+  assert.match(bodyOf('bool viewInAdvanced('), /case View::WebCtl:/);
+  assert.match(bodyOf('void advSelect()'), /case ADV_WEBCTL: webCtlEdit = currentRuntime\.tech\.webCtlMask;/);
+  assert.match(bodyOf('void goBack()'), /case View::WebCtl: view = View::AdvMenu; advIndex = ADV_WEBCTL;/);
+  const input = bodyOf('void handleInput()');
+  assert.match(input, /case View::WebCtl:[\s\S]*?queueCommand\(HmiCommandType::WebCtlSet, COMMAND_DEFAULT_VALID_MS, 0, static_cast<uint32_t>\(webCtlEdit\)\)/);
+  const draw = bodyOf('void drawWebCtl()');
+  for (const name of ['Thanh nhiet', 'Quat hut', 'Quat tuan hoan', 'Den', 'Coi', 'Dao trung']) assert.ok(draw.includes(name), name);
+  // the machine side: Local only, needs the technician session (same gate as the Web permission), Remote commands are refused without their bit
   const machine = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'machine_control.h'), 'utf8');
-  assert.match(machine, /m\.launchGain = startupHeat_\.launchGain\(\);[\s\S]*?m\.launchCap = startupHeat_\.lastCeiling\(\);/);
+  assert.match(machine, /case HmiCommandType::WebCtlSet: \{\s*if \(remote\) \{ message = "CHI HMI DUOC DOI QUYEN"; break; \}/);
+  assert.match(machine, /\(techGate_\.webCtlMask\(\) & need\) == 0U\) \{ message = "WEB CHUA DUOC CHO PHEP"/);
+  const bridge = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'transaction_bridge.h'), 'utf8');
+  assert.match(bridge, /tech\["webCtl"\] = rt\.tech\.webCtlMask;/);
+  for (const action of ['vent_toggle', 'circ_toggle', 'heater_toggle', 'siren_toggle', 'turn_hold']) assert.ok(bridge.includes(`"${action}"`), action);
 });

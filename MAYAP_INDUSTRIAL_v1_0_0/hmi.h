@@ -594,13 +594,15 @@ const SettingItem SETTINGS[] = {
 constexpr uint8_t SETTING_COUNT = sizeof(SETTINGS) / sizeof(SETTINGS[0]);
 static_assert(SETTING_COUNT == 56, "Bang SETTINGS phai co 56 thong so");
 
+// Thermal Control V2.0.0: the old controller's rows (Kp/Ki/Kd 15-17, tune 26-27, balance 51, Smart Thermal 54, Predictive 55) stay in
+// SETTINGS so every index and the stored config keep their meaning, but no menu group lists them.
 const uint8_t GROUP_SETTING_INDEXES[] = {
   0,1,2,3,                             // Cai dat me
   4,5,6,8,                             // Nhiet do (nguong van hanh; Bu nhiet do da chuyen sang HIEU CHUAN)
   11,12,13,28,                         // Dao trung
   14,29,                               // He thong
-  15,16,17,19,51,54,55,                // PID / GIA NHIET + Smart Thermal + Nhiet du doan (NANG CAO)
-  20,21,22,23,24,25,26,27,             // Bao ve nhiet      (NANG CAO)
+  19,                                  // GIA NHIET: tran cong suat (NANG CAO)
+  20,21,22,23,24,25,                   // Bao ve nhiet      (NANG CAO)
   9,10,                                // Quat hut; Thong gio la menu con
   30,31,                               // Tao am
   7,52,32,53                           // Hieu chuan + Bo tao am + DPG cam bien (NANG CAO)
@@ -620,15 +622,15 @@ const SettingGroup GROUPS[] = {
   // la cai dat mang - gom ca ma QR, dat lai PIN, cap nhat firmware... nen
   // "He thong" mo ta dung hon la cai dat chung cua may.
   {"HE THONG", 12, 2},
-  {"PID/GIA NHIET", 14, 7},
-  {"BAO VE NHIET", 21, 8},
-  {"QUAT HUT", 29, 2},
-  {"TAO AM", 31, 2},
-  {"HIEU CHUAN", 33, 4}
+  {"GIA NHIET", 14, 1},
+  {"BAO VE NHIET", 15, 6},
+  {"QUAT HUT", 21, 2},
+  {"TAO AM", 23, 2},
+  {"HIEU CHUAN", 25, 4}
 };
 constexpr uint8_t GROUP_COUNT = sizeof(GROUPS) / sizeof(GROUPS[0]);
 static_assert(GROUP_COUNT == 9, "Bang GROUPS phai co 9 nhom");
-static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) == 37U,
+static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) == 29U,
               "Sai so luong setting hien trong menu chinh");
 
 // Dong phu (khong phai setting gia tri) duoc gan them vao cuoi mot so nhom.
@@ -637,9 +639,8 @@ static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) =
 // "Doi wifi" chi hien khi Online) qua visibleGroupExtraAt() de ra danh sach
 // LIEN TUC hien thi tren man hinh. (groupExtraSlotVisible/visibleGroupExtraAt/
 // groupVisibleExtraCount dat o DUOI, sau khai bao currentConfig - xem do.)
-enum class GroupExtra : uint8_t { None, TurnStats, WifiChange, ConnectionInfo, QrCode, CloudPinReset, FirmwareWebUpdate, AutoTuneEntry, VentilationEntry, SleepTime };
+enum class GroupExtra : uint8_t { None, TurnStats, WifiChange, ConnectionInfo, QrCode, CloudPinReset, FirmwareWebUpdate, VentilationEntry, SleepTime };
 GroupExtra groupExtraSlot(uint8_t group, uint8_t slot) {
-  // "Tu chinh PID" (Smart AutoTune) nay nam trong NANG CAO, khong con la dong phu cua NHIET DO.
   if (group == 2 && slot == 0) return GroupExtra::TurnStats;      // DAO TRUNG -> "So lan dao"
   // Thu tu da quy hoach lai (nhom HE THONG): 2 muc ve MANG di lien nhau
   // truoc (thong tin + doi wifi), roi den DINH DANH/BAO MAT (QR + PIN), cuoi
@@ -808,16 +809,20 @@ void formatSettingValue(const SettingItem &item, float value, char *out, size_t 
 // 5. TRANG, MENU, HANG DOI LENH
 // ============================================================
 enum class View : uint8_t {
-  Home, MainMenu, ChungMenu, SettingList, EditSetting, TurnStats, AutoTune,
+  Home, MainMenu, ChungMenu, SettingList, EditSetting, TurnStats,
   EventLog, Alarm, TestMode, TestSummary, WifiChange, ConnectionInfo, QrCode,
   FirmwareProgress, TurnStatus, VentilationMenu, VentilationAdvanced, FirmwareMenu,
-  // NANG CAO (can ma ky thuat): nhap ma, menu, PID Monitor, ho so nhiet, ban ghi cu, quyen Web, yeu cau tu Web.
-  AdvPin, AdvMenu, PidMonitor, ThermalProfile, AdvHistory, AdvHistoryView, WebAccess, TechRequest,
+  // NANG CAO (can ma ky thuat): nhap ma, menu, PID Monitor, ban ghi cu, quyen Web, yeu cau tu Web.
+  AdvPin, AdvMenu, PidMonitor, AdvHistory, AdvHistoryView, WebAccess, WebCtl, TechRequest,
   // HE THONG: "Thong tin ket noi" gom Chi tiet / Doi wifi / Ma QR / Dat lai PIN / Thiet bi ket noi; Thoi gian ngu.
   ConnMenu, MemberList, SleepTime, GuestMode
 };
 
-enum class ConfirmAction : uint8_t { None, BatchToggle, AutoTuneStart, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AutoTuneCancel, AdvRestore, MemberRemove };
+enum class ConfirmAction : uint8_t { None, BatchToggle, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AdvRestore, MemberRemove };
+
+// NANG CAO menu (declared here because goBack() returns to these rows).
+constexpr uint8_t ADV_ITEM_COUNT = 10U;
+enum AdvItem : uint8_t { ADV_PID, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_HISTORY, ADV_WEB, ADV_WEBCTL, ADV_GUEST, ADV_PINCHG, ADV_EXIT };
 
 // Prototype thu cong: Arduino IDE tu sinh prototype cho ham trong .ino.
 // Neu ham dung enum/struct tuy chinh, prototype tu dong co the bi chen
@@ -1077,9 +1082,10 @@ uint8_t pinFirst[ADV_PIN_DIGITS] = {};
 uint8_t pinPos = 0, pinCur = 0;
 View pinReturnView = View::ChungMenu;
 uint8_t advIndex = 0, advTop = 0;
-uint8_t monPage = 0, profilePage = 0;
+uint8_t monPage = 0;
 uint8_t histIndex = 0, histPage = 0;
 bool webChoice = false;
+uint8_t webCtlEdit = 0U, webCtlRow = 0U;     // HMI Nang cao > Dieu khien Web: permission bits being edited, cursor (0..5 an output, 6 = save)
 bool techReqShown = false, techDecisionSent = false;
 uint8_t techReqIndex = 0U;
 View techReturnView = View::Home;
@@ -1095,9 +1101,9 @@ bool advGroup(uint8_t group) { return group == 4U || group == 5U || group == 8U;
 const MachineConfig &editConfigView() { return (advActive && advGroup(selectedGroup)) ? advDraft : currentConfig; }
 bool viewInAdvanced(View v) {
   switch (v) {
-    case View::AdvPin: case View::AdvMenu: case View::PidMonitor: case View::ThermalProfile:
-    case View::AdvHistory: case View::AdvHistoryView: case View::WebAccess: case View::TechRequest: case View::GuestMode:
-    case View::AutoTune: return true;
+    case View::AdvPin: case View::AdvMenu: case View::PidMonitor:
+    case View::AdvHistory: case View::AdvHistoryView: case View::WebAccess: case View::WebCtl: case View::TechRequest: case View::GuestMode:
+      return true;
     case View::SettingList: case View::EditSetting: return advGroup(selectedGroup);
     case View::Alarm: return advActive && alarmReturnView != View::Alarm && viewInAdvanced(alarmReturnView);
     case View::TurnStatus: return advActive && turnStatusReturnView != View::TurnStatus && viewInAdvanced(turnStatusReturnView);
@@ -1221,7 +1227,6 @@ const char *chungItemLabel(uint8_t index) {
 
 const char *groupExtraLabelFor(GroupExtra extra) {
   switch (extra) {
-    case GroupExtra::AutoTuneEntry: return "Tu chinh PID";
     case GroupExtra::TurnStats: return "So lan dao";
     case GroupExtra::WifiChange: return "Doi wifi";
     case GroupExtra::SleepTime: return "Thoi gian ngu";
@@ -1414,12 +1419,6 @@ bool commandTypesConflict(HmiCommandType a, HmiCommandType b) {
   const bool aBatch = a == HmiCommandType::BatchStart || a == HmiCommandType::BatchStop;
   const bool bBatch = b == HmiCommandType::BatchStart || b == HmiCommandType::BatchStop;
   if (aBatch && bBatch) return true;
-  const bool aTune = a == HmiCommandType::AutoTuneStart ||
-                     a == HmiCommandType::AutoTuneCancel;
-  const bool bTune = b == HmiCommandType::AutoTuneStart ||
-                     b == HmiCommandType::AutoTuneCancel;
-  if (aTune && bTune) return true;
-  if ((aTune && bBatch) || (bTune && aBatch)) return true;
   const bool aResume = a == HmiCommandType::ResumeYes || a == HmiCommandType::ResumeNo;
   const bool bResume = b == HmiCommandType::ResumeYes || b == HmiCommandType::ResumeNo;
   if (aResume && bResume) return true;
@@ -1429,8 +1428,8 @@ bool commandTypesConflict(HmiCommandType a, HmiCommandType b) {
   const bool bTest = b == HmiCommandType::TestModeEnter || b == HmiCommandType::TestModeExit ||
                      b == HmiCommandType::TestOutputPulse || b == HmiCommandType::TestOutputStop ||
                      b == HmiCommandType::TestLimitStart || b == HmiCommandType::TestLimitCancel;
-  // Thu nghiem thiet bi khong duoc dan xen voi bat dau me/auto tune.
-  return (aTest && (bBatch || bTune)) || (bTest && (aBatch || aTune));
+  // Thu nghiem thiet bi khong duoc dan xen voi bat dau me.
+  return (aTest && bBatch) || (bTest && aBatch);
 }
 
 bool commandConflictLocked(HmiCommandType type) {
@@ -1554,7 +1553,7 @@ void goBack() {
     case View::SettingList:
       if (advGroup(selectedGroup)) {
         view = View::AdvMenu;
-        advIndex = selectedGroup == 4U ? 0U : (selectedGroup == 5U ? 3U : 4U);
+        advIndex = selectedGroup == 4U ? 0U : (selectedGroup == 5U ? 2U : 3U);   // GIA NHIET / BAO VE NHIET / HIEU CHUAN
         alignAdvMenuWindow();
       } else if (selectedGroup == 0U) {
         view = View::MainMenu;
@@ -1590,19 +1589,14 @@ void goBack() {
       selectedGroup = 2U;  // DAO TRUNG
       setListSelection(GROUPS[2U].count, settingListItemCount(2U));
       break;
-    case View::AutoTune:
-      view = View::AdvMenu;
-      advIndex = 1U;
-      alignAdvMenuWindow();
-      break;
     case View::AdvPin: advPinBack(); break;
     case View::AdvMenu: advBeginExit(); break;
-    case View::PidMonitor: view = View::AdvMenu; advIndex = 2U; alignAdvMenuWindow(); break;
-    case View::ThermalProfile: view = View::AdvMenu; advIndex = 5U; alignAdvMenuWindow(); break;
-    case View::AdvHistory: view = View::AdvMenu; advIndex = 6U; alignAdvMenuWindow(); break;
+    case View::PidMonitor: view = View::AdvMenu; advIndex = ADV_MONITOR; alignAdvMenuWindow(); break;
+    case View::AdvHistory: view = View::AdvMenu; advIndex = ADV_HISTORY; alignAdvMenuWindow(); break;
     case View::AdvHistoryView: view = View::AdvHistory; break;
-    case View::WebAccess: view = View::AdvMenu; advIndex = 7U; alignAdvMenuWindow(); break;
-    case View::GuestMode: view = View::AdvMenu; advIndex = 8U; alignAdvMenuWindow(); break;
+    case View::WebAccess: view = View::AdvMenu; advIndex = ADV_WEB; alignAdvMenuWindow(); break;
+    case View::WebCtl: view = View::AdvMenu; advIndex = ADV_WEBCTL; alignAdvMenuWindow(); break;
+    case View::GuestMode: view = View::AdvMenu; advIndex = ADV_GUEST; alignAdvMenuWindow(); break;
     case View::TechRequest: view = techReturnView; break;
     case View::EventLog:
       view = eventLogReturnView;
@@ -1661,10 +1655,6 @@ void openGroup(uint8_t group) {
     showToast("DANG CHO XAC NHAN LUU", true);
     return;
   }
-  if (currentRuntime.autoTuneState == AutoTuneState::Running) {
-    showToast("AUTO TUNE DANG CHAY", true);
-    return;
-  }
   selectedGroup = group;
   listIndex = listTop = 0;
   view = View::SettingList;
@@ -1672,10 +1662,6 @@ void openGroup(uint8_t group) {
 }
 
 void openChungMenu() {
-  if (currentRuntime.autoTuneState == AutoTuneState::Running) {
-    showToast("AUTO TUNE DANG CHAY", true);
-    return;
-  }
   chungIndex = chungTop = 0;
   view = View::ChungMenu;
   dirty = true;
@@ -1698,24 +1684,9 @@ void selectChungItem() {
   }
 }
 
-// "Tu chinh PID" - dong phu cua nhom NHIET DO (xem groupExtraSlot()). Giu
-// nguyen dieu kien chan cu (khong the tu chinh PID trong luc dang co me).
-void openAutoTuneEntry() {
-  if (currentRuntime.batchRunning) {
-    showToast("HAY DUNG ME TRUOC AUTO TUNE", true);
-    return;
-  }
-  view = View::AutoTune;
-  dirty = true;
-}
-
 void openTestMode() {
   if (currentRuntime.batchRunning) {
     showToast("DANG CO ME - KHONG TEST DUOC", true);
-    return;
-  }
-  if (currentRuntime.autoTuneState == AutoTuneState::Running) {
-    showToast("AUTO TUNE DANG CHAY", true);
     return;
   }
   if (queueCommand(HmiCommandType::TestModeEnter)) {
@@ -1818,10 +1789,6 @@ void openBatchConfirm(View returnView) {
     showToast("CHO LUU XONG TRUOC KHI CHAY ME", true);
     return;
   }
-  if (currentRuntime.autoTuneState == AutoTuneState::Running) {
-    showToast("HAY CHO AUTO TUNE XONG", true);
-    return;
-  }
   confirmAction = ConfirmAction::BatchToggle;
   confirmReturnView = returnView;
   // Bat dau: mac dinh DONG Y de thao tac nhanh.
@@ -1868,37 +1835,6 @@ void openBatchOverdueContinueConfirm() {
   confirmYes = true;
   view = View::Home;
   homePage = 0;
-  clearToast();
-  armInputGuard();
-  dirty = true;
-}
-
-void openAutoTuneConfirm() {
-  if (configSave.active) {
-    showToast("CHO LUU XONG TRUOC", true);
-    return;
-  }
-  if (currentRuntime.autoTuneState == AutoTuneState::Running) {
-    confirmAction = ConfirmAction::AutoTuneCancel;
-    confirmReturnView = View::AutoTune;
-    confirmYes = false;
-    clearToast();
-    armInputGuard();
-    dirty = true;
-    return;
-  }
-  if (currentRuntime.batchRunning) {
-    showToast("HAY DUNG ME TRUOC AUTO TUNE", true);
-    return;
-  }
-  if (!currentRuntime.sensorOnline ||
-      (currentRuntime.alarmMask & (AlarmSensor | AlarmEmergency | AlarmSystem))) {
-    showToast("CAM BIEN/AN TOAN CHUA SAN SANG", true);
-    return;
-  }
-  confirmAction = ConfirmAction::AutoTuneStart;
-  confirmReturnView = View::AutoTune;
-  confirmYes = false;
   clearToast();
   armInputGuard();
   dirty = true;
@@ -2576,18 +2512,6 @@ void executeConfirmation(bool accepted) {
       }
       view = View::Home;
       homePage = 0;
-    } else if (action == ConfirmAction::AutoTuneStart) {
-      if (queueCommand(HmiCommandType::AutoTuneStart,
-                       COMMAND_AUTOTUNE_VALID_MS)) {
-        showToast("DANG KHOI DONG AUTO TUNE");
-      }
-      view = View::AutoTune;
-    } else if (action == ConfirmAction::AutoTuneCancel) {
-      if (queueCommand(HmiCommandType::AutoTuneCancel,
-                       COMMAND_DEFAULT_VALID_MS)) {
-        showToast("DANG HUY AUTO TUNE");
-      }
-      view = View::AutoTune;
     } else if (action == ConfirmAction::ResumeBatch) {
       if (queueCommand(HmiCommandType::ResumeYes)) {
         resumeDecisionSubmitted = true;
@@ -2703,8 +2627,6 @@ bool handleInlineConfirmation() {
 // ============================================================
 // NANG CAO: phien ky thuat, nhap ma, luu mot lan khi thoat, ban ghi cu, yeu cau tu Web
 // ============================================================
-constexpr uint8_t ADV_ITEM_COUNT = 11U;
-enum AdvItem : uint8_t { ADV_PID, ADV_TUNE, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_PROFILE, ADV_HISTORY, ADV_WEB, ADV_GUEST, ADV_PINCHG, ADV_EXIT };
 void alignAdvMenuWindow() { advTop = advIndex >= 3U ? static_cast<uint8_t>(advIndex - 3U) : 0U; }
 
 void pinWipe() {
@@ -2769,7 +2691,7 @@ void advEnter() {
   dirty = true;
 }
 
-// Cau hinh moi cua firmware (Web, AutoTune...) lam moi ban nhap; giu nguyen cac muc nguoi dung da sua.
+// Cau hinh moi cua firmware (Web...) lam moi ban nhap; giu nguyen cac muc nguoi dung da sua.
 void advRebaseDraft() {
   if (!advActive) return;
   const MachineConfig edited = advDraft;
@@ -2931,14 +2853,13 @@ void serviceAdvanced(uint32_t now) {
 
 const char *advItemLabel(uint8_t i) {
   switch (i) {
-    case ADV_PID: return "PID / Gia nhiet";
-    case ADV_TUNE: return "Smart AutoTune";
+    case ADV_PID: return "Gia nhiet";
     case ADV_MONITOR: return "PID Monitor";
     case ADV_PROTECT: return "Bao ve nhiet";
     case ADV_CALIB: return "Hieu chuan";
-    case ADV_PROFILE: return "Ho so nhiet";
     case ADV_HISTORY: return "Ban ghi cu";
     case ADV_WEB: return currentRuntime.tech.webAllowed ? "Quyen Web: HIEN" : "Quyen Web: AN";
+    case ADV_WEBCTL: return "Dieu khien Web";
     case ADV_GUEST: return "Che do 2 tai khoan";
     case ADV_PINCHG: return "Doi ma ky thuat";
     default: return "Thoat (luu)";
@@ -2950,21 +2871,18 @@ void advSelect() {
     case ADV_PID: openGroup(4U); break;
     case ADV_PROTECT: openGroup(5U); break;
     case ADV_CALIB: openGroup(8U); break;
-    case ADV_TUNE: openAutoTuneEntry(); break;
     case ADV_MONITOR: monPage = 0U; view = View::PidMonitor; dirty = true; break;
-    case ADV_PROFILE: profilePage = 0U; view = View::ThermalProfile; dirty = true; break;
     case ADV_HISTORY: histIndex = 0U; view = View::AdvHistory; dirty = true; break;
     case ADV_WEB: webChoice = currentRuntime.tech.webAllowed; view = View::WebAccess; dirty = true; break;
+    case ADV_WEBCTL: webCtlEdit = currentRuntime.tech.webCtlMask; webCtlRow = 0U; view = View::WebCtl; dirty = true; break;
     case ADV_GUEST: openGuestMode(); break;
     case ADV_PINCHG: advOpenPin(PinPurpose::SetNew); break;
     default: advBeginExit(); break;
   }
 }
 
-constexpr uint8_t MON_ITEM_COUNT = 34U;     // PID Monitor: 12 muc PID, 5 muc "Lo" (do tren lo nay, muc 20..24), 6 muc ho so (12..17), 3 muc "Du doan" (25..27)
-uint8_t monItemIndex(uint8_t k) { return k < 12U ? k : (k < 17U ? static_cast<uint8_t>(20U + k - 12U) : (k < 23U ? static_cast<uint8_t>(k - 5U) : (k < 26U ? static_cast<uint8_t>(25U + k - 23U) : static_cast<uint8_t>(28U + k - 26U)))); }
-constexpr uint8_t PROFILE_FIRST = 12U, PROFILE_COUNT = 8U;   // Ho so nhiet: muc 12..19
-// Mot muc thong tin chi-doc (nhan + gia tri). Du lieu lay tu bo dieu khien dang chay, khong co so gia.
+constexpr uint8_t MON_ITEM_COUNT = 9U;      // PID Monitor (read-only): what is measured and what the heater was actually given
+// Mot muc thong tin chi-doc (nhan + gia tri). Du lieu lay tu firmware dang chay, khong co so gia.
 void infoItem(uint8_t i, const char *&label, char *v, size_t n) {
   const MachineRuntime &r = currentRuntime;
   const PidMonitorData &m = r.pidMon;
@@ -2974,54 +2892,17 @@ void infoItem(uint8_t i, const char *&label, char *v, size_t n) {
     case 0: label = "PV nhiet do"; if (ok) snprintf(v, n, "%.2fC", r.temperature); break;
     case 1: label = "SP dat"; snprintf(v, n, "%.2fC", currentConfig.targetTemp); break;
     case 2: label = "Sai so"; if (ok) snprintf(v, n, "%+.2fC", m.error); break;
-    case 3: label = "PID (P+I+D)"; if (ok) snprintf(v, n, "%+.1f%%", m.pidCorrection); break;
-    case 4: label = "Hold FF"; if (ok) snprintf(v, n, "%.1f%%", m.holdFf); break;
-    case 5: label = "Vent FF"; if (ok) snprintf(v, n, "%.1f%%", m.ventFf); break;
-    case 6: label = "Gioi han"; if (ok) snprintf(v, n, "%.0f-%.0f%%", m.limitLo, m.limitHi); break;
-    case 7: label = "Yeu cau cuoi"; if (ok) snprintf(v, n, "%.1f%%", m.requestPct); break;
-    case 8: label = "SSR TB 60s"; if (ok) snprintf(v, n, "%.1f%%", m.actualAvgPct); break;
-    case 9: label = "Kp"; snprintf(v, n, "%.2f", currentConfig.kp); break;
-    case 10: label = "Ki"; snprintf(v, n, "%.3f", currentConfig.ki); break;
-    case 11: label = "Kd"; snprintf(v, n, "%.1f", currentConfig.kd); break;
-    case 12: label = "Tin cay ho so"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%u%%", static_cast<unsigned>(r.thermalConfidence)); break;
-    case 13: label = "Heater gain"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%.3f", r.thermalGain); break;
-    case 14: label = "Heater delay"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%.0fs", r.thermalDelaySec); break;
-    case 15: label = "Coast"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%.2fC", r.thermalCoastC); break;
-    case 16: label = "Hold power"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%.1f%%", r.thermalHoldPct); break;
-    case 17: label = "Vent gain"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%.3f", r.thermalVentGain); break;
-    case 18: {
-      static const char *const learn[] = {"CHUA HOC", "DANG HOC", "DAT", "THICH NGHI", "SUY GIAM"};
-      label = "Trang thai hoc";
-      if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%s", learn[r.thermalLearnState < 5U ? r.thermalLearnState : 0U]);
+    case 3: label = "Yeu cau cuoi"; if (ok) snprintf(v, n, "%.1f%%", m.requestPct); break;
+    case 4: label = "SSR TB 60s"; if (ok) snprintf(v, n, "%.1f%%", m.actualAvgPct); break;
+    case 5: label = "Chu ky DK us"; if (m.valid) snprintf(v, n, "%lu/%lu", static_cast<unsigned long>(m.cycleLastUs), static_cast<unsigned long>(m.cycleMaxUs)); break;
+    case 6: label = "PV du doan"; if (ok) snprintf(v, n, "%.2fC", m.predictedC); break;
+    case 7: {
+      static const char *const phaseText[4] = {"NHIN/DO", "DA BIET", "DA HOC 1", "DA HOC 2"};
+      label = "Pha hoc V2";
+      if (m.valid) snprintf(v, n, "%s%s", phaseText[m.phase < 4U ? m.phase : 3U], m.suspect ? " NGHI" : "");
       break;
     }
-    case 20: label = "Lo: gain do"; if (m.valid && m.launchGain > 0.0f) snprintf(v, n, "%.4f", m.launchGain); break;
-    case 21: label = "Lo: tre do"; if (m.valid && m.launchDelay > 0.0f) snprintf(v, n, "%.0fs", m.launchDelay); break;
-    case 22: label = "Lo: hold do"; if (m.valid && m.launchHold > 0.0f) snprintf(v, n, "%.1f%%", m.launchHold); break;
-    case 23: label = "Lo: tran phanh"; if (m.valid) snprintf(v, n, "%.0f%%", m.launchCap); break;
-    case 24: label = "Lo: troi len"; if (m.valid && m.launchIdleOver > 0.0f) snprintf(v, n, "+%.2fC", m.launchIdleOver); break;
-    case 25: {
-      label = "Du doan: che do";
-      static const char *const PRED_STATE[] = {"TAT", "DANG HOC", "DIEU KHIEN", "LUI VE PID"};
-      const uint8_t st = static_cast<uint8_t>(m.predState + 0.5f);
-      if (m.valid) snprintf(v, n, "%s", PRED_STATE[st < 4U ? st : 0U]);
-      break;
-    }
-    case 26: label = "Du doan: sai so mh"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.3fC", m.predRms); break;
-    case 27: label = "Du doan: trung"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.2fC", m.predEggTemp); break;
-    case 28: label = "Du doan: yeu cau"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.1f%%", m.predRequest); break;
-    case 29: label = "Du doan: hold"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.1f%%", m.predHold); break;
-    case 30: label = "Du doan: tre/qt"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.0f/%.0fs", m.predDead, m.predTau); break;
-    case 31: label = "Du doan: k / a"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.1f/%.2f", m.predK, m.predA); break;
-    case 32: label = "Du doan: loi gan"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%.3fC", m.predInnov); break;
-    case 33: {
-      static const char *const WHY[] = {"OK", "THIEU DL", "SAI LON", "CAM BIEN", "QUA SP", "MH KEM"};
-      label = "Du doan: ly do"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%s", WHY[m.predWhy < 6U ? m.predWhy : 0U]);
-      break;
-    }
-    case 34: label = "Du doan: lui/ph"; if (m.valid && m.predState > 0.5f) snprintf(v, n, "%ux %lum", static_cast<unsigned>(m.predFallbacks), static_cast<unsigned long>(m.predActiveS / 60UL)); break;
-    case 35: label = "Chu ky DK us"; if (m.valid) snprintf(v, n, "%lu/%lu", static_cast<unsigned long>(m.cycleLastUs), static_cast<unsigned long>(m.cycleMaxUs)); break;
-    default: label = "Loi du bao"; if (currentConfig.adaptiveThermalBalanceEnabled) snprintf(v, n, "%.2fC", r.thermalPredictionError); break;
+    default: label = "Slot V2 us"; if (m.valid) snprintf(v, n, "%lu/%lu", static_cast<unsigned long>(m.slotLastUs), static_cast<unsigned long>(m.slotMaxUs)); break;
   }
   if (!v[0]) snprintf(v, n, "--");
 }
@@ -3056,17 +2937,6 @@ uint8_t techReqItemCount() {
   const TechStatus &t = currentRuntime.tech;
   return static_cast<uint8_t>((t.pendingKind == 1U ? advMaskCount(t.pendingMask) : 1U) + 2U);
 }
-
-const char *const AUTOTUNE_PHASE_TEXT[] = {
-  "SAN SANG", "LAM NONG", "GIA NHIET", "LAM NGUOI", "KIEM CHUNG", "HOAN THANH", "THAT BAI",
-  "DO NEN", "KICH THICH", "TRUOT NHIET", "KICH THICH 2", "TIEN SAT SV", "GAN SV", "ON DINH", "TINH PID"};
-const char *const AUTOTUNE_REASON_TEXT[] = {
-  "-", "BAO VE NHIET", "LOI CAM BIEN", "DOI CHE DO", "QUA GIO LAM NONG", "QUA GIO GIAI DOAN", "QUA GIO TONG",
-  "KHONG LAP LAI", "BIEN DO NHO", "CHU KY NGAN", "KU KHONG HOP LE", "HE SO SAI", "LOI LUU", "THANH CONG",
-  "THIEU CONG SUAT", "NEN KHONG ON DINH", "KHONG DAP UNG", "MO HINH SAI", "BI GIOI HAN CS",
-  "QUA GIO TIEN SAT", "RELAY THAT BAI", "UNG VIEN SAI", "KIEM CHUNG SAI"};
-const char *autoTunePhaseText(uint8_t p) { return p < sizeof(AUTOTUNE_PHASE_TEXT) / sizeof(AUTOTUNE_PHASE_TEXT[0]) ? AUTOTUNE_PHASE_TEXT[p] : "?"; }
-const char *autoTuneReasonText(uint8_t r) { return r < sizeof(AUTOTUNE_REASON_TEXT) / sizeof(AUTOTUNE_REASON_TEXT[0]) ? AUTOTUNE_REASON_TEXT[r] : "?"; }
 
 void openAdvRestoreConfirm() {
   confirmAction = ConfirmAction::AdvRestore;
@@ -3334,15 +3204,12 @@ void handleInput() {
       if (rotary.button == ButtonEvent::ShortPress) advSelect();
       break;
 
-    case View::PidMonitor:
-    case View::ThermalProfile: {
-      const uint8_t count = view == View::PidMonitor ? MON_ITEM_COUNT : PROFILE_COUNT;
-      const uint8_t pages = static_cast<uint8_t>((count + 3U) / 4U);
-      uint8_t &page = view == View::PidMonitor ? monPage : profilePage;
+    case View::PidMonitor: {
+      const uint8_t pages = static_cast<uint8_t>((MON_ITEM_COUNT + 3U) / 4U);
       if (rotary.step) {
-        int p = (static_cast<int>(page) + rotary.step) % pages;
+        int p = (static_cast<int>(monPage) + rotary.step) % pages;
         if (p < 0) p += pages;
-        page = static_cast<uint8_t>(p);
+        monPage = static_cast<uint8_t>(p);
         dirty = true;
       }
       if (rotary.button == ButtonEvent::ShortPress) goBack();
@@ -3378,6 +3245,18 @@ void handleInput() {
       if (rotary.button == ButtonEvent::ShortPress) {
         if (webChoice == currentRuntime.tech.webAllowed) goBack();
         else if (queueCommand(HmiCommandType::TechWebSet, COMMAND_DEFAULT_VALID_MS, 0, webChoice ? 1UL : 0UL)) goBack();
+      }
+      break;
+
+    case View::WebCtl:
+      if (rotary.step) {
+        webCtlRow = static_cast<uint8_t>(constrain(static_cast<int>(webCtlRow) + rotary.step, 0, 6));
+        dirty = true;
+      }
+      if (rotary.button == ButtonEvent::ShortPress) {
+        if (webCtlRow < 6U) { webCtlEdit = static_cast<uint8_t>(webCtlEdit ^ (1U << webCtlRow)); dirty = true; }
+        else if (webCtlEdit == currentRuntime.tech.webCtlMask) goBack();
+        else if (queueCommand(HmiCommandType::WebCtlSet, COMMAND_DEFAULT_VALID_MS, 0, static_cast<uint32_t>(webCtlEdit))) goBack();
       }
       break;
 
@@ -3460,10 +3339,6 @@ void handleInput() {
 
     case View::QrCode:
       if (rotary.button == ButtonEvent::ShortPress) goBack();
-      break;
-
-    case View::AutoTune:
-      if (rotary.button == ButtonEvent::ShortPress) openAutoTuneConfirm();
       break;
 
     case View::TestMode: {
@@ -4523,37 +4398,6 @@ void drawEditSetting() {
   lcd.drawStr(11, 62, "NHAN: LUU   GIU: HUY");
 }
 
-const char *autoTuneStateText(AutoTuneState state) {
-  switch (state) {
-    case AutoTuneState::Running: return "DANG TU CHINH";
-    case AutoTuneState::Success: return "DA HOAN THANH";
-    case AutoTuneState::Failed: return "THAT BAI";
-    default: return "SAN SANG";
-  }
-}
-
-void drawAutoTune() {
-  char text[28];
-  drawHeader("SMART AUTOTUNE", false);
-  drawCenteredFit(29, autoTuneStateText(currentRuntime.autoTuneState),
-                  u8g2_font_helvB12_tf, u8g2_font_6x12_tf, u8g2_font_5x8_tf);
-
-  if (currentRuntime.autoTuneState == AutoTuneState::Running) {
-    snprintf(text, sizeof(text), "%s %u%%", autoTunePhaseText(currentRuntime.autoTunePhase),
-             currentRuntime.autoTuneProgress);
-  } else if (currentRuntime.autoTuneState == AutoTuneState::Failed) {
-    snprintf(text, sizeof(text), "%s", autoTuneReasonText(currentRuntime.autoTuneReason));
-  } else if (currentRuntime.batchRunning) {
-    snprintf(text, sizeof(text), "HAY DUNG ME TRUOC");
-  } else if (!currentRuntime.sensorOnline) {
-    snprintf(text, sizeof(text), "CAM BIEN DANG LOI");
-  } else {
-    snprintf(text, sizeof(text), "MAY SE TU TIM PID");
-  }
-  drawCenteredFit(46, text, u8g2_font_6x12_tf, u8g2_font_5x8_tf,
-                  u8g2_font_5x8_tf);
-}
-
 const char *testOutputLabel(uint8_t index) {
   switch (static_cast<TestOutputId>(index)) {
     case TestOutputId::HeaterSsr: return "SSR NHIET";
@@ -5075,7 +4919,7 @@ void drawAdvMenu() {
 }
 
 // Trang thong tin chi-doc 4 dong/trang; xoay de doi trang.
-void drawInfoPage(const char *title, uint8_t first, uint8_t count, uint8_t page, bool monitorOrder = false) {
+void drawInfoPage(const char *title, uint8_t count, uint8_t page) {
   const uint8_t pages = static_cast<uint8_t>((count + 3U) / 4U);
   drawHeader(title, false);
   drawListPosition(page, pages);
@@ -5084,7 +4928,7 @@ void drawInfoPage(const char *title, uint8_t first, uint8_t count, uint8_t page,
     const uint8_t k = static_cast<uint8_t>(page * 4U + row);
     if (k >= count) break;
     const char *label = "";
-    infoItem(monitorOrder ? monItemIndex(k) : static_cast<uint8_t>(first + k), label, value, sizeof(value));
+    infoItem(k, label, value, sizeof(value));
     const int16_t y = 22 + row * 12;
     lcd.setFont(u8g2_font_6x12_tf);
     const int16_t valueX = max(2, 126 - static_cast<int16_t>(lcd.getStrWidth(value)));
@@ -5092,8 +4936,7 @@ void drawInfoPage(const char *title, uint8_t first, uint8_t count, uint8_t page,
     drawLeftFit2(2, y, label, static_cast<int16_t>(valueX - 4), u8g2_font_6x12_tf, u8g2_font_5x8_tf);
   }
 }
-void drawPidMonitor() { drawInfoPage("PID MONITOR", 0U, MON_ITEM_COUNT, monPage, true); }
-void drawThermalProfile() { drawInfoPage("HO SO NHIET", PROFILE_FIRST, PROFILE_COUNT, profilePage); }
+void drawPidMonitor() { drawInfoPage("PID MONITOR", MON_ITEM_COUNT, monPage); }
 
 void drawAdvHistory() {
   const uint8_t count = currentRuntime.tech.historyCount;
@@ -5148,6 +4991,23 @@ void drawWebAccess() {
   drawCenteredFit(54, webChoice ? "WEB CAN MA + HMI XAC NHAN" : "WEB KHONG VAO DUOC KY THUAT",
                   u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
   drawCenteredFit(63, "XOAY:DOI  NHAN:LUU  GIU:LUI", u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
+}
+
+void drawWebCtl() {
+  static const char *const names[6] = {"Thanh nhiet", "Quat hut", "Quat tuan hoan", "Den", "Coi", "Dao trung"};
+  drawHeader(webCtlEdit != currentRuntime.tech.webCtlMask ? "DK WEB *" : "DK WEB", false);
+  drawListPosition(webCtlRow, 7);
+  const uint8_t top = webCtlRow < 4U ? 0U : static_cast<uint8_t>(webCtlRow - 3U);
+  for (uint8_t row = 0; row < 4U && top + row < 7U; ++row) {
+    const uint8_t index = static_cast<uint8_t>(top + row);
+    drawSelectableRow(row, index == webCtlRow);
+    lcd.setFont(u8g2_font_6x12_tf);
+    char text[28];
+    if (index < 6U) snprintf(text, sizeof(text), "%s %s", (webCtlEdit & (1U << index)) ? "[X]" : "[ ]", names[index]);
+    else snprintf(text, sizeof(text), "LUU");
+    lcd.drawStr(2, 22 + row * 12, text);
+    lcd.setDrawColor(1);
+  }
 }
 
 void drawGuestMode() {
@@ -5205,8 +5065,6 @@ void drawTechRequest() {
         lcd.drawStr(valueX, y, value);
         drawLeftFit2(2, y, advFieldLabel(static_cast<uint8_t>(f)), static_cast<int16_t>(valueX - 4), u8g2_font_6x12_tf, u8g2_font_5x8_tf);
       }
-    } else {
-      lcd.drawStr(2, y, "CHAY SMART AUTOTUNE");
     }
     lcd.setDrawColor(1);
   }
@@ -5223,10 +5081,6 @@ void drawConfirmScreen() {
   } else if (confirmAction == ConfirmAction::BatchOverdueContinue) {
     line1 = "QUA HAN NGAY AP";
     line2 = "TIEP TUC U AM?";
-  } else if (confirmAction == ConfirmAction::AutoTuneStart) {
-    line1 = "CHAY AUTO TUNE PID?";
-  } else if (confirmAction == ConfirmAction::AutoTuneCancel) {
-    line1 = "HUY TU DO PID?";
   } else if (confirmAction == ConfirmAction::TurningToggle) {
     line1 = pendingTurningConfig.turningEnabled ? "BAT DAO TU DONG?" : "TAT DAO TU DONG?";
   } else if (confirmAction == ConfirmAction::AdvRestore) {
@@ -5317,7 +5171,7 @@ void render(uint32_t now) {
   const bool periodicSplash = splashActive;
   // No prophylactic reinitialization or duplicate page draws. Static menus
   // stay still; only actual changes/dynamic data and real I2C faults redraw.
-  const bool periodicAdvanced = (view == View::PidMonitor || view == View::ThermalProfile ||
+  const bool periodicAdvanced = (view == View::PidMonitor ||
                                  view == View::TechRequest) && now - lastAdvDrawAt >= ADV_REFRESH_MS;
   const bool periodic = periodicHome || periodicAlarm ||
                         periodicSplash || periodicFirmwareProgress || periodicAdvanced;
@@ -5355,14 +5209,13 @@ void render(uint32_t now) {
       case View::TurnStats: drawTurnStats(); break;
       case View::ConnectionInfo: drawConnectionInfo(); break;
       case View::QrCode: drawQrCode(); break;
-      case View::AutoTune: drawAutoTune(); break;
       case View::AdvPin: drawAdvPin(); break;
       case View::AdvMenu: drawAdvMenu(); break;
       case View::PidMonitor: drawPidMonitor(); break;
-      case View::ThermalProfile: drawThermalProfile(); break;
       case View::AdvHistory: drawAdvHistory(); break;
       case View::AdvHistoryView: drawAdvHistoryView(); break;
       case View::WebAccess: drawWebAccess(); break;
+      case View::WebCtl: drawWebCtl(); break;
       case View::GuestMode: drawGuestMode(); break;
       case View::TechRequest: drawTechRequest(); break;
       case View::TestMode: drawTestMode(); break;
@@ -5404,7 +5257,7 @@ void render(uint32_t now) {
   if (view == View::Home) lastHomeDrawAt = now;
   if (view == View::Alarm) lastAlarmDrawAt = now;
   if (view == View::FirmwareProgress) lastFirmwareProgressDrawAt = now;
-  if (view == View::PidMonitor || view == View::ThermalProfile || view == View::TechRequest) lastAdvDrawAt = now;
+  if (view == View::PidMonitor || view == View::TechRequest) lastAdvDrawAt = now;
 }
 
 // ============================================================
@@ -5563,10 +5416,6 @@ void sanitizeRuntime(MachineRuntime &runtime) {
       static_cast<uint8_t>(TurnState::Fault)) {
     runtime.turnState = TurnState::Fault;
   }
-  if (static_cast<uint8_t>(runtime.autoTuneState) >
-      static_cast<uint8_t>(AutoTuneState::Failed)) {
-    runtime.autoTuneState = AutoTuneState::Failed;
-  }
   if (static_cast<uint8_t>(runtime.connectivityMode) >
       static_cast<uint8_t>(ConnectivityMode::Online)) {
     runtime.connectivityMode = ConnectivityMode::Offline;
@@ -5582,19 +5431,11 @@ void sanitizeRuntime(MachineRuntime &runtime) {
       runtime.networkConfigured &&
       runtime.networkState == NetworkStateCode::Connected &&
       runtime.networkConnected;
-  runtime.autoTuneProgress = static_cast<uint8_t>(constrain(
-      static_cast<int>(runtime.autoTuneProgress), 0, 100));
   if (runtime.activeFaultDisplayCount > HMI_FAULT_DISPLAY_CAPACITY) {
     runtime.activeFaultDisplayCount = HMI_FAULT_DISPLAY_CAPACITY;
   }
   if (runtime.activeFaultCount < runtime.activeFaultDisplayCount) {
     runtime.activeFaultCount = runtime.activeFaultDisplayCount;
-  }
-  if (runtime.autoTuneState == AutoTuneState::Success) {
-    runtime.autoTuneProgress = 100;
-  } else if (runtime.autoTuneState == AutoTuneState::Idle ||
-             runtime.autoTuneState == AutoTuneState::Failed) {
-    runtime.autoTuneProgress = 0;
   }
   if (!runtime.dateText[0]) snprintf(runtime.dateText, sizeof(runtime.dateText),
                                      "--/--/----");
@@ -5687,14 +5528,6 @@ bool runtimeVisibleChanged(const MachineRuntime &before,
     case View::GuestMode:
       return false;
 
-    case View::AutoTune:
-      return before.autoTuneState != after.autoTuneState ||
-             before.autoTuneProgress != after.autoTuneProgress ||
-             before.autoTunePhase != after.autoTunePhase ||
-             before.autoTuneReason != after.autoTuneReason ||
-             before.batchRunning != after.batchRunning ||
-             before.sensorOnline != after.sensorOnline;
-
     case View::EventLog:
       return before.eventSequence != after.eventSequence;
 
@@ -5723,7 +5556,6 @@ bool runtimeVisibleChanged(const MachineRuntime &before,
 
     // Man dong: ve lai theo chu ky (periodicAdvanced) thay vi theo tung thay doi nho cua runtime.
     case View::PidMonitor:
-    case View::ThermalProfile:
     case View::TechRequest:
       return false;
 
@@ -5733,6 +5565,9 @@ bool runtimeVisibleChanged(const MachineRuntime &before,
 
     case View::WebAccess:
       return before.tech.webAllowed != after.tech.webAllowed;
+
+    case View::WebCtl:
+      return before.tech.webCtlMask != after.tech.webCtlMask;
 
     case View::AdvMenu:
       return before.tech.webAllowed != after.tech.webAllowed;
@@ -5763,7 +5598,6 @@ void applyRuntime(MachineRuntime runtime) {
       currentRuntime.networkConfigured && !currentRuntime.networkConnected &&
       runtime.connectivityMode == ConnectivityMode::Online &&
       runtime.networkConfigured && runtime.networkConnected;
-  const AutoTuneState previousAutoTuneState = currentRuntime.autoTuneState;
   const bool newFaultOccurrence =
       runtime.faultNotificationSequence != currentRuntime.faultNotificationSequence &&
       runtime.lastRaisedFaultCode != 0U;
@@ -5797,18 +5631,6 @@ void applyRuntime(MachineRuntime runtime) {
   // Moi ma loi moi deu duoc keu lai, ke ca no dung chung AlarmBit voi mot loi
   // cu da duoc nguoi dung ACK truoc do.
   if (newFaultAlarmBit != AlarmNone) buzzerUnacknowledge(newFaultAlarmBit);
-
-  if (currentRuntime.autoTuneState != previousAutoTuneState) {
-    if (currentRuntime.autoTuneState == AutoTuneState::Running) {
-      showToast("AUTO TUNE DA BAT DAU");
-    } else if (currentRuntime.autoTuneState == AutoTuneState::Success) {
-      showToast("AUTO TUNE THANH CONG");
-      buzzerPlayCue(BuzzerCue::Ok);
-    } else if (currentRuntime.autoTuneState == AutoTuneState::Failed) {
-      showToast("AUTO TUNE THAT BAI", true);
-      buzzerPlayCue(BuzzerCue::Error);
-    }
-  }
 
   if (!currentRuntime.resumeConfirmationRequired) resumeDecisionSubmitted = false;
   if (!currentRuntime.batchOverdueConfirmationPending) batchOverdueDecisionSubmitted = false;

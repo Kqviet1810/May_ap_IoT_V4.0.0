@@ -35,7 +35,7 @@ def main():
         (out / 'actual-tech-config.inc').write_text(between(config, 'enum class TechResult', 'struct MachineRuntime {'), encoding='utf-8')
         (out / 'actual-hmi-command-type.inc').write_text(between(config, 'enum class HmiCommandType : uint8_t {', '// F-09 (audit'), encoding='utf-8')
         (out / 'actual-tech-members.inc').write_text(between(machine, '  // A Web technical request waits here', '  uint32_t techRetryAt_ = 0;') + '  uint32_t techRetryAt_ = 0;\n', encoding='utf-8')
-        (out / 'actual-tech-funcs.inc').write_text(between(machine, '  // Keep the advanced values that are about to be replaced', '  // Read-only PID monitor.'), encoding='utf-8')
+        (out / 'actual-tech-funcs.inc').write_text(between(machine, '  // The HMI list reads cached copies', '  // Read-only PID monitor.'), encoding='utf-8')
         for name in ('tech-access', 'tech-controller'):
             exe = out / name
             cmd = [args.cxx, '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', str(out), '-I', str(FW),
