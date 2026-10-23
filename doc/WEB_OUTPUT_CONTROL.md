@@ -1,7 +1,7 @@
 # Điều khiển đầu ra qua Web và log từ xa (firmware 2.0.0-rc, Web 1.1.21)
 
 ## Quyền điều khiển qua Web (chỉ đặt trên HMI)
-HMI → Nâng cao → **Dieu khien Web** (cần phiên kỹ thuật). 6 quyền, mặc định **TẮT**:
+HMI → Nâng cao → **Dieu khien Web** (cần phiên kỹ thuật). 6 quyền. Mặc định **BẬT**: Quạt hút, Quạt tuần hoàn, Đèn, Còi; **TẮT**: Thanh nhiệt, Đảo trứng (máy cũ đã lên firmware này cũng nhận mặc định đó):
 Thanh nhiệt, Quạt hút, Quạt tuần hoàn, Đèn, Còi, Đảo trứng. Lưu bằng dòng LUU.
 Web chỉ đọc các quyền này (`runtime.tech.webCtl`); không có lệnh nào trên Web để ghi chúng.
 

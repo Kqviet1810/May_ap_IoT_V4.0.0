@@ -265,7 +265,7 @@ int main() {
 
   // 12. Web output control permissions: HMI only, needs the technician session, stored with the PIN record, revokes the overrides of what is taken away.
   { Ctl c; fresh(c, now);
-    CHECK(c.techGate_.webCtlMask() == 0 && c.runtime_.tech.webCtlMask == 0);                                  // default: the Web may switch nothing
+    CHECK(c.techGate_.webCtlMask() == 30 && c.runtime_.tech.webCtlMask == 30);                               // default: vent, circulation, light, siren ON; heater and turning OFF
     CHECK(c.run(now, HmiCommandType::WebCtlSet, false, 0x3F, m) && c.techGate_.webCtlMask() == 0x3F);
     CHECK(c.webRevoked == 0);                                                                                  // nothing was taken away
     CHECK(c.run(now, HmiCommandType::WebCtlSet, false, WebCtlLight | WebCtlTurn, m) && c.techGate_.webCtlMask() == (WebCtlLight | WebCtlTurn));
