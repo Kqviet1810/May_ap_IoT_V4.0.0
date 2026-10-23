@@ -15,7 +15,7 @@ Web chỉ đọc các quyền này (`runtime.tech.webCtl`); không có lệnh n�
 
 ## Log từ xa
 Máy giữ vòng 180 mẫu × 10 s (30 phút) trong RAM. Khi thẻ PID Monitor mở, mỗi snapshot mang kèm một khối 10 mẫu; Web ghép theo chỉ số và nút **Tải log** xuất CSV
-(`time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,source`).
+(`time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,source`).
 Giới hạn: chỉ thu được khi thẻ đang mở và máy online; mất điện thì mất vòng nhớ.
 
 ## Máy ngoại tuyến

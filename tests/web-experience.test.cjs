@@ -133,9 +133,9 @@ test('Heater monitor shows measured values only and lists every figure the firmw
 test('PID log: chunks of the machine ring are assembled by index and saved as CSV', () => {
   const h = browser();
   h.pidMon.log = new Map(); h.pidMon.series = []; h.pidMon.logHead = 0;
-  h.pmIngestLog({ h: 30, s: 20, d: [3750, 3750, 3751, 40, 22, 0x41, 3752, 3750, 3752, 42, 23, 0x45] });       // samples 20 and 21
-  h.pmIngestLog({ h: 30, s: 20, d: [3750, 3750, 3751, 40, 22, 0x41] });                                          // a repeat changes nothing
-  h.pmIngestLog({ h: 30, s: 28, d: [3760, 3750, 3760, 0, 0, 0x03] });
+  h.pmIngestLog({ h: 30, s: 20, d: [3750, 3750, 3751, 40, 22, 0x41, 0, 3752, 3750, 3752, 42, 23, 0x45, 6] });    // samples 20 and 21 (the 7th value is the V2 state: 6 = brake)
+  h.pmIngestLog({ h: 30, s: 20, d: [3750, 3750, 3751, 40, 22, 0x41, 0] });                                          // a repeat changes nothing
+  h.pmIngestLog({ h: 30, s: 28, d: [3760, 3750, 3760, 0, 0, 0x03, 5] });
   assert.equal(h.pidMon.log.size, 3);
   assert.equal(h.pidMon.log.get(21).pv, 37.52);
   assert.equal(h.pidMon.log.get(21).req, 21);                                                                    // percent * 2 on the wire
@@ -143,10 +143,10 @@ test('PID log: chunks of the machine ring are assembled by index and saved as CS
   const csv = h.pmCsv({ id: 'MAP-TEST', bootId: 7 });
   const lines = csv.trim().split('\n');
   assert.match(lines[0], /^# mayap pid log device=MAP-TEST boot=7/);
-  assert.equal(lines[1], 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,source');
+  assert.equal(lines[1], 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,source');
   assert.equal(lines.length, 5);
   const second = lines[3].split(',');
-  assert.equal(second[1], '21'); assert.equal(second[7], '1'); assert.equal(second[8], '1'); assert.equal(second[14], 'machine');   // phase 1, suspect flag
+  assert.equal(second[1], '21'); assert.equal(second[7], '1'); assert.equal(second[8], '1'); assert.equal(second[14], 'brake'); assert.equal(second[15], 'machine');   // phase 1, suspect flag
 });
 
 test('fan config requires complete capabilities and preserves legacy schedules', () => {
@@ -323,7 +323,7 @@ test('server alert view never outlives its freshness window', () => {
 test('Web output control: buttons exist, are gated by the HMI permissions, and offline temperature shows a dash', () => {
   const html = fs.readFileSync(require.resolve('../index.html'), 'utf8');
   const src = fs.readFileSync(require.resolve('../app.js'), 'utf8');
-  for (const id of ['outputHeaterBtn', 'outputCircBtn', 'outputVentBtn', 'turnLeftBtn', 'turnRightBtn', 'pmDownload'])
+  for (const id of ['outputHeaterBtn', 'outputCircBtn', 'outputVentBtn', 'outputTurnTile', 'turnSplit', 'turnLeftBtn', 'turnRightBtn', 'pmDownload'])
     assert.match(html, new RegExp(`id="${id}"`));
   assert.match(src, /WEBCTL = Object\.freeze\(\{ heater: 1, vent: 2, circ: 4, light: 8, siren: 16, turn: 32 \}\)/);
   for (const act of ['vent_toggle', 'circ_toggle', 'heater_toggle', 'siren_toggle', 'turn_hold'])
@@ -331,4 +331,12 @@ test('Web output control: buttons exist, are gated by the HMI permissions, and o
   // the Web never writes the permission mask: no command that sets it exists on the Web side
   assert.ok(!/webctl_set|WebCtlSet/.test(src));
   assert.match(src, /\['online',\s*'reconnecting',\s*'degraded'\]/);
+  // the egg-turn tile is ONE tile unless the HMI allows turning AND AUTO is off; the old pad row and hint line are gone
+  assert.ok(!/turnPad|webCtlHint/.test(html) && !/turnPad|webCtlHint/.test(src));
+  assert.match(src, /granted\s*&&\s*manual/);
+  // every item of the machine's Advanced menu is listed with its access
+  assert.match(html, /id="advOverview"/);
+  for (const label of ['Gia nhiệt', 'PID Monitor', 'Bảo vệ nhiệt', 'Hiệu chuẩn', 'Bản ghi cũ', 'Quyền Web', 'Điều khiển Web', 'Chế độ 2 tài khoản', 'Đổi mã kỹ thuật'])
+    assert.ok(src.includes(`'${label}'`) || src.includes(`['${label}'`) || src.includes(label), label);
+  assert.match(src, /Chỉ đọc/); assert.match(src, /Ghi được/); assert.match(src, /Chỉ đổi trên máy/);
 });

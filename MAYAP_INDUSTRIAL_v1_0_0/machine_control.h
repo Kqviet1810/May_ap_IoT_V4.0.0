@@ -5038,6 +5038,7 @@ class MachineController {
     m.predictedC = v2.predicted();
     m.phase = !v2.identified() ? 0U : static_cast<uint8_t>(1U + std::min<uint8_t>(v2.batchesDone(), 2U));
     m.suspect = v2.responseSuspect();
+    m.v2State = thermalV2_.last().state;
     m.slotLastUs = slotLastUs_; m.slotMaxUs = slotMaxUs_;
     if (m.valid && elapsedMs(now, pidLogAt_) >= MayapPidLog::SAMPLE_PERIOD_MS) {          // one sample per 10 s into the log ring (the Web page downloads it as CSV)
       pidLogAt_ = now;
@@ -5048,6 +5049,7 @@ class MachineController {
       s.flags = static_cast<uint8_t>((m.phase & MayapPidLog::FlPhaseMask) | (m.suspect ? MayapPidLog::FlSuspect : 0U) | (o.ventFan ? MayapPidLog::FlVentFan : 0U) |
           (o.heaterSsr ? MayapPidLog::FlSsr : 0U) | (o.heatMaster ? MayapPidLog::FlMaster : 0U) | (batchRunning_ ? MayapPidLog::FlBatch : 0U) |
           (sensorUsable_ ? MayapPidLog::FlSensorOk : 0U));
+      s.spare = m.v2State;
       MayapPidLog::ring().push(s);
     }
   }

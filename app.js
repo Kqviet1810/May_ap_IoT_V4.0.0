@@ -1363,22 +1363,48 @@
     setBtn('outputVentBtn', WEBCTL.vent);
     setBtn('outputCircBtn', WEBCTL.circ);
     if ($('outputHeater') && runtime && webCtlActive(device, WEBCTL.heater)) $('outputHeater').textContent = 'NGẮT TỪ XA';
-    const pad = $('turnPad');
-    if (pad) {
+    // The egg-turn tile stays ONE tile as before; only when the HMI allows the Web to turn AND the machine's AUTO switch is off does it split into two halves
+    // (left | right, hold to turn, release to stop).
+    const tile = $('outputTurnTile'), split = $('turnSplit');
+    if (tile && split) {
       const granted = webCtlGranted(device, WEBCTL.turn);
-      pad.hidden = !granted;
-      const manual = runtime && runtime.autoMode === false;
-      for (const id of ['turnLeftBtn', 'turnRightBtn']) if ($(id)) $(id).disabled = !(granted && ready && manual);
+      const manual = Boolean(runtime) && runtime.autoMode === false;
+      const show = granted && manual;
+      tile.classList.toggle('split', show);
+      split.hidden = !show;
+      for (const id of ['turnLeftBtn', 'turnRightBtn']) if ($(id)) $(id).disabled = !(show && ready);
     }
-    const hint = $('webCtlHint');
-    if (hint) {
-      if (!runtime) { hint.textContent = ''; return; }
-      const granted = WEBCTL_LABELS.filter(([bit]) => webCtlGranted(device, bit)).map(([, name]) => name);
-      const turnNote = webCtlGranted(device, WEBCTL.turn) && runtime.autoMode !== false ? ' Đảo tay chỉ dùng được khi công tắc máy ở MANUAL.' : '';
-      hint.textContent = (granted.length
-        ? `Điều khiển từ Web được máy cho phép: ${granted.join(', ')}.${turnNote}`
-        : 'Web chỉ xem. Muốn điều khiển từ xa: màn hình máy → Nâng cao → Điều khiển Web.')
-        + ' Cài đặt này chỉ đổi được trên máy.';
+    renderAdvOverview(device, runtime);
+  }
+
+  // Every item of the machine's "Nang cao" menu, with what the Web may do with it: read only, write (technical PIN + confirmation on the machine) or machine only.
+  function renderAdvOverview(device, runtime) {
+    const box = $('advOverview'); if (!box) return;
+    box.textContent = '';
+    if (!runtime) { const p = document.createElement('p'); p.className = 'settingFootnote'; p.textContent = 'Chưa có dữ liệu từ máy.'; box.appendChild(p); return; }
+    const cfg = device?.config || {}, tech = runtime.tech || {};
+    const writable = Boolean(tech.allowed);
+    const num = (v, unit = '') => (Number.isFinite(Number(v)) && v !== null && v !== undefined && v !== '') ? `${Number(v)}${unit}` : '—';
+    const RW = writable ? ['rw', 'Ghi được (mã kỹ thuật + xác nhận trên máy)'] : ['ro', 'Chỉ đọc (máy chưa cho phép ghi)'];
+    const mask = webCtlMask(device);
+    const permLine = WEBCTL_LABELS.map(([bit, name]) => `${name}: ${(mask & bit) ? (webCtlActive(device, bit) ? 'cho phép · đang ghi đè' : 'cho phép') : 'không'}`).join(' · ');
+    const rows = [
+      ['Gia nhiệt', `Trần công suất ${num(cfg.maxHeaterPower, '%')}`, ...RW],
+      ['PID Monitor', 'Xem ở thẻ PID Monitor phía trên', 'ro', 'Chỉ đọc'],
+      ['Bảo vệ nhiệt', `Tốc độ ${num(cfg.tempRateLimitC, '°C')}/${num(cfg.tempRateWindowSec, ' s')} · dao động ${num(cfg.tempOscillationCrossLimit)} lần/${num(cfg.tempOscillationWindowSec, ' s')} · không tăng nhiệt ${num(cfg.heaterStuckMinRiseC, '°C')}/${num(cfg.heaterStuckDurationSec, ' s')}`, ...RW],
+      ['Hiệu chuẩn', `Bù nhiệt ${num(cfg.tempOffset, '°C')} · bù ẩm ${num(cfg.humidityOffset, '%RH')}`, ...RW],
+      ['Bản ghi cũ', 'Xem và khôi phục trên máy', 'dev', 'Chỉ trên máy'],
+      ['Quyền Web (PID)', tech.allowed ? 'BẬT' : 'TẮT', 'dev', 'Chỉ đổi trên máy'],
+      ['Điều khiển Web', permLine, 'dev', 'Chỉ đổi trên máy'],
+      ['Chế độ 2 tài khoản', 'Xem và đổi trên máy', 'dev', 'Chỉ trên máy'],
+      ['Đổi mã kỹ thuật', 'Chỉ đổi trên máy', 'dev', 'Chỉ trên máy'],
+    ];
+    for (const [label, value, kind, badge] of rows) {
+      const row = document.createElement('div'); row.className = 'advRow';
+      const left = document.createElement('div'); const a = document.createElement('strong'); a.textContent = label; const b = document.createElement('span'); b.textContent = value;
+      left.append(a, b);
+      const tag = document.createElement('em'); tag.className = kind; tag.textContent = badge;
+      row.append(left, tag); box.appendChild(row);
     }
   }
 
@@ -3273,6 +3299,8 @@
     ['req', 'Yêu cầu cuối', '%', 1], ['act', 'SSR thực tế TB 60 s', '%', 1],
     ['pred', 'PV dự đoán', '°C', 2], ['phase', 'Pha học V2', '', 0], ['slot', 'Slot V2 lớn nhất', 'µs', 0]]);
   const PM_PHASES = Object.freeze(['Nhìn/đo', 'Đã nhận dạng', 'Đã khớp lần 1', 'Đã khớp lần 2']);
+  const PM_STATES = Object.freeze({ 0: 'idle', 1: 'climb', 2: 'track', 3: 'frozen', 4: 'e115', 5: 'shadow', 6: 'brake' });
+  const PM_STATE_TEXT = Object.freeze({ 5: ' · CHẠY NGẦM (quạt hút chặn sưởi)', 6: ' · PHANH' });
   const PM_LOG_MAX = 1500;
   const PM_MAX_POINTS = 900;
   const PM_SAMPLE_MS = 2000;
@@ -3304,7 +3332,7 @@
     v.req = ok ? Number(m.req) : NaN;
     v.act = ok ? Number(m.act) : NaN;
     v.pred = ok ? Number(m.pr) : NaN;
-    v.phase = ok && Number.isFinite(Number(m.ph)) ? `${PM_PHASES[Math.min(3, Number(m.ph))]}${m.sus ? ' · NGHI' : ''}` : '';
+    v.phase = ok && Number.isFinite(Number(m.ph)) ? `${PM_PHASES[Math.min(3, Number(m.ph))]}${m.sus ? ' · NGHI' : ''}${PM_STATE_TEXT[Number(m.stt)] || ''}` : '';
     v.slot = ok ? Number(m.sl) : NaN;
     return v;
   }
@@ -3317,9 +3345,9 @@
     if (!Number.isFinite(head) || !Number.isFinite(first) || head < 1) return;
     if (head < pidMon.logHead - 3) { pidMon.log = new Map(); }                // the machine restarted its counter (same boot id is not guaranteed)
     pidMon.logHead = head; pidMon.logHeadAt = Date.now();
-    for (let i = 0; i + 5 < lg.d.length; i += 6) {
-      const idx = first + i / 6;
-      pidMon.log.set(idx, { pv: lg.d[i] / 100, sp: lg.d[i + 1] / 100, pred: lg.d[i + 2] / 100, req: lg.d[i + 3] / 2, act: lg.d[i + 4] / 2, fl: lg.d[i + 5] });
+    for (let i = 0; i + 6 < lg.d.length; i += 7) {
+      const idx = first + i / 7;
+      pidMon.log.set(idx, { pv: lg.d[i] / 100, sp: lg.d[i + 1] / 100, pred: lg.d[i + 2] / 100, req: lg.d[i + 3] / 2, act: lg.d[i + 4] / 2, fl: lg.d[i + 5], st: lg.d[i + 6] });
     }
     while (pidMon.log.size > PM_LOG_MAX) pidMon.log.delete(pidMon.log.keys().next().value);
     const info = $('pmLogInfo');
@@ -3332,11 +3360,11 @@
     const rows = [];
     for (const [idx, r] of pidMon.log) {
       const t = pidMon.logHeadAt - (pidMon.logHead - 1 - idx) * 10000;
-      rows.push([t, idx, r.pv, r.sp, r.pred, r.req, r.act, r.fl & 3, (r.fl & 4) ? 1 : 0, (r.fl & 8) ? 1 : 0, (r.fl & 16) ? 1 : 0, (r.fl & 32) ? 1 : 0, (r.fl & 64) ? 1 : 0, (r.fl & 128) ? 1 : 0, 'machine']);
+      rows.push([t, idx, r.pv, r.sp, r.pred, r.req, r.act, r.fl & 3, (r.fl & 4) ? 1 : 0, (r.fl & 8) ? 1 : 0, (r.fl & 16) ? 1 : 0, (r.fl & 32) ? 1 : 0, (r.fl & 64) ? 1 : 0, (r.fl & 128) ? 1 : 0, PM_STATES[r.st] || '', 'machine']);
     }
-    for (const r of pidMon.series) rows.push([r.t, '', r.pv, r.sp, '', r.req, r.act, '', '', r.vent, '', '', '', '', 'page']);
+    for (const r of pidMon.series) rows.push([r.t, '', r.pv, r.sp, '', r.req, r.act, '', '', r.vent, '', '', '', '', '', 'page']);
     rows.sort((a, b) => a[0] - b[0]);
-    const head = 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,source';
+    const head = 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,source';
     const cell = (v) => (typeof v === 'number' ? (Number.isFinite(v) ? String(v) : '') : String(v));
     return [`# mayap pid log device=${device?.id || ''} boot=${device?.bootId || ''} exported=${iso(Date.now())}`, head,
       ...rows.map((r) => [iso(r[0]), ...r.slice(1)].map(cell).join(','))].join('\n') + '\n';

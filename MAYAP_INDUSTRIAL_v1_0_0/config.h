@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.0.0";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.0.1";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -1205,6 +1205,7 @@ struct PidMonitorData {
   float predictedC = 0;               // V2: where the PV is heading with the power already on its way [degC]
   uint8_t phase = 0;                  // V2 learning phase: 0 looking / probing, 1 identified, 2 first fit done, 3 second fit done
   bool suspect = false;               // V2 response watchdog: power arrived but the PV did not move (request withdrawn)
+  uint8_t v2State = 0;                // V2 output state of the last step: 0 idle, 1 climb, 2 track, 3 frozen, 4 E115 boost, 5 shadow (vent line blocks), 6 brake (first approach)
   uint32_t slotLastUs = 0, slotMaxUs = 0;     // V2 controller slot time [us] (esp_timer)
 };
 
