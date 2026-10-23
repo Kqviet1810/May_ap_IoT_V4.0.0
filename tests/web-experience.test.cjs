@@ -15,7 +15,7 @@ function browser(overrides = {}, initialStorage = {}) {
       buildConfig, validateTemperatureForm, validateSensorForm, validateVentForm,
       validateAdvancedForm, REQUIRED_CONFIG_KEYS, VENT_PROFILE_KEYS, createDevice,
 connectionStatus, pollServerAlerts, syncServerAlertPolling, serverConnectionDetail, renderServerAlarmBanner, setRealtimeStatus, SERVER_ALERT,
-      buildTechFields, techGateInfo, pmValues, PM_ITEMS, TECH_FIELDS });
+      buildTechFields, techGateInfo, pmValues, PM_ITEMS, TECH_FIELDS, pmIngestLog, pmCsv, pidMon });
   })();`);
   let now = 0, wall = Date.now(), timerId = 0;
   class BrowserDate extends Date { static now() { return wall; } }
@@ -121,13 +121,32 @@ test('technical section is hidden unless the HMI grants it; unlocked only with a
 test('Heater monitor shows measured values only and lists every figure the firmware still sends', () => {
   const h = browser();
   const keys = h.PM_ITEMS.map((item) => item[0]);
-  assert.deepEqual(JSON.parse(JSON.stringify(keys)), ['pv', 'sp', 'err', 'req', 'act']);
+  assert.deepEqual(JSON.parse(JSON.stringify(keys)), ['pv', 'sp', 'err', 'req', 'act', 'pred', 'phase', 'slot']);
   const none = h.pmValues({ config: {} }, { temperature: 37.5 });          // firmware without pidMon: nothing invented
-  for (const key of keys) assert.ok(Number.isNaN(none[key]), key);
+  for (const key of keys) assert.ok(key === 'phase' ? none[key] === '' : Number.isNaN(none[key]), key);
   const live = h.pmValues({ config: {} }, { temperature: 37.4, pidMon: { valid: true, sp: 37.5, err: 0.1, req: 11, act: 10.5 } });
   assert.equal(live.pv, 37.4); assert.equal(live.sp, 37.5); assert.equal(live.err, 0.1); assert.equal(live.req, 11); assert.equal(live.act, 10.5);
   const webSource = fs.readFileSync(require.resolve('../app.js'), 'utf8');
   assert.match(webSource, /\.\.\.\(mon \? \{ mon: true \} : \{\}\)/);                              // lease asks for pidMon only while the card is open
+});
+
+test('PID log: chunks of the machine ring are assembled by index and saved as CSV', () => {
+  const h = browser();
+  h.pidMon.log = new Map(); h.pidMon.series = []; h.pidMon.logHead = 0;
+  h.pmIngestLog({ h: 30, s: 20, d: [3750, 3750, 3751, 40, 22, 0x41, 3752, 3750, 3752, 42, 23, 0x45] });       // samples 20 and 21
+  h.pmIngestLog({ h: 30, s: 20, d: [3750, 3750, 3751, 40, 22, 0x41] });                                          // a repeat changes nothing
+  h.pmIngestLog({ h: 30, s: 28, d: [3760, 3750, 3760, 0, 0, 0x03] });
+  assert.equal(h.pidMon.log.size, 3);
+  assert.equal(h.pidMon.log.get(21).pv, 37.52);
+  assert.equal(h.pidMon.log.get(21).req, 21);                                                                    // percent * 2 on the wire
+  h.pmIngestLog(null); h.pmIngestLog({ h: 'x', s: 1, d: [] });                                                   // garbage is ignored
+  const csv = h.pmCsv({ id: 'MAP-TEST', bootId: 7 });
+  const lines = csv.trim().split('\n');
+  assert.match(lines[0], /^# mayap pid log device=MAP-TEST boot=7/);
+  assert.equal(lines[1], 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,source');
+  assert.equal(lines.length, 5);
+  const second = lines[3].split(',');
+  assert.equal(second[1], '21'); assert.equal(second[7], '1'); assert.equal(second[8], '1'); assert.equal(second[14], 'machine');   // phase 1, suspect flag
 });
 
 test('fan config requires complete capabilities and preserves legacy schedules', () => {
@@ -299,4 +318,17 @@ test('server alert view never outlives its freshness window', () => {
   h.device.server = { ok: true, at: h.now() - h.SERVER_ALERT.pollMs * 3 - 1, serverTime: h.now(), lastSeen: h.now() - 500000, alarms: [], events: [] };
   h.state.realtimeConnected = false; h.state.realtimeLostAt = h.now() - 60000;
   assert.notEqual(h.connectionStatus(h.device), 'devicelost');            // stale copy is ignored: unknown beats wrong
+});
+
+test('Web output control: buttons exist, are gated by the HMI permissions, and offline temperature shows a dash', () => {
+  const html = fs.readFileSync(require.resolve('../index.html'), 'utf8');
+  const src = fs.readFileSync(require.resolve('../app.js'), 'utf8');
+  for (const id of ['outputHeaterBtn', 'outputCircBtn', 'outputVentBtn', 'turnLeftBtn', 'turnRightBtn', 'pmDownload'])
+    assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(src, /WEBCTL\s*=\s*\{heater:1,vent:2,circ:4,light:8,siren:16,turn:32\}/);
+  for (const act of ['vent_toggle', 'circ_toggle', 'heater_toggle', 'siren_toggle', 'turn_hold'])
+    assert.ok(src.includes(act), act);
+  // the Web never writes the permission mask: no command that sets it exists on the Web side
+  assert.ok(!/webctl_set|WebCtlSet/.test(src));
+  assert.match(src, /\['online',\s*'reconnecting',\s*'degraded'\]/);
 });

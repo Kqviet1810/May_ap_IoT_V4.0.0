@@ -62,7 +62,7 @@ test('Home and boot success depend on local stability, never server connectivity
 
 test('Heater permits never depend on the boot screen: operator Home cannot bypass sensor/fault interlocks', () => {
   const mc = read(dir + 'machine_control.h');
-  assert.match(mc, /normalMasterPermit =\s*in\.heaterEnable && sensorUsable_ && !faults_\.masterDropRequired\(\)/);
+  assert.match(mc, /normalMasterPermit =\s*in\.heaterEnable && !webHeaterOff_ && !webCircOffBlocksHeat && sensorUsable_ && !faults_\.masterDropRequired\(\)/);
   assert.match(mc, /heaterPidConditions =\s*!faults_\.masterDropRequired\(\) &&\s*storageAllowsHeat && !abnormalResetLatched_ &&\s*batchAllowsHeat && sensorUsable_/);
   assert.match(mc, /actuatorReady = outputs_\.heaterReady\(now\) && mayapBootOperationsReady\(\) &&\s*!mayapSystemTripLatched\(\)/);
   // the operator override only changes what the HMI shows; it never calls anything that touches outputs or faults

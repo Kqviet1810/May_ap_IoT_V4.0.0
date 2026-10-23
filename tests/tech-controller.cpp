@@ -87,6 +87,10 @@ struct Ctl {
   void commitSavedConfig(uint32_t, const MachineConfig &, const MachineConfig &readback) { config_ = readback; ++commits; }
   void latchStorageFault(const char *) { storageFaultLatched_ = true; }
   void clearStorageDegraded(uint32_t) { storageDegraded_ = false; }
+  // Web output control lives outside the sliced tech region: these two stand in for the machine's overrides
+  uint8_t webRevoked = 0;
+  void webOutputsRevoke(uint32_t, uint8_t bits) { webRevoked = static_cast<uint8_t>(webRevoked | bits); }
+  uint8_t webOutputsActive(uint32_t) const { return 0; }
 #include "actual-tech-members.inc"
 #include "actual-tech-funcs.inc"
 
@@ -256,6 +260,27 @@ int main() {
   { Ctl c; fresh(c, now); grantWeb(c, now);
     CHECK(stage(MayapTech::Kind::AutoTune, {}, "req-tune", c.config_));
     CHECK(!c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "UNSUPPORTED" && c.runtime_.tech.pendingKind == 0);
+  }
+
+
+  // 12. Web output control permissions: HMI only, needs the technician session, stored with the PIN record, revokes the overrides of what is taken away.
+  { Ctl c; fresh(c, now);
+    CHECK(c.techGate_.webCtlMask() == 0 && c.runtime_.tech.webCtlMask == 0);                                  // default: the Web may switch nothing
+    CHECK(c.run(now, HmiCommandType::WebCtlSet, false, 0x3F, m) && c.techGate_.webCtlMask() == 0x3F);
+    CHECK(c.webRevoked == 0);                                                                                  // nothing was taken away
+    CHECK(c.run(now, HmiCommandType::WebCtlSet, false, WebCtlLight | WebCtlTurn, m) && c.techGate_.webCtlMask() == (WebCtlLight | WebCtlTurn));
+    CHECK(c.webRevoked == (WebCtlHeater | WebCtlVent | WebCtlCirc | WebCtlSiren));                            // exactly the removed bits are revoked at once
+    CHECK(c.techGate_.webAllowed() == false);                                                                  // independent of the PID-engineering Web permission
+    CHECK(!c.run(now, HmiCommandType::WebCtlSet, true, 0x3F, m) && m == "CHI HMI DUOC DOI QUYEN");            // the Web can never grant itself anything
+    CHECK(c.techGate_.webCtlMask() == (WebCtlLight | WebCtlTurn));
+    CHECK(c.run(now, HmiCommandType::WebCtlSet, false, 0xFF, m) && c.techGate_.webCtlMask() == WebCtlAll);   // bits above the six are ignored
+    // the permission survives a restart (same record) and a new PIN keeps it
+    TechAccess::Gate<FakeAuth> again(c.auth_); again.begin(now + 10);
+    CHECK(again.webCtlMask() == WebCtlAll);
+    CHECK(c.run(now, HmiCommandType::TechPinSet, false, 4321, m) && c.techGate_.webCtlMask() == WebCtlAll);
+    // locked HMI session: refused, nothing changes
+    c.techGate_.lockHmi();
+    CHECK(!c.run(now + 5, HmiCommandType::WebCtlSet, false, 0, m) && c.techGate_.webCtlMask() == WebCtlAll);
   }
 
   // 11. Nothing changed => nothing is written; the same values never fill the history.

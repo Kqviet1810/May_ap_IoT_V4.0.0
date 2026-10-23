@@ -1188,6 +1188,8 @@ struct TechStatus {
   uint8_t pendingKind = 0;            // 0 none, 1 config change (2 was Smart AutoTune: retired)
   uint8_t pendingRemainingS = 0;      // of the 60 s the HMI has to answer
   uint16_t pendingMask = 0;           // which snapshot fields the Web asked to change
+  uint8_t webCtlMask = 0;             // WebCtl* permission bits set on the HMI (read-only for the Web)
+  uint8_t webCtlActive = 0;           // WebCtl* bits whose output is currently overridden from the Web (heater: switched OFF remotely)
   uint8_t historyCount = 0;           // advanced-config records available on the HMI (0..3)
   TechResult resultState = TechResult::None;   // outcome of the last Web technical request
   // The heavy parts (old-record snapshots, requested values, request id) live in MayapTech::Detail (tech_request.h):
@@ -1312,8 +1314,15 @@ enum class HmiCommandType : uint8_t {
   TechWebSet,         // Local only: alarmMask 1 = Web may use technical features, 0 = hidden (revokes the session + pending request)
   TechDecision,       // Local only: alarmMask 1 = approve, 0 = decline the pending Web request
   TechRequestSubmit,  // Remote only: the staged technical request (config values)
-  AdvancedRestore     // Local only: alarmMask = rank 0..2 of the advanced-config record to restore
+  AdvancedRestore,    // Local only: alarmMask = rank 0..2 of the advanced-config record to restore
+  // Web output control (the HMI "Nang cao > Dieu khien Web" page decides which outputs the Web may touch; every one of these is Remote only and is refused
+  // unless the matching permission bit is set). Appended: every older value keeps its number.
+  WebCtlSet,          // Local only: alarmMask = permission bits (WebCtl* below) the Web may use
+  WebVentToggle, WebCircToggle, WebHeaterToggle, WebSirenToggle,
+  WebTurnHold         // Remote: alarmMask = direction (0 stop, 1 left, 2 right) | lease ms << 8 (the machine stops by itself when the lease ends)
 };
+// Permission bits of the Web output control (HMI Advanced). Heater, vent, circulation, light, siren, egg turning.
+enum : uint8_t { WebCtlHeater = 1, WebCtlVent = 2, WebCtlCirc = 4, WebCtlLight = 8, WebCtlSiren = 16, WebCtlTurn = 32, WebCtlAll = 63 };
 // F-09 (audit truoc phat hanh v3.7.1): AlarmAck truoc day khong phan biet
 // lenh den tu bang dieu khien vat ly (HMI) hay tu xa (MQTT/web) - mot nguoi
 // dung tu xa co the xoa loi dao trung (can kiem tra co khi that su) hoac tam

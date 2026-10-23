@@ -813,7 +813,7 @@ enum class View : uint8_t {
   EventLog, Alarm, TestMode, TestSummary, WifiChange, ConnectionInfo, QrCode,
   FirmwareProgress, TurnStatus, VentilationMenu, VentilationAdvanced, FirmwareMenu,
   // NANG CAO (can ma ky thuat): nhap ma, menu, PID Monitor, ban ghi cu, quyen Web, yeu cau tu Web.
-  AdvPin, AdvMenu, PidMonitor, AdvHistory, AdvHistoryView, WebAccess, TechRequest,
+  AdvPin, AdvMenu, PidMonitor, AdvHistory, AdvHistoryView, WebAccess, WebCtl, TechRequest,
   // HE THONG: "Thong tin ket noi" gom Chi tiet / Doi wifi / Ma QR / Dat lai PIN / Thiet bi ket noi; Thoi gian ngu.
   ConnMenu, MemberList, SleepTime, GuestMode
 };
@@ -821,8 +821,8 @@ enum class View : uint8_t {
 enum class ConfirmAction : uint8_t { None, BatchToggle, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AdvRestore, MemberRemove };
 
 // NANG CAO menu (declared here because goBack() returns to these rows).
-constexpr uint8_t ADV_ITEM_COUNT = 9U;
-enum AdvItem : uint8_t { ADV_PID, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_HISTORY, ADV_WEB, ADV_GUEST, ADV_PINCHG, ADV_EXIT };
+constexpr uint8_t ADV_ITEM_COUNT = 10U;
+enum AdvItem : uint8_t { ADV_PID, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_HISTORY, ADV_WEB, ADV_WEBCTL, ADV_GUEST, ADV_PINCHG, ADV_EXIT };
 
 // Prototype thu cong: Arduino IDE tu sinh prototype cho ham trong .ino.
 // Neu ham dung enum/struct tuy chinh, prototype tu dong co the bi chen
@@ -1085,6 +1085,7 @@ uint8_t advIndex = 0, advTop = 0;
 uint8_t monPage = 0;
 uint8_t histIndex = 0, histPage = 0;
 bool webChoice = false;
+uint8_t webCtlEdit = 0U, webCtlRow = 0U;     // HMI Nang cao > Dieu khien Web: permission bits being edited, cursor (0..5 an output, 6 = save)
 bool techReqShown = false, techDecisionSent = false;
 uint8_t techReqIndex = 0U;
 View techReturnView = View::Home;
@@ -1101,7 +1102,7 @@ const MachineConfig &editConfigView() { return (advActive && advGroup(selectedGr
 bool viewInAdvanced(View v) {
   switch (v) {
     case View::AdvPin: case View::AdvMenu: case View::PidMonitor:
-    case View::AdvHistory: case View::AdvHistoryView: case View::WebAccess: case View::TechRequest: case View::GuestMode:
+    case View::AdvHistory: case View::AdvHistoryView: case View::WebAccess: case View::WebCtl: case View::TechRequest: case View::GuestMode:
       return true;
     case View::SettingList: case View::EditSetting: return advGroup(selectedGroup);
     case View::Alarm: return advActive && alarmReturnView != View::Alarm && viewInAdvanced(alarmReturnView);
@@ -1594,6 +1595,7 @@ void goBack() {
     case View::AdvHistory: view = View::AdvMenu; advIndex = ADV_HISTORY; alignAdvMenuWindow(); break;
     case View::AdvHistoryView: view = View::AdvHistory; break;
     case View::WebAccess: view = View::AdvMenu; advIndex = ADV_WEB; alignAdvMenuWindow(); break;
+    case View::WebCtl: view = View::AdvMenu; advIndex = ADV_WEBCTL; alignAdvMenuWindow(); break;
     case View::GuestMode: view = View::AdvMenu; advIndex = ADV_GUEST; alignAdvMenuWindow(); break;
     case View::TechRequest: view = techReturnView; break;
     case View::EventLog:
@@ -2857,6 +2859,7 @@ const char *advItemLabel(uint8_t i) {
     case ADV_CALIB: return "Hieu chuan";
     case ADV_HISTORY: return "Ban ghi cu";
     case ADV_WEB: return currentRuntime.tech.webAllowed ? "Quyen Web: HIEN" : "Quyen Web: AN";
+    case ADV_WEBCTL: return "Dieu khien Web";
     case ADV_GUEST: return "Che do 2 tai khoan";
     case ADV_PINCHG: return "Doi ma ky thuat";
     default: return "Thoat (luu)";
@@ -2871,6 +2874,7 @@ void advSelect() {
     case ADV_MONITOR: monPage = 0U; view = View::PidMonitor; dirty = true; break;
     case ADV_HISTORY: histIndex = 0U; view = View::AdvHistory; dirty = true; break;
     case ADV_WEB: webChoice = currentRuntime.tech.webAllowed; view = View::WebAccess; dirty = true; break;
+    case ADV_WEBCTL: webCtlEdit = currentRuntime.tech.webCtlMask; webCtlRow = 0U; view = View::WebCtl; dirty = true; break;
     case ADV_GUEST: openGuestMode(); break;
     case ADV_PINCHG: advOpenPin(PinPurpose::SetNew); break;
     default: advBeginExit(); break;
@@ -3241,6 +3245,18 @@ void handleInput() {
       if (rotary.button == ButtonEvent::ShortPress) {
         if (webChoice == currentRuntime.tech.webAllowed) goBack();
         else if (queueCommand(HmiCommandType::TechWebSet, COMMAND_DEFAULT_VALID_MS, 0, webChoice ? 1UL : 0UL)) goBack();
+      }
+      break;
+
+    case View::WebCtl:
+      if (rotary.step) {
+        webCtlRow = static_cast<uint8_t>(constrain(static_cast<int>(webCtlRow) + rotary.step, 0, 6));
+        dirty = true;
+      }
+      if (rotary.button == ButtonEvent::ShortPress) {
+        if (webCtlRow < 6U) { webCtlEdit = static_cast<uint8_t>(webCtlEdit ^ (1U << webCtlRow)); dirty = true; }
+        else if (webCtlEdit == currentRuntime.tech.webCtlMask) goBack();
+        else if (queueCommand(HmiCommandType::WebCtlSet, COMMAND_DEFAULT_VALID_MS, 0, static_cast<uint32_t>(webCtlEdit))) goBack();
       }
       break;
 
@@ -4977,6 +4993,23 @@ void drawWebAccess() {
   drawCenteredFit(63, "XOAY:DOI  NHAN:LUU  GIU:LUI", u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
 }
 
+void drawWebCtl() {
+  static const char *const names[6] = {"Thanh nhiet", "Quat hut", "Quat tuan hoan", "Den", "Coi", "Dao trung"};
+  drawHeader(webCtlEdit != currentRuntime.tech.webCtlMask ? "DK WEB *" : "DK WEB", false);
+  drawListPosition(webCtlRow, 7);
+  const uint8_t top = webCtlRow < 4U ? 0U : static_cast<uint8_t>(webCtlRow - 3U);
+  for (uint8_t row = 0; row < 4U && top + row < 7U; ++row) {
+    const uint8_t index = static_cast<uint8_t>(top + row);
+    drawSelectableRow(row, index == webCtlRow);
+    lcd.setFont(u8g2_font_6x12_tf);
+    char text[28];
+    if (index < 6U) snprintf(text, sizeof(text), "%s %s", (webCtlEdit & (1U << index)) ? "[X]" : "[ ]", names[index]);
+    else snprintf(text, sizeof(text), "LUU");
+    lcd.drawStr(2, 22 + row * 12, text);
+    lcd.setDrawColor(1);
+  }
+}
+
 void drawGuestMode() {
   drawHeader("2 TAI KHOAN", false);
   const GuestModeSnapshot &g = guestView;
@@ -5182,6 +5215,7 @@ void render(uint32_t now) {
       case View::AdvHistory: drawAdvHistory(); break;
       case View::AdvHistoryView: drawAdvHistoryView(); break;
       case View::WebAccess: drawWebAccess(); break;
+      case View::WebCtl: drawWebCtl(); break;
       case View::GuestMode: drawGuestMode(); break;
       case View::TechRequest: drawTechRequest(); break;
       case View::TestMode: drawTestMode(); break;
@@ -5531,6 +5565,9 @@ bool runtimeVisibleChanged(const MachineRuntime &before,
 
     case View::WebAccess:
       return before.tech.webAllowed != after.tech.webAllowed;
+
+    case View::WebCtl:
+      return before.tech.webCtlMask != after.tech.webCtlMask;
 
     case View::AdvMenu:
       return before.tech.webAllowed != after.tech.webAllowed;

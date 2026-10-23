@@ -1340,6 +1340,114 @@
     });
   }
 
+  // ---- Web output control ----
+  // The HMI (Nâng cao → Điều khiển Web) grants each output separately; the Web only READS the grant (runtime.tech.webCtl) and the machine refuses a command
+  // without it. Bits: 1 heater, 2 vent, 4 circulation, 8 light, 16 siren, 32 egg turning.
+  const WEBCTL = Object.freeze({ heater: 1, vent: 2, circ: 4, light: 8, siren: 16, turn: 32 });
+  const WEBCTL_LABELS = Object.freeze([[1, 'thanh nhiệt'], [2, 'quạt hút'], [4, 'quạt tuần hoàn'], [8, 'đèn'], [16, 'còi'], [32, 'đảo trứng']]);
+  function webCtlMask(device) { return Number(device?.snapshot?.runtime?.tech?.webCtl || 0) & 63; }
+  function webCtlGranted(device, bit) { return (webCtlMask(device) & bit) !== 0; }
+  function webCtlActive(device, bit) { return (Number(device?.snapshot?.runtime?.tech?.webAct || 0) & bit) !== 0; }
+  function renderWebControls(device, runtime) {
+    const ready = Boolean(runtime) && (controlReady(device) || canHoldCommand(device));
+    const busy = Date.now() < Number(device?.webCtlBusyUntil || 0);
+    const setBtn = (id, bit, extraOk = true) => {
+      const btn = $(id); if (!btn) return;
+      const granted = webCtlGranted(device, bit);
+      btn.disabled = !(granted && ready && extraOk) || busy;
+      btn.classList.toggle('locked', !granted);
+      btn.classList.toggle('webOverride', granted && webCtlActive(device, bit));
+      btn.title = granted ? '' : 'Chưa được cho phép: bật ở màn hình máy → Nâng cao → Điều khiển Web';
+    };
+    setBtn('outputHeaterBtn', WEBCTL.heater);
+    setBtn('outputVentBtn', WEBCTL.vent);
+    setBtn('outputCircBtn', WEBCTL.circ);
+    if ($('outputHeater') && runtime && webCtlActive(device, WEBCTL.heater)) $('outputHeater').textContent = 'NGẮT TỪ XA';
+    const pad = $('turnPad');
+    if (pad) {
+      const granted = webCtlGranted(device, WEBCTL.turn);
+      pad.hidden = !granted;
+      const manual = runtime && runtime.autoMode === false;
+      for (const id of ['turnLeftBtn', 'turnRightBtn']) if ($(id)) $(id).disabled = !(granted && ready && manual);
+    }
+    const hint = $('webCtlHint');
+    if (hint) {
+      if (!runtime) { hint.textContent = ''; return; }
+      const granted = WEBCTL_LABELS.filter(([bit]) => webCtlGranted(device, bit)).map(([, name]) => name);
+      const turnNote = webCtlGranted(device, WEBCTL.turn) && runtime.autoMode !== false ? ' Đảo tay chỉ dùng được khi công tắc máy ở MANUAL.' : '';
+      hint.textContent = (granted.length
+        ? `Điều khiển từ Web được máy cho phép: ${granted.join(', ')}.${turnNote}`
+        : 'Web chỉ xem. Muốn điều khiển từ xa: màn hình máy → Nâng cao → Điều khiển Web.')
+        + ' Cài đặt này chỉ đổi được trên máy.';
+    }
+  }
+
+  function bindWebControls() {
+    const guard = (device) => { device.webCtlBusyUntil = Date.now() + 1500; renderWebControls(device, device.snapshot?.runtime); };
+    $('outputHeaterBtn')?.addEventListener('click', async () => {
+      const device = currentDevice();
+      if (!webCtlGranted(device, WEBCTL.heater)) return;
+      if (!webCtlActive(device, WEBCTL.heater)) {
+        const ok = await confirmAction({ title: 'Ngắt thanh nhiệt từ xa?',
+          message: 'Máy sẽ không gia nhiệt cho tới khi bạn cho phép lại hoặc bắt đầu mẻ mới. Nhiệt độ trong tủ có thể giảm.',
+          accept: 'Ngắt thanh nhiệt', danger: true });
+        if (!ok) return;
+      }
+      guard(device);
+      await sendCommand('heater_toggle', { device });
+    });
+    $('outputVentBtn')?.addEventListener('click', async () => {
+      const device = currentDevice();
+      if (!webCtlGranted(device, WEBCTL.vent)) return;
+      guard(device);
+      await sendCommand('vent_toggle', { device });
+    });
+    $('outputCircBtn')?.addEventListener('click', async () => {
+      const device = currentDevice();
+      if (!webCtlGranted(device, WEBCTL.circ)) return;
+      if (device.snapshot?.runtime?.batchRunning && device.snapshot?.runtime?.circulationFanOn) {
+        const ok = await confirmAction({ title: 'Tắt quạt tuần hoàn khi đang ấp?',
+          message: 'Máy sẽ ngừng gia nhiệt khi quạt tắt. Sau 15 phút máy tự quay lại chế độ tự động.',
+          accept: 'Tắt quạt', danger: true });
+        if (!ok) return;
+      }
+      guard(device);
+      await sendCommand('circ_toggle', { device });
+    });
+    // Egg turning: two halves, held to run, released to stop. The machine stops by itself when the 1.5 s lease is not renewed.
+    const holdState = { dir: 0, timer: 0, inflight: false };
+    const sendHold = async (dir) => {
+      const device = currentDevice();
+      if (!device || holdState.inflight) return;
+      holdState.inflight = true;
+      try { await sendCommand('turn_hold', { device, arg0: dir, leaseMs: dir ? 1500 : 0 }); } finally { holdState.inflight = false; }
+    };
+    const stopHold = () => {
+      if (!holdState.dir) return;
+      holdState.dir = 0;
+      if (holdState.timer) { clearInterval(holdState.timer); holdState.timer = 0; }
+      for (const id of ['turnLeftBtn', 'turnRightBtn']) $(id)?.classList.remove('held');
+      const device = currentDevice();
+      if (device) sendCommand('turn_hold', { device, arg0: 0 });
+    };
+    for (const [id, dir] of [['turnLeftBtn', 1], ['turnRightBtn', 2]]) {
+      const btn = $(id);
+      if (!btn) continue;
+      btn.addEventListener('pointerdown', (event) => {
+        if (btn.disabled || holdState.dir) return;
+        event.preventDefault();
+        try { btn.setPointerCapture?.(event.pointerId); } catch { /* not every browser */ }
+        holdState.dir = dir; btn.classList.add('held');
+        sendHold(dir);
+        holdState.timer = setInterval(() => sendHold(dir), 900);
+      });
+      for (const type of ['pointerup', 'pointercancel', 'lostpointercapture', 'pointerleave']) btn.addEventListener(type, stopHold);
+      btn.addEventListener('contextmenu', (event) => event.preventDefault());
+    }
+    window.addEventListener('blur', stopHold);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) stopHold(); });
+  }
+
   function updateOutput(id, on, onText = 'BẬT', offText = 'TẮT') {
     const element = $(id);
     if (!element) return;
@@ -1420,6 +1528,7 @@
       if ($('sirenActionHint')) $('sirenActionHint').textContent = 'Chỉ khi còi đang kêu';
       if ($('outputLightBtn')) $('outputLightBtn').disabled = true;
       if ($('outputSirenBtn')) $('outputSirenBtn').disabled = true;
+      renderWebControls(device, null);
       // F-10: chua co snapshot = chua biet may co dang chay me hay khong -
       // khoa "Tong so ngay ap" theo huong an toan (gia dinh co the dang chay)
       // thay vi mac dinh cho sua.
@@ -1429,8 +1538,10 @@
       return;
     }
 
-    $('liveTemp').textContent = `${numberVi(runtime.temperature)}°C`;
-    $('liveHumidity').textContent = `${numberVi(runtime.humidity, 0)}%`;
+    // A number from a machine that is not connected (cache, still connecting, offline) is an old number: show a dash instead, so it is never read as live.
+    const liveTrusted = ['online', 'reconnecting', 'degraded'].includes(connectionStatus(device));
+    $('liveTemp').textContent = liveTrusted ? `${numberVi(runtime.temperature)}°C` : '—';
+    $('liveHumidity').textContent = liveTrusted ? `${numberVi(runtime.humidity, 0)}%` : '—';
     renderLiveState(device, runtime);
     // O "Thanh nhiet" chi hien BAT/TAT theo relay nguon thanh nhiet (heat master/contactor,
     // firmware gui qua heaterOn). Relay khong nhap nhay theo burst SSR nen on dinh.
@@ -1448,14 +1559,21 @@
     // khi coi dang thuc su keu (giong het dieu kien mo man Alarm tren HMI).
     if ($('outputLightBtn')) {
       const lightBusy = lightCommandPending(device);
-      $('outputLightBtn').disabled = lightBusy || !(controlReady(device) || canHoldCommand(device));
+      const lightGranted = webCtlGranted(device, WEBCTL.light);
+      $('outputLightBtn').disabled = lightBusy || !lightGranted || !(controlReady(device) || canHoldCommand(device));
+      $('outputLightBtn').classList.toggle('locked', !lightGranted);
+      $('outputLightBtn').title = lightGranted ? '' : 'Chưa được cho phép: bật ở màn hình máy → Nâng cao → Điều khiển Web';
       $('outputLightBtn').setAttribute('aria-busy', lightBusy ? 'true' : 'false');
       $('outputLightBtn').classList.toggle('pending', lightBusy);
       if (lightBusy && $('outputLight')) $('outputLight').textContent = 'ĐANG GỬI…';   // the tile itself only follows the next snapshot
     }
     if ($('outputSirenBtn')) {
-      $('outputSirenBtn').disabled = !controlReady(device) || !bool(runtime.sirenOn);
+      const sirenGranted = webCtlGranted(device, WEBCTL.siren);
+      $('outputSirenBtn').disabled = !controlReady(device) || !(bool(runtime.sirenOn) || sirenGranted);
+      $('outputSirenBtn').classList.toggle('webOverride', sirenGranted && webCtlActive(device, WEBCTL.siren));
+      if ($('sirenActionHint') && !bool(runtime.sirenOn) && sirenGranted) $('sirenActionHint').textContent = 'Chạm để bật còi thử 30 giây';
     }
+    renderWebControls(device, runtime);
 
     const turnMap = { 0: 'DỪNG', 1: 'TRÁI', 2: 'PHẢI', 3: 'CHỜ', 4: 'LỖI' };
     const turn = Number(runtime.turnState);
@@ -3152,10 +3270,13 @@
   // Heater monitor: read-only. Only measured numbers; a missing value stays "—".
   const PM_ITEMS = Object.freeze([
     ['pv', 'PV nhiệt độ', '°C', 2], ['sp', 'SP đặt', '°C', 2], ['err', 'Sai số (SP−PV)', '°C', 2],
-    ['req', 'Yêu cầu cuối', '%', 1], ['act', 'SSR thực tế TB 60 s', '%', 1]]);
+    ['req', 'Yêu cầu cuối', '%', 1], ['act', 'SSR thực tế TB 60 s', '%', 1],
+    ['pred', 'PV dự đoán', '°C', 2], ['phase', 'Pha học V2', '', 0], ['slot', 'Slot V2 lớn nhất', 'µs', 0]]);
+  const PM_PHASES = Object.freeze(['Nhìn/đo', 'Đã nhận dạng', 'Đã khớp lần 1', 'Đã khớp lần 2']);
+  const PM_LOG_MAX = 1500;
   const PM_MAX_POINTS = 900;
   const PM_SAMPLE_MS = 2000;
-  const pidMon = { open: false, deviceId: '', bootId: 0, series: [], lastAt: 0, cells: null, raf: 0 };
+  const pidMon = { open: false, deviceId: '', bootId: 0, series: [], lastAt: 0, cells: null, raf: 0, log: new Map(), logHead: 0, logHeadAt: 0 };
 
   function pmEnsureGrid() {
     const grid = $('pmGrid');
@@ -3182,7 +3303,55 @@
     v.err = ok ? Number(m.err) : NaN;
     v.req = ok ? Number(m.req) : NaN;
     v.act = ok ? Number(m.act) : NaN;
+    v.pred = ok ? Number(m.pr) : NaN;
+    v.phase = ok && Number.isFinite(Number(m.ph)) ? `${PM_PHASES[Math.min(3, Number(m.ph))]}${m.sus ? ' · NGHI' : ''}` : '';
+    v.slot = ok ? Number(m.sl) : NaN;
     return v;
+  }
+
+  // The machine keeps the last two hours (one sample per 10 s) and sends a few of them with every snapshot while this card is open.
+  // Keyed by the machine's own sample index, so a repeat is harmless; the newest sample (index h-1) was taken within 10 s of the snapshot.
+  function pmIngestLog(lg) {
+    if (!lg || !Array.isArray(lg.d)) return;
+    const head = Number(lg.h), first = Number(lg.s);
+    if (!Number.isFinite(head) || !Number.isFinite(first) || head < 1) return;
+    if (head < pidMon.logHead - 3) { pidMon.log = new Map(); }                // the machine restarted its counter (same boot id is not guaranteed)
+    pidMon.logHead = head; pidMon.logHeadAt = Date.now();
+    for (let i = 0; i + 5 < lg.d.length; i += 6) {
+      const idx = first + i / 6;
+      pidMon.log.set(idx, { pv: lg.d[i] / 100, sp: lg.d[i + 1] / 100, pred: lg.d[i + 2] / 100, req: lg.d[i + 3] / 2, act: lg.d[i + 4] / 2, fl: lg.d[i + 5] });
+    }
+    while (pidMon.log.size > PM_LOG_MAX) pidMon.log.delete(pidMon.log.keys().next().value);
+    const info = $('pmLogInfo');
+    if (info) info.textContent = `Đã nhận ${pidMon.log.size} / ${Math.min(720, head)} mẫu của máy (10 s một mẫu, tối đa 2 giờ). Giữ mục này mở ~2 phút để nhận đủ.`;
+    if ($('pmDownload')) $('pmDownload').disabled = pidMon.log.size === 0 && pidMon.series.length === 0;
+  }
+
+  function pmCsv(device) {
+    const iso = (t) => new Date(t).toISOString();
+    const rows = [];
+    for (const [idx, r] of pidMon.log) {
+      const t = pidMon.logHeadAt - (pidMon.logHead - 1 - idx) * 10000;
+      rows.push([t, idx, r.pv, r.sp, r.pred, r.req, r.act, r.fl & 3, (r.fl & 4) ? 1 : 0, (r.fl & 8) ? 1 : 0, (r.fl & 16) ? 1 : 0, (r.fl & 32) ? 1 : 0, (r.fl & 64) ? 1 : 0, (r.fl & 128) ? 1 : 0, 'machine']);
+    }
+    for (const r of pidMon.series) rows.push([r.t, '', r.pv, r.sp, '', r.req, r.act, '', '', r.vent, '', '', '', '', 'page']);
+    rows.sort((a, b) => a[0] - b[0]);
+    const head = 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,source';
+    const cell = (v) => (typeof v === 'number' ? (Number.isFinite(v) ? String(v) : '') : String(v));
+    return [`# mayap pid log device=${device?.id || ''} boot=${device?.bootId || ''} exported=${iso(Date.now())}`, head,
+      ...rows.map((r) => [iso(r[0]), ...r.slice(1)].map(cell).join(','))].join('\n') + '\n';
+  }
+
+  function pmDownload() {
+    const device = currentDevice();
+    if (!device || (pidMon.log.size === 0 && pidMon.series.length === 0)) { toast('Chưa có số liệu để tải'); return; }
+    const blob = new Blob([pmCsv(device)], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
+    a.href = url; a.download = `mayap-${device.id}-${stamp}.csv`;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
   }
 
   function renderPidMonitor(device, runtime = device?.snapshot?.runtime) {
@@ -3191,7 +3360,9 @@
     if (!pidMon.open || !device) return;
     if (pidMon.deviceId !== device.id || pidMon.bootId !== Number(device.bootId || 0)) {
       pidMon.deviceId = device.id; pidMon.bootId = Number(device.bootId || 0); pidMon.series = []; pidMon.lastAt = 0;
+      pidMon.log = new Map(); pidMon.logHead = 0; pidMon.logHeadAt = 0;
     }
+    pmIngestLog(runtime?.pidMon?.lg);
     const values = pmValues(device, runtime);
     for (const [key, , , digits] of PM_ITEMS) {
       const raw = values[key];
@@ -4067,14 +4238,18 @@
     // O "Den" tren outputStrip gio la nut bam: bat/tat den tuc thi, khong
     // can xac nhan (thao tac nhe, khong anh huong an toan van hanh).
     $('outputLightBtn')?.addEventListener('click', () => commandOrHold('light_toggle'));
+    bindWebControls();
 
     // O "Coi bao" chi bam duoc khi coi THUC SU dang keu (xem toggle disabled
     // trong applySnapshotToUi) - giong het nut ACK tren HMI, tat coi tam 5
     // phut chu KHONG tat han canh bao (loi goc van con neu chua khac phuc).
     $('outputSirenBtn')?.addEventListener('click', async () => {
       const device = currentDevice();
-      if (!device?.snapshot?.runtime?.sirenOn) return;
-      await sendCommand('alarm_ack');
+      const runtime = device?.snapshot?.runtime;
+      if (!runtime) return;
+      // The siren ringing for a real alarm: the tile mutes it (acknowledge). Otherwise, with the HMI's permission, it sounds the siren for 30 s (or stops that).
+      if (runtime.sirenOn && !webCtlActive(device, WEBCTL.siren)) { await sendCommand('alarm_ack'); return; }
+      if (webCtlGranted(device, WEBCTL.siren)) await sendCommand('siren_toggle', { device });
     });
 
     $('temperatureForm').addEventListener('submit', async (event) => {
@@ -4138,6 +4313,7 @@
     $('advancedForm').addEventListener('submit', (event) => { event.preventDefault(); submitTechRequest(); });
     $('techUnlockForm').addEventListener('submit', (event) => { event.preventDefault(); submitTechUnlock(); });
     $('techLockBtn').addEventListener('click', () => { sendCommand('tech_lock'); });
+    $('pmDownload')?.addEventListener('click', pmDownload);
     $('pidMonitorCard').addEventListener('toggle', () => {
       pidMon.open = $('pidMonitorCard').open;
       if (state.selectedId) sendSession(state.selectedId, true, pidMon.open);

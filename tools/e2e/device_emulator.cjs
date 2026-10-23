@@ -30,7 +30,7 @@ const CONFIG_DEFAULTS = {
 
 const COMMANDS = new Set(['batch_start', 'batch_stop', 'resume_yes', 'resume_no',
   'firmware_check_now', 'firmware_rollback', 'light_toggle', 'alarm_ack',
-  'batch_overdue_continue']);
+  'batch_overdue_continue', 'vent_toggle', 'circ_toggle', 'heater_toggle', 'siren_toggle', 'turn_hold']);
 
 // transaction_bridge.h ackCode()/ackFriendlyMessage() for the codes this emulator emits.
 function ackCode(result, message) {
@@ -60,7 +60,8 @@ function startDeviceEmulator({ url, deviceId, password, commandKeyHex, activeInt
       currentDay: 0, heaterOn: false, heaterPower: 0, circulationFanOn: true, ventFanOn: false,
       humidifierOn: false, lightOn: false, sirenOn: false, turnState: 3, nextTurnMinutes: 90,
       resumeConfirmationRequired: false,
-      batchOverdueConfirmationPending: false, activeFaults: [] },
+      batchOverdueConfirmationPending: false, activeFaults: [], autoMode: false,
+      tech: { allowed: false, session: false, sessionS: 0, lockS: 0, pinSet: true, pending: 0, pendingS: 0, webCtl: 63, webAct: 0 } },
   };
   const leases = new Map();
   const replay = new Map();      // clientId -> last seq
@@ -172,6 +173,11 @@ function startDeviceEmulator({ url, deviceId, password, commandKeyHex, activeInt
     // The real controller consumes the HMI queue on its own task; emulate the delay.
     setTimeout(async () => {
       if (doc.action === 'light_toggle') state.runtime.lightOn = !state.runtime.lightOn;
+      if (doc.action === 'vent_toggle') state.runtime.ventFanOn = !state.runtime.ventFanOn;
+      if (doc.action === 'circ_toggle') state.runtime.circulationFanOn = !state.runtime.circulationFanOn;
+      if (doc.action === 'heater_toggle') state.runtime.tech.webAct ^= 1;
+      if (doc.action === 'siren_toggle') state.runtime.sirenOn = !state.runtime.sirenOn;
+      if (doc.action === 'turn_hold') state.runtime.turnState = Number(doc.arg0 || 0) === 1 ? 1 : Number(doc.arg0 || 0) === 2 ? 2 : 3;
       stats.commandsExecuted++;
       inflight.delete(doc.requestId);
       await publishAck(doc.requestId, 'applied', '', op, key);

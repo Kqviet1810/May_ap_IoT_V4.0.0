@@ -135,6 +135,8 @@ struct AuthRecord {
   uint32_t crc = 0;
 };
 constexpr uint8_t FlagWebAllowed = 0x01;
+constexpr uint8_t FlagWebCtlShift = 1;         // flags bits 1..6: which outputs the Web may switch (heater, vent, circulation, light, siren, turning)
+constexpr uint8_t FlagWebCtlBits = 0x7E;
 
 inline uint32_t recordCrc(const AuthRecord &r) { return crc32(reinterpret_cast<const uint8_t *>(&r), offsetof(AuthRecord, crc)); }
 inline bool recordValid(const AuthRecord &r) {
@@ -175,6 +177,7 @@ class Gate {
   void retryLoad(uint32_t now) { if (storageError_) begin(now); }
   bool pinConfigured() const { return loaded_ || storageError_; }
   bool webAllowed() const { return loaded_ && (rec_.flags & FlagWebAllowed) != 0U; }
+  uint8_t webCtlMask() const { return loaded_ ? static_cast<uint8_t>((rec_.flags & FlagWebCtlBits) >> FlagWebCtlShift) : 0U; }
   uint8_t failCount() const { return loaded_ ? rec_.failCount : 0U; }
 
   bool lockedOut(uint32_t now) {
@@ -254,6 +257,16 @@ class Gate {
     else next.flags = static_cast<uint8_t>(next.flags & ~FlagWebAllowed);
     if (next.flags != rec_.flags && !persist(next)) return Result::StorageError;
     if (!allowed) revokeWeb();
+    return Result::Ok;
+  }
+
+  // Which outputs the Web may switch (HMI only, needs the technician session like the Web permission). Stored in the same record, bits 1..6 of flags.
+  Result setWebCtlMask(uint32_t now, uint8_t mask) {
+    if (!loaded_) return Result::NotSet;
+    if (!hmiUnlocked(now)) return Result::NotUnlocked;
+    AuthRecord next = rec_;
+    next.flags = static_cast<uint8_t>((next.flags & ~FlagWebCtlBits) | ((static_cast<uint8_t>(mask & 0x3F) << FlagWebCtlShift) & FlagWebCtlBits));
+    if (next.flags != rec_.flags && !persist(next)) return Result::StorageError;
     return Result::Ok;
   }
 

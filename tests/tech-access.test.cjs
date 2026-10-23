@@ -86,7 +86,7 @@ test('old-record snapshot excludes PIN, Web permission, batch data and independe
     assert.doesNotMatch(snapshot, new RegExp(forbidden, 'i'));
   // the Web can neither read nor trigger old records
   assert.doesNotMatch(bridge, /history\[|historyCache|AdvancedRestore|readAdvHistory/);
-  assert.match(fw('config.h'), /AdvancedRestore\s+\/\/ Local only/);
+  assert.match(fw('config.h'), /AdvancedRestore,\s+\/\/ Local only/);
 });
 
 test('technical EEPROM records sit in spare space and never overlap config A/B, batch or the temperature history', () => {

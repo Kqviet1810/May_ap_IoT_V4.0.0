@@ -15,6 +15,7 @@
 #include "advanced_history.h"
 #include "tech_request.h"
 #include "thermal_v2_adapter.h"
+#include "pid_log.h"
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <esp_task_wdt.h>
@@ -4687,7 +4688,16 @@ class MachineController {
             message = "KHONG CO BAN CU DE QUAY LAI";
           }
           break;
+        case HmiCommandType::WebVentToggle:
+        case HmiCommandType::WebCircToggle:
+        case HmiCommandType::WebHeaterToggle:
+        case HmiCommandType::WebSirenToggle:
+        case HmiCommandType::WebTurnHold:
+          ok = handleWebOutput(now, command, message); break;
         case HmiCommandType::LightToggle: {
+          if (command.source == HmiCommandSource::Remote && (techGate_.webCtlMask() & WebCtlLight) == 0U) {
+            message = "WEB CHUA DUOC CHO DIEU KHIEN DEN"; break;       // HMI Nang cao > Dieu khien Web
+          }
           const bool currentlyOn = lightWebOverrideActive_
               ? lightWebOverrideValue_ : inputs_.state().light;
           lightWebOverrideValue_ = !currentlyOn;
@@ -4704,6 +4714,7 @@ class MachineController {
         case HmiCommandType::TechPinSet:
         case HmiCommandType::TechLock:
         case HmiCommandType::TechWebSet:
+        case HmiCommandType::WebCtlSet:
         case HmiCommandType::TechDecision:
         case HmiCommandType::TechRequestSubmit:
         case HmiCommandType::AdvancedRestore:
@@ -4874,6 +4885,17 @@ class MachineController {
         }
         break;
       }
+      case HmiCommandType::WebCtlSet: {
+        if (remote) { message = "CHI HMI DUOC DOI QUYEN"; break; }
+        const uint8_t mask = static_cast<uint8_t>(command.alarmMask & WebCtlAll);
+        const TechAccess::Result r = techGate_.setWebCtlMask(now, mask);
+        ok = techResultText(r, now, false, message);
+        if (ok) {
+          webOutputsRevoke(now, static_cast<uint8_t>(~mask & WebCtlAll));       // a permission taken away also ends its override at once
+          message = "DA LUU QUYEN DIEU KHIEN WEB";
+        }
+        break;
+      }
       case HmiCommandType::TechDecision: {
         if (remote) { message = "CHI HMI DUOC XAC NHAN"; break; }
         if (techPending_.kind == MayapTech::Kind::None) { message = "KHONG CO YEU CAU"; break; }
@@ -4980,6 +5002,8 @@ class MachineController {
     t.storageError = techGate_.storageError();
     t.hmiUnlocked = techGate_.hmiUnlocked(now);
     t.webAllowed = techGate_.webAllowed();
+    t.webCtlMask = techGate_.webCtlMask();
+    t.webCtlActive = webOutputsActive(now);
     t.webSession = techGate_.webSessionActive(now);
     t.lockRemainingS = static_cast<uint16_t>(std::min<uint32_t>(65535UL, (techGate_.lockRemainingMs(now) + 999UL) / 1000UL));
     t.webSessionRemainingS = static_cast<uint16_t>(std::min<uint32_t>(65535UL, techGate_.webRemainingMs(now) / 1000UL));
@@ -5015,6 +5039,17 @@ class MachineController {
     m.phase = !v2.identified() ? 0U : static_cast<uint8_t>(1U + std::min<uint8_t>(v2.batchesDone(), 2U));
     m.suspect = v2.responseSuspect();
     m.slotLastUs = slotLastUs_; m.slotMaxUs = slotMaxUs_;
+    if (m.valid && elapsedMs(now, pidLogAt_) >= MayapPidLog::SAMPLE_PERIOD_MS) {          // one sample per 10 s into the log ring (the Web page downloads it as CSV)
+      pidLogAt_ = now;
+      MayapPidLog::Sample s;
+      const OutputState &o = outputs_.state();
+      s.pv100 = MayapPidLog::toC100(temperature_); s.sp100 = MayapPidLog::toC100(config_.targetTemp); s.pred100 = MayapPidLog::toC100(m.predictedC);
+      s.req2 = MayapPidLog::toPct2(m.requestPct); s.act2 = MayapPidLog::toPct2(m.actualAvgPct);
+      s.flags = static_cast<uint8_t>((m.phase & MayapPidLog::FlPhaseMask) | (m.suspect ? MayapPidLog::FlSuspect : 0U) | (o.ventFan ? MayapPidLog::FlVentFan : 0U) |
+          (o.heaterSsr ? MayapPidLog::FlSsr : 0U) | (o.heatMaster ? MayapPidLog::FlMaster : 0U) | (batchRunning_ ? MayapPidLog::FlBatch : 0U) |
+          (sensorUsable_ ? MayapPidLog::FlSensorOk : 0U));
+      MayapPidLog::ring().push(s);
+    }
   }
 
   // ---- Thermal V2 slot glue (the host rig compiles buildThermalV2SlotIn() textually from here) ----
@@ -5043,6 +5078,79 @@ class MachineController {
     if (slotLastUs_ > slotMaxUs_) slotMaxUs_ = slotLastUs_;
     return u;
   }
+  // ---- Web output control (HMI "Nang cao > Dieu khien Web" grants it per output; the Web can only ask) ----
+  static constexpr uint32_t WEB_OVERRIDE_MS = 15UL * 60UL * 1000UL;   // vent / circulation overrides fall back to automatic after this
+  static constexpr uint32_t WEB_SIREN_MS = 30UL * 1000UL;
+  bool webOverrideLive(uint32_t until, uint32_t now) const { return until != 0U && !timeReached(now, until); }
+  uint8_t webOutputsActive(uint32_t now) const {
+    return static_cast<uint8_t>((webHeaterOff_ ? WebCtlHeater : 0U) | (webOverrideLive(webVentUntil_, now) ? WebCtlVent : 0U) |
+        (webOverrideLive(webCircUntil_, now) ? WebCtlCirc : 0U) | (lightWebOverrideActive_ ? WebCtlLight : 0U) |
+        (webOverrideLive(webSirenUntil_, now) ? WebCtlSiren : 0U) | (webOverrideLive(webTurnUntil_, now) ? WebCtlTurn : 0U));
+  }
+  void webOutputsRevoke(uint32_t now, uint8_t bits) {
+    (void)now;
+    if (bits & WebCtlHeater) webHeaterOff_ = false;
+    if (bits & WebCtlVent) webVentUntil_ = 0U;
+    if (bits & WebCtlCirc) webCircUntil_ = 0U;
+    if (bits & WebCtlLight) lightWebOverrideActive_ = false;
+    if (bits & WebCtlSiren) webSirenUntil_ = 0U;
+    if (bits & WebCtlTurn) { webTurnUntil_ = 0U; webTurnDir_ = 0U; }
+  }
+  bool handleWebOutput(uint32_t now, const HmiCommand &command, const char *&message) {
+    if (command.source != HmiCommandSource::Remote) { message = "CHI WEB DUOC GUI"; return false; }
+    uint8_t need = 0U;
+    switch (command.type) {
+      case HmiCommandType::WebVentToggle: need = WebCtlVent; break;
+      case HmiCommandType::WebCircToggle: need = WebCtlCirc; break;
+      case HmiCommandType::WebHeaterToggle: need = WebCtlHeater; break;
+      case HmiCommandType::WebSirenToggle: need = WebCtlSiren; break;
+      case HmiCommandType::WebTurnHold: need = WebCtlTurn; break;
+      default: break;
+    }
+    if (need == 0U || (techGate_.webCtlMask() & need) == 0U) { message = "WEB CHUA DUOC CHO PHEP"; return false; }
+    if (testModeActive_ || mayapFirmwareMaintenanceActive()) { message = "MAY DANG O CHE DO KHAC"; return false; }
+    const OutputState &o = outputs_.state();
+    switch (command.type) {
+      case HmiCommandType::WebVentToggle: {
+        if (webOverrideLive(webVentUntil_, now)) { webVentUntil_ = 0U; message = "QUAT HUT: TU DONG"; return true; }
+        webVentValue_ = !o.ventFan;
+        webVentUntil_ = now + WEB_OVERRIDE_MS; if (webVentUntil_ == 0U) webVentUntil_ = 1U;
+        message = webVentValue_ ? "DA BAT QUAT HUT (15 PHUT)" : "DA TAT QUAT HUT (15 PHUT)";
+        return true;
+      }
+      case HmiCommandType::WebCircToggle: {
+        if (webOverrideLive(webCircUntil_, now)) { webCircUntil_ = 0U; message = "QUAT TUAN HOAN: TU DONG"; return true; }
+        webCircValue_ = !o.circulationFan;
+        webCircUntil_ = now + WEB_OVERRIDE_MS; if (webCircUntil_ == 0U) webCircUntil_ = 1U;
+        message = webCircValue_ ? "DA BAT QUAT TUAN HOAN (15 PHUT)" : "DA TAT QUAT TUAN HOAN (15 PHUT)";
+        return true;
+      }
+      case HmiCommandType::WebHeaterToggle:
+        webHeaterOff_ = !webHeaterOff_;
+        message = webHeaterOff_ ? "DA NGAT THANH NHIET TU XA" : "DA CHO THANH NHIET HOAT DONG LAI";
+        return true;
+      case HmiCommandType::WebSirenToggle:
+        if (webOverrideLive(webSirenUntil_, now)) { webSirenUntil_ = 0U; message = "DA TAT COI"; return true; }
+        webSirenUntil_ = now + WEB_SIREN_MS; if (webSirenUntil_ == 0U) webSirenUntil_ = 1U;
+        message = "DA BAT COI (30 GIAY)";
+        return true;
+      case HmiCommandType::WebTurnHold: {
+        const uint8_t dir = static_cast<uint8_t>(command.alarmMask & 3U);
+        if (dir == 0U) { webTurnUntil_ = 0U; webTurnDir_ = 0U; message = "DA DUNG DAO"; return true; }
+        if (dir > 2U) { message = "HUONG DAO KHONG HOP LE"; return false; }
+        if (inputs_.state().autoMode) { message = "MAY DANG AUTO - CHUYEN MANUAL DE DAO TAY"; return false; }
+        uint32_t lease = (command.alarmMask >> 8U) & 0xFFFFU;
+        if (lease < 300U) lease = 300U; else if (lease > 3000U) lease = 3000U;
+        webTurnDir_ = dir;
+        webTurnUntil_ = now + lease; if (webTurnUntil_ == 0U) webTurnUntil_ = 1U;
+        message = dir == 1U ? "DANG DAO TRAI" : "DANG DAO PHAI";
+        return true;
+      }
+      default: break;
+    }
+    return false;
+  }
+
   bool startBatch(uint32_t now, const char *&message) {
     if (!mayapBootOperationsReady()) { message = "DANG KHOI DONG"; return false; }
     if (mayapFirmwareMaintenanceActive()) { message = "DANG CAP NHAT FIRMWARE"; return false; }
@@ -5122,6 +5230,7 @@ class MachineController {
       message = "LOI LUU TRANG THAI ME";
       return false;
     }
+    webHeaterOff_ = false;                                    // a heater switched off from the Web never carries over into a new batch
     message = "DA BAT DAU ME";
     eventLog_.push(now, EventType::BatchStart,
                    static_cast<uint16_t>(EventCode::BatchStart));
@@ -5863,9 +5972,15 @@ class MachineController {
     // AUTO, logic tim goc/tiep tuc lich (needHome_/batchPhase_ Homing) hoat
     // dong y het truoc gio, khong can thay doi gi them.
     if (!in.autoMode) {
-      updateManualTurning(now, in);
+      InputState effective = in;                                        // a held Web button is a virtual press of the panel button (same limits, same dead time)
+      if (webOverrideLive(webTurnUntil_, now)) {
+        if (webTurnDir_ == 1U) effective.turnLeft = true;
+        else if (webTurnDir_ == 2U) effective.turnRight = true;
+      } else if (webTurnUntil_ != 0U) { webTurnUntil_ = 0U; webTurnDir_ = 0U; }
+      updateManualTurning(now, effective);
       return;
     }
+    if (webTurnUntil_ != 0U) { webTurnUntil_ = 0U; webTurnDir_ = 0U; }   // AUTO: the machine's own schedule only
 
     // 3 ngay cuoi: khoa dao tu dong de trung vao tu the no.
     if (turningLockdownActive(now)) {
@@ -6160,6 +6275,7 @@ class MachineController {
     // heatMaster: tu khi relay tong bam theo cong tac vat ly, no co the BAT
     // ca khi khong co me (cong tac de nguyen) - xet heatMaster o day se lam
     // quat hau lam mat bi kich hoat lai lien tuc, khong bao gio tat duoc.
+    if (webOverrideLive(webCircUntil_, now)) baseCirculation = webCircValue_;       // Web override (15 min); the safety conditions below still force the fan on
     if (!baseCirculation && outputs_.state().heaterSsr) {
       postCoolUntil_ = now + POST_COOL_MS;
     }
@@ -6236,7 +6352,8 @@ class MachineController {
     // xuong 5%, khong bao gio khoa duong lam mat qua nhiet.
     req.ventFanForceOn = emergencyActive_ || highTemperatureActive_ ||
         ventTemperatureActive_ || faults_.ventForced() || sensorFaultNeedsFan;
-    req.ventFan = req.ventFanForceOn || profileVentActive || scheduledVentActive;
+    const bool automaticVent = webOverrideLive(webVentUntil_, now) ? webVentValue_ : (profileVentActive || scheduledVentActive);
+    req.ventFan = req.ventFanForceOn || automaticVent;               // a Web override replaces the automatic vent, never a forced one
 
     // "Nhiet ngoai me" da bo khoi HMI (khong con cach nao nguoi dung tat lai
     // duoc neu no da tung bat), nen KHONG con duoc phep giu nhiet chay khi
@@ -6256,8 +6373,9 @@ class MachineController {
     const bool heatDemandContext = batchRunning_;
     // v3.8.0: cong tac vat ly la yeu cau BAT, khong phai quyen vuot qua
     // bao ve. Mat/loi cam bien hoac fault yeu cau cat tong phai nha contactor.
+    const bool webCircOffBlocksHeat = webOverrideLive(webCircUntil_, now) && !webCircValue_;   // no heating without the circulation the Web switched off
     const bool normalMasterPermit =
-        in.heaterEnable && sensorUsable_ && !faults_.masterDropRequired() &&
+        in.heaterEnable && !webHeaterOff_ && !webCircOffBlocksHeat && sensorUsable_ && !faults_.masterDropRequired() &&
         !emergencyActive_ && heatDemandContext;
     // D1 SSR (dong nhiet THAT su) van giu NGUYEN VEN toan bo cac dieu
     // kien an toan nhu truoc gio - chi RIENG relay tong o tren la doi theo
@@ -6303,7 +6421,7 @@ class MachineController {
     // quan co che tam tat/ACK cua canh bao that (updateSirenSelfTest() da tu
     // bo qua neu dang co canh bao that de khong bao gio trung voi nhanh nay).
     req.siren = ((emergencyActive_ || batchOverdueSirenActive_) &&
-                 timeReached(now, sirenMutedUntil_)) || sirenSelfTestActive_;
+                 timeReached(now, sirenMutedUntil_)) || sirenSelfTestActive_ || webOverrideLive(webSirenUntil_, now);
 
     // Tao am chi hoat dong trong me, khi cam bien hop le. Hysteresis 2%%RH:
     // dang OFF thi chi bat khi <= SV-2; dang ON thi giu den khi dat SV.
@@ -7934,6 +8052,9 @@ class MachineController {
   // "ghi de" tam thoi - het hieu luc ngay khi cong tac vat ly thuc su doi
   // trang thai (xem lightWebOverrideRefInput_), tranh truong hop web tuong
   // den dang OFF trong khi ai do da bat cong tac that tai may.
+  bool webHeaterOff_ = false, webVentValue_ = false, webCircValue_ = false;
+  uint8_t webTurnDir_ = 0U;
+  uint32_t webVentUntil_ = 0U, webCircUntil_ = 0U, webSirenUntil_ = 0U, webTurnUntil_ = 0U;   // 0 = no Web override
   bool lightWebOverrideActive_ = false;
   bool lightWebOverrideValue_ = false;
   bool lightWebOverrideRefInput_ = false;
@@ -7950,6 +8071,7 @@ class MachineController {
 
   HeaterBurstScheduler heaterBurst_{HEATER_GROUP_COUNT, HEATER_BURST_QUANTUM_MS};
   ThermalV2Slot thermalV2_;                          // Thermal V2.0.0 controller (RAM ~6.5 KB, nothing stored)
+  uint32_t pidLogAt_ = 0;                            // last PID log ring sample
   uint32_t slotLastUs_ = 0, slotMaxUs_ = 0;          // controller slot time [us], reported to the PID monitor
   bool previousFanCommand_ = false;
   uint32_t fanOnSince_ = 0;

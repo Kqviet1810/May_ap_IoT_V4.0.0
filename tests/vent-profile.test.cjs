@@ -22,7 +22,7 @@ test('ventilation defaults cover all incubation stages and preserve GPIO13', () 
 test('thermal safety overrides profile and RH, while manual output test remains immediate', () => {
   assert.match(control, /return rhLow \? std::min<uint8_t>\(duty, 5U\) : duty/);
   assert.match(control, /req\.ventFanForceOn = emergencyActive_ \|\| highTemperatureActive_ \|\|/);
-  assert.match(control, /req\.ventFan = req\.ventFanForceOn \|\| profileVentActive \|\| scheduledVentActive/);
+  assert.match(control, /req\.ventFan = req\.ventFanForceOn \|\| automaticVent/);
   assert.match(control, /request\.ventFanBypassTiming[\s\S]*?setImmediate\(PIN_OUT_VENT_FAN/);
   assert.match(control, /req\.ventFanBypassTiming = true/);
 });

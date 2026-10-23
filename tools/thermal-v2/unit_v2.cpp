@@ -1,5 +1,6 @@
 // Host unit tests of thermal_v2.h alone (no rig, no firmware): contract of the block, not tuning quality (that is the grid's job).
 #include "../../MAYAP_INDUSTRIAL_v1_0_0/thermal_v2_adapter.h"
+#include "../../MAYAP_INDUSTRIAL_v1_0_0/pid_log.h"
 #include <cstdio>
 #include <vector>
 using namespace thermalv2;
@@ -159,6 +160,16 @@ int main() {
     CHECK(!bad, "adapter at a 5 ms call rate: output stays within [0, cap]");
     CHECK(permitCut, "adapter at a 5 ms call rate: a lost permit gives 0 at once (never held)");
     CHECK(std::fabs(p.Ta - 37.5) < 1.0, "adapter at a 5 ms call rate: the oven still reaches the target"); (void)realSteps; }
+  { using namespace MayapPidLog; Ring r; Sample out[CHUNK]; uint32_t cur = 0, start = 0; bool ok = true;
+    CHECK(r.fetch(cur, out, start) == 0 && r.head() == 0, "pid log: an empty ring returns nothing");
+    for (uint32_t i = 0; i < 25; ++i) { Sample s; s.pv100 = static_cast<uint16_t>(i); r.push(s); }
+    uint32_t seen = 0; cur = 0; for (int k = 0; k < 3; ++k) { const uint8_t n = r.fetch(cur, out, start); for (uint8_t j = 0; j < n; ++j) if (out[j].pv100 != start + j) ok = false; seen += n; }
+    CHECK(ok && seen == 25 && cur == 25, "pid log: chunks of 10 deliver every sample in order, then the cursor sits at the head");
+    CHECK(r.fetch(cur, out, start) == 10 && start == 0, "pid log: past the newest the cursor wraps to the oldest");
+    for (uint32_t i = 25; i < 25 + CAPACITY + 7; ++i) { Sample s; s.pv100 = static_cast<uint16_t>(i); r.push(s); }
+    cur = 3; const uint8_t n = r.fetch(cur, out, start);
+    CHECK(n == 10 && start == r.oldest() && out[0].pv100 == static_cast<uint16_t>(start), "pid log: a cursor that fell off the ring jumps to the oldest sample still held");
+    CHECK(toC100(NAN) == 0 && toC100(-5.0f) == 0 && toC100(37.504f) == 3750 && toC100(1e9f) == 65535 && toPct2(100.0f) == 200 && toPct2(1e9f) == 255, "pid log: quantisers are total (NaN, negative, huge)"); }
   g_q = 0.01;                                                                                  // fine sensor: the egg observer is active
   { Controller c; Mini p; Run r = simulate(c, p, 3.0, 37.5f, 100.0f);
     CHECK(!r.nan && r.minU >= 0.0f && r.maxU <= 100.0f && r.peak < 38.5f, "fine sensor, cold start 3 h: finite, in [0, 100], peak below 38.5 degC");

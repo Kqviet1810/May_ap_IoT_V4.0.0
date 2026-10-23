@@ -8,6 +8,7 @@
 
 #include "protocol_limits.h"
 #include "tech_request.h"
+#include "pid_log.h"
 #include "realtime_publish_policy.h"
 #include "wifi_power_policy.h"
 #include "mqtt_tx_arbiter.h"
@@ -438,6 +439,7 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
   r["humidity"] = rt.humidity;
   r["machineState"] = rt.machineState;
   r["batchRunning"] = rt.batchRunning;
+  r["autoMode"] = rt.autoMode;                 // the machine's AUTO switch: the Web turning buttons only work in MANUAL
   r["currentDay"] = rt.currentDay;
   r["heaterOn"] = rt.heaterOn;
   r["heaterPower"] = rt.heaterPower;
@@ -466,6 +468,8 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
   tech["sessionS"] = rt.tech.webSessionRemainingS;
   tech["lockS"] = rt.tech.lockRemainingS;
   tech["pinSet"] = rt.tech.pinSet;
+  tech["webCtl"] = rt.tech.webCtlMask;            // which outputs the HMI lets the Web switch (the Web can read it, never write it)
+  tech["webAct"] = rt.tech.webCtlActive;          // which of them are overridden from the Web right now
   tech["pending"] = rt.tech.pendingKind;          // 0 none, 1 config: waiting for the HMI
   tech["pendingS"] = rt.tech.pendingRemainingS;
   tech["result"] = static_cast<uint8_t>(rt.tech.resultState);
@@ -486,6 +490,24 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
     m["sus"] = rt.pidMon.suspect;
     m["sl"] = rt.pidMon.slotMaxUs;
     m["valid"] = rt.pidMon.valid;
+    // The log ring, a few samples per snapshot, cycling from the oldest to the newest and around again: "h" = how many samples the machine ever took
+    // (the newest has index h-1, 10 s apart), "s" = index of the first sample here, "d" = 6 numbers per sample. Only while the frame has room.
+    if (measureJson(doc) < 1300U) {
+      static uint32_t pidLogCursor = 0U;
+      MayapPidLog::Sample chunk[MayapPidLog::CHUNK];
+      uint32_t first = 0U;
+      const uint8_t n = MayapPidLog::ring().fetch(pidLogCursor, chunk, first);
+      if (n > 0U) {
+        JsonObject lg = m["lg"].to<JsonObject>();
+        lg["h"] = MayapPidLog::ring().head();
+        lg["s"] = first;
+        JsonArray d = lg["d"].to<JsonArray>();
+        for (uint8_t i = 0U; i < n; ++i) {
+          d.add(chunk[i].pv100); d.add(chunk[i].sp100); d.add(chunk[i].pred100);
+          d.add(chunk[i].req2); d.add(chunk[i].act2); d.add(chunk[i].flags);
+        }
+      }
+    }
   }
   return publishJson("snapshot", doc, false);
 }
@@ -731,6 +753,12 @@ inline HmiCommandType mapCommandAction(const char *action) {
   // cach truyen alarmMask rieng cho alarm_ack (LightToggle khong can tham so).
   if (!strcmp(action, "light_toggle")) return HmiCommandType::LightToggle;
   if (!strcmp(action, "alarm_ack")) return HmiCommandType::AlarmAck;
+  // Web output control: each one is refused by the machine unless the HMI (Nang cao > Dieu khien Web) granted that output.
+  if (!strcmp(action, "vent_toggle")) return HmiCommandType::WebVentToggle;
+  if (!strcmp(action, "circ_toggle")) return HmiCommandType::WebCircToggle;
+  if (!strcmp(action, "heater_toggle")) return HmiCommandType::WebHeaterToggle;
+  if (!strcmp(action, "siren_toggle")) return HmiCommandType::WebSirenToggle;
+  if (!strcmp(action, "turn_hold")) return HmiCommandType::WebTurnHold;
   // F-06: xac nhan "tiep tuc u am" khi me qua han ngay du kien - khong bi
   // han che nguon (F-09) vi day la quyet dinh van hanh, khong phai su co
   // can kiem tra vat ly.
@@ -967,6 +995,32 @@ inline void handleCommandMessage(const JsonDocument &doc) {
   // duoc gi ca (xem case HmiCommandType::AlarmAck trong machine_control.h).
   uint32_t alarmMaskParam = AlarmNone;
   if (type == HmiCommandType::TechPinVerify) alarmMaskParam = techParam;
+  {
+    // Web output control: refuse early from the mirrored permission bits (the control task decides again). The turning command carries its
+    // direction in arg0 and its lease in leaseMs: direction | lease << 8.
+    uint8_t need = 0U;
+    switch (type) {
+      case HmiCommandType::WebVentToggle: need = WebCtlVent; break;
+      case HmiCommandType::WebCircToggle: need = WebCtlCirc; break;
+      case HmiCommandType::WebHeaterToggle: need = WebCtlHeater; break;
+      case HmiCommandType::WebSirenToggle: need = WebCtlSiren; break;
+      case HmiCommandType::WebTurnHold: need = WebCtlTurn; break;
+      case HmiCommandType::LightToggle: need = WebCtlLight; break;
+      default: break;
+    }
+    if (need != 0U) {
+      portENTER_CRITICAL(&realtimeMux);
+      const bool granted = knownRuntimeValid && (knownRuntime.tech.webCtlMask & need) != 0U;
+      portEXIT_CRITICAL(&realtimeMux);
+      if (!granted) { publishAck(requestId, "rejected", "WEB_CTL_NOT_ALLOWED"); return; }
+    }
+    if (type == HmiCommandType::WebTurnHold) {
+      const uint32_t dir = static_cast<uint32_t>(doc["arg0"] | 0U) & 3U;
+      uint32_t lease = static_cast<uint32_t>(doc["leaseMs"] | 0U);
+      if (lease > 3000U) lease = 3000U;
+      alarmMaskParam = dir | (lease << 8U);
+    }
+  }
   if (type == HmiCommandType::AlarmAck) {
     portENTER_CRITICAL(&realtimeMux);
     alarmMaskParam = knownRuntimeValid

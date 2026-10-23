@@ -68,14 +68,16 @@
 <label class="quickField"><span>Chu kỳ đảo</span><div><input id="quickTurn" max="720" min="15" type="number" value="120"/><b>Phút</b></div></label>
 </div>
 <div class="outputStrip" id="outputStrip">
-<div><span>Thanh nhiệt</span><strong id="outputHeater">TẮT</strong></div>
-<div><span>Tuần hoàn</span><strong class="on" id="outputCirculation">BẬT</strong></div>
-<div><span>Thông gió</span><strong id="outputVent">TẮT</strong></div>
+<button aria-label="Thanh nhiệt: ngắt/cho phép từ xa" id="outputHeaterBtn" type="button"><span>Thanh nhiệt</span><strong id="outputHeater">TẮT</strong></button>
+<button aria-label="Bật/tắt quạt tuần hoàn" id="outputCircBtn" type="button"><span>Tuần hoàn</span><strong class="on" id="outputCirculation">BẬT</strong></button>
+<button aria-label="Bật/tắt quạt hút" id="outputVentBtn" type="button"><span>Thông gió</span><strong id="outputVent">TẮT</strong></button>
 <div hidden id="outputHumidifierTile"><span>Tạo ẩm</span><strong id="outputHumidifier">TẮT</strong></div>
 <div><span>Đảo trứng</span><strong id="outputTurn">CHỜ</strong></div>
 <button aria-label="Bật/tắt đèn" id="outputLightBtn" type="button"><span>Đèn</span><strong id="outputLight">TẮT</strong></button>
 <button aria-label="Tạm tắt còi báo" id="outputSirenBtn" type="button"><span>Còi báo</span><strong id="outputSiren">TẮT</strong></button>
 </div>
+<div class="turnPad" hidden id="turnPad"><button aria-label="Giữ để đảo sang trái" id="turnLeftBtn" type="button">◀ Đảo trái</button><button aria-label="Giữ để đảo sang phải" id="turnRightBtn" type="button">Đảo phải ▶</button></div>
+<p class="settingFootnote" id="webCtlHint"></p>
 </div>
 <button class="primary full" type="submit">Lưu thông số</button>
 </form>
@@ -251,6 +253,7 @@
 <div class="pmGrid" id="pmGrid"></div>
 <div class="pmChartWrap"><canvas aria-label="Nhiệt độ và giá trị đặt" height="150" id="pmTempChart"></canvas></div>
 <div class="pmChartWrap"><canvas aria-label="Công suất gia nhiệt và sự kiện quạt hút" height="150" id="pmPowerChart"></canvas></div>
+<div class="pmDownloadRow"><button class="ghost" disabled="" id="pmDownload" type="button">Tải log CSV</button><span class="settingFootnote" id="pmLogInfo">Giữ mục này mở ~2 phút để nhận đủ 2 giờ log từ máy.</span></div>
 <p class="settingFootnote" id="pmLegend">Đỏ: nhiệt độ · xanh: giá trị đặt · cam: công suất yêu cầu · tím nét đứt: SSR thực tế (TB 60 s) · dải xám: quạt hút chạy</p>
 </div>
 </details>
@@ -395,5 +398,5 @@
 </dialog>
 <div aria-live="polite" class="toast" id="toast" role="status"></div>
 
-<script defer src="./config.js?v=1.1.20"></script><script defer src="./account.js?v=1.1.20"></script><script defer src="./vendor/jsQR.min.js"></script><script defer src="./vendor/mqtt.min.js"></script><script defer src="./push.js?v=1.1.20"></script><script defer src="./protocol_v2.js?v=1.1.20"></script><script defer src="./notes.js?v=1.1.20"></script><script defer src="./mqtt_transport.js?v=1.1.20"></script><script defer src="./app.js?v=1.1.20"></script></body>
+<script defer src="./config.js?v=1.1.21"></script><script defer src="./account.js?v=1.1.21"></script><script defer src="./vendor/jsQR.min.js"></script><script defer src="./vendor/mqtt.min.js"></script><script defer src="./push.js?v=1.1.21"></script><script defer src="./protocol_v2.js?v=1.1.21"></script><script defer src="./notes.js?v=1.1.21"></script><script defer src="./mqtt_transport.js?v=1.1.21"></script><script defer src="./app.js?v=1.1.21"></script></body>
 </html>

@@ -1,14 +1,14 @@
 'use strict';
-const CACHE = 'mayap-web-v1.1.20';
+const CACHE = 'mayap-web-v1.1.21';
 
 // The canonical installed-app entry is the Service Worker scope root. Android
 // may keep an older /index.html start URL for a while after an app update, so
 // both forms are accepted, but only the canonical root is required for install.
 const REQUIRED_SHELL = [
-  './', './styles.css', './landing.css', './account.js?v=1.1.20', './config.js?v=1.1.20',
-  './app.js?v=1.1.20', './protocol_v2.js?v=1.1.20', './push.js?v=1.1.20',
-  './manifest.webmanifest', './vendor/jsQR.min.js', './vendor/mqtt.min.js', './mqtt_transport.js?v=1.1.20',
-  './notes.js?v=1.1.20', './notes.css', './icons/icon-192.png', './icons/icon-512.png'
+  './', './styles.css', './landing.css', './account.js?v=1.1.21', './config.js?v=1.1.21',
+  './app.js?v=1.1.21', './protocol_v2.js?v=1.1.21', './push.js?v=1.1.21',
+  './manifest.webmanifest', './vendor/jsQR.min.js', './vendor/mqtt.min.js', './mqtt_transport.js?v=1.1.21',
+  './notes.js?v=1.1.21', './notes.css', './icons/icon-192.png', './icons/icon-512.png'
 ];
 const OPTIONAL_SHELL = [
   './index.html', './docs/MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.pdf', './docs/MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.html', './icons/badge-72.png'
