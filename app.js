@@ -3299,8 +3299,8 @@
     ['req', 'Yêu cầu cuối', '%', 1], ['act', 'SSR thực tế TB 60 s', '%', 1],
     ['pred', 'PV dự đoán', '°C', 2], ['phase', 'Pha học V2', '', 0], ['slot', 'Slot V2 lớn nhất', 'µs', 0]]);
   const PM_PHASES = Object.freeze(['Nhìn/đo', 'Đã nhận dạng', 'Đã khớp lần 1', 'Đã khớp lần 2']);
-  const PM_STATES = Object.freeze({ 0: 'idle', 1: 'climb', 2: 'track', 3: 'frozen', 4: 'e115', 5: 'shadow', 6: 'brake' });
-  const PM_STATE_TEXT = Object.freeze({ 5: ' · CHẠY NGẦM (quạt hút chặn sưởi)', 6: ' · PHANH' });
+  const PM_STATES = Object.freeze({ 0: 'idle', 1: 'climb', 2: 'track', 3: 'frozen', 4: 'e115', 5: 'shadow', 6: 'brake', 7: 'recover', 8: 'degraded' });
+  const PM_STATE_TEXT = Object.freeze({ 5: ' · CHẠY NGẦM (quạt hút chặn sưởi)', 6: ' · PHANH', 7: ' · HỒI NHIỆT (bám PV đo)', 8: ' · BÁM PV ĐO (dự đoán kém tin)' });
   const PM_LOG_MAX = 1500;
   const PM_MAX_POINTS = 900;
   const PM_SAMPLE_MS = 2000;
@@ -3332,7 +3332,7 @@
     v.req = ok ? Number(m.req) : NaN;
     v.act = ok ? Number(m.act) : NaN;
     v.pred = ok ? Number(m.pr) : NaN;
-    v.phase = ok && Number.isFinite(Number(m.ph)) ? `${PM_PHASES[Math.min(3, Number(m.ph))]}${m.sus ? ' · NGHI' : ''}${PM_STATE_TEXT[Number(m.stt)] || ''}` : '';
+    v.phase = ok && Number.isFinite(Number(m.ph)) ? `${PM_PHASES[Math.min(3, Number(m.ph))]}${m.sus ? ' · NGHI' : ''}${PM_STATE_TEXT[Number(m.stt) & 15] || ''}` : '';
     v.slot = ok ? Number(m.sl) : NaN;
     return v;
   }
@@ -3351,7 +3351,7 @@
     }
     while (pidMon.log.size > PM_LOG_MAX) pidMon.log.delete(pidMon.log.keys().next().value);
     const info = $('pmLogInfo');
-    if (info) info.textContent = `Đã nhận ${pidMon.log.size} / ${Math.min(180, head)} mẫu của máy (10 s một mẫu, tối đa 30 phút). Giữ mục này mở vài phút để nhận đủ.`;
+    if (info) info.textContent = `Đã nhận ${pidMon.log.size} mẫu (10 s một mẫu). Máy giữ 30 phút gần nhất; trang này giữ cả phần đã nhận trước đó khi mục đang mở. Giữ mục này mở vài phút để nhận đủ.`;
     if ($('pmDownload')) $('pmDownload').disabled = pidMon.log.size === 0 && pidMon.series.length === 0;
   }
 
@@ -3360,11 +3360,11 @@
     const rows = [];
     for (const [idx, r] of pidMon.log) {
       const t = pidMon.logHeadAt - (pidMon.logHead - 1 - idx) * 10000;
-      rows.push([t, idx, r.pv, r.sp, r.pred, r.req, r.act, r.fl & 3, (r.fl & 4) ? 1 : 0, (r.fl & 8) ? 1 : 0, (r.fl & 16) ? 1 : 0, (r.fl & 32) ? 1 : 0, (r.fl & 64) ? 1 : 0, (r.fl & 128) ? 1 : 0, PM_STATES[r.st] || '', 'machine']);
+      rows.push([t, idx, r.pv, r.sp, r.pred, r.req, r.act, r.fl & 3, (r.fl & 4) ? 1 : 0, (r.fl & 8) ? 1 : 0, (r.fl & 16) ? 1 : 0, (r.fl & 32) ? 1 : 0, (r.fl & 64) ? 1 : 0, (r.fl & 128) ? 1 : 0, PM_STATES[r.st & 15] || '', Math.round(((r.st >> 4) & 15) * 100 / 15), 'machine']);
     }
-    for (const r of pidMon.series) rows.push([r.t, '', r.pv, r.sp, '', r.req, r.act, '', '', r.vent, '', '', '', '', '', 'page']);
+    for (const r of pidMon.series) rows.push([r.t, '', r.pv, r.sp, '', r.req, r.act, '', '', r.vent, '', '', '', '', '', '', 'page']);
     rows.sort((a, b) => a[0] - b[0]);
-    const head = 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,source';
+    const head = 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,trust_pct,source';
     const cell = (v) => (typeof v === 'number' ? (Number.isFinite(v) ? String(v) : '') : String(v));
     return [`# mayap pid log device=${device?.id || ''} boot=${device?.bootId || ''} exported=${iso(Date.now())}`, head,
       ...rows.map((r) => [iso(r[0]), ...r.slice(1)].map(cell).join(','))].join('\n') + '\n';

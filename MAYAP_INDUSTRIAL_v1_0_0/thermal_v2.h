@@ -176,6 +176,46 @@ constexpr float LIM_MARGIN_C = 0.4f;       // below the Emergency line
 #ifndef V2_F9
 #define V2_F9 1
 #endif
+// ---- G8 (the owner's log of 24 Oct, doc/THERMAL_V2_G8_DESIGN.md): the air sat 0.1..0.3 degC under SP for 20 minutes with 0..15 % requested because the prediction said "arriving"
+#ifndef V2_F10A
+#define V2_F10A 1                          // a deficit that does not close is integrated on the MEASURED error, faster
+#endif
+#ifndef V2_F10B
+#define V2_F10B 1                          // the integral does not leak while the air itself is still below SP
+#endif
+#ifndef V2_F10C
+#define V2_F10C 1                          // the measured-slope crest uses the slope's lower confidence bound and a bounded negative demand
+#endif
+#ifndef V2_STUCK_GAIN
+#define V2_STUCK_GAIN 8.0f
+#endif
+#ifndef V2_STUCK_AFTER
+#define V2_STUCK_AFTER 420.0f
+#endif
+#ifndef V2_STUCK_REC
+#define V2_STUCK_REC 900.0f
+#endif
+#ifndef V2_STUCK_DEF
+#define V2_STUCK_DEF 0.10f
+#endif
+#ifndef V2_F1_DMF
+#define V2_F1_DMF 8.0f
+#endif
+#ifndef V2_SLOPE_Z
+#define V2_SLOPE_Z 2.0f
+#endif
+#ifndef V2_F10D
+#define V2_F10D 1                          // the level anchor corrects the arriving power for the slope also in a "flat" window
+#endif
+#ifndef V2_F10E
+#define V2_F10E 1                          // the slow-up gate of G7 holds only for a mismatch that can be a door (a large one)
+#endif
+#ifndef V2_SLOWUP_ERR
+#define V2_SLOWUP_ERR 8.0f
+#endif
+#ifndef V2_ASYM_HOLD
+#define V2_ASYM_HOLD 20.0f
+#endif
 // ---- G7 (the owner's real-oven log of 23 Oct, doc/THERMAL_V2_G7_DESIGN.md): the predicted crest is tied to the MEASURED slope, the coast is learned from every
 // cut of the power, the first approach brakes at the predicted crest, the integral is released when the air has overtaken it, a far-mode that cannot flicker,
 // a guard below SP, a patience measured on the climb, and a shadow mode while the vent line blocks the heater.  Each one is a switch.
@@ -196,6 +236,11 @@ constexpr bool F4_UNWIND = V2_F4A;         // the integral leaks while the crest
 constexpr bool F4_PERSIST = V2_F4B;        // a big level mismatch that repeats is learned
 constexpr float UNWIND_TAU_FACTOR = 2.0f;  // integral leak time constant = factor * theta
 constexpr uint8_t LEVEL_PERSIST_N = 3;     // a level mismatch above LEVEL_SLOPE_GATE that repeats this many 10 s steps with one sign is not a one-off
+constexpr bool F10A_STUCK = V2_F10A, F10B_LEAK = V2_F10B, F10C_PRED = V2_F10C;
+constexpr float STUCK_GAIN = V2_STUCK_GAIN, STUCK_AFTER_S = V2_STUCK_AFTER, STUCK_REC_S = V2_STUCK_REC, STUCK_DEF_C = V2_STUCK_DEF, UNWIND_PV_C = 0.10f;
+constexpr bool F10D_FLATSLOPE = V2_F10D, F10E_SLOWGATE = V2_F10E;
+constexpr float SLOWUP_ERR_PCT = V2_SLOWUP_ERR;
+constexpr float F1_DM_FLOOR = V2_F1_DMF, SLOPE_Z = V2_SLOPE_Z, ASYM_HOLD = V2_ASYM_HOLD;
 constexpr bool F5_FAR_SMOOTH = V2_F5;
 constexpr float FAR_SMOOTH_S = 30.0f, FAR_MIN_DWELL_S = 30.0f, FAR_OFF_FRAC = 0.25f;
 constexpr bool F8_GUARD = V2_F8;            // below SP: the power may not carry the crest over SP + GUARD_CEIL_C; above SP the request never rises while the air still climbs
@@ -277,7 +322,7 @@ class Controller {
     P_[0][0] = A0_STD * A0_STD; P_[1][1] = C0_STD * C0_STD; P_[2][2] = CP_STD * CP_STD; P_[3][3] = CE_STD * CE_STD; P_[4][4] = C3_STD * C3_STD;
     lostS_ = 0; lastU_ = 0; haveSample_ = false; pvPred_ = 0;
     dQ_ = 0.1f; slopeMks_ = 0.0f; pvPredModel_ = 0.0f; eSm_ = NAN; farAgeS_ = 0.0f; coastGain_ = 1.0f; predMeas_ = 0.0f; slopeOk_ = false; shadowNow_ = false; cutActive_ = false;
-    brakeActive_ = false; brakeDone_ = false; atSpOnce_ = false; tcN_ = 0; gateCnt_ = 0; gateSign_ = 0; patienceObs_ = 0.0f; stallRef_ = NAN; stallRunS_ = 0.0f; flatDeficitS_ = 0.0f; fallS_ = 0.0f;
+    brakeActive_ = false; brakeDone_ = false; atSpOnce_ = false; tcN_ = 0; gateCnt_ = 0; gateSign_ = 0; patienceObs_ = 0.0f; stallRef_ = NAN; stallRunS_ = 0.0f; flatDeficitS_ = 0.0f; fallS_ = 0.0f; stuckS_ = 0.0f; slopeSeMks_ = 0.0f;
   }
   // read-outs (telemetry and tests)
   float kEst() const { return th_[0] * 1e-5f; }
@@ -382,8 +427,11 @@ class Controller {
     if (F1_KIN_PRED && trusted_ && slopeOk_ && ringCount_ >= SLOPE_N) {
       // the same energy balance with the demand the air itself just showed: D_meas = arriving power - slope / k (what levelUpdate() uses), over the energy really in flight
       float pam = 0.0f; for (uint8_t i = RING_N - SLOPE_N; i < RING_N; ++i) pam += paRing_[i]; pam *= 1.0f / SLOPE_N;
-      float dm = pam - 100.0f * slopeMks_ / th_[0];
-      if (dm < D_MIN) dm = D_MIN; else if (dm > D_MAX) dm = D_MAX;
+      // G8/F10C: the crest is raised only by a rise the slope shows beyond its own noise (a 0.1 degC step of the sensor looks like 2 mK/s over 60 s), and a negative demand is bounded
+      const float slEff = F10C_PRED ? slopeMks_ - SLOPE_Z * slopeSeMks_ : slopeMks_;
+      float dm = pam - 100.0f * slEff / th_[0];
+      const float dmLo = F10C_PRED ? -F1_DM_FLOOR : D_MIN;
+      if (dm < dmLo) dm = dmLo; else if (dm > D_MAX) dm = D_MAX;
       const float margin = 0.5f * kinMinSlope() * 1e-3f * Ttr;       // the slope's own noise over the transit: the model is trusted unless the air disagrees by more than this
       const float meas = pv_ + coastGain_ * k * (Etr - dm * Ttr);
       predMeas_ = meas;
@@ -395,7 +443,8 @@ class Controller {
     const float eOn = std::fmax(E_ON_MIN, Z_SIGMA * sigPred_);
     const float Kc = 1.0f / (k * 3.0f * theta_);                 // SIMC for an integrating plant, tau_c = 2*theta
     const float tauI = TAUI_FACTOR * theta_;
-    const float K = (e >= 0.0f) ? KUP * Kc : ASYM * Kc;
+    const bool airUnderSp = atSpOnce_ && in.sp - pv_ > -0.05f;          // G8: the crest is predicted above SP but the air is not (the prediction wobbles +-0.15 degC, a gain of ASYM would rectify it into a lower mean)
+    const float K = (e >= 0.0f) ? KUP * Kc : (airUnderSp ? ASYM_HOLD : ASYM) * Kc;
     if (shadowNow_) {                                            // the vent line blocks the heater: the model keeps running (predicting, anchoring the level), nothing is commanded, the integral waits
       brakeActive_ = false; far_ = false; farAgeS_ = 0.0f; eSm_ = e;
       out.state = StShadow; lastU_ = 0.0f; return out;
@@ -422,11 +471,13 @@ class Controller {
     float u = uRaw < 0.0f ? 0.0f : (uRaw > cap ? cap : uRaw);
     const bool satHigh = uRaw >= cap, satLow = uRaw < 0.0f;
     if (!chaseOn && !((satHigh && e > 0.0f) || (satLow && e < 0.0f && !(F4_UNWIND && I_ > 0.0f)))) {      // conditional integration (a positive integral may still unwind)
-      I_ += Kc / tauI * e * dt;
+      float eI = e, gI = 1.0f;
+      if (F10A_STUCK && stuckS_ >= STUCK_AFTER_S && in.sp - pv_ > e) { eI = in.sp - pv_; gI = STUCK_GAIN; }     // G8: the measured deficit, faster
+      I_ += Kc / tauI * gI * eI * dt;
       if (I_ > I_MAX) I_ = I_MAX; else if (I_ < -I_MAX) I_ = -I_MAX;
     }
     // G7/F4: the air has overtaken the integral (the crest is above SP): it leaks away instead of waiting to be integrated out, which takes tens of minutes
-    if (F4_UNWIND && e < -0.05f && I_ > 0.0f) { I_ -= I_ * dt / (UNWIND_TAU_FACTOR * theta_); if (I_ < 0.0f) I_ = 0.0f; }
+    if (F4_UNWIND && e < -0.05f && I_ > 0.0f && !(F10B_LEAK && pv_ < in.sp - UNWIND_PV_C)) { I_ -= I_ * dt / (UNWIND_TAU_FACTOR * theta_); if (I_ < 0.0f) I_ = 0.0f; }
     if (idPhase_ == 1 || idPhase_ == 2) {                           // blind / probe phase: power from the CURRENT room below SP, never above the safe level
       const float pp = probePower(in.sp, pv_);
       idPower_ = pp; u = pp < cap ? pp : cap; out.state = StClimb; far_ = false;
@@ -522,7 +573,10 @@ class Controller {
     if (gap || ringCount_ < SLOPE_N) return;
     const uint8_t n = SLOPE_N; float sx = 0, sy = 0, sxx = 0, sxy = 0;
     for (uint8_t i = 0; i < n; ++i) { const float t = i * 10.0f, y = pvRing_[RING_N - n + i]; sx += t; sy += y; sxx += t * t; sxy += t * y; }
-    slopeMks_ = 1000.0f * (n * sxy - sx * sy) / (n * sxx - sx * sx);
+    const float sdd = sxx - sx * sx / n, b = (n * sxy - sx * sy) / (n * sxx - sx * sx), a0 = (sy - b * sx) / n;
+    float sse = 0.0f; for (uint8_t i = 0; i < n; ++i) { const float r = pvRing_[RING_N - n + i] - (a0 + b * i * 10.0f); sse += r * r; }
+    slopeSeMks_ = sdd > 0.0f ? 1000.0f * std::sqrt(sse / (n - 2) / sdd) : 0.0f;
+    slopeMks_ = 1000.0f * b;
     slopeOk_ = std::isfinite(slopeMks_);
   }
   // every cut of the power, whoever made it (this law, the vent line, a safety layer), is a free measurement of the coast
@@ -549,6 +603,13 @@ class Controller {
     const float pam = (paRing_[RING_N - 1] + paRing_[RING_N - 2] + paRing_[RING_N - 3]) * (1.0f / 3.0f);
     const bool arrives = pam >= clampPos(feedForward()) + CHASE_ARR_PCT;
     if (trusted_ && slopeOk_ && std::fabs(slopeMks_) < flatLim && pv_ < spNow_ - 0.15f && arrives) flatDeficitS_ += 10.0f; else flatDeficitS_ = 0.0f;
+    // G8: a flat or slowly drifting deficit that the present slope would not close within STUCK_REC_S, with the air already at SP once: the law is satisfied by a prediction the air does not follow
+    {
+      const float def = spNow_ - pv_;
+      const bool inBand = trusted_ && idDone_ && atSpOnce_ && idPhase_ != 1 && idPhase_ != 2 && slopeOk_ && def > STUCK_DEF_C && def < 1.0f && std::fabs(slopeMks_) <= flatLim;
+      if (F10A_STUCK && inBand && slopeMks_ < def / STUCK_REC_S * 1000.0f) stuckS_ += 10.0f;
+      else if (!F10A_STUCK || !inBand || def < 0.5f * STUCK_DEF_C) stuckS_ = 0.0f;
+    }
     // a steady moderate decline is a loss (a door held open); a sudden steep one is a step of the air, which the energy balance already handles
     if (trusted_ && slopeOk_ && slopeMks_ < -kinMinSlope() && slopeMks_ > -FALL_STEEP_MKS && pv_ < spNow_ - 0.15f) fallS_ += 10.0f; else fallS_ = 0.0f;
   }
@@ -706,6 +767,10 @@ class Controller {
     float pa = 0, pvm = 0; for (uint8_t i = 0; i < RING_N; ++i) { pa += paRing_[i]; pvm += pvRing_[i]; }
     pa /= RING_N; pvm /= RING_N;
     float meas = pa;                                                  // flat: the power that arrives IS the demand
+    if (F10D_FLATSLOPE && flat && std::fabs(rise) >= 2.0f * dQ_) {    // ... minus what the air still gains or loses: a "flat" 0.1 degC drift over 110 s is 5 % of the demand
+      const float slopeW = 1000.0f * rise / (10.0f * (RING_N - 1));    // mK/s over the whole ring window
+      meas = pa - 100.0f * slopeW / th_[0];
+    }
     if (!flat) {                                                      // moving: demand = arriving power - slope / k (mK/s -> %)
       const uint8_t n = SLOPE_N; float sx = 0, sy = 0, sxx = 0, sxy = 0, pam = 0;
       for (uint8_t i = 0; i < n; ++i) { const float t = i * 10.0f, y = pvRing_[RING_N - n + i]; sx += t; sy += y; sxx += t * t; sxy += t * y; pam += paRing_[RING_N - n + i]; }
@@ -716,7 +781,7 @@ class Controller {
     }
     const float err = meas - demandAt(pvm);
     bool slowUp = false;
-    if (F4C_ASYM && err > 0.0f && pv_ < spNow_ - 0.15f && (flatDeficitS_ >= 30.0f || (slopeOk_ && slopeMks_ < -kinMinSlope()) || (atSpOnce_ && pv_ < spNow_ - 0.3f))) {
+    if (F4C_ASYM && err > 0.0f && (!F10E_SLOWGATE || err > SLOWUP_ERR_PCT) && pv_ < spNow_ - 0.15f && (flatDeficitS_ >= 30.0f || (slopeOk_ && slopeMks_ < -kinMinSlope()) || (atSpOnce_ && pv_ < spNow_ - 0.3f))) {
       if (V2_SLOWUP <= 0.0f) return;
       slowUp = true;                                                // a disturbance signature: a door must not become the level in minutes, a cold tray still does in tens of minutes
     }
@@ -734,7 +799,7 @@ class Controller {
       if (!(F4_PERSIST && gateCnt_ >= LEVEL_PERSIST_N)) return;
     } else gateCnt_ = 0;
     float step = (flat ? LEVEL_GAIN : LEVEL_SLOPE_GAIN) * err;
-    if (slowUp) step *= V2_SLOWUP;
+    if (slowUp && !(F10A_STUCK && stuckS_ >= STUCK_AFTER_S)) step *= V2_SLOWUP;           // G8: not a door any more once it has lasted this long
     float nb = dBias_ + step; if (nb > 40.0f) nb = 40.0f; else if (nb < -40.0f) nb = -40.0f;
     step = nb - dBias_;
     float ni = I_ - step; if (ni > I_MAX) ni = I_MAX; else if (ni < -I_MAX) ni = -I_MAX;
@@ -998,7 +1063,7 @@ class Controller {
   uint8_t tcN_ = 0, gateCnt_ = 0; int8_t gateSign_ = 0;
   float cutT0_ = 0, cutPv0_ = 0, cutRise_ = 0, cutPeak_ = 0, brakeT0_ = 0, brakePv0_ = 0, brakeRise_ = 0, brakePeak_ = 0;
   bool atSpOnce_ = false;
-  float patienceObs_ = 0.0f, stallRef_ = NAN, stallRunS_ = 0.0f, flatDeficitS_ = 0.0f, fallS_ = 0.0f;
+  float patienceObs_ = 0.0f, stallRef_ = NAN, stallRunS_ = 0.0f, flatDeficitS_ = 0.0f, fallS_ = 0.0f, stuckS_ = 0.0f, slopeSeMks_ = 0.0f;
 };
 
 }  // namespace thermalv2
