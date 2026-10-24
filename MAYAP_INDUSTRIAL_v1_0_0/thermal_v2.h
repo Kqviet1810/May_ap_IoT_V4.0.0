@@ -204,6 +204,9 @@ constexpr float LIM_MARGIN_C = 0.4f;       // below the Emergency line
 #ifndef V2_F10B_FLAT
 #define V2_F10B_FLAT 1                     // ... only while the air stands still (a rebound after a door still needs the leak)
 #endif
+#ifndef V2_STUCK_NOARR
+#define V2_STUCK_NOARR 1                   // a deficit that the arriving power already fights (a door ajar, a cold tray) is a real loss, not a stuck law
+#endif
 #ifndef V2_STUCK_GAIN
 #define V2_STUCK_GAIN 8.0f
 #endif
@@ -262,6 +265,7 @@ constexpr float STEADY_PA_PCT = 6.0f, TRUST_OVER_C = 0.15f, STEADY_FAN_S = 300.0
 constexpr float GAP_TAU_S = V2_GAP_TAU, GAP_G0_C = V2_GAP_G0, GAP_SPAN_C = V2_GAP_SPAN;
 constexpr bool F10D_FLATSLOPE = V2_F10D, F10E_SLOWGATE = V2_F10E;
 constexpr float SLOWUP_ERR_PCT = V2_SLOWUP_ERR;
+constexpr bool STUCK_NOARR = V2_STUCK_NOARR;
 constexpr float F1_DM_FLOOR = V2_F1_DMF, SLOPE_Z = V2_SLOPE_Z, ASYM_HOLD = V2_ASYM_HOLD;
 constexpr bool F5_FAR_SMOOTH = V2_F5;
 constexpr float FAR_SMOOTH_S = 30.0f, FAR_MIN_DWELL_S = 30.0f, FAR_OFF_FRAC = 0.25f;
@@ -669,7 +673,7 @@ class Controller {
     {
       const float def = spNow_ - pv_;
       const bool inBand = trusted_ && idDone_ && atSpOnce_ && idPhase_ != 1 && idPhase_ != 2 && slopeOk_ && def > STUCK_DEF_C && def < 1.0f && std::fabs(slopeMks_) <= flatLim;
-      if (F10A_STUCK && inBand && slopeMks_ < def / STUCK_REC_S * 1000.0f) stuckS_ += 10.0f;
+      if (F10A_STUCK && inBand && !(STUCK_NOARR && arrives) && slopeMks_ < def / STUCK_REC_S * 1000.0f) stuckS_ += 10.0f;
       else if (!F10A_STUCK || !inBand || def < 0.5f * STUCK_DEF_C) stuckS_ = 0.0f;
     }
     // a steady moderate decline is a loss (a door held open); a sudden steep one is a step of the air, which the energy balance already handles
