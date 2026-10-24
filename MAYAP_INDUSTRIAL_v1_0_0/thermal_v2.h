@@ -260,7 +260,10 @@ constexpr uint8_t LEVEL_PERSIST_N = 3;     // a level mismatch above LEVEL_SLOPE
 constexpr bool F10A_STUCK = V2_F10A, F10B_LEAK = V2_F10B, F10C_PRED = V2_F10C;
 constexpr float STUCK_GAIN = V2_STUCK_GAIN, STUCK_AFTER_S = V2_STUCK_AFTER, STUCK_REC_S = V2_STUCK_REC, STUCK_DEF_C = V2_STUCK_DEF, UNWIND_PV_C = 0.10f;
 constexpr bool F10B_FLAT = V2_F10B_FLAT, F11_TRUST = V2_F11, F12_VENT = V2_F12;
-constexpr float FAN_LAG_S = 10.0f, FAN_MAX_PCT = 60.0f;
+#ifndef V2_FAN_SETTLE
+#define V2_FAN_SETTLE 60.0f
+#endif
+constexpr float FAN_LAG_S = 10.0f, FAN_MAX_PCT = 60.0f, FAN_SETTLE_S = V2_FAN_SETTLE;
 constexpr float STEADY_PA_PCT = 6.0f, TRUST_OVER_C = 0.15f, STEADY_FAN_S = 300.0f;
 constexpr float GAP_TAU_S = V2_GAP_TAU, GAP_G0_C = V2_GAP_G0, GAP_SPAN_C = V2_GAP_SPAN;
 constexpr bool F10D_FLATSLOPE = V2_F10D, F10E_SLOWGATE = V2_F10E;
@@ -426,7 +429,8 @@ class Controller {
     const bool live = in.permit || shadowNow_;
     if (pvOk) pvBadS_ = 0.0f; else pvBadS_ += dt;
     if (F12_VENT) {                                                  // what the fan does now (for the learner) and what it will do when the power asked now lands (for the law)
-      fanNow_ = in.ventFan;
+      const bool fanKnown = in.ventOnInS < 1.0e5f || in.ventOffInS < 1.0e5f;        // only a fan whose run the vent schedule announces is modelled: one unannounced run (the vent line, the Web, an hour-of-day list) is too little to learn a loss from
+      fanNow_ = in.ventFan && fanKnown;
       fanF_ += ((fanNow_ ? 1.0f : 0.0f) - fanF_) * (dt >= FAN_LAG_S ? 1.0f : dt / FAN_LAG_S);
       const float lead = tdPrime(), horizon = lead + tau_;
       const float fa = fanNow_ ? 0.0f : in.ventOnInS, fb = fanNow_ ? in.ventOffInS : in.ventOffInS;     // the next (or the present) run of the fan: [fa, fb] seconds from now
@@ -827,7 +831,10 @@ class Controller {
 
   // Level anchor: in a FLAT window the power that arrives equals the demand whatever k is, so the model's level is pulled to it (slowly).  The same amount
   // is taken out of I, so the pair (model level, I) changes by nothing but where the number lives.
-  void levelUpdate() { const float save = fanW_; fanW_ = fanF_; levelUpdateCore(); fanW_ = save; }
+  void levelUpdate() {
+    if (F12_VENT && fanChgS_ < FAN_SETTLE_S) return;                  // the fan switched (or is about to land) a moment ago: the air and the arriving power are in a transient, nothing is learned from it
+    const float save = fanW_; fanW_ = fanF_; levelUpdateCore(); fanW_ = save;
+  }
   void levelUpdateCore() {
     if (!idDone_ || ringCount_ < RING_N || batchActive_) return;
     const bool fanLevel = F12_VENT && fanF_ > 0.5f;                  // while the fan runs the mismatch belongs to the fan, not to the oven

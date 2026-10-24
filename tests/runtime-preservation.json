@@ -58,12 +58,12 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "89f6e41074b64af77a21b9c22cf3d18637c3444979cb1e25ee223f4ea1265afc",
+      "sha256": "614a0a17b903c52994568930266de6e8722f9971795fa2595b94c46e4638970e",
       "filter": "config"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "f36d211598da4d2a61f7ab8f4aa5dd989f6a180cea4f981a85ca00371de77700",
+      "sha256": "f0004b70d5d2d9a33feb063f093145765b7409a8e1e6f47baf3481c0121ce3b6",
       "signature": "class MachineController {"
     },
     {
@@ -151,7 +151,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/ota_web_update.h",
-      "sha256": "a28e56ad3f8337ad0b370f616060084fc23698a0a86846a74da3fe8276226bfa",
+      "sha256": "e09f8b485535eebb8478e9cdc6f33cae150c5aec62247f126abb700a9add7d83",
       "signature": "inline void mayapFirmwareWebUpdate("
     },
     {

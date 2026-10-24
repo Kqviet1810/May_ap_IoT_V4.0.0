@@ -445,6 +445,7 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
   r["heaterPower"] = rt.heaterPower;
   r["circulationFanOn"] = rt.circulationFanOn;
   r["ventFanOn"] = rt.ventFanOn;
+  r["ventWhy"] = rt.ventReason;                // why the exhaust fan runs (see MachineRuntime::ventReason)
   r["humidifierOn"] = rt.humidifierOn;
   r["lightOn"] = rt.lightOn;
   r["sirenOn"] = rt.sirenOn;
@@ -469,6 +470,7 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
   tech["lockS"] = rt.tech.lockRemainingS;
   tech["pinSet"] = rt.tech.pinSet;
   tech["webCtl"] = rt.tech.webCtlMask;            // which outputs the HMI lets the Web switch (the Web can read it, never write it)
+  tech["fwAutoS"] = mayapFirmwareAutoUpdateCountdownS();   // automatic firmware update: seconds left before it starts (255 = not counting)
   tech["webAct"] = rt.tech.webCtlActive;          // which of them are overridden from the Web right now
   tech["pending"] = rt.tech.pendingKind;          // 0 none, 1 config: waiting for the HMI
   tech["pendingS"] = rt.tech.pendingRemainingS;

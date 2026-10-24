@@ -516,9 +516,9 @@ const SettingItem SETTINGS[] = {
 
   // ---- CAI DAT CHUNG > QUAT HUT (2 muc) ----
   ITEM_FLOAT("Quat hut bat", ventOnTemp, TARGET_TEMP_MIN_C + VENT_ON_ABOVE_SV_C,
-             HIGH_ALARM_MAX_C, 0.1f, 1, "C"),                                  // 9
+             HIGH_ALARM_MAX_C, 0.05f, 2, "C"),                                  // 9
   ITEM_FLOAT("Quat hut tat", ventOffTemp, TARGET_TEMP_MIN_C,
-             HIGH_ALARM_MAX_C, 0.1f, 1, "C"),                                  // 10
+             HIGH_ALARM_MAX_C, 0.05f, 2, "C"),                                  // 10
 
   // ---- CAI DAT CHUNG > DAO TRUNG (3 muc, + "So lan dao" la dong phu) ----
   ITEM_BOOL("Tu dong dao", turningEnabled),                                    // 11
@@ -3250,11 +3250,11 @@ void handleInput() {
 
     case View::WebCtl:
       if (rotary.step) {
-        webCtlRow = static_cast<uint8_t>(constrain(static_cast<int>(webCtlRow) + rotary.step, 0, 6));
+        webCtlRow = static_cast<uint8_t>(constrain(static_cast<int>(webCtlRow) + rotary.step, 0, 7));
         dirty = true;
       }
       if (rotary.button == ButtonEvent::ShortPress) {
-        if (webCtlRow < 6U) { webCtlEdit = static_cast<uint8_t>(webCtlEdit ^ (1U << webCtlRow)); dirty = true; }
+        if (webCtlRow < 7U) { webCtlEdit = static_cast<uint8_t>(webCtlEdit ^ (1U << webCtlRow)); dirty = true; }
         else if (webCtlEdit == currentRuntime.tech.webCtlMask) goBack();
         else if (queueCommand(HmiCommandType::WebCtlSet, COMMAND_DEFAULT_VALID_MS, 0, static_cast<uint32_t>(webCtlEdit))) goBack();
       }
@@ -4994,16 +4994,16 @@ void drawWebAccess() {
 }
 
 void drawWebCtl() {
-  static const char *const names[6] = {"Thanh nhiet", "Quat hut", "Quat tuan hoan", "Den", "Coi", "Dao trung"};
+  static const char *const names[7] = {"Thanh nhiet", "Quat hut", "Quat tuan hoan", "Den", "Coi", "Dao trung", "Cap nhat tu dong"};
   drawHeader(webCtlEdit != currentRuntime.tech.webCtlMask ? "DK WEB *" : "DK WEB", false);
-  drawListPosition(webCtlRow, 7);
+  drawListPosition(webCtlRow, 8);
   const uint8_t top = webCtlRow < 4U ? 0U : static_cast<uint8_t>(webCtlRow - 3U);
-  for (uint8_t row = 0; row < 4U && top + row < 7U; ++row) {
+  for (uint8_t row = 0; row < 4U && top + row < 8U; ++row) {
     const uint8_t index = static_cast<uint8_t>(top + row);
     drawSelectableRow(row, index == webCtlRow);
     lcd.setFont(u8g2_font_6x12_tf);
     char text[28];
-    if (index < 6U) snprintf(text, sizeof(text), "%s %s", (webCtlEdit & (1U << index)) ? "[X]" : "[ ]", names[index]);
+    if (index < 7U) snprintf(text, sizeof(text), "%s %s", (webCtlEdit & (1U << index)) ? "[X]" : "[ ]", names[index]);
     else snprintf(text, sizeof(text), "LUU");
     lcd.drawStr(2, 22 + row * 12, text);
     lcd.setDrawColor(1);

@@ -2,7 +2,7 @@
 /* ============================== Design tokens ============================== */
 :root{
   --ink:#203a43;--muted:#526c76;--label:#36565f;
-  --line:#dfecef;--lineSoft:#eaf2f4;--tile:#f5fafb;
+  --line:#dfecef;--lineSoft:#eaf2f4;--tile:#f5fafb;--tileRo:#dde7ea;
   --surface:#fff;--wash:#f0f8f9;
   --primary:#64c9d1;--onPrimary:#173e45;--primary2:#286974;--chartLine:#286974;--dangerAction:#b52645;--attentionBg:#815713;--primarySoft:#e5f6f7;
 
@@ -45,7 +45,7 @@
   :root:not([data-theme="light"]){
     color-scheme:dark;
     --ink:#f4fafc;--muted:#c4d5dc;--label:#deedf3;
-    --line:#4a6774;--lineSoft:#36515e;--tile:#304b58;
+    --line:#4a6774;--lineSoft:#36515e;--tile:#304b58;--tileRo:#213845;
     --surface:#243944;--wash:#36515e;
     --primary:#64c9d1;--onPrimary:#173e45;--primary2:#92dce2;--chartLine:#64c9d1;--dangerAction:#b52645;--attentionBg:#815713;--primarySoft:#2b5561;
 
@@ -75,7 +75,7 @@
 :root[data-theme="dark"]{
   color-scheme:dark;
   --ink:#f4fafc;--muted:#c4d5dc;--label:#deedf3;
-  --line:#4a6774;--lineSoft:#36515e;--tile:#304b58;
+  --line:#4a6774;--lineSoft:#36515e;--tile:#304b58;--tileRo:#213845;
   --surface:#243944;--wash:#36515e;
   --primary:#64c9d1;--onPrimary:#173e45;--primary2:#92dce2;--chartLine:#64c9d1;--dangerAction:#b52645;--attentionBg:#815713;--primarySoft:#2b5561;
 
@@ -856,6 +856,15 @@ body[data-page="batch"] .telemetryCanvasWrap{flex:1 1 0;height:0;min-height:72px
 #profilePhotoDialog{width:min(360px,calc(100vw - 24px))}
 #profilePhotoDialog .googleLogin{margin:16px 0;display:flex;justify-content:center}
 
+.advGroup{margin:14px 0 8px;font-size:var(--fs-xs);font-weight:800;letter-spacing:.3px;color:var(--label)}
+.advGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+@media(min-width:640px){.advGrid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(min-width:960px){.advGrid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+#techActions{margin-top:14px;display:grid;gap:8px}
+.advGrid>.compactTile.ro{background:var(--tileRo);border-color:var(--tileRo);cursor:default}
+.advGrid>.compactTile.ro .roValue{display:block;font-size:var(--fs-base);font-weight:800;color:var(--muted);overflow-wrap:anywhere}
+.advGrid>.compactTile input:disabled{opacity:.6;cursor:not-allowed}
+.outputStrip strong{overflow-wrap:anywhere;line-height:1.2}
 .advOverview{display:grid;gap:8px}
 .advRow{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:11px 12px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--tile)}
 .advRow>div{min-width:0}

@@ -5003,6 +5003,7 @@ class MachineController {
     t.hmiUnlocked = techGate_.hmiUnlocked(now);
     t.webAllowed = techGate_.webAllowed();
     t.webCtlMask = techGate_.webCtlMask();
+    mayapSetFirmwareAutoUpdate((t.webCtlMask & WebCtlAutoUpdate) != 0U);        // the OTA task updates by itself only while the HMI lets it
     t.webCtlActive = webOutputsActive(now);
     t.webSession = techGate_.webSessionActive(now);
     t.lockRemainingS = static_cast<uint16_t>(std::min<uint32_t>(65535UL, (techGate_.lockRemainingMs(now) + 999UL) / 1000UL));
@@ -6366,7 +6367,20 @@ class MachineController {
     req.ventFanForceOn = emergencyActive_ || highTemperatureActive_ ||
         ventTemperatureActive_ || faults_.ventForced() || sensorFaultNeedsFan;
     const bool automaticVent = webOverrideLive(webVentUntil_, now) ? webVentValue_ : (profileVentActive || scheduledVentActive);
-    req.ventFan = req.ventFanForceOn || automaticVent;               // a Web override replaces the automatic vent, never a forced one
+    req.ventFan = req.ventFanForceOn || automaticVent;
+    {   // why the exhaust fan runs (shown on the Web): the strongest reason first
+      uint8_t why = 0U;
+      if (!req.ventFan) why = 0U;
+      else if (emergencyActive_) why = 1U;
+      else if (highTemperatureActive_) why = 2U;
+      else if (ventTemperatureActive_) why = 3U;
+      else if (faults_.ventForced()) why = 4U;
+      else if (sensorFaultNeedsFan) why = 5U;
+      else if (webOverrideLive(webVentUntil_, now) && webVentValue_) why = 6U;
+      else if (profileVentActive) why = 7U;
+      else if (scheduledVentActive) why = 8U;
+      ventReason_ = why;
+    }               // a Web override replaces the automatic vent, never a forced one
 
     // "Nhiet ngoai me" da bo khoi HMI (khong con cach nao nguoi dung tat lai
     // duoc neu no da tung bat), nen KHONG con duoc phep giu nhiet chay khi
@@ -7301,6 +7315,7 @@ class MachineController {
     runtime_.heaterOn = outputs_.state().heatMaster;
     runtime_.circulationFanOn = outputs_.state().circulationFan;
     runtime_.ventFanOn = outputs_.state().ventFan;
+    runtime_.ventReason = runtime_.ventFanOn ? ventReason_ : 0U;
     runtime_.humidifierOn = outputs_.state().humidifier;
     runtime_.lightOn = outputs_.state().light;
     runtime_.sirenOn = outputs_.state().siren;
@@ -8021,6 +8036,7 @@ class MachineController {
   ConditionTimer emergencyClearTimer_{};
   ConditionTimer humidityTimer_{};
   bool ventTemperatureActive_ = false;
+  uint8_t ventReason_ = 0U;
   bool lowTemperatureActive_ = false;
   bool highTemperatureActive_ = false;
   bool emergencyActive_ = false;

@@ -135,11 +135,11 @@ struct AuthRecord {
   uint32_t crc = 0;
 };
 constexpr uint8_t FlagWebAllowed = 0x01;
-constexpr uint8_t FlagWebCtlShift = 1;         // flags bits 1..6: which outputs the Web may switch (heater, vent, circulation, light, siren, turning)
-constexpr uint8_t FlagWebCtlBits = 0x7E;
-// Factory default of the Web output permissions: vent fan, circulation fan, light and siren ON; heater and egg turning OFF. The record stores the
-// DIFFERENCE from this default, so every older record (bits 1..6 all zero) and a device with no technician record read as the default.
-constexpr uint8_t WebCtlDefaultMask = 2U | 4U | 8U | 16U;
+constexpr uint8_t FlagWebCtlShift = 1;         // flags bits 1..7: which outputs the Web may switch (heater, vent, circulation, light, siren, turning) + bit 7 (value 64): the Web may update the firmware by itself
+constexpr uint8_t FlagWebCtlBits = 0xFE;
+// Factory default of the Web output permissions: vent fan, circulation fan, light and siren ON; heater and egg turning OFF; automatic firmware update ON.
+// The record stores the DIFFERENCE from this default, so every older record (bits 1..7 all zero) and a device with no technician record read as the default.
+constexpr uint8_t WebCtlDefaultMask = 2U | 4U | 8U | 16U | 64U;
 
 inline uint32_t recordCrc(const AuthRecord &r) { return crc32(reinterpret_cast<const uint8_t *>(&r), offsetof(AuthRecord, crc)); }
 inline bool recordValid(const AuthRecord &r) {
@@ -268,7 +268,7 @@ class Gate {
     if (!loaded_) return Result::NotSet;
     if (!hmiUnlocked(now)) return Result::NotUnlocked;
     AuthRecord next = rec_;
-    next.flags = static_cast<uint8_t>((next.flags & ~FlagWebCtlBits) | ((static_cast<uint8_t>((mask & 0x3F) ^ WebCtlDefaultMask) << FlagWebCtlShift) & FlagWebCtlBits));
+    next.flags = static_cast<uint8_t>((next.flags & ~FlagWebCtlBits) | ((static_cast<uint8_t>((mask & 0x7F) ^ WebCtlDefaultMask) << FlagWebCtlShift) & FlagWebCtlBits));
     if (next.flags != rec_.flags && !persist(next)) return Result::StorageError;
     return Result::Ok;
   }

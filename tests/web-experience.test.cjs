@@ -111,7 +111,8 @@ test('technical section is hidden unless the HMI grants it; unlocked only with a
   assert.equal(locked.allowed, true); assert.equal(locked.session, false);
   assert.equal(h.techGateInfo({ tech: { allowed: true, session: true } }).session, true);
   const html = fs.readFileSync(require.resolve('../index.html'), 'utf8');
-  assert.match(html, /<details class="settingCard" id="techCard" hidden>/);                                        // hidden by default
+  assert.match(html, /<details class="settingCard" id="techCard">/);                                              // ONE "Nâng cao" card (the old machine overview and PID section are merged)
+  assert.match(html, /<div id="techLocked" hidden>/);                                                              // the PIN form shows only when the machine allows it and the session is locked
   assert.match(html, /id="techPin"[^>]*type="password"/);                                                          // PIN never echoed
   assert.match(html, /maxlength="4"/);
   const webSource = fs.readFileSync(require.resolve('../app.js'), 'utf8');
@@ -325,7 +326,7 @@ test('Web output control: buttons exist, are gated by the HMI permissions, and o
   const src = fs.readFileSync(require.resolve('../app.js'), 'utf8');
   for (const id of ['outputHeaterBtn', 'outputCircBtn', 'outputVentBtn', 'outputTurnTile', 'turnSplit', 'turnLeftBtn', 'turnRightBtn', 'pmDownload'])
     assert.match(html, new RegExp(`id="${id}"`));
-  assert.match(src, /WEBCTL = Object\.freeze\(\{ heater: 1, vent: 2, circ: 4, light: 8, siren: 16, turn: 32 \}\)/);
+  assert.match(src, /WEBCTL = Object\.freeze\(\{ heater: 1, vent: 2, circ: 4, light: 8, siren: 16, turn: 32, autoUpdate: 64 \}\)/);
   for (const act of ['vent_toggle', 'circ_toggle', 'heater_toggle', 'siren_toggle', 'turn_hold'])
     assert.ok(src.includes(act), act);
   // the Web never writes the permission mask: no command that sets it exists on the Web side
@@ -336,7 +337,13 @@ test('Web output control: buttons exist, are gated by the HMI permissions, and o
   assert.match(src, /granted\s*&&\s*manual/);
   // every item of the machine's Advanced menu is listed with its access
   assert.match(html, /id="advOverview"/);
-  for (const label of ['Gia nhiệt', 'PID Monitor', 'Bảo vệ nhiệt', 'Hiệu chuẩn', 'Bản ghi cũ', 'Quyền Web', 'Điều khiển Web', 'Chế độ 2 tài khoản', 'Đổi mã kỹ thuật'])
+  for (const label of ['PID Monitor', 'Bản ghi cũ', 'Quyền Web', 'Chế độ 2 tài khoản', 'Đổi mã kỹ thuật'])
     assert.ok(src.includes(`'${label}'`) || src.includes(`['${label}'`) || src.includes(label), label);
-  assert.match(src, /Chỉ đọc/); assert.match(src, /Ghi được/); assert.match(src, /Chỉ đổi trên máy/);
+  for (const label of ['Gia nhiệt', 'Bảo vệ nhiệt', 'Hiệu chuẩn cảm biến', 'Trần công suất nhiệt'])
+    assert.ok(html.includes(label), label);                                                                          // the editable tiles are in the same card
+  // no legend: editable tiles are the light ones, display-only tiles are a darker shade of the same grid
+  assert.match(src, /compactTile ro/);
+  assert.match(fs.readFileSync(require.resolve('../styles.css'), 'utf8'), /\.advGrid>\.compactTile\.ro\{background:var\(--tileRo\)/);
+  // the exhaust-fan tile says why the fan runs, the egg-turn tile says which way
+  assert.match(src, /VENT_WHY/); assert.match(src, /ĐANG ĐẢO TRÁI/); assert.match(html, /<span>Quạt hút<\/span><strong id="outputVent">/);
 });

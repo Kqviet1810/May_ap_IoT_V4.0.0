@@ -72,7 +72,7 @@ Trên tập dev E: S14a/b/c giữ nhiệt 86 → 95, 81 → 90, 71 → 83 %; S15
 * Ca cửa hé lâu (S13a/b/c) kém đi chút ít ở độ ổn định sau khi đóng cửa, số ca High không đổi hoặc +1; dạng này luôn là điểm yếu (xem G7).
 * Hai lò E20/E35 (cảm biến trễ 90 s) ở cửa 5 phút vẫn nằm sát vạch High 38,2 °C ở cả G7 và G8; lệch vài phần trăm độ có thể đẩy qua.
 * S14b ở bộ C có thêm một ca High nhỏ (vọt +0,70).
-* Đầu vào quạt chỉ biết lịch của **thông gió tự động theo chu kỳ**; thông gió theo lịch giờ, quạt do vạch nhiệt hoặc Web chỉ được học qua dFan khi đã chạy (không bù trước).
+* Khối V2 chỉ mô hình hóa quạt mà **lịch thông gió tự động theo chu kỳ báo trước**. Quạt không báo trước (thông gió theo danh sách giờ, vạch nhiệt, Web) được bỏ qua như G7: học tổn thất từ một lần chạy lẻ không đáng tin (thử trong mô phỏng làm kém đi 10 điểm ở kịch bản quạt theo giờ S6a, nên đã loại). Sau mỗi lần quạt đổi trạng thái khối nghỉ học mức nhu cầu 60 s.
 * Mô phỏng chưa có khối nhiệt chậm của thép xe; bản này chưa thử trên lò thật.
 
 ## 7. Cách thử trên lò (bổ sung cho `doc/FIELD_TRIAL_V2.md`)

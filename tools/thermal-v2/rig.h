@@ -190,6 +190,7 @@ struct Rig {
   bool resumeConfirmationRequired_ = false, resumePending_ = false, batchRunning_ = true, prevBatchRunningForOutputs_ = false;
   bool sensorUsable_ = false, humidityLowActive_ = false, previousFanCommand_ = false;
   bool emergencyActive_ = false, highTemperatureActive_ = false, ventTemperatureActive_ = false;
+  uint8_t ventReason_ = 0;                                // why the exhaust fan runs (the production heating text sets it; the rig never reads it)
   bool batchClearPending_ = false, safetyJournalFaultLatched_ = false, storageFaultLatched_ = false, storageDegraded_ = false, abnormalResetLatched_ = false;
   bool newSensorSample_ = false, batchOverdueSirenActive_ = false, sirenSelfTestActive_ = false;
   bool warmupVentHold_ = false, warmupVentChecked_ = false; uint32_t warmupVentHoldSince_ = 0;
