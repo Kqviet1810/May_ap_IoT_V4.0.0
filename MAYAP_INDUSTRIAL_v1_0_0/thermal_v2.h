@@ -186,6 +186,9 @@ constexpr float LIM_MARGIN_C = 0.4f;       // below the Emergency line
 #ifndef V2_F10C
 #define V2_F10C 1                          // the measured-slope crest uses the slope's lower confidence bound and a bounded negative demand
 #endif
+#ifndef V2_F10B_FLAT
+#define V2_F10B_FLAT 1                     // ... only while the air stands still (a rebound after a door still needs the leak)
+#endif
 #ifndef V2_STUCK_GAIN
 #define V2_STUCK_GAIN 8.0f
 #endif
@@ -238,6 +241,7 @@ constexpr float UNWIND_TAU_FACTOR = 2.0f;  // integral leak time constant = fact
 constexpr uint8_t LEVEL_PERSIST_N = 3;     // a level mismatch above LEVEL_SLOPE_GATE that repeats this many 10 s steps with one sign is not a one-off
 constexpr bool F10A_STUCK = V2_F10A, F10B_LEAK = V2_F10B, F10C_PRED = V2_F10C;
 constexpr float STUCK_GAIN = V2_STUCK_GAIN, STUCK_AFTER_S = V2_STUCK_AFTER, STUCK_REC_S = V2_STUCK_REC, STUCK_DEF_C = V2_STUCK_DEF, UNWIND_PV_C = 0.10f;
+constexpr bool F10B_FLAT = V2_F10B_FLAT;
 constexpr bool F10D_FLATSLOPE = V2_F10D, F10E_SLOWGATE = V2_F10E;
 constexpr float SLOWUP_ERR_PCT = V2_SLOWUP_ERR;
 constexpr float F1_DM_FLOOR = V2_F1_DMF, SLOPE_Z = V2_SLOPE_Z, ASYM_HOLD = V2_ASYM_HOLD;
@@ -477,7 +481,7 @@ class Controller {
       if (I_ > I_MAX) I_ = I_MAX; else if (I_ < -I_MAX) I_ = -I_MAX;
     }
     // G7/F4: the air has overtaken the integral (the crest is above SP): it leaks away instead of waiting to be integrated out, which takes tens of minutes
-    if (F4_UNWIND && e < -0.05f && I_ > 0.0f && !(F10B_LEAK && pv_ < in.sp - UNWIND_PV_C)) { I_ -= I_ * dt / (UNWIND_TAU_FACTOR * theta_); if (I_ < 0.0f) I_ = 0.0f; }
+    if (F4_UNWIND && e < -0.05f && I_ > 0.0f && !(F10B_LEAK && pv_ < in.sp - UNWIND_PV_C && (!F10B_FLAT || (slopeOk_ && std::fabs(slopeMks_) <= flatLimit())))) { I_ -= I_ * dt / (UNWIND_TAU_FACTOR * theta_); if (I_ < 0.0f) I_ = 0.0f; }
     if (idPhase_ == 1 || idPhase_ == 2) {                           // blind / probe phase: power from the CURRENT room below SP, never above the safe level
       const float pp = probePower(in.sp, pv_);
       idPower_ = pp; u = pp < cap ? pp : cap; out.state = StClimb; far_ = false;
@@ -536,6 +540,7 @@ class Controller {
 
  private:
   // ---- G7 helpers ----
+  float flatLimit() const { const float k = kinMinSlope(); return k > 1.5f ? k : 1.5f; }
   float kinMinSlope() const { const float f = 25.0f * dQ_; return f > KIN_SLOPE_MIN_MKS ? f : KIN_SLOPE_MIN_MKS; }    // mK/s: a 60 s slope must be at least ~2.5 sensor steps per 100 s to count
   float patienceS() const {
     float p = patienceObs_ > PATIENCE_MIN_S ? patienceObs_ : PATIENCE_MIN_S;
