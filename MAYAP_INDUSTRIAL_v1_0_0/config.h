@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.0.2";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.0.3";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -961,8 +961,8 @@ constexpr float LOW_ALARM_GAP_C = 0.1f;
 constexpr float HIGH_ALARM_GAP_C = 0.1f;
 constexpr float EMERGENCY_ABOVE_HIGH_C = 0.1f;
 constexpr float VENT_OFF_ABOVE_SV_C = 0.0f;
-constexpr float VENT_ON_ABOVE_SV_C = 0.1f;
-constexpr float VENT_HYSTERESIS_C = 0.1f;
+constexpr float VENT_ON_ABOVE_SV_C = 0.05f;
+constexpr float VENT_HYSTERESIS_C = 0.05f;
 // Chuoi rang buoc: SV <= HUT OFF < HUT ON <= BAO CAO < KHAN CAP.
 // VENT_HYSTERESIS_C la khoang cach toi thieu giua nguong tat va bat quat hut.
 constexpr float HIGH_ALARM_MAX_C = 42.0f;
@@ -1224,6 +1224,7 @@ struct MachineRuntime {
   bool heaterOn = false;
   bool circulationFanOn = false;
   bool ventFanOn = false;
+  uint8_t ventReason = 0;          // why the exhaust fan runs (0 off/unknown, 1 emergency, 2 high, 3 vent line, 4 protection, 5 sensor fault, 6 Web, 7 automatic vent, 8 schedule)
   bool humidifierOn = false;
   bool lightOn = false;
   bool sirenOn = false;
@@ -1323,7 +1324,7 @@ enum class HmiCommandType : uint8_t {
   WebTurnHold         // Remote: alarmMask = direction (0 stop, 1 left, 2 right) | lease ms << 8 (the machine stops by itself when the lease ends)
 };
 // Permission bits of the Web output control (HMI Advanced). Heater, vent, circulation, light, siren, egg turning.
-enum : uint8_t { WebCtlHeater = 1, WebCtlVent = 2, WebCtlCirc = 4, WebCtlLight = 8, WebCtlSiren = 16, WebCtlTurn = 32, WebCtlAll = 63 };
+enum : uint8_t { WebCtlHeater = 1, WebCtlVent = 2, WebCtlCirc = 4, WebCtlLight = 8, WebCtlSiren = 16, WebCtlTurn = 32, WebCtlAutoUpdate = 64, WebCtlAll = 127 };
 // F-09 (audit truoc phat hanh v3.7.1): AlarmAck truoc day khong phan biet
 // lenh den tu bang dieu khien vat ly (HMI) hay tu xa (MQTT/web) - mot nguoi
 // dung tu xa co the xoa loi dao trung (can kiem tra co khi that su) hoac tam

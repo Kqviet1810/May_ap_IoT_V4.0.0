@@ -58,6 +58,14 @@ static volatile uint8_t applyPhase = 0U;  // 0=khong lam gi, 1=dang tai, 2=loi, 
 // atomic tren ESP32 (khong can portENTER_CRITICAL) nen khong dung chung mux
 // voi cac truong "pending" khac de khong lam cham vong lap tai file.
 static volatile uint8_t downloadPercent = 0U;
+// Automatic update ("Cap nhat tu dong", HMI Nang cao > Dieu khien Web, default ON): when a newer firmware is waiting and the machine is idle
+// (no batch, no test, heater switch off: the same condition the HMI path needs) the update starts BY ITSELF after AUTO_UPDATE_DELAY_MS of
+// uninterrupted idleness, without anyone confirming on the HMI.  Anything that makes the machine busy again resets the count.
+static volatile uint8_t autoUpdateAllowed = 1U;
+static volatile uint8_t autoCountdownS = 255U;
+static uint32_t autoReadySince = 0U;
+static char autoTriedVersion[16] = "";
+constexpr uint32_t AUTO_UPDATE_DELAY_MS = 60000UL;
 
 static portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 static bool pendingAvailable = false;
@@ -136,6 +144,14 @@ inline FirmwareWebStatus mayapFirmwareWebStatus() {
 // nhat - chi dat co, viec tai ve/flash thuc su lam ben trong otaTask.
 inline void mayapRequestFirmwareWebApply() {
   __atomic_store_n(&MayapFirmwareWebInternal::applyRequestFlag, 1U, __ATOMIC_RELEASE);
+}
+
+inline void mayapSetFirmwareAutoUpdate(bool allowed) {
+  __atomic_store_n(&MayapFirmwareWebInternal::autoUpdateAllowed, allowed ? 1U : 0U, __ATOMIC_RELEASE);
+}
+// Seconds left before the automatic update starts; 255 = nothing is counting down.
+inline uint8_t mayapFirmwareAutoUpdateCountdownS() {
+  return __atomic_load_n(&MayapFirmwareWebInternal::autoCountdownS, __ATOMIC_ACQUIRE);
 }
 
 // Goi tu lenh "firmware_check_now" nguoi dung bam tren web dashboard (qua
@@ -437,6 +453,29 @@ inline void mayapFirmwareWebUpdate(uint32_t now) {
       if (!told) { setError("CHUA ONLINE/MAT MANG"); told = true; }
     } else told = false;
     return;
+  }
+
+  {   // automatic update: the idle machine, a newer firmware waiting, the permission on: count 60 s, then ask for the apply (once per version and boot)
+    const FirmwareWebStatus waiting = mayapFirmwareWebStatus();
+    const bool idle = mayapFirmwareMaintenanceReady() && !mayapFirmwareMaintenanceActive();
+    const bool allowed = __atomic_load_n(&autoUpdateAllowed, __ATOMIC_ACQUIRE) != 0U;
+    const bool already = waiting.version[0] != '\0' && strcmp(autoTriedVersion, waiting.version) == 0;
+    if (allowed && idle && waiting.available && waiting.applyPhase == 0U && !already) {
+      if (autoReadySince == 0U) { autoReadySince = now | 1U; mayapSerialPrintf(false, "[FWWEB] cap nhat tu dong v%s: bat dau dem 60 s\n", waiting.version); }
+      const uint32_t waited = now - autoReadySince;
+      if (waited >= AUTO_UPDATE_DELAY_MS) {
+        snprintf(autoTriedVersion, sizeof(autoTriedVersion), "%s", waiting.version);
+        autoReadySince = 0U;
+        __atomic_store_n(&autoCountdownS, 255U, __ATOMIC_RELEASE);
+        __atomic_store_n(&applyRequestFlag, 1U, __ATOMIC_RELEASE);
+        mayapSerialPrintf(false, "[FWWEB] cap nhat tu dong v%s: bat dau tai\n", waiting.version);
+        return;
+      }
+      __atomic_store_n(&autoCountdownS, static_cast<uint8_t>((AUTO_UPDATE_DELAY_MS - waited + 999U) / 1000U), __ATOMIC_RELEASE);
+    } else {
+      autoReadySince = 0U;
+      __atomic_store_n(&autoCountdownS, 255U, __ATOMIC_RELEASE);
+    }
   }
 
   const bool checkNow = __atomic_load_n(&checkNowRequestFlag, __ATOMIC_ACQUIRE) != 0U;

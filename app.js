@@ -1343,9 +1343,9 @@
   // ---- Web output control ----
   // The HMI (Nâng cao → Điều khiển Web) grants each output separately; the Web only READS the grant (runtime.tech.webCtl) and the machine refuses a command
   // without it. Bits: 1 heater, 2 vent, 4 circulation, 8 light, 16 siren, 32 egg turning.
-  const WEBCTL = Object.freeze({ heater: 1, vent: 2, circ: 4, light: 8, siren: 16, turn: 32 });
-  const WEBCTL_LABELS = Object.freeze([[1, 'thanh nhiệt'], [2, 'quạt hút'], [4, 'quạt tuần hoàn'], [8, 'đèn'], [16, 'còi'], [32, 'đảo trứng']]);
-  function webCtlMask(device) { return Number(device?.snapshot?.runtime?.tech?.webCtl || 0) & 63; }
+  const WEBCTL = Object.freeze({ heater: 1, vent: 2, circ: 4, light: 8, siren: 16, turn: 32, autoUpdate: 64 });
+  const WEBCTL_LABELS = Object.freeze([[1, 'thanh nhiệt'], [2, 'quạt hút'], [4, 'quạt tuần hoàn'], [8, 'đèn'], [16, 'còi'], [32, 'đảo trứng'], [64, 'cập nhật tự động']]);
+  function webCtlMask(device) { return Number(device?.snapshot?.runtime?.tech?.webCtl || 0) & 127; }
   function webCtlGranted(device, bit) { return (webCtlMask(device) & bit) !== 0; }
   function webCtlActive(device, bit) { return (Number(device?.snapshot?.runtime?.tech?.webAct || 0) & bit) !== 0; }
   function renderWebControls(device, runtime) {
@@ -1377,34 +1377,34 @@
     renderAdvOverview(device, runtime);
   }
 
-  // Every item of the machine's "Nang cao" menu, with what the Web may do with it: read only, write (technical PIN + confirmation on the machine) or machine only.
+  // Every item of the machine's "Nang cao" menu that the Web only SHOWS, as darker tiles in the same grid as the editable ones (the editable ones are the light
+  // tiles above them).  No legend: the shade tells which is which.
   function renderAdvOverview(device, runtime) {
     const box = $('advOverview'); if (!box) return;
     box.textContent = '';
-    if (!runtime) { const p = document.createElement('p'); p.className = 'settingFootnote'; p.textContent = 'Chưa có dữ liệu từ máy.'; box.appendChild(p); return; }
-    const cfg = device?.config || {}, tech = runtime.tech || {};
-    const writable = Boolean(tech.allowed);
-    const num = (v, unit = '') => (Number.isFinite(Number(v)) && v !== null && v !== undefined && v !== '') ? `${Number(v)}${unit}` : '—';
-    const RW = writable ? ['rw', 'Ghi được (mã kỹ thuật + xác nhận trên máy)'] : ['ro', 'Chỉ đọc (máy chưa cho phép ghi)'];
+    if (!runtime) return;
+    const tech = runtime.tech || {};
     const mask = webCtlMask(device);
-    const permLine = WEBCTL_LABELS.map(([bit, name]) => `${name}: ${(mask & bit) ? (webCtlActive(device, bit) ? 'cho phép · đang ghi đè' : 'cho phép') : 'không'}`).join(' · ');
     const rows = [
-      ['Gia nhiệt', `Trần công suất ${num(cfg.maxHeaterPower, '%')}`, ...RW],
-      ['PID Monitor', 'Xem ở thẻ PID Monitor phía trên', 'ro', 'Chỉ đọc'],
-      ['Bảo vệ nhiệt', `Tốc độ ${num(cfg.tempRateLimitC, '°C')}/${num(cfg.tempRateWindowSec, ' s')} · dao động ${num(cfg.tempOscillationCrossLimit)} lần/${num(cfg.tempOscillationWindowSec, ' s')} · không tăng nhiệt ${num(cfg.heaterStuckMinRiseC, '°C')}/${num(cfg.heaterStuckDurationSec, ' s')}`, ...RW],
-      ['Hiệu chuẩn', `Bù nhiệt ${num(cfg.tempOffset, '°C')} · bù ẩm ${num(cfg.humidityOffset, '%RH')}`, ...RW],
-      ['Bản ghi cũ', 'Xem và khôi phục trên máy', 'dev', 'Chỉ trên máy'],
-      ['Quyền Web (PID)', tech.allowed ? 'BẬT' : 'TẮT', 'dev', 'Chỉ đổi trên máy'],
-      ['Điều khiển Web', permLine, 'dev', 'Chỉ đổi trên máy'],
-      ['Chế độ 2 tài khoản', 'Xem và đổi trên máy', 'dev', 'Chỉ trên máy'],
-      ['Đổi mã kỹ thuật', 'Chỉ đổi trên máy', 'dev', 'Chỉ trên máy'],
+      ['PID Monitor', 'Thẻ phía trên'],
+      ['Bản ghi cũ', 'Xem trên máy'],
+      ['Quyền Web (PID)', tech.allowed ? 'BẬT' : 'TẮT'],
+      ...WEBCTL_LABELS.map(([bit, name]) => {
+        const label = `Web: ${name}`;
+        if (bit === WEBCTL.autoUpdate) {
+          const left = Number(tech.fwAutoS);
+          return [label, (mask & bit) ? (Number.isFinite(left) && left < 255 ? `Tự cập nhật sau ${left} giây` : 'BẬT') : 'TẮT'];
+        }
+        return [label, (mask & bit) ? (webCtlActive(device, bit) ? 'CHO PHÉP · ĐANG GHI ĐÈ' : 'CHO PHÉP') : 'KHÔNG'];
+      }),
+      ['Chế độ 2 tài khoản', 'Đổi trên máy'],
+      ['Đổi mã kỹ thuật', 'Đổi trên máy'],
     ];
-    for (const [label, value, kind, badge] of rows) {
-      const row = document.createElement('div'); row.className = 'advRow';
-      const left = document.createElement('div'); const a = document.createElement('strong'); a.textContent = label; const b = document.createElement('span'); b.textContent = value;
-      left.append(a, b);
-      const tag = document.createElement('em'); tag.className = kind; tag.textContent = badge;
-      row.append(left, tag); box.appendChild(row);
+    for (const [label, value] of rows) {
+      const tile = document.createElement('div'); tile.className = 'compactTile ro';
+      const a = document.createElement('span'); a.textContent = label;
+      const b = document.createElement('b'); b.className = 'roValue'; b.textContent = value;
+      tile.append(a, b); box.appendChild(tile);
     }
   }
 
@@ -1474,6 +1474,9 @@
     document.addEventListener('visibilitychange', () => { if (document.hidden) stopHold(); });
   }
 
+  // Why the exhaust fan runs (machine field ventWhy): the tile says it instead of a bare ON.
+  const VENT_WHY = Object.freeze({ 1: 'Khẩn cấp', 2: 'Quá nhiệt cao', 3: 'Quá nhiệt', 4: 'Bảo vệ', 5: 'Lỗi cảm biến', 6: 'Từ Web', 7: 'Thông gió', 8: 'Thông gió theo giờ' });
+  function ventOnText(runtime) { const why = VENT_WHY[Number(runtime?.ventWhy)]; return why ? `BẬT · ${why}` : 'BẬT'; }
   function updateOutput(id, on, onText = 'BẬT', offText = 'TẮT') {
     const element = $(id);
     if (!element) return;
@@ -1575,7 +1578,7 @@
     const heaterActive = runtime.heaterPower == null ? bool(runtime.heaterOn) : Number(runtime.heaterPower) > 0;
     updateOutput('outputHeater', bool(runtime.heaterOn));
     updateOutput('outputCirculation', bool(runtime.circulationFanOn));
-    updateOutput('outputVent', bool(runtime.ventFanOn));
+    updateOutput('outputVent', bool(runtime.ventFanOn), ventOnText(runtime));
     updateOutput('outputHumidifier', bool(runtime.humidifierOn));
     updateOutput('outputLight', bool(runtime.lightOn));
     updateOutput('outputSiren', bool(runtime.sirenOn));
@@ -1601,7 +1604,7 @@
     }
     renderWebControls(device, runtime);
 
-    const turnMap = { 0: 'DỪNG', 1: 'TRÁI', 2: 'PHẢI', 3: 'CHỜ', 4: 'LỖI' };
+    const turnMap = { 0: 'DỪNG', 1: 'ĐANG ĐẢO TRÁI ◀', 2: 'ĐANG ĐẢO PHẢI ▶', 3: 'CHỜ', 4: 'LỖI' };
     const turn = Number(runtime.turnState);
     const outputTurn = $('outputTurn');
     // Dang dao (1/2) thi khong con "lan dao tiep theo" de dem nguoc; chi thay
@@ -1670,7 +1673,7 @@
     if (turn === 1 || turn === 2) {
       setCurrentActivity(`Đang đảo trứng sang ${turn === 1 ? 'trái' : 'phải'}`, 'Đang chờ công tắc hành trình', 'active');
     } else if (runtime.ventFanOn) {
-      setCurrentActivity('Quạt thông gió đang chạy', `Nhiệt độ ${numberVi(runtime.temperature)}°C`, 'active');
+      setCurrentActivity(`Quạt hút đang chạy${VENT_WHY[Number(runtime.ventWhy)] ? ` · ${VENT_WHY[Number(runtime.ventWhy)]}` : ''}`, `Nhiệt độ ${numberVi(runtime.temperature)}°C`, 'active');
     } else if (heaterActive) {
       setCurrentActivity(`Đang gia nhiệt ${numberVi(runtime.temperature)}°C`, `Công suất ${numberVi(runtime.heaterPower, 0)}%`, 'active');
     } else if (runtime.batchRunning) {
@@ -1895,10 +1898,10 @@
     check('temperatureForm', 'highTempAlarmWithoutBatch', config.highTempAlarmWithoutBatch);
     assign('ventForm', 'ventOn', config.ventOnTemp);
     assign('ventForm', 'ventOff', config.ventOffTemp);
-    $('ventOn').min = (Number(config.targetTemp) + 0.1).toFixed(1);
-    $('ventOn').max = Number(config.highTempAlarm).toFixed(1);
-    $('ventOff').min = Number(config.targetTemp).toFixed(1);
-    $('ventOff').max = Number(config.highTempAlarm).toFixed(1);
+    $('ventOn').min = (Number(config.targetTemp) + 0.05).toFixed(2);
+    $('ventOn').max = Number(config.highTempAlarm).toFixed(2);
+    $('ventOff').min = Number(config.targetTemp).toFixed(2);
+    $('ventOff').max = Number(config.highTempAlarm).toFixed(2);
     check('ventForm', 'ventAutoEnabled', config.ventAutoEnabled);
     assign('ventForm', 'ventProfileLevel', config.ventProfileLevel ?? 1);
     assign('ventForm', 'ventCycleMinutes', config.ventCycleMinutes ?? 40);
@@ -3275,14 +3278,16 @@
     if (!card) return;
     const gate = techGateInfo(runtime);
     const tech = runtime?.tech || {};
-    card.hidden = !gate.allowed;
-    if (!gate.allowed) { $('techPin').value = ''; return; }
-    $('techLocked').hidden = gate.session;
-    $('advancedForm').hidden = !gate.session;
+    $('techLocked').hidden = !(gate.allowed && !gate.session);
+    $('techActions').hidden = !gate.session;
+    // the light tiles are the ones the Web may write: they open for editing only inside an unlocked technician session
+    for (const input of card.querySelectorAll('#advancedForm .advGrid:not(#advOverview) input')) input.disabled = !gate.session;
+    if (!gate.allowed) $('techPin').value = '';
     const mmss = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
-    $('techSummary').textContent = gate.session ? `Đã mở khóa · còn ${mmss(Number(tech.sessionS || 0))}`
+    $('techSummary').textContent = !gate.allowed ? 'Mọi mục Nâng cao của máy'
+      : gate.session ? `Đã mở khóa · còn ${mmss(Number(tech.sessionS || 0))}`
       : Number(tech.lockS) > 0 ? `Bị khóa ${tech.lockS} giây`
-      : tech.pinSet === false ? 'Máy chưa đặt mã kỹ thuật' : 'Cần mã kỹ thuật 4 số';
+      : tech.pinSet === false ? 'Máy chưa đặt mã kỹ thuật' : 'Cần mã kỹ thuật 4 số để sửa';
     $('techUnlockBtn').disabled = !controlReady(device) || Number(tech.lockS) > 0 || tech.pinSet === false;
     if (!gate.session) return;
     $('techSessionNote').textContent = `Phiên Kỹ thuật còn ${mmss(Number(tech.sessionS || 0))}.`;
@@ -3847,11 +3852,11 @@
     const on = Number($('ventOn').value);
     const off = Number($('ventOff').value);
     const target = Number(currentDevice()?.config?.targetTemp);
-    if (!Number.isFinite(on) || on < target + 0.1 - 0.0005)
-      return invalidate('ventForm', 'ventOn', 'Ngưỡng bật quạt phải cao hơn nhiệt độ đặt ít nhất 0,1°C.');
+    if (!Number.isFinite(on) || on < target + 0.05 - 0.0005)
+      return invalidate('ventForm', 'ventOn', 'Ngưỡng bật quạt phải cao hơn nhiệt độ đặt ít nhất 0,05°C.');
     if (!Number.isFinite(off) || off < target - 0.0005)
       return invalidate('ventForm', 'ventOff', 'Ngưỡng tắt quạt không được thấp hơn nhiệt độ đặt.');
-    if (on - off < 0.1 - 0.0005) return invalidate('ventForm', 'ventOn', 'Ngưỡng bật phải cao hơn ngưỡng tắt ít nhất 0,1°C.');
+    if (on - off < 0.05 - 0.0005) return invalidate('ventForm', 'ventOn', 'Ngưỡng bật phải cao hơn ngưỡng tắt ít nhất 0,05°C.');
     if (!(on <= Number(currentDevice()?.config?.highTempAlarm)))
       return invalidate('ventForm', 'ventOn', 'Ngưỡng bật quạt không được cao hơn cảnh báo nhiệt cao.');
     if (!supportsVentProfile(currentDevice()?.config)) return true;

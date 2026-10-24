@@ -37,6 +37,8 @@ static void sanitizeMachineConfig(MachineConfig &c) {
   c.maxHeaterPower = static_cast<uint8_t>(std::min<int>(100, std::max<int>(10, c.maxHeaterPower)));
 }
 static bool timeReached(uint32_t now, uint32_t deadline) { return static_cast<int32_t>(now - deadline) >= 0; }
+static bool g_autoUpdateAllowed = true;
+static void mayapSetFirmwareAutoUpdate(bool allowed) { g_autoUpdateAllowed = allowed; }          // the OTA task's permission mirror (ota_web_update.h)
 
 static unsigned checks = 0;
 #define CHECK(c) do { ++checks; if (!(c)) { std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); std::abort(); } } while (0)
@@ -265,15 +267,15 @@ int main() {
 
   // 12. Web output control permissions: HMI only, needs the technician session, stored with the PIN record, revokes the overrides of what is taken away.
   { Ctl c; fresh(c, now);
-    CHECK(c.techGate_.webCtlMask() == 30 && c.runtime_.tech.webCtlMask == 30);                               // default: vent, circulation, light, siren ON; heater and turning OFF
-    CHECK(c.run(now, HmiCommandType::WebCtlSet, false, 0x3F, m) && c.techGate_.webCtlMask() == 0x3F);
+    CHECK(c.techGate_.webCtlMask() == 94 && c.runtime_.tech.webCtlMask == 94);                               // default: vent, circulation, light, siren and automatic firmware update ON; heater and turning OFF
+    CHECK(c.run(now, HmiCommandType::WebCtlSet, false, 0x7F, m) && c.techGate_.webCtlMask() == 0x7F);
     CHECK(c.webRevoked == 0);                                                                                  // nothing was taken away
     CHECK(c.run(now, HmiCommandType::WebCtlSet, false, WebCtlLight | WebCtlTurn, m) && c.techGate_.webCtlMask() == (WebCtlLight | WebCtlTurn));
-    CHECK(c.webRevoked == (WebCtlHeater | WebCtlVent | WebCtlCirc | WebCtlSiren));                            // exactly the removed bits are revoked at once
+    CHECK(c.webRevoked == (WebCtlHeater | WebCtlVent | WebCtlCirc | WebCtlSiren | WebCtlAutoUpdate));                            // exactly the removed bits are revoked at once
     CHECK(c.techGate_.webAllowed() == false);                                                                  // independent of the PID-engineering Web permission
     CHECK(!c.run(now, HmiCommandType::WebCtlSet, true, 0x3F, m) && m == "CHI HMI DUOC DOI QUYEN");            // the Web can never grant itself anything
     CHECK(c.techGate_.webCtlMask() == (WebCtlLight | WebCtlTurn));
-    CHECK(c.run(now, HmiCommandType::WebCtlSet, false, 0xFF, m) && c.techGate_.webCtlMask() == WebCtlAll);   // bits above the six are ignored
+    CHECK(c.run(now, HmiCommandType::WebCtlSet, false, 0xFF, m) && c.techGate_.webCtlMask() == WebCtlAll);   // bits above the seven are ignored
     // the permission survives a restart (same record) and a new PIN keeps it
     TechAccess::Gate<FakeAuth> again(c.auth_); again.begin(now + 10);
     CHECK(again.webCtlMask() == WebCtlAll);

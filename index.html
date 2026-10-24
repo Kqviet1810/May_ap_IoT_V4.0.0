@@ -70,7 +70,7 @@
 <div class="outputStrip" id="outputStrip">
 <button aria-label="Thanh nhiệt: ngắt/cho phép từ xa" id="outputHeaterBtn" type="button"><span>Thanh nhiệt</span><strong id="outputHeater">TẮT</strong></button>
 <button aria-label="Bật/tắt quạt tuần hoàn" id="outputCircBtn" type="button"><span>Tuần hoàn</span><strong class="on" id="outputCirculation">BẬT</strong></button>
-<button aria-label="Bật/tắt quạt hút" id="outputVentBtn" type="button"><span>Thông gió</span><strong id="outputVent">TẮT</strong></button>
+<button aria-label="Bật/tắt quạt hút" id="outputVentBtn" type="button"><span>Quạt hút</span><strong id="outputVent">TẮT</strong></button>
 <div hidden id="outputHumidifierTile"><span>Tạo ẩm</span><strong id="outputHumidifier">TẮT</strong></div>
 <div class="turnTile" id="outputTurnTile"><span>Đảo trứng</span><strong id="outputTurn">CHỜ</strong><div class="turnSplit" hidden id="turnSplit"><button aria-label="Giữ để đảo sang trái" id="turnLeftBtn" type="button">◀ Đảo trái</button><i aria-hidden="true"></i><button aria-label="Giữ để đảo sang phải" id="turnRightBtn" type="button">Đảo phải ▶</button></div></div>
 <button aria-label="Bật/tắt đèn" id="outputLightBtn" type="button"><span>Đèn</span><strong id="outputLight">TẮT</strong></button>
@@ -202,8 +202,8 @@
 <form class="settingBody" id="ventForm">
 <p class="settingFootnote" id="ventAvailability" role="status">Kết nối máy để xem và điều chỉnh thông số quạt hút.</p>
 <div class="tempGrid">
-<label class="compactTile"><span>Bật quạt khi nhiệt cao</span><div class="unit"><input id="ventOn" max="42" min="30" step="0.1" type="number" value="38"/><b>°C</b></div></label>
-<label class="compactTile"><span>Tắt quạt khi nhiệt hạ</span><div class="unit"><input id="ventOff" max="42" min="30" step="0.1" type="number" value="37.6"/><b>°C</b></div></label>
+<label class="compactTile"><span>Bật quạt khi nhiệt cao</span><div class="unit"><input id="ventOn" max="42" min="30" step="0.05" type="number" value="38"/><b>°C</b></div></label>
+<label class="compactTile"><span>Tắt quạt khi nhiệt hạ</span><div class="unit"><input id="ventOff" max="42" min="30" step="0.05" type="number" value="37.6"/><b>°C</b></div></label>
 </div>
 <fieldset class="ventProfileFields" id="ventProfileFields" disabled>
 <div class="notificationLine"><div><strong>Thông gió tự động</strong><small>Máy thay đổi thời gian chạy quạt theo ngày ấp. Bảo vệ quá nhiệt luôn được ưu tiên.</small></div><label class="toggle"><input id="ventAutoEnabled" type="checkbox"/><i></i></label></div>
@@ -255,33 +255,24 @@
 <p class="settingFootnote" id="pmLegend">Đỏ: nhiệt độ · xanh: giá trị đặt · cam: công suất yêu cầu · tím nét đứt: SSR thực tế (TB 60 s) · dải xám: quạt hút chạy</p>
 </div>
 </details>
-<details class="settingCard" id="advOverviewCard">
-<summary><span class="settingIcon"><svg fill="none" height="22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="22"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg></span><span class="settingSummary"><strong>Nâng cao trên máy</strong><small>Mọi mục của màn hình máy · đọc / ghi</small></span></summary>
+<details class="settingCard" id="techCard">
+<summary><span class="settingIcon"><svg fill="none" height="22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="22"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg></span><span class="settingSummary"><strong>Nâng cao</strong><small id="techSummary">Mọi mục Nâng cao của máy</small></span><span aria-hidden="true" class="disclosure"></span></summary>
 <div class="settingBody">
-<p class="settingFootnote">Web hiện mọi mục của màn hình máy → Nâng cao. Nhãn cho biết mục nào Web chỉ xem, mục nào ghi được.</p>
-<div class="advOverview" id="advOverview"></div>
-</div>
-</details>
-<details class="settingCard" id="techCard" hidden>
-<summary><span class="settingIcon"><svg fill="none" height="22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="22"><rect height="11" rx="2" width="16" x="4" y="11"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><span class="settingSummary"><strong>Kỹ thuật PID</strong><small id="techSummary">Cần mã kỹ thuật 4 số</small></span><span aria-hidden="true" class="disclosure"></span></summary>
-<div class="settingBody">
-<div id="techLocked">
-<p class="settingFootnote">Mục này do máy cho phép (Nâng cao → Quyền Web PID). Nhập mã kỹ thuật 4 số đã đặt trên màn hình máy. Mã không được lưu trên trình duyệt.</p>
+<div id="techLocked" hidden>
 <form class="stackForm" id="techUnlockForm" autocomplete="off">
 <label class="field"><span>Mã kỹ thuật</span><input autocomplete="off" id="techPin" inputmode="numeric" maxlength="4" minlength="4" pattern="[0-9]{4}" placeholder="4 chữ số" required="" type="password"/></label>
 <p class="formError" id="techUnlockError" role="alert"></p>
-<button class="primary full" id="techUnlockBtn" type="submit">Mở khóa</button>
+<button class="primary full" id="techUnlockBtn" type="submit">Mở khóa để sửa</button>
 </form>
 </div>
-<form id="advancedForm" hidden>
+<form id="advancedForm">
 <div class="techSession" id="techSessionNote" role="status"></div>
-<p class="settingFootnote"><strong>Gia nhiệt</strong></p>
-<div class="tempGrid">
+<p class="advGroup">Gia nhiệt</p>
+<div class="advGrid">
 <label class="compactTile"><span>Trần công suất nhiệt</span><div class="unit"><input id="advMaxHeaterPower" max="100" min="10" step="1" type="number"/><b>%</b></div></label>
 </div>
-<hr class="settingDivider"/>
-<p class="settingFootnote"><strong>Bảo vệ nhiệt (ngưỡng chẩn đoán)</strong></p>
-<div class="tempGrid">
+<p class="advGroup">Bảo vệ nhiệt</p>
+<div class="advGrid">
 <label class="compactTile"><span>Tốc độ tăng/giảm bất thường</span><div class="unit"><input id="advTempRateLimitC" max="10" min="0.1" step="0.1" type="number"/><b>°C</b></div></label>
 <label class="compactTile"><span>Khung đánh giá tốc độ</span><div class="unit"><input id="advTempRateWindowSec" max="1800" min="30" step="1" type="number"/><b>Giây</b></div></label>
 <label class="compactTile"><span>Số lần dao động cho phép</span><input id="advTempOscillationCrossLimit" max="30" min="2" step="1" type="number"/></label>
@@ -289,17 +280,20 @@
 <label class="compactTile"><span>Mức tăng nhiệt tối thiểu</span><div class="unit"><input id="advHeaterStuckMinRiseC" max="5" min="0.05" step="0.05" type="number"/><b>°C</b></div></label>
 <label class="compactTile"><span>Thời gian xác nhận không tăng nhiệt</span><div class="unit"><input id="advHeaterStuckDurationSec" max="3600" min="60" step="1" type="number"/><b>Giây</b></div></label>
 </div>
-<hr class="settingDivider"/>
-<p class="settingFootnote"><strong>Hiệu chuẩn cảm biến</strong></p>
-<div class="tempGrid">
+<p class="advGroup">Hiệu chuẩn cảm biến</p>
+<div class="advGrid">
 <label class="compactTile"><span>Bù nhiệt độ</span><div class="unit"><input id="tempOffset" max="5" min="-5" step="0.1" type="number" value="0"/><b>°C</b></div></label>
 <label class="compactTile"><span>Bù độ ẩm</span><div class="unit"><input id="humidityOffset" max="20" min="-20" step="0.1" type="number" value="0"/><b>%RH</b></div></label>
 </div>
-<p class="settingFootnote">Web không tự lưu. Nút bên dưới chỉ gửi yêu cầu; máy hiện giá trị cũ/mới trên màn hình và chờ bạn bấm CÓ hoặc KHÔNG trong 60 giây. Không có mẻ đang chạy mới áp dụng được.</p>
+<p class="advGroup">Trên máy</p>
+<div class="advGrid" id="advOverview"></div>
 <p class="formError" id="advancedFormError" role="alert"></p>
 <p class="settingFootnote" id="techRequestStatus" role="status"></p>
+<div id="techActions" hidden>
+<p class="settingFootnote">Web không tự lưu: nút này chỉ gửi yêu cầu, máy hiện giá trị cũ/mới và chờ bạn bấm CÓ hoặc KHÔNG trong 60 giây. Không có mẻ đang chạy mới áp dụng được.</p>
 <button class="primary full" id="techSendBtn" type="submit">Gửi yêu cầu (chờ xác nhận tại máy)</button>
 <button class="ghost full" id="techLockBtn" type="button">Khóa lại</button>
+</div>
 </form>
 </div>
 </details>
@@ -403,5 +397,5 @@
 </dialog>
 <div aria-live="polite" class="toast" id="toast" role="status"></div>
 
-<script defer src="./config.js?v=1.1.23"></script><script defer src="./account.js?v=1.1.23"></script><script defer src="./vendor/jsQR.min.js"></script><script defer src="./vendor/mqtt.min.js"></script><script defer src="./push.js?v=1.1.23"></script><script defer src="./protocol_v2.js?v=1.1.23"></script><script defer src="./notes.js?v=1.1.23"></script><script defer src="./mqtt_transport.js?v=1.1.23"></script><script defer src="./app.js?v=1.1.23"></script></body>
+<script defer src="./config.js?v=1.1.24"></script><script defer src="./account.js?v=1.1.24"></script><script defer src="./vendor/jsQR.min.js"></script><script defer src="./vendor/mqtt.min.js"></script><script defer src="./push.js?v=1.1.24"></script><script defer src="./protocol_v2.js?v=1.1.24"></script><script defer src="./notes.js?v=1.1.24"></script><script defer src="./mqtt_transport.js?v=1.1.24"></script><script defer src="./app.js?v=1.1.24"></script></body>
 </html>
