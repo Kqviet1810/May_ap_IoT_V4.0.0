@@ -209,6 +209,10 @@ class Sim {
     rig.config_.tempOffset = isfinite(tempOffsetCfg) ? tempOffsetCfg : 0.0f;
     rig.batchRunning_ = s_.batchRunning;
     rig.inputs_.in.heaterEnable = true;
+    if (s_.ventAuto) {                                      // the automatic profile through the production logic (cycle 40 min)
+      rig.config_.ventAutoEnabled = true; rig.config_.ventScheduleEnabled = false; rig.config_.ventCycleMinutes = 40;
+      rig.config_.ventDutyDay1To3 = static_cast<uint8_t>(s_.ventDuty); rig.config_.ventProfileLevel = 1;
+    }
     if (s_.ventAt >= 0 && s_.ventKnown != 0) {              // scheduled vent through the production schedule logic
       rig.config_.ventScheduleEnabled = true; rig.config_.ventAutoEnabled = false; rig.config_.ventScheduleCount = 1;
       rig.config_.ventScheduleDurationMin = static_cast<uint8_t>(std::max(1.0, s_.ventFor / 60.0));

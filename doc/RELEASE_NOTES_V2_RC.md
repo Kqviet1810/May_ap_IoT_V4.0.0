@@ -1,5 +1,7 @@
 # Thermal V2.0.1 — ứng viên phát hành (rc), ghi chú
 
+**2.0.2 (G8):** sửa theo log lò thật 24/10 — trọng số tin cậy cho dự đoán (luật bám PV đo khi dự đoán không khớp), tích phân theo PV đo khi kẹt dưới SP, lọc nhiễu dự đoán từ độ dốc, quạt hút thành đầu vào của khối V2 (học tổn thất do quạt, bù trước theo lịch thông gió tự động), cột `trust_pct` trong CSV, hai trạng thái `recover` / `degraded`. Chi tiết, số liệu và cái giá: `doc/THERMAL_V2_G8_DESIGN.md`. Chưa thử lò thật.
+
 **2.0.1 (G7):** sửa theo log lò thật 23/10 — dự đoán neo vào nhu cầu đo được, học nhiệt tồn, phanh lần đầu, giới hạn đuổi khuyết (cửa), chạy ngầm khi quạt hút chặn sưởi. Chi tiết, số liệu và cái giá: `doc/THERMAL_V2_G7_DESIGN.md`. Web: ô đảo trứng chia đôi khi được phép và AUTO tắt; thẻ "Nâng cao trên máy" (đọc/ghi); log 30 phút (CSV có cột `v2_state`).
 
 Trạng thái: **chưa thử lò thật.** Mô phỏng + biên dịch CI. Không gắn tag, không tạo Release (chờ bạn).
