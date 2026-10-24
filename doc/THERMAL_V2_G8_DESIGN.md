@@ -42,6 +42,42 @@ Khối quyết định nhiệt vẫn là **một hàm**: nhận một `Input`, t
 * **Giảm `ASYM`:** chưa làm mặc định, vì giảm bảo vệ vọt; chưa có lợi ích đo được tách riêng khỏi F10C.
 * **Khối nhiệt chậm** (thép xe/vách): chưa làm. Mô hình vẫn một khối trứng; đây là nguyên nhân khả dĩ của việc nhu cầu giữ đổi 43 → 15 % trong 20 phút ở log 24/10. Chỉ nên làm nếu log lò thật sau bản này cho thấy còn lệch.
 
-## 6. Kết quả mô phỏng
+## 6. Kết quả mô phỏng (G7 → G8)
 
-(Điền sau khi lưới cuối chạy xong; xem `tools/thermal-v2/g8_results.txt`.)
+Tiêu chí tiêu chuẩn (các kịch bản S1…S9 mặc định) **không đo mục tiêu của G8**, nên chỉ kiểm không tệ đi:
+
+| | A+D+E (88 lò, dev) G7 → G8 | B (hạt mới 20261225) + C (held-out) G7 → G8 |
+|---|---|---|
+| Cổng an toàn (High / Emergency / unsafe / E115) | 968/968 → 968/968 | High 890/891 → **891/891**; C8cal High 29/33 → 30/33; còn lại không đổi |
+| Tiêu chí không đạt (tổng) | 436 → 439 | 573 → 573 |
+| R2.over (vọt ≤ 0,2) | 549 → 540 /616 | 509 → 500 /567 |
+| R7.spstep.settle | 71 → 76 /88 | 60 → 64 /81 |
+| R5.door | 66 → 67 /88 | 50 → 53 /79 |
+| R4.tail | 83 → 85 /88 | 67 → 70 /81 |
+
+Kịch bản đo đúng cái G8 sửa (bộ giữ riêng B và C, G7 → G8, tỷ lệ % thời gian cuối trong ±0,1 °C):
+
+| Kịch bản | B | C |
+|---|---|---|
+| S15a thông gió tự động 10 % chu kỳ | 82,3 → 88,7; High 2 → 0 | 85,1 → 85,7; High 2 → 0 |
+| S15b thông gió 25 % | 65,0 → 86,9; High 4 → 0 | 69,7 → 89,1; High 3 → 1 |
+| S15c thông gió 50 % | 37,0 → **86,3**; High 3 → 0 | 32,1 → **90,8**; High 3 → 0 |
+| S14b nhu cầu tăng chậm 20 % | 85,8 → 92,8 | 86,8 → 91,8 (một ca High mới) |
+| S11b cửa 5 phút | 97,6 → 98,5; High 0 → 0 | 89,2 → 91,4; High 0 → 0 |
+| S13a cửa hé 15 phút | 94,2 → **87,7**; High 5 → 5 | 96,9 → **93,5**; High 8 → 9 |
+
+Trên tập dev E: S14a/b/c giữ nhiệt 86 → 95, 81 → 90, 71 → 83 %; S15c 30 → 94 %.
+
+**Cái giá và giới hạn:**
+* Ca cửa hé lâu (S13a/b/c) kém đi chút ít ở độ ổn định sau khi đóng cửa, số ca High không đổi hoặc +1; dạng này luôn là điểm yếu (xem G7).
+* Hai lò E20/E35 (cảm biến trễ 90 s) ở cửa 5 phút vẫn nằm sát vạch High 38,2 °C ở cả G7 và G8; lệch vài phần trăm độ có thể đẩy qua.
+* S14b ở bộ C có thêm một ca High nhỏ (vọt +0,70).
+* Đầu vào quạt chỉ biết lịch của **thông gió tự động theo chu kỳ**; thông gió theo lịch giờ, quạt do vạch nhiệt hoặc Web chỉ được học qua dFan khi đã chạy (không bù trước).
+* Mô phỏng chưa có khối nhiệt chậm của thép xe; bản này chưa thử trên lò thật.
+
+## 7. Cách thử trên lò (bổ sung cho `doc/FIELD_TRIAL_V2.md`)
+
+1. Lên nhiệt từ nguội, mở PID Monitor trước vài phút. Cột `trust_pct` ở CSV phải ở 100 % khi PV đứng yên đúng SP; nếu nó tụt dưới 50 % kéo dài trong khi PV lệch SP, đó là dấu hiệu mô hình sai mức nhu cầu (ghi lại, gửi log).
+2. Giữ ổn định ≥ 90 phút, xem PV có còn kẹt dưới SP > 0,1 °C quá 10 phút không (trước đây: kẹt 17+ phút ở 0,1–0,4 °C).
+3. Bật thông gió tự động (chu kỳ 40 phút), chạy ≥ 2 chu kỳ; so PV lúc quạt chạy và sau khi quạt dừng.
+4. Mở cửa 5 phút rồi đóng, như các lần trước.
