@@ -96,6 +96,7 @@ struct Scenario {
   double door = 0;                    // S4: air step (negative)
   double trayFrac = 0, trayTemp = 28; // S5: fraction of egg mass replaced by cold eggs
   double ventAt = -1, ventFor = 300, ventKnown = 0;       // S6
+  bool ventAuto = false; int ventDuty = 10;               // S15: the production automatic vent profile (cycle 40 min, day-1-3 duty = ventDuty %)
   double embryoMax = 0, ambientTo = NAN;                  // S7 (ramped over the whole run)
   double spStep = 0;                                      // S8
   double permitLossAt = -1, permitLossFor = 600;          // S9
@@ -151,7 +152,7 @@ struct V2Ctl : Controller {            // the V2 law behind the production adapt
     const thermalv2::Controller &c = slot.controller();
     static const bool dbg = std::getenv("V2DBG") != nullptr;
     if (dbg && (si.nowMs % 20000U) < 100U)
-      std::fprintf(stderr, "t=%6.0f pv=%.2f pred=%.2f u=%.1f k=%.2e th=%.0f dloss=%.1f I=%.1f Te=%.2f st=%d dnow=%.1f truth=%.1f td=%.0f tl=%.0f te=%.0f ha=%.1f sg=%.2f rj=%d rms=%.2f pm=%.2f sl=%.1f cg=%.2f/%d br=%d\n", (si.nowMs - 1000) / 1000.0, si.pv, c.predicted(), slot.last().powerPct, c.kAir(), c.thetaHat(), c.dLoss(), c.integral(), c.teModel(), slot.last().state, c.dNow(), g_truthDemandPct, c.tdHat(), c.tauHat(), c.tauEggHat(), c.haPct(), c.sigmaPred(), c.fitRejects(), c.fitRms(), c.predictedModel(), c.slopeMks(), c.coastGain(), (int)c.coastSamples(), (int)c.brakeRunning());
+      std::fprintf(stderr, "t=%6.0f pv=%.2f pred=%.2f u=%.1f k=%.2e th=%.0f dloss=%.1f I=%.1f Te=%.2f st=%d dnow=%.1f truth=%.1f td=%.0f tl=%.0f te=%.0f ha=%.1f sg=%.2f rj=%d rms=%.2f pm=%.2f sl=%.1f cg=%.2f/%d br=%d tr=%.2f gap=%.3f dfan=%.1f\n", (si.nowMs - 1000) / 1000.0, si.pv, c.predicted(), slot.last().powerPct, c.kAir(), c.thetaHat(), c.dLoss(), c.integral(), c.teModel(), slot.last().state, c.dNow(), g_truthDemandPct, c.tdHat(), c.tauHat(), c.tauEggHat(), c.haPct(), c.sigmaPred(), c.fitRejects(), c.fitRms(), c.predictedModel(), c.slopeMks(), c.coastGain(), (int)c.coastSamples(), (int)c.brakeRunning(), c.trust(), c.gapEma(), c.fanLoss());
     return u;
   }
 };

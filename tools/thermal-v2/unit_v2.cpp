@@ -223,6 +223,23 @@ int main() {
       p.step(in.deliveredPct > 0 ? 1.0 : 0.0, 0.1); p.UA = ua; if (p.Ta > peak) peak = p.Ta; }
     CHECK(!bad, "G7 door: output finite and in [0, 100] through a 10 min door and its recovery");
     CHECK(peak < 38.6, "G7 door: the recovery after the door stays below the vent / High region"); }
+  // ---- G8 ----
+  { Controller c; Mini p; simulate(c, p, 2.0, 37.5f, 100.0f);                                // settled: the prediction and the air agree, the law trusts the prediction
+    CHECK(c.trust() >= 0.0f && c.trust() <= 1.0f && c.trust() > 0.8f, "G8 trust: after a settled run the weight of the prediction is high and within [0, 1]"); }
+  { Controller c; Input in; in.pv = 33.0f; in.sp = 37.5f; in.permit = true; in.newSample = true; Output o = c.step(in);
+    CHECK(o.trustQ <= 15, "G8 trust: the telemetry nibble fits 4 bits (the PID log packs it above the state)"); }
+  { Controller c; Mini p; simulate(c, p, 2.0, 37.5f, 100.0f);                                // a vent that the schedule announces: 10 min of a fan taking 2 kW out, every 40 min, for 3 h
+    Input in; in.sp = 37.5f; in.capPct = 100.0f; in.dtS = 0.1f; in.permit = true; in.dQ = 0.1f; float u = 0; bool bad = false; double lo = 99, hi = 0;
+    for (int k = 0; k < 36000 * 3; ++k) {
+      const double t = k * 0.1, ph = std::fmod(t, 2400.0); const bool on = ph < 600.0;
+      in.ventFan = on; in.ventOnInS = on ? 0.0f : static_cast<float>(2400.0 - ph); in.ventOffInS = on ? static_cast<float>(600.0 - ph) : in.ventOnInS + 600.0f;
+      const double ua = p.UA; if (on) p.UA += 160.0;
+      in.pv = quant(p.Ta); in.newSample = (k % 20) == 0; in.deliveredPct = ((k % 30) < static_cast<int>(u * 0.3f + 0.5f)) ? 100.0f : 0.0f;
+      const Output o = c.step(in); u = o.powerPct; if (!std::isfinite(u) || u < 0.0f || u > 100.0f + 1e-3f) bad = true;
+      p.step(in.deliveredPct > 0 ? 1.0 : 0.0, 0.1); p.UA = ua; if (k > 36000 && p.Ta > hi) hi = p.Ta; if (k > 36000 && p.Ta < lo) lo = p.Ta; }
+    CHECK(!bad, "G8 vent: output finite and in [0, 100] through 3 h of announced vent runs");
+    CHECK(c.fanLoss() > 0.0f && c.fanLoss() <= 60.0f, "G8 vent: the fan's loss was learned apart from the oven's own level, within its bound");
+    CHECK(hi < 38.2 && lo > 36.8, "G8 vent: the air stays within +0.7 / -0.7 degC of SP through the vent runs after the first hour"); }
   g_q = 0.1;
   std::printf("%s (%d failure(s))\n", fails ? "UNIT FAILED" : "UNIT PASSED", fails);
   return fails ? 1 : 0;

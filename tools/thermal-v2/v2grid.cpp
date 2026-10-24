@@ -47,6 +47,9 @@ static Scenario scenario(const std::string &id) {
   else if (id == "S14a" || id == "S14b" || id == "S14c") {            // the owner's 23 Oct drift: the demand creeps up by 15 / 20 / 30 % of Pmax over 10 / 20 / 10 min and stays
     s.warm = true; s.eventAt = 5400; s.doorAt = 5400; s.rampFrac = id == "S14a" ? 0.15 : (id == "S14b" ? 0.20 : 0.30); s.rampFor = id == "S14b" ? 1200 : 600; s.duration = 5400 + 2 * 3600;
   }
+  else if (id == "S15a" || id == "S15b" || id == "S15c") {            // the owner's 24 Oct switch-on of the automatic ventilation: the fan runs 10 / 25 / 50 % of every 40 min
+    s.warm = true; s.eventAt = 5400; s.ventAuto = true; s.ventDuty = id == "S15a" ? 10 : (id == "S15b" ? 25 : 50); s.duration = 5400 + 3 * 3600;
+  }
   else if (id.rfind("S10", 0) == 0) {            // G4 protection: S10a..S10g = fault kinds 1..7, injected into a settled oven
     s.warm = true; s.eventAt = 5400; s.fault = id.size() > 3 ? id[3] - 'a' + 1 : 1; s.faultAt = 5400; s.duration = 5400 + 2 * 3600;
     if (id == "S10h") { s.warm = false; s.startAir = s.startEgg = 28; s.fault = 1; s.faultAt = 800; s.eventAt = 0; s.duration = 4 * 3600; }   // frozen sensor WHILE climbing (cold, far below SP)

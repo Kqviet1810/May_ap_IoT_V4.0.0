@@ -5049,7 +5049,7 @@ class MachineController {
       s.flags = static_cast<uint8_t>((m.phase & MayapPidLog::FlPhaseMask) | (m.suspect ? MayapPidLog::FlSuspect : 0U) | (o.ventFan ? MayapPidLog::FlVentFan : 0U) |
           (o.heaterSsr ? MayapPidLog::FlSsr : 0U) | (o.heatMaster ? MayapPidLog::FlMaster : 0U) | (batchRunning_ ? MayapPidLog::FlBatch : 0U) |
           (sensorUsable_ ? MayapPidLog::FlSensorOk : 0U));
-      s.spare = m.v2State;
+      s.spare = static_cast<uint8_t>((m.v2State & 0x0FU) | (static_cast<uint8_t>(thermalV2_.last().trustQ & 0x0FU) << 4));
       MayapPidLog::ring().push(s);
     }
   }
@@ -5071,6 +5071,17 @@ class MachineController {
     const float stuckLimitMs = static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f;
     si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterStuckAccumOnMs_) / stuckLimitMs : 0.0f;
     si.dQ = thermalV2SensorStepC();
+    si.ventFan = st.ventFan;                                                // the fan that really runs: it takes heat out of the box
+    if (config_.ventAutoEnabled && batchRunning_ && !warmupVentHold_) {     // the automatic profile knows when it starts and ends: the controller pays for the loss in advance
+      const uint32_t cycleSec = static_cast<uint32_t>(config_.ventCycleMinutes) * 60UL;
+      if (cycleSec > 0UL) {
+        const uint32_t elapsedSec = elapsedBatchSec(now);
+        const uint8_t duty = ventProfileDutyPercent(config_, elapsedSec / 86400UL + 1UL, humidityLowActive_);
+        const uint32_t onSec = cycleSec * duty / 100UL, phase = elapsedSec % cycleSec;
+        if (phase < onSec) { si.ventOnInS = 0.0f; si.ventOffInS = static_cast<float>(onSec - phase); }
+        else if (onSec > 0UL) { si.ventOnInS = static_cast<float>(cycleSec - phase); si.ventOffInS = si.ventOnInS + static_cast<float>(onSec); }
+      }
+    }
     return si;
   }
   float thermalV2Command(uint32_t now, bool permit, bool shadow) {

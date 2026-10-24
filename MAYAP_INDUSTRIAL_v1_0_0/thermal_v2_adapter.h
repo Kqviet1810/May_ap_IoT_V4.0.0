@@ -18,6 +18,8 @@ struct ThermalV2SlotIn {
   float deliveredPct = 0.0f;          // what the arbiter really gave in the last step (0 or 100)
   float e115Frac = 0.0f;              // E115 evidence: heater-on time without the 0.3 degC rise / its limit
   float dQ = 0.1f;                    // sensor step [degC]: 0.1 (X10), 0.01 (X100 / native)
+  bool ventFan = false;               // the exhaust fan is running (the arbiter's real output)
+  float ventOnInS = 1.0e6f, ventOffInS = 1.0e6f;   // the vent schedule's own knowledge: seconds to the next start / to the end of the run (1e6 = unknown)
   float dtOverrideS = NAN;            // host rigs only (jitter experiments); never set by the firmware
 };
 
@@ -42,6 +44,7 @@ class ThermalV2Slot {
     thermalv2::Input i;
     i.pv = in.pv; i.sp = in.sp; i.dQ = in.dQ; i.headroomC = in.headroomC; i.alarmHeadroomC = in.alarmHeadroomC; i.capPct = in.capPct;
     i.deliveredPct = in.deliveredPct; i.e115Frac = in.e115Frac; i.dtS = dt; i.newSample = in.newSample || pendingSample_; i.permit = in.permit; i.shadow = in.shadow;
+    i.ventFan = in.ventFan; i.ventOnInS = in.ventOnInS; i.ventOffInS = in.ventOffInS;
     pendingSample_ = false;
     last_ = ctl_.step(i);
     held_ = clampOut(last_.powerPct, in.capPct);
