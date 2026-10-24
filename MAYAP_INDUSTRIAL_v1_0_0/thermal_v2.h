@@ -266,6 +266,7 @@ constexpr float GAP_TAU_S = V2_GAP_TAU, GAP_G0_C = V2_GAP_G0, GAP_SPAN_C = V2_GA
 constexpr bool F10D_FLATSLOPE = V2_F10D, F10E_SLOWGATE = V2_F10E;
 constexpr float SLOWUP_ERR_PCT = V2_SLOWUP_ERR;
 constexpr bool STUCK_NOARR = V2_STUCK_NOARR;
+constexpr float C_BAND_C = 0.3f;
 constexpr float F1_DM_FLOOR = V2_F1_DMF, SLOPE_Z = V2_SLOPE_Z, ASYM_HOLD = V2_ASYM_HOLD;
 constexpr bool F5_FAR_SMOOTH = V2_F5;
 constexpr float FAR_SMOOTH_S = 30.0f, FAR_MIN_DWELL_S = 30.0f, FAR_OFF_FRAC = 0.25f;
@@ -473,9 +474,10 @@ class Controller {
       // the same energy balance with the demand the air itself just showed: D_meas = arriving power - slope / k (what levelUpdate() uses), over the energy really in flight
       float pam = 0.0f; for (uint8_t i = RING_N - SLOPE_N; i < RING_N; ++i) pam += paRing_[i]; pam *= 1.0f / SLOPE_N;
       // G8/F10C: the crest is raised only by a rise the slope shows beyond its own noise (a 0.1 degC step of the sensor looks like 2 mK/s over 60 s), and a negative demand is bounded
-      const float slEff = F10C_PRED ? slopeMks_ - SLOPE_Z * slopeSeMks_ : slopeMks_;
+      const bool holdBand = F10C_PRED && std::fabs(in.sp - pv_) < C_BAND_C;      // the noise bound is for the hold band; a rebound from a deep dip (a door) is a real signal
+      const float slEff = holdBand ? slopeMks_ - SLOPE_Z * slopeSeMks_ : slopeMks_;
       float dm = pam - 100.0f * slEff / th_[0];
-      const float dmLo = F10C_PRED ? -F1_DM_FLOOR : D_MIN;
+      const float dmLo = holdBand ? -F1_DM_FLOOR : D_MIN;
       if (dm < dmLo) dm = dmLo; else if (dm > D_MAX) dm = D_MAX;
       const float margin = 0.5f * kinMinSlope() * 1e-3f * Ttr;       // the slope's own noise over the transit: the model is trusted unless the air disagrees by more than this
       const float meas = pv_ + coastGain_ * k * (Etr - dm * Ttr);
