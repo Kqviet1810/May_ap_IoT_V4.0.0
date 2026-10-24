@@ -429,7 +429,8 @@ class Controller {
     const bool live = in.permit || shadowNow_;
     if (pvOk) pvBadS_ = 0.0f; else pvBadS_ += dt;
     if (F12_VENT) {                                                  // what the fan does now (for the learner) and what it will do when the power asked now lands (for the law)
-      fanNow_ = in.ventFan;
+      const bool fanKnown = in.ventOnInS < 1.0e5f || in.ventOffInS < 1.0e5f;        // only a fan whose run the vent schedule announces is modelled: one unannounced run (the vent line, the Web, an hour-of-day list) is too little to learn a loss from
+      fanNow_ = in.ventFan && fanKnown;
       fanF_ += ((fanNow_ ? 1.0f : 0.0f) - fanF_) * (dt >= FAN_LAG_S ? 1.0f : dt / FAN_LAG_S);
       const float lead = tdPrime(), horizon = lead + tau_;
       const float fa = fanNow_ ? 0.0f : in.ventOnInS, fb = fanNow_ ? in.ventOffInS : in.ventOffInS;     // the next (or the present) run of the fan: [fa, fb] seconds from now
