@@ -181,10 +181,22 @@ constexpr float LIM_MARGIN_C = 0.4f;       // below the Emergency line
 #define V2_F10A 1                          // a deficit that does not close is integrated on the MEASURED error, faster
 #endif
 #ifndef V2_F10B
-#define V2_F10B 1                          // the integral does not leak while the air itself is still below SP
+#define V2_F10B 0                          // the integral does not leak while the air itself is still below SP
 #endif
 #ifndef V2_F10C
 #define V2_F10C 1                          // the measured-slope crest uses the slope's lower confidence bound and a bounded negative demand
+#endif
+#ifndef V2_F11
+#define V2_F11 1                           // the law trusts its prediction only as far as the prediction agrees with the air when the air stands still
+#endif
+#ifndef V2_GAP_TAU
+#define V2_GAP_TAU 300.0f
+#endif
+#ifndef V2_GAP_G0
+#define V2_GAP_G0 0.04f
+#endif
+#ifndef V2_GAP_SPAN
+#define V2_GAP_SPAN 0.10f
 #endif
 #ifndef V2_F10B_FLAT
 #define V2_F10B_FLAT 1                     // ... only while the air stands still (a rebound after a door still needs the leak)
@@ -202,16 +214,16 @@ constexpr float LIM_MARGIN_C = 0.4f;       // below the Emergency line
 #define V2_STUCK_DEF 0.10f
 #endif
 #ifndef V2_F1_DMF
-#define V2_F1_DMF 8.0f
+#define V2_F1_DMF 60.0f
 #endif
 #ifndef V2_SLOPE_Z
-#define V2_SLOPE_Z 2.0f
+#define V2_SLOPE_Z 3.0f
 #endif
 #ifndef V2_F10D
-#define V2_F10D 1                          // the level anchor corrects the arriving power for the slope also in a "flat" window
+#define V2_F10D 0                          // the level anchor corrects the arriving power for the slope also in a "flat" window
 #endif
 #ifndef V2_F10E
-#define V2_F10E 1                          // the slow-up gate of G7 holds only for a mismatch that can be a door (a large one)
+#define V2_F10E 0                          // the slow-up gate of G7 holds only for a mismatch that can be a door (a large one)
 #endif
 #ifndef V2_SLOWUP_ERR
 #define V2_SLOWUP_ERR 8.0f
@@ -241,7 +253,8 @@ constexpr float UNWIND_TAU_FACTOR = 2.0f;  // integral leak time constant = fact
 constexpr uint8_t LEVEL_PERSIST_N = 3;     // a level mismatch above LEVEL_SLOPE_GATE that repeats this many 10 s steps with one sign is not a one-off
 constexpr bool F10A_STUCK = V2_F10A, F10B_LEAK = V2_F10B, F10C_PRED = V2_F10C;
 constexpr float STUCK_GAIN = V2_STUCK_GAIN, STUCK_AFTER_S = V2_STUCK_AFTER, STUCK_REC_S = V2_STUCK_REC, STUCK_DEF_C = V2_STUCK_DEF, UNWIND_PV_C = 0.10f;
-constexpr bool F10B_FLAT = V2_F10B_FLAT;
+constexpr bool F10B_FLAT = V2_F10B_FLAT, F11_TRUST = V2_F11;
+constexpr float GAP_TAU_S = V2_GAP_TAU, GAP_G0_C = V2_GAP_G0, GAP_SPAN_C = V2_GAP_SPAN;
 constexpr bool F10D_FLATSLOPE = V2_F10D, F10E_SLOWGATE = V2_F10E;
 constexpr float SLOWUP_ERR_PCT = V2_SLOWUP_ERR;
 constexpr float F1_DM_FLOOR = V2_F1_DMF, SLOPE_Z = V2_SLOPE_Z, ASYM_HOLD = V2_ASYM_HOLD;
@@ -279,7 +292,7 @@ constexpr float LIM_SOFT_MARGIN_C = 0.1f;  // soft ceiling for the limiter: the 
 constexpr float BATCH_MAX_SPAN_S = 150.0f; // a batch fit that takes longer than this (slow call rate) is discarded: the history it reads would have moved
 constexpr float TIME_REBASE_S = 1.0e6f;    // absolute seconds are rebased before float resolution (1 s at 2^24) becomes a problem
 
-enum State : uint8_t { StIdle = 0, StClimb = 1, StTrack = 2, StFrozen = 3, StE115 = 4, StShadow = 5, StBrake = 6 };
+enum State : uint8_t { StIdle = 0, StClimb = 1, StTrack = 2, StFrozen = 3, StE115 = 4, StShadow = 5, StBrake = 6, StRecover = 7, StDegraded = 8 };
 
 struct Input {
   float pv = NAN, sp = 37.5f, dQ = 0.1f, headroomC = 0.7f, alarmHeadroomC = 0.7f,   // headroomC: to the vent line; alarmHeadroomC: to the Emergency line (control sensor's frame)
@@ -291,6 +304,7 @@ struct Output {
   float powerPct = 0.0f;
   uint8_t state = StIdle;
   bool powerLimited = false;
+  uint8_t trustQ = 15;     // telemetry only: how far the law trusts its own prediction, 0..15 (never read back by anything)
 };
 
 // What survives a restart: the oven's identified path and loss model (the last accepted batch fit).  Nothing about the eggs or the room is kept.
@@ -326,7 +340,7 @@ class Controller {
     P_[0][0] = A0_STD * A0_STD; P_[1][1] = C0_STD * C0_STD; P_[2][2] = CP_STD * CP_STD; P_[3][3] = CE_STD * CE_STD; P_[4][4] = C3_STD * C3_STD;
     lostS_ = 0; lastU_ = 0; haveSample_ = false; pvPred_ = 0;
     dQ_ = 0.1f; slopeMks_ = 0.0f; pvPredModel_ = 0.0f; eSm_ = NAN; farAgeS_ = 0.0f; coastGain_ = 1.0f; predMeas_ = 0.0f; slopeOk_ = false; shadowNow_ = false; cutActive_ = false;
-    brakeActive_ = false; brakeDone_ = false; atSpOnce_ = false; tcN_ = 0; gateCnt_ = 0; gateSign_ = 0; patienceObs_ = 0.0f; stallRef_ = NAN; stallRunS_ = 0.0f; flatDeficitS_ = 0.0f; fallS_ = 0.0f; stuckS_ = 0.0f; slopeSeMks_ = 0.0f;
+    brakeActive_ = false; brakeDone_ = false; atSpOnce_ = false; tcN_ = 0; gateCnt_ = 0; gateSign_ = 0; patienceObs_ = 0.0f; stallRef_ = NAN; stallRunS_ = 0.0f; flatDeficitS_ = 0.0f; fallS_ = 0.0f; stuckS_ = 0.0f; slopeSeMks_ = 0.0f; gapEma_ = 0.0f; trust_ = 1.0f;
   }
   // read-outs (telemetry and tests)
   float kEst() const { return th_[0] * 1e-5f; }
@@ -342,6 +356,8 @@ class Controller {
   float predicted() const { return pvPred_; }
   float sigmaPred() const { return sigPred_; }
   float predictedModel() const { return pvPredModel_; }
+  float trust() const { return trust_; }
+  float gapEma() const { return gapEma_; }
   float slopeMks() const { return slopeOk_ ? slopeMks_ : 0.0f; }
   float coastGain() const { return coastGain_; }
   uint8_t coastSamples() const { return tcN_; }
@@ -441,7 +457,8 @@ class Controller {
       predMeas_ = meas;
       if (meas - margin > pvPred_) pvPred_ = meas - margin;
     }
-    const float e = in.sp - pvPred_;
+    const float predUsed = F11_TRUST ? pv_ + trust_ * (pvPred_ - pv_) : pvPred_;      // G8: the supervisor's weight: 1 = the prediction as it is, 0 = the measured PV
+    const float e = in.sp - predUsed;
     // uncertainty of that prediction: k (relative), and the demand model (learner covariance) paid over the transit
     sigPred_ = predictionSigma(k, Etr, dMid, Ttr, pMid);
     const float eOn = std::fmax(E_ON_MIN, Z_SIGMA * sigPred_);
@@ -525,6 +542,8 @@ class Controller {
       } else if (V2_MONO && pv_ >= in.sp && slopeOk_ && slopeMks_ >= 0.0f && u > lastU_) u = lastU_;
     }
     out.state = StTrack;
+    if (F11_TRUST && trust_ < 0.5f) out.state = StDegraded;
+    if (F10A_STUCK && stuckS_ >= STUCK_AFTER_S) out.state = StRecover;
     if (!idDone_ && idPhase_ == 0 && ringCount_ < LOOK_RING) { u = 0.0f; far_ = false; }       // first look: nothing is commanded
     if (in.e115Frac >= E115_CLIMB_FRAC && pv_ < in.sp) {          // heater on for long without the air rising 0.3: ask for more, in proportion
       const float boost = E115_BOOST_MAX * (in.e115Frac - E115_CLIMB_FRAC) / (1.0f - E115_CLIMB_FRAC);
@@ -535,6 +554,7 @@ class Controller {
     if (u > cap) u = cap;
     out.powerLimited = (u >= cap) && cap < 100.0f;
     out.powerPct = u; lastU_ = u;
+    out.trustQ = static_cast<uint8_t>(trust_ * 15.0f + 0.5f);
     return out;
   }
 
@@ -608,6 +628,15 @@ class Controller {
     const float pam = (paRing_[RING_N - 1] + paRing_[RING_N - 2] + paRing_[RING_N - 3]) * (1.0f / 3.0f);
     const bool arrives = pam >= clampPos(feedForward()) + CHASE_ARR_PCT;
     if (trusted_ && slopeOk_ && std::fabs(slopeMks_) < flatLim && pv_ < spNow_ - 0.15f && arrives) flatDeficitS_ += 10.0f; else flatDeficitS_ = 0.0f;
+    // G8/F11: when the air stands still the prediction must equal it (the energy in flight is then just what the demand eats); a persistent gap is a wrong level of the model
+    if (F11_TRUST) {
+      const bool still = trusted_ && idDone_ && slopeOk_ && ringCount_ >= RING_N && !brakeActive_ && !shadowNow_ && idPhase_ != 1 && idPhase_ != 2 &&
+                         std::fabs(slopeMks_) <= flatLimit() && pv_ > spNow_ - 1.0f;
+      if (still) gapEma_ += (pvPred_ - pv_ - gapEma_) * (10.0f / GAP_TAU_S);
+      const float g0 = GAP_G0_C + 0.5f * dQ_, ag = std::fabs(gapEma_);
+      float w = 1.0f - (ag - g0) / GAP_SPAN_C;
+      trust_ = w < 0.0f ? 0.0f : (w > 1.0f ? 1.0f : w);
+    }
     // G8: a flat or slowly drifting deficit that the present slope would not close within STUCK_REC_S, with the air already at SP once: the law is satisfied by a prediction the air does not follow
     {
       const float def = spNow_ - pv_;
@@ -1068,7 +1097,7 @@ class Controller {
   uint8_t tcN_ = 0, gateCnt_ = 0; int8_t gateSign_ = 0;
   float cutT0_ = 0, cutPv0_ = 0, cutRise_ = 0, cutPeak_ = 0, brakeT0_ = 0, brakePv0_ = 0, brakeRise_ = 0, brakePeak_ = 0;
   bool atSpOnce_ = false;
-  float patienceObs_ = 0.0f, stallRef_ = NAN, stallRunS_ = 0.0f, flatDeficitS_ = 0.0f, fallS_ = 0.0f, stuckS_ = 0.0f, slopeSeMks_ = 0.0f;
+  float patienceObs_ = 0.0f, stallRef_ = NAN, stallRunS_ = 0.0f, flatDeficitS_ = 0.0f, fallS_ = 0.0f, stuckS_ = 0.0f, slopeSeMks_ = 0.0f, gapEma_ = 0.0f, trust_ = 1.0f;
 };
 
 }  // namespace thermalv2
