@@ -2380,31 +2380,6 @@ void commitSetting() {
   showToast("DANG LUU...");
 }
 
-void saveBatchSetting(uint8_t param, float val) {
-  MachineConfig candidate = currentConfig;
-  if (param == 0) {
-    const float oldTarget = candidate.targetTemp;
-    candidate.targetTemp = constrain(val, 35.0f, 40.0f);
-    const float delta = candidate.targetTemp - oldTarget;
-    candidate.lowTempAlarm += delta;
-    candidate.highTempAlarm += delta;
-    candidate.emergencyTemp += delta;
-    candidate.ventOnTemp += delta;
-    candidate.ventOffTemp += delta;
-  } else if (param == 1) {
-    candidate.targetHumidity = constrain(val, 40.0f, 85.0f);
-  } else if (param == 2) {
-    candidate.totalIncubationDays = static_cast<uint8_t>(constrain(static_cast<int>(val), 1, 45));
-  } else if (param == 3) {
-    candidate.autoResumeOnPowerLoss = (val > 0.5f);
-  }
-  sanitizeConfig(candidate);
-  if (startConfigSave(candidate)) {
-    currentConfig = candidate;
-    showToast("DA LUU");
-  }
-}
-
 void exitSettingGroup() {
   if (advGroup(selectedGroup)) {
     goBack();
