@@ -60,8 +60,8 @@ constexpr uint32_t STEP_TIMEOUT_MS = 8000UL;        // WebSocket upgrade / CONNA
 // One arbiter decides who gets the wire (mqtt_tx_arbiter.h has the rules): PUBACKs owed to the broker are a queue of packet ids that
 // is never dropped (overflow restarts the link, visibly), the bridge asks laneGate() BEFORE it builds a frame, and the lanes are
 // served in priority order - so a 2 KB snapshot can no longer take the writable moment a 300-byte terminal ack was waiting for.
-constexpr uint32_t TX_STALL_MS = 25000UL;           // nothing could be written for this long -> the uplink is really dead
-constexpr uint32_t TX_STALL_SILENCE_MS = 10000UL;   // ... and the broker has been silent this long as well
+constexpr uint32_t TX_STALL_MS = 4000UL;            // nothing could be written for this long -> the uplink is really dead
+constexpr uint32_t TX_STALL_SILENCE_MS = 2500UL;    // ... and the broker has been silent this long as well
 constexpr uint8_t CTRL_QUEUE = 6U;                  // PINGREQ / PONG waiting for a writable socket (PUBACKs have their own queue)
 constexpr size_t CTRL_FRAME_MAX = 96U;              // finished (masked) WebSocket frame
 // "received" acknowledgements are advisory (the terminal ack still follows): they are shed first when the QoS1 window is nearly full.

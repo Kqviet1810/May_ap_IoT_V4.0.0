@@ -1580,21 +1580,22 @@
     updateOutput('outputCirculation', bool(runtime.circulationFanOn));
     updateOutput('outputVent', bool(runtime.ventFanOn), ventOnText(runtime));
     updateOutput('outputHumidifier', bool(runtime.humidifierOn));
-    updateOutput('outputLight', bool(runtime.lightOn));
+    const lightBusy = lightCommandPending(device);
+    const activeLight = (lightBusy && device.optimisticLight !== undefined)
+      ? device.optimisticLight : bool(runtime.lightOn);
+    updateOutput('outputLight', activeLight);
     updateOutput('outputSiren', bool(runtime.sirenOn));
     if ($('sirenActionHint')) $('sirenActionHint').textContent = bool(runtime.sirenOn)
       ? 'Chạm để tạm tắt' : 'Chỉ khi còi đang kêu';
     // Nut Den bam duoc bat cu luc nao thiet bi online; nut Coi CHI bam duoc
     // khi coi dang thuc su keu (giong het dieu kien mo man Alarm tren HMI).
     if ($('outputLightBtn')) {
-      const lightBusy = lightCommandPending(device);
       const lightGranted = webCtlGranted(device, WEBCTL.light);
       $('outputLightBtn').disabled = lightBusy || !lightGranted || !(controlReady(device) || canHoldCommand(device));
       $('outputLightBtn').classList.toggle('locked', !lightGranted);
       $('outputLightBtn').title = lightGranted ? '' : 'Chưa được cho phép: bật ở màn hình máy → Nâng cao → Điều khiển Web';
       $('outputLightBtn').setAttribute('aria-busy', lightBusy ? 'true' : 'false');
       $('outputLightBtn').classList.toggle('pending', lightBusy);
-      if (lightBusy && $('outputLight')) $('outputLight').textContent = 'ĐANG GỬI…';   // the tile itself only follows the next snapshot
     }
     if ($('outputSirenBtn')) {
       const sirenGranted = webCtlGranted(device, WEBCTL.siren);
@@ -2294,7 +2295,11 @@
     }
     startTransaction(id, { kind: 'command', operation: action.replaceAll('_', '.'),
       deviceId: device.id, action }, WEB.commandTimeoutMs);
-    if (action === 'light_toggle') { device.lightPendingId = id; if (device.id === state.selectedId) renderDevice(); }
+    if (action === 'light_toggle') {
+      device.optimisticLight = !bool(device.snapshot?.runtime?.lightOn);
+      device.lightPendingId = id;
+      if (device.id === state.selectedId) renderDevice();
+    }
 
     try {
       const envelope = await signRealtimeWrite(device, 'command', payload);
@@ -2318,6 +2323,18 @@
     const pending = state.pending.get(id);
     if (pending?.timeout) clearTimeout(pending.timeout);
     if (pending?.retryTimer) clearTimeout(pending.retryTimer);
+    const device = pending?.deviceId ? state.devices.find((item) => item.id === pending.deviceId) : null;
+    if (device && device.lightPendingId === id) {
+      delete device.optimisticLight;
+      if (device.snapshot?.runtime) updateOutput('outputLight', bool(device.snapshot.runtime.lightOn));
+      if ($('outputLightBtn')) {
+        $('outputLightBtn').setAttribute('aria-busy', 'false');
+        $('outputLightBtn').classList.toggle('pending', false);
+      }
+      if (device.id === state.selectedId) {
+        try { renderDevice(); } catch (_) {}
+      }
+    }
     state.pending.delete(id);
     transactions.remove(id);
   }
@@ -2446,6 +2463,20 @@
         }
         addBatchLog(device, message);
       } else if (device.id === state.selectedId) setFormError('batchForm', '');
+    }
+    if (pending.action === 'light_toggle') {
+      if (ok && device.snapshot?.runtime && device.optimisticLight !== undefined) {
+        device.snapshot.runtime.lightOn = device.optimisticLight;
+      }
+      delete device.optimisticLight;
+      if (device.snapshot?.runtime) updateOutput('outputLight', bool(device.snapshot.runtime.lightOn));
+      if ($('outputLightBtn')) {
+        $('outputLightBtn').setAttribute('aria-busy', 'false');
+        $('outputLightBtn').classList.toggle('pending', false);
+      }
+      if (device.id === state.selectedId) {
+        try { renderDevice(); } catch (_) {}
+      }
     }
     if (pending.action && pending.action.startsWith('tech_')) { techOnAck(pending.action, ok, message); return; }
     toast(ok ? message : `Máy từ chối: ${message}`, 5000);

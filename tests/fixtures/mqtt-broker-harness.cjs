@@ -5,6 +5,7 @@
 // serialized to plain objects). Nothing of substance may live only in RAM.
 
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 
 function b64enc(bytes) {
   return Buffer.from(bytes).toString('base64');
@@ -102,7 +103,7 @@ class StubWebSocketPairGlobal {
 }
 
 async function loadBrokerModule() {
-  const mod = await import(path.resolve(__dirname, '../../cloudflare/src/broker/broker-do.js'));
+  const mod = await import(pathToFileURL(path.resolve(__dirname, '../../cloudflare/src/broker/broker-do.js')).href);
   return mod;
 }
 
