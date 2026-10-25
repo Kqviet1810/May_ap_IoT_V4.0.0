@@ -14,7 +14,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/boot_diagnostic.h",
-      "sha256": "86073fd6a3c1dc7f30b1eb9eabc13aece257d372f7e8d4da36ab2dd0199e50f3"
+      "sha256": "a2dccdc805b8e236b8e079a2c80bd6a2acf66cae4374fa654762ff9cf9478d2f"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/boot_assets.h",
@@ -124,12 +124,12 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino",
-      "sha256": "8658b7cdcbc840590273a689698293f71cd0de6f1c46a3ecc0ffcf904ce4fd86",
+      "sha256": "58e5a72828d696e1e80e9e588da1248302504bdaf10f1bfb890da4ae2e5593b3",
       "signature": "static void updateBootStability("
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/MAYAP_INDUSTRIAL_v1_0_0.ino",
-      "sha256": "036b7f4d1b6f2213050b8cd13a65858f87266796bf9e1b920a560992468e9ad3",
+      "sha256": "6bb1493bdcca1da0637382beb399977ed91e0896a76dbed251b83356f0fa2612",
       "signature": "void setup()"
     },
     {

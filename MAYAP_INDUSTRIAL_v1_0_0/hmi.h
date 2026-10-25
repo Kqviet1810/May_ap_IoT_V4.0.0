@@ -5159,7 +5159,7 @@ void render(uint32_t now) {
     // The splash has NO timeout of its own. Home only when the boot coordinator releases it (valid stable sensor + every local safety
     // condition, or the operator pressed the button on a diagnostic screen). If the coordinator is stalled the HMI draws its own
     // E993 diagnostic; it never leaves the splash, and never shows "ready", on its own initiative.
-    splashShown = MayapBoot::splashView(now, mayapBootHomeReleased(), mayapBootStatus() == MayapBoot::Status::Ready,
+    splashShown = MayapBoot::splashView(now, mayapBootHomeReleased(), mayapBootReadyShown(),
                                         mayapBootDiagnosticActive(), splashOperatorHome);
     if (splashShown == MayapBoot::SplashView::Home) {
       if (!mayapBootHomeReleased())

@@ -48,6 +48,7 @@ using namespace Mayap;
 constexpr uint32_t NETWORK_FAST_TASK_PERIOD_MS = 50UL;
 constexpr uint32_t MQTT_TASK_PERIOD_MS = 20UL;
 constexpr uint32_t CLOUD_TASK_PERIOD_MS = 100UL;
+constexpr uint32_t BOOT_AUTO_HOME_TIMEOUT_MS = 120000UL; // 2 phut: tu dong vao man hinh chinh neu co loi de hien thi ro loi
 // Controller availability outranks connectivity. Heap pressure remains visible
 // through E401/E402, but an online workload may not reboot the machine.
 // Same budget as the V2 MQTT owner: publishAck/publishJson alone keep a 2 KiB
@@ -582,7 +583,16 @@ static void updateBootStability(uint32_t now) {
       mayapSerialPrintf(false, "[BOOT-DIAG-SCREEN] %lus code=E%u %s\n", static_cast<unsigned long>(homeGate.age(now) / 1000UL),
                         static_cast<unsigned>(MayapBoot::blockCode(why)), MayapBoot::blockText(why));
     mayapBootPublishDiagnostic(MayapBoot::blockCode(why), why, homeGate.age(now));
-    if (mayapBootHomeRequested() && !bootReadyShown) { bootReadyShown = true; bootReadyAt = now - MayapBoot::READY_DISPLAY_MS; }
+    const bool timeoutReached = homeGate.age(now) >= BOOT_AUTO_HOME_TIMEOUT_MS;
+    if ((mayapBootHomeRequested() || timeoutReached) && !bootReadyShown) {
+      if (timeoutReached && !mayapBootHomeRequested()) {
+        mayapSerialPrintf(false, "[BOOT-HOME] auto timeout %lus -> entering Home to report fault E%u\n",
+                          static_cast<unsigned long>(homeGate.age(now) / 1000UL),
+                          static_cast<unsigned>(MayapBoot::blockCode(why)));
+      }
+      bootReadyShown = true;
+      bootReadyAt = now - MayapBoot::READY_DISPLAY_MS;
+    }
   } else {
     mayapBootClearDiagnostic();
   }
@@ -755,6 +765,7 @@ void setup() {
   i2cMutex = xSemaphoreCreateMutexStatic(&i2cMutexBuffer);
   if (!i2cMutex) fatalRestart("I2C MUTEX", ESP_ERR_NO_MEM);
 
+  mayapI2cBusClearEarly();
   if (!Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, I2C_CLOCK_HZ)) {
     fatalRestart("I2C BEGIN", ESP_FAIL);
   }
