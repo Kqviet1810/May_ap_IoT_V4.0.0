@@ -115,14 +115,7 @@ static char activeSsid[WIFI_PORTAL_SSID_MAX + 1U] = "";
 static char activePassword[WIFI_PORTAL_PASSWORD_MAX + 1U] = "";
 static bool credentialsLoaded = false;
 
-inline void loadCredentialsOnce();
-
 inline bool credentialsConfigured() { return activeSsid[0] != '\0'; }
-
-inline const char *mayapActiveWifiSsid() {
-  loadCredentialsOnce();
-  return activeSsid[0] ? activeSsid : "";
-}
 
 inline void loadCredentialsOnce() {
   if (credentialsLoaded) return;
@@ -922,6 +915,12 @@ inline bool mayapWifiPortalExclusiveRequested() {
 
 inline IPAddress mayapNetworkLocalIp() {
   return IPAddress(__atomic_load_n(&MayapNetworkInternal::publishedLocalIp, __ATOMIC_ACQUIRE));
+}
+
+inline const char *mayapActiveWifiSsid() {
+  using namespace MayapNetworkInternal;
+  loadCredentialsOnce();
+  return activeSsid[0] ? activeSsid : "";
 }
 
 // Owner networkTask only. Other tasks cooperate through radioQuiesce; no socket is forcibly stopped from this task while another
