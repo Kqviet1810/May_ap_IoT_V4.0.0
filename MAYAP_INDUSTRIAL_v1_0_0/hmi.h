@@ -1550,6 +1550,8 @@ void alignAdvMenuWindow();
 void advPinBack();
 void advBeginExit();
 void advOpenPin(PinPurpose purpose);
+void drawWifiChange();
+void saveBatchSetting(uint8_t param, float val);
 
 void goBack() {
   switch (view) {
@@ -1557,7 +1559,7 @@ void goBack() {
     case View::MainMenu: view = View::Home; break;
     case View::ChungMenu:
       view = View::MainMenu;
-      mainIndex = MAIN_CAI_DAT_CHUNG;
+      mainIndex = 0;
       alignMainMenuWindow();
       break;
     case View::SettingList:
@@ -1611,7 +1613,7 @@ void goBack() {
     case View::EventLog:
       view = eventLogReturnView;
       if (view == View::MainMenu) {
-        mainIndex = MAIN_NHAT_KY;
+        mainIndex = currentConfig.humidifierInstalled ? 5U : 4U;
         alignMainMenuWindow();
       }
       break;
@@ -1688,7 +1690,7 @@ void selectChungItem() {
     openTestMode();
   } else {
     view = View::MainMenu;
-    mainIndex = MAIN_CAI_DAT_CHUNG;
+    mainIndex = 0;
     alignMainMenuWindow();
     dirty = true;
   }
@@ -2376,6 +2378,31 @@ void commitSetting() {
   if (!startConfigSave(candidate)) return;
   currentConfig = candidate;
   showToast("DANG LUU...");
+}
+
+void saveBatchSetting(uint8_t param, float val) {
+  MachineConfig candidate = currentConfig;
+  if (param == 0) {
+    const float oldTarget = candidate.targetTemp;
+    candidate.targetTemp = constrain(val, 35.0f, 40.0f);
+    const float delta = candidate.targetTemp - oldTarget;
+    candidate.lowTempAlarm += delta;
+    candidate.highTempAlarm += delta;
+    candidate.emergencyTemp += delta;
+    candidate.ventOnTemp += delta;
+    candidate.ventOffTemp += delta;
+  } else if (param == 1) {
+    candidate.targetHumidity = constrain(val, 40.0f, 85.0f);
+  } else if (param == 2) {
+    candidate.totalIncubationDays = static_cast<uint8_t>(constrain(static_cast<int>(val), 1, 45));
+  } else if (param == 3) {
+    candidate.autoResumeOnPowerLoss = (val > 0.5f);
+  }
+  sanitizeConfig(candidate);
+  if (startConfigSave(candidate)) {
+    currentConfig = candidate;
+    showToast("DA LUU");
+  }
 }
 
 void exitSettingGroup() {
@@ -3183,7 +3210,7 @@ void handleInput() {
             view = View::FirmwareMenu;
             dirty = true;
           } else if (extra == GroupExtra::Advanced) {
-            openAdvPin();
+            advOpenPin(PinPurpose::Enter);
           } else if (extra == GroupExtra::VentilationEntry) {
             ventilationIndex = 0U;
             view = View::VentilationMenu;

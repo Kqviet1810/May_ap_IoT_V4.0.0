@@ -858,6 +858,11 @@ class SafetyJournal {
   }
   bool ready() const { return ready_; }
 
+  bool clear() {
+    if (!ready_) return false;
+    return prefs_.clear();
+  }
+
   bool stopIntentPending() {
     return ready_ && prefs_.getUInt(SAFETY_NVS_STOP_KEY, 0U) ==
         BATCH_STOP_INTENT_MAGIC;
@@ -4746,13 +4751,14 @@ class MachineController {
           }
           break;
         case HmiCommandType::FactoryReset: {
-          serialLog("[SYSTEM] Factory Reset requested from HMI Advanced menu");
+          mayapSerialPrintf(false, "[SYSTEM] Factory Reset requested from HMI Advanced menu\n");
           MachineConfig defConfig{};
           sanitizeMachineConfig(defConfig);
           config_ = defConfig;
           MachineConfig verify{};
           (void)store_.saveConfig(config_, verify);
-          (void)stopBatch("FACTORY_RESET");
+          const char *stopMsg = nullptr;
+          (void)stopBatch(now, stopMsg);
           PackedBatchV1 emptyBatch{};
           (void)store_.saveBatch(emptyBatch);
           safetyJournal_.clear();
@@ -4763,7 +4769,7 @@ class MachineController {
           ok = true;
           message = "DANG KHOI PHUC CAI DAT GOC...";
           delay(200);
-          mayapRestart(RestartReason::None, "Factory Reset");
+          mayapRestart(MayapBoot::RestartReason::None, "Factory Reset");
           break;
         }
         case HmiCommandType::WebVentToggle:

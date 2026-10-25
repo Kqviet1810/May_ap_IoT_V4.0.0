@@ -63,7 +63,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "323ef02249c026a1a88085a8274d8dfeee69a1d44bc6ee68963e0617b6da5d7f",
+      "sha256": "08384f078d7aeceda54ea74d449adc83bddc36f451878ffa04cca0210eade111",
       "signature": "class MachineController {"
     },
     {
