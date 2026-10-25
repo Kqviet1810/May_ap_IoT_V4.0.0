@@ -917,6 +917,12 @@ inline IPAddress mayapNetworkLocalIp() {
   return IPAddress(__atomic_load_n(&MayapNetworkInternal::publishedLocalIp, __ATOMIC_ACQUIRE));
 }
 
+inline const char *mayapActiveWifiSsid() {
+  using namespace MayapNetworkInternal;
+  loadCredentialsOnce();
+  return activeSsid[0] ? activeSsid : "";
+}
+
 // Owner networkTask only. Other tasks cooperate through radioQuiesce; no socket is forcibly stopped from this task while another
 // owner is in TLS I/O. This transaction runs for exactly two reasons: an explicit radio stop (Offline / no credentials) and the FSM's
 // RECOVERY state. Nothing else (no MQTT/Cloud failure, no supervisor request, no per-attempt trigger) can start it.

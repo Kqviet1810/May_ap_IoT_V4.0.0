@@ -5,6 +5,7 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { test } = require('node:test');
 
 const root = path.resolve(__dirname, '..');
@@ -15,7 +16,7 @@ const haveCompiler = compiled.status === 0;
 const skip = haveCompiler ? false : 'g++ not available';
 
 let codec;
-test('load codec', async () => { codec = await import(path.join(root, 'cloudflare/src/broker/mqtt-codec.js')); });
+test('load codec', async () => { codec = await import(pathToFileURL(path.join(root, 'cloudflare/src/broker/mqtt-codec.js')).href); });
 
 function decodeOne(hexText) {
   const decoder = new codec.StreamingDecoder();

@@ -126,7 +126,7 @@ test('UI/core scripts share one release-qualified asset set and cache',()=>{
 
 test('phones: no hamburger - the bottom tab bar is always visible, full width, flush with the bottom edge; tall pages never scroll, short ones scroll', () => {
   const fs2 = require('node:fs');
-  const html = fs2.readFileSync('index.html', 'utf8'), css = fs2.readFileSync('styles.css', 'utf8');
+  const html = fs2.readFileSync('index.html', 'utf8'), css = fs2.readFileSync('styles.css', 'utf8').replace(/\r\n/g, '\n');
   const app = fs2.readFileSync('app.js', 'utf8'), notes = fs2.readFileSync('notes.js', 'utf8');
   assert.doesNotMatch(html, /navToggle/);                                                 // the 3-line button is gone
   assert.doesNotMatch(css, /navToggle/);

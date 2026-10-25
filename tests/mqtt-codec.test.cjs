@@ -1,12 +1,13 @@
 'use strict';
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { test } = require('node:test');
 const wire = require('./fixtures/mqtt-wire.cjs');
 
 let codec;
 test('load codec module', async () => {
-  codec = await import(path.resolve(__dirname, '../cloudflare/src/broker/mqtt-codec.js'));
+  codec = await import(pathToFileURL(path.resolve(__dirname, '../cloudflare/src/broker/mqtt-codec.js')).href);
   assert.ok(codec.StreamingDecoder);
 });
 
