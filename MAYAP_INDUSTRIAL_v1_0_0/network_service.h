@@ -115,7 +115,14 @@ static char activeSsid[WIFI_PORTAL_SSID_MAX + 1U] = "";
 static char activePassword[WIFI_PORTAL_PASSWORD_MAX + 1U] = "";
 static bool credentialsLoaded = false;
 
+inline void loadCredentialsOnce();
+
 inline bool credentialsConfigured() { return activeSsid[0] != '\0'; }
+
+inline const char *mayapActiveWifiSsid() {
+  loadCredentialsOnce();
+  return activeSsid[0] ? activeSsid : "";
+}
 
 inline void loadCredentialsOnce() {
   if (credentialsLoaded) return;
