@@ -678,7 +678,8 @@ inline bool sendRegister() {
   doc["device_name"] = mayapDeviceIdText();
   String response;
   int code = 0;
-  if (!postJson("/api/device/register", doc, "register", &response, &code,outboxCount!=0U)) {
+  const bool urgent = (outboxCount != 0U) && !mayapMqttTransportConnected();
+  if (!postJson("/api/device/register", doc, "register", &response, &code, urgent)) {
     if (code == 403) {
       mayapSetProvisioningState(MayapProvisioningState::ServerDenied);
     } else if (code == 401) {
@@ -1107,6 +1108,11 @@ inline void serviceHeartbeat(uint32_t now) {
 
 inline void serviceRegister(uint32_t now) {
   if (registered) return;
+  if (mayapMqttTransportConnected()) {
+    registered = true;
+    cloudBackoff.onSuccess();
+    return;
+  }
   if (!cloudBackoff.ready(now)) return;
   const NetworkStatus status = mayapGetRawNetworkStatus();
   if (status.requestedMode != ConnectivityMode::Online) return;

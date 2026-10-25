@@ -621,9 +621,9 @@ int main() {
     CHECK(mayapMqttTransportConnected());                                                // 40 s unwritable but the broker keeps talking
     resetWorld(); connectNow(); inflightClear();
     net.txReady = false; publishFromBridge("ack", "{\"v\":2}", 7U);
-    for (unsigned i = 0U; i < 3U && mayapMqttTransportConnected(); ++i) tick(1000);
-    CHECK(mayapMqttTransportConnected());                                                // 3 s: not yet
-    for (unsigned i = 0U; i < 2U && mayapMqttTransportConnected(); ++i) tick(1000);
+    for (unsigned i = 0U; i < 24U && mayapMqttTransportConnected(); ++i) tick(1000);
+    CHECK(mayapMqttTransportConnected());                                                // 24 s: not yet
+    for (unsigned i = 0U; i < 4U && mayapMqttTransportConnected(); ++i) tick(1000);
     CHECK(!mayapMqttTransportConnected() && logged("link lost reason=tx-stall"));
     // The reason of a plain write failure is explained too, and the socket recovers into a fresh connection quickly.
     resetWorld(); connectNow(); net.failWrite = true; publishFromBridge("ack", "{\"v\":2}", 7U); tick(1);
@@ -741,9 +741,9 @@ int main() {
   {
     resetWorld(); connectNow(); inflightClear();
     net.txReady = false;
-    for (unsigned i = 0U; i < 3U && mayapMqttTransportConnected(); ++i) { laneGate(static_cast<uint8_t>(MayapTx::Lane::Ack)); tick(1000); }
-    CHECK(mayapMqttTransportConnected());                                                              // 3 s: not yet
-    for (unsigned i = 0U; i < 2U && mayapMqttTransportConnected(); ++i) { laneGate(static_cast<uint8_t>(MayapTx::Lane::Ack)); tick(1000); }
+    for (unsigned i = 0U; i < 24U && mayapMqttTransportConnected(); ++i) { laneGate(static_cast<uint8_t>(MayapTx::Lane::Ack)); tick(1000); }
+    CHECK(mayapMqttTransportConnected());                                                              // 24 s: not yet
+    for (unsigned i = 0U; i < 4U && mayapMqttTransportConnected(); ++i) { laneGate(static_cast<uint8_t>(MayapTx::Lane::Ack)); tick(1000); }
     CHECK(!mayapMqttTransportConnected() && logged("link lost reason=tx-stall"));
   }
 

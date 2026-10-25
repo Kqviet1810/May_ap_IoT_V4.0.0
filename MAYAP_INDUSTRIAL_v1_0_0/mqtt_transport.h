@@ -60,8 +60,8 @@ constexpr uint32_t STEP_TIMEOUT_MS = 8000UL;        // WebSocket upgrade / CONNA
 // One arbiter decides who gets the wire (mqtt_tx_arbiter.h has the rules): PUBACKs owed to the broker are a queue of packet ids that
 // is never dropped (overflow restarts the link, visibly), the bridge asks laneGate() BEFORE it builds a frame, and the lanes are
 // served in priority order - so a 2 KB snapshot can no longer take the writable moment a 300-byte terminal ack was waiting for.
-constexpr uint32_t TX_STALL_MS = 4000UL;            // nothing could be written for this long -> the uplink is really dead
-constexpr uint32_t TX_STALL_SILENCE_MS = 2500UL;    // ... and the broker has been silent this long as well
+constexpr uint32_t TX_STALL_MS = 25000UL;           // nothing could be written for this long -> the uplink is really dead
+constexpr uint32_t TX_STALL_SILENCE_MS = 10000UL;   // ... and the broker has been silent this long as well
 constexpr uint8_t CTRL_QUEUE = 6U;                  // PINGREQ / PONG waiting for a writable socket (PUBACKs have their own queue)
 constexpr size_t CTRL_FRAME_MAX = 96U;              // finished (masked) WebSocket frame
 // "received" acknowledgements are advisory (the terminal ack still follows): they are shed first when the QoS1 window is nearly full.
@@ -177,10 +177,10 @@ template <typename C> inline bool txReadyProbe(C &client, long) {
   fd_set writeSet;
   FD_ZERO(&writeSet);
   FD_SET(fd, &writeSet);
-  struct timeval none;
-  none.tv_sec = 0;
-  none.tv_usec = 0;
-  return select(fd + 1, nullptr, &writeSet, nullptr, &none) != 0;   // error (<0): the write reports it
+  struct timeval pollTv;
+  pollTv.tv_sec = 0;
+  pollTv.tv_usec = 500;                             // 500us slice gives lwIP TCP thread room to retire unacked pbufs
+  return select(fd + 1, nullptr, &writeSet, nullptr, &pollTv) != 0;   // error (<0): the write reports it
 }
 inline bool txReady() {
   const bool writable = txReadyProbe(net, 0);
