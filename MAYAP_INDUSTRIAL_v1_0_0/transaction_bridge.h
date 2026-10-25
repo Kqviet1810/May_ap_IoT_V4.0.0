@@ -1481,28 +1481,7 @@ inline void expirePendingCommands(uint32_t now) {
 // answers it WITHOUT executing it again.
 static uint32_t ackWaitSince = 0U, ackRetryAt = 0U, ackLogAt = 0U, ackRefusedTotal = 0U, ackRefusedLogged = 0U;
 constexpr uint32_t ACK_FAILED_PAUSE_MS = 100UL;
-inline bool ackIsWaiting(uint32_t now) {
-  if (MayapTx::ackHolds(ackWaitSince, now)) return true;
-  portENTER_CRITICAL(&realtimeMux);
-  for (uint8_t i = 0U; i < COMMAND_QUEUE_SIZE + 2U; ++i) {
-    if (ackOutbox[i].used) {
-      portEXIT_CRITICAL(&realtimeMux);
-      return true;
-    }
-  }
-  for (const PendingCommand &slot : pendingCommands) {
-    if (slot.used) {
-      portEXIT_CRITICAL(&realtimeMux);
-      return true;
-    }
-  }
-  if (pendingConfigSave.used) {
-    portEXIT_CRITICAL(&realtimeMux);
-    return true;
-  }
-  portEXIT_CRITICAL(&realtimeMux);
-  return false;
-}
+inline bool ackIsWaiting(uint32_t now) { return MayapTx::ackHolds(ackWaitSince, now); }
 inline void drainAckOutbox() {
   const uint32_t startedAt = millis();
   if (ackRetryAt != 0U && static_cast<int32_t>(startedAt - ackRetryAt) < 0) return;
