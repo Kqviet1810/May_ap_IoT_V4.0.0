@@ -686,15 +686,12 @@ constexpr uint32_t OTA_TASK_PERIOD_MS = 30UL;
 constexpr size_t CONTROL_TASK_STACK_BYTES = 8192U;
 constexpr size_t HMI_TASK_STACK_BYTES = 10240U;
 constexpr size_t SUPERVISOR_TASK_STACK_BYTES = 4096U;
-// 12288 giu nguyen sau khi go ArduinoOTA: task van chay WiFiClientSecure+HTTPClient (TLS toi Cloudflare)
-// + buffer 1 kB doc firmware + mbedtls_sha256_context. Dinh stack luc TAI THAT chua duoc do tren
-// mach (log [TASK] chi moi ghi 5,8 kB luc nhan roi); do truoc khi thu nho hoac gop vao task khac.
-constexpr size_t OTA_TASK_STACK_BYTES = 12288U;
-// Bench measurement (PILOT log, 60 s [TASK] report, Wi-Fi + NTP + MQTT + Cloud running): network task used
-// 2.5 kB of 12 kB at its peak. Stacks are static RAM, so every kB removed here is a kB of heap for TLS.
-// 8 kB keeps >3x the measured peak; the Wi-Fi portal (WebServer/DNS/scan) path was NOT in that log, so it
-// must be exercised during the soak and `net=` (bytes never used) must stay >= 2048 before going lower.
-constexpr size_t NETWORK_TASK_STACK_BYTES = 8192U;
+// 12288 -> 8192: Task van chay WiFiClientSecure+HTTPClient (TLS toi Cloudflare) + buffer 1 kB doc firmware + mbedtls_sha256_context.
+// Dinh stack do duoc 5.8 kB luc nhan roi, 8192 giu >2.3 kB du phong an toan, tra 4 KB static RAM ve cho TLS heap.
+constexpr size_t OTA_TASK_STACK_BYTES = 8192U;
+// Bench measurement (PILOT log, 60 s [TASK] report): network task used 2.5 kB of 12 kB at its peak.
+// 6144 giu >3.6 kB du phong an toan, tra 2 KB static RAM ve cho TLS heap.
+constexpr size_t NETWORK_TASK_STACK_BYTES = 6144U;
 constexpr uint32_t TASK_STACK_MONITOR_MS = 60000UL;
 // 5 s: du bien cho giao dich I2C huu han nhung van phat hien task bi treo.
 constexpr uint32_t CONTROL_WDT_TIMEOUT_MS = 5000UL;

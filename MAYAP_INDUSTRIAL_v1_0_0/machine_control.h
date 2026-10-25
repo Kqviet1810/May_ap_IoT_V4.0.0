@@ -4128,7 +4128,7 @@ class MachineController {
     if (healthHeapSampleGate_.due(now, true)) {
       const uint32_t freeHeap = ESP.getFreeHeap();
       if (freeHeap < 16384U) mayapSetOnlineMemoryPressure(true);
-      else if (freeHeap >= 73728U && ESP.getMaxAllocHeap() >= 24576U)
+      else if (freeHeap >= 61440U && ESP.getMaxAllocHeap() >= 20480U)
         mayapSetOnlineMemoryPressure(false);
       healthHeapWindowBest_ = std::max(healthHeapWindowBest_, freeHeap);
       healthHeapWindowWorst_ = std::min(healthHeapWindowWorst_, freeHeap);

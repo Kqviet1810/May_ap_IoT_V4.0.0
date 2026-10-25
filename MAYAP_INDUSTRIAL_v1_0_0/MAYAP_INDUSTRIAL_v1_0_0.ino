@@ -54,7 +54,8 @@ constexpr uint32_t BOOT_AUTO_HOME_TIMEOUT_MS = 120000UL; // 2 phut: tu dong vao 
 // Same budget as the V2 MQTT owner: publishAck/publishJson alone keep a 2 KiB
 // frame plus signing buffers on this stack.
 constexpr size_t MQTT_TASK_STACK_BYTES = 12288U;
-constexpr size_t CLOUD_TASK_STACK_BYTES = 12288U;
+// Cloud task dung WiFiClientSecure + HTTPClient + 1.5 KB JSON body, 8192 giu >4 kB du phong an toan, tra 4 KB static RAM ve cho TLS heap.
+constexpr size_t CLOUD_TASK_STACK_BYTES = 8192U;
 
 static StaticTask_t controlTaskTcb;
 static StackType_t controlTaskStack[
