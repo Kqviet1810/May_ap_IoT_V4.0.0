@@ -818,8 +818,8 @@ enum class View : uint8_t {
 enum class ConfirmAction : uint8_t { None, BatchToggle, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AdvRestore, MemberRemove, FactoryReset };
 
 // NANG CAO menu (declared here because goBack() returns to these rows).
-constexpr uint8_t ADV_ITEM_COUNT = 12U;
-enum AdvItem : uint8_t { ADV_PID, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_HISTORY, ADV_TEST, ADV_RESET, ADV_WEB, ADV_WEBCTL, ADV_GUEST, ADV_PINCHG, ADV_EXIT };
+constexpr uint8_t ADV_ITEM_COUNT = 13U;
+enum AdvItem : uint8_t { ADV_PID, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_HISTORY, ADV_LOG, ADV_TEST, ADV_RESET, ADV_WEB, ADV_WEBCTL, ADV_GUEST, ADV_PINCHG, ADV_EXIT };
 
 // Prototype thu cong: Arduino IDE tu sinh prototype cho ham trong .ino.
 // Neu ham dung enum/struct tuy chinh, prototype tu dong co the bi chen
@@ -1192,11 +1192,11 @@ HmiI2cUnlockFn i2cUnlockCallback = nullptr;
 // hang voi Cai dat chung thay vi chon sau vao trong do - menu chinh chi con
 // 3 muc (Cai dat me/Cai dat chung/Thoat) bi che la "trong", dua Nhat ky me
 // ra day vua giai quyet, vua dung ban chat cua no.
-constexpr uint8_t MAIN_COUNT_MAX = 7;
+constexpr uint8_t MAIN_COUNT_MAX = 6;
 uint8_t mainItemCount() {
-  return currentConfig.humidifierInstalled ? 7U : 6U;
+  return currentConfig.humidifierInstalled ? 6U : 5U;
 }
-constexpr uint8_t MAIN_COUNT = 7;
+constexpr uint8_t MAIN_COUNT = 6;
 const char *mainItemLabel(uint8_t index) {
   const bool humid = currentConfig.humidifierInstalled;
   switch (index) {
@@ -1204,8 +1204,7 @@ const char *mainItemLabel(uint8_t index) {
     case 1: return "DAO TRUNG";
     case 2: return "QUAT HUT";
     case 3: return "HE THONG";
-    case 4: return humid ? "TAO AM" : "LOI / NHAT KY";
-    case 5: return humid ? "LOI / NHAT KY" : "THOAT";
+    case 4: return humid ? "TAO AM" : "THOAT";
     default: return "THOAT";
   }
 }
@@ -1612,9 +1611,9 @@ void goBack() {
     case View::TechRequest: view = techReturnView; break;
     case View::EventLog:
       view = eventLogReturnView;
-      if (view == View::MainMenu) {
-        mainIndex = currentConfig.humidifierInstalled ? 5U : 4U;
-        alignMainMenuWindow();
+      if (view == View::AdvMenu) {
+        advIndex = ADV_LOG;
+        alignAdvMenuWindow();
       }
       break;
     case View::TestMode:
@@ -2421,11 +2420,6 @@ void selectMainItem() {
     openGroup(3U); // HE THONG
   } else if (humid && mainIndex == 4) {
     openGroup(7U); // TAO AM
-  } else if ((humid && mainIndex == 5) || (!humid && mainIndex == 4)) {
-    eventLogIndex = 0U;
-    eventLogFaultsOnly = false;
-    eventLogReturnView = View::MainMenu;
-    view = View::EventLog;
   } else {
     view = View::Home;
     homePage = 1;
@@ -2452,9 +2446,9 @@ void activateHomeContext(bool longPress) {
     }
     return;
   }
-  if (homePage == 0U) {
+  if (homePage == 1U) {
     openBatchConfirm(View::Home);
-  } else {
+  } else if (homePage == 2U) {
     view = View::MainMenu;
     mainIndex = 0U;
     listTop = 0U;
@@ -2880,6 +2874,7 @@ const char *advItemLabel(uint8_t i) {
     case ADV_PROTECT: return "Bao ve nhiet";
     case ADV_CALIB: return "Hieu chuan";
     case ADV_HISTORY: return "Ban ghi cu";
+    case ADV_LOG: return "Loi / Nhat ky";
     case ADV_TEST: return "Che do test";
     case ADV_RESET: return "Reset may";
     case ADV_WEB: return currentRuntime.tech.webAllowed ? "Quyen Web: HIEN" : "Quyen Web: AN";
@@ -2897,6 +2892,13 @@ void advSelect() {
     case ADV_CALIB: openGroup(8U); break;
     case ADV_MONITOR: monPage = 0U; view = View::PidMonitor; dirty = true; break;
     case ADV_HISTORY: histIndex = 0U; view = View::AdvHistory; dirty = true; break;
+    case ADV_LOG:
+      eventLogIndex = 0U;
+      eventLogFaultsOnly = false;
+      eventLogReturnView = View::AdvMenu;
+      view = View::EventLog;
+      dirty = true;
+      break;
     case ADV_TEST: openTestMode(); break;
     case ADV_RESET: openFactoryResetConfirm(); break;
     case ADV_WEB: webChoice = currentRuntime.tech.webAllowed; view = View::WebAccess; dirty = true; break;
@@ -3132,6 +3134,15 @@ void handleInput() {
               dirty = true;
             }
           }
+        }
+      } else if (homePage == 1) {
+        if (rotary.step) {
+          int p = static_cast<int>(homePage) + rotary.step;
+          homePage = static_cast<uint8_t>(constrain(p, 0, 2));
+          dirty = true;
+        }
+        if (rotary.button == ButtonEvent::ShortPress) {
+          openBatchConfirm(View::Home);
         }
       } else {
         if (rotary.step) {
@@ -4120,62 +4131,69 @@ void saveBatchSetting(uint8_t quadrant, float value) {
 void drawHomeBatch() {
   drawHeader("CAI DAT ME");
 
-  lcd.drawVLine(64, 13, 51);
-  lcd.drawHLine(0, 38, 128);
+  // Dau + cach vien:
+  // Duong ngang: y = 37, x = 6..121 (cach mep 6px)
+  // Duong doc: x = 64, y = 14..60 (cach header 4px, mep duoi 3px)
+  lcd.drawHLine(6, 37, 116);
+  lcd.drawVLine(64, 14, 46);
 
   const bool blink = (millis() / 300) % 2 == 0;
 
-  auto drawQuadIndicator = [&](uint8_t q, int16_t x0, int16_t y0, int16_t w, int16_t h) {
-    if (batchEditMode && batchParamIndex == q && !batchValEditing) {
-      lcd.drawFrame(x0, y0, w, h);
-    }
+  auto drawCornerSelection = [&](int16_t x0, int16_t y0, int16_t w, int16_t h) {
+    constexpr int16_t arm = 7;
+    // Goc tren phai:
+    lcd.drawHLine(x0 + w - arm, y0, arm);
+    lcd.drawVLine(x0 + w - 1, y0, arm);
+    // Goc duoi trai:
+    lcd.drawVLine(x0, y0 + h - arm, arm);
+    lcd.drawHLine(x0, y0 + h - 1, arm);
   };
 
-  drawQuadIndicator(0, 0, 13, 64, 25);
-  drawQuadIndicator(1, 65, 13, 63, 25);
-  drawQuadIndicator(2, 0, 39, 64, 25);
-  drawQuadIndicator(3, 65, 39, 63, 25);
-
-  char buf[20];
-
-  // Q0: SP
-  lcd.setFont(u8g2_font_5x8_tf);
-  lcd.drawStr(4, 23, "SP (C)");
-  if (!batchEditMode || batchParamIndex != 0 || !batchValEditing || blink) {
-    const float val = (batchEditMode && batchParamIndex == 0 && batchValEditing) ? editTargetTemp : currentConfig.targetTemp;
-    snprintf(buf, sizeof(buf), "%.1f", val);
-    lcd.setFont(u8g2_font_6x12_tf);
-    lcd.drawStr(4, 35, buf);
+  if (batchEditMode) {
+    if (batchParamIndex == 0) drawCornerSelection(4, 13, 56, 22);
+    else if (batchParamIndex == 1) drawCornerSelection(68, 13, 56, 22);
+    else if (batchParamIndex == 2) drawCornerSelection(4, 39, 56, 22);
+    else if (batchParamIndex == 3) drawCornerSelection(68, 39, 56, 22);
   }
 
-  // Q1: RH
-  lcd.setFont(u8g2_font_5x8_tf);
-  lcd.drawStr(69, 23, "RH (%)");
+  auto drawCellCentered = [&](int16_t cx, int16_t y, const char *str) {
+    const int16_t w = static_cast<int16_t>(lcd.getStrWidth(str));
+    lcd.drawStr(max(0, cx - w / 2), y, str);
+  };
+
+  char buf[20];
+  lcd.setFont(u8g2_font_6x12_tf);
+
+  // Q0: SP (cx = 32)
+  drawCellCentered(32, 23, "SP");
+  if (!batchEditMode || batchParamIndex != 0 || !batchValEditing || blink) {
+    const float val = (batchEditMode && batchParamIndex == 0 && batchValEditing) ? editTargetTemp : currentConfig.targetTemp;
+    snprintf(buf, sizeof(buf), "%.1f C", val);
+    drawCellCentered(32, 34, buf);
+  }
+
+  // Q1: RH (cx = 96)
+  drawCellCentered(96, 23, "RH");
   if (!batchEditMode || batchParamIndex != 1 || !batchValEditing || blink) {
     const float val = (batchEditMode && batchParamIndex == 1 && batchValEditing) ? editTargetHumidity : currentConfig.targetHumidity;
     snprintf(buf, sizeof(buf), "%.0f%%", val);
-    lcd.setFont(u8g2_font_6x12_tf);
-    lcd.drawStr(69, 35, buf);
+    drawCellCentered(96, 34, buf);
   }
 
-  // Q2: So Ngay
-  lcd.setFont(u8g2_font_5x8_tf);
-  lcd.drawStr(4, 49, "SO NGAY");
+  // Q2: So Ngay (cx = 32)
+  drawCellCentered(32, 49, "So Ngay");
   if (!batchEditMode || batchParamIndex != 2 || !batchValEditing || blink) {
     const uint8_t val = (batchEditMode && batchParamIndex == 2 && batchValEditing) ? editTotalDays : currentConfig.totalIncubationDays;
-    snprintf(buf, sizeof(buf), "%u ngay", val);
-    lcd.setFont(u8g2_font_6x12_tf);
-    lcd.drawStr(4, 61, buf);
+    snprintf(buf, sizeof(buf), "%u", val);
+    drawCellCentered(32, 60, buf);
   }
 
-  // Q3: Ap Lai
-  lcd.setFont(u8g2_font_5x8_tf);
-  lcd.drawStr(69, 49, "AP LAI");
+  // Q3: Ap Lai (cx = 96)
+  drawCellCentered(96, 49, "Ap Lai");
   if (!batchEditMode || batchParamIndex != 3 || !batchValEditing || blink) {
     const bool val = (batchEditMode && batchParamIndex == 3 && batchValEditing) ? (editAutoResume != 0) : currentConfig.autoResumeOnPowerLoss;
-    snprintf(buf, sizeof(buf), "%s", val ? "TU DONG" : "HOI XN");
-    lcd.setFont(u8g2_font_6x12_tf);
-    lcd.drawStr(69, 61, buf);
+    snprintf(buf, sizeof(buf), "%s", val ? "Tu Dong" : "Xac Nhan");
+    drawCellCentered(96, 60, buf);
   }
 }
 
@@ -4497,9 +4515,6 @@ void drawConnectionInfo() {
 
   snprintf(text, sizeof(text), "TOC DO: %s", currentRuntime.networkConnected ? "72 Mbps" : "--");
   drawLeftFit(6, 48, text, u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
-
-  lcd.setFont(u8g2_font_5x8_tf);
-  lcd.drawStr(6, 60, "Cuon: Doi WiFi | Nhan: Thoat");
 }
 
 void drawQrCode() {
