@@ -42,7 +42,7 @@
     'nextDirection', 'heaterStuckMinRiseC', 'heaterStuckDurationSec',
     'tempRateLimitC', 'tempRateWindowSec', 'tempOscillationCrossLimit',
     'tempOscillationWindowSec', 'autotuneRelayPowerPercent', 'autotuneBandC',
-    'manualTurnReanchorsSchedule', 'sirenSelfTestEnabled'
+    'manualTurnReanchorsSchedule'
   ]);
   const CONFIG_KEYS = Object.freeze([...REQUIRED_CONFIG_KEYS, ...VENT_PROFILE_KEYS, 'adaptiveThermalBalanceEnabled']);
 
@@ -1919,7 +1919,6 @@
     assign('advancedForm', 'humidityOffset', config.humidityOffset);
 
     check('lightAlarmForm', 'lightAfterBatchAlarmEnabled', config.lightAfterBatchAlarmEnabled);
-    check('lightAlarmForm', 'sirenSelfTestEnabled', config.sirenSelfTestEnabled);
 
     assign('advancedForm', 'advMaxHeaterPower', config.maxHeaterPower);
     assign('advancedForm', 'advTempRateLimitC', config.tempRateLimitC);
@@ -2020,7 +2019,6 @@
       config.nextDirection = $('nextDirection').value === 'right' ? 1 : 0;
     } else if (group === 'lightAlarm') {
       config.lightAfterBatchAlarmEnabled = $('lightAfterBatchAlarmEnabled').checked;
-      config.sirenSelfTestEnabled = $('sirenSelfTestEnabled').checked;
     } else if (group === 'humidifier') {
       if (!config.humidifierInstalled) return null;
       const off = Number($('humidifierOffHumidity').value);

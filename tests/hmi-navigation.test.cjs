@@ -49,11 +49,11 @@ test('all settings remain reachable exactly once in shorter groups', () => {
     .replace(/\/\/[^\n]*/g, '').match(/\d+/g).map(Number);
   const groups = [...hmi.matchAll(/\{"([^"\n]+)",\s*(\d+),\s*(\d+)\}/g)]
     .map((match) => ({ name: match[1], first: Number(match[2]), count: Number(match[3]) }));
-  // Thermal Control V2.0.0: the old controller's rows (15-17 Kp/Ki/Kd, 26-27 tune, 51 balance, 54 Smart Thermal, 55 Predictive) stay in the
+  // Thermal Control V2.0.0: the old controller's rows (15-17 Kp/Ki/Kd, 26-27 tune, 29 siren self-test, 51 balance, 54 Smart Thermal, 55 Predictive) stay in the
   // SETTINGS table (indexes and stored config keep their meaning) but no group lists them any more.
-  const hidden = [15, 16, 17, 26, 27, 51, 54, 55];
-  assert.equal(indexes.length, 29);
-  assert.equal(new Set(indexes).size, 29);
+  const hidden = [15, 16, 17, 26, 27, 29, 51, 54, 55];
+  assert.equal(indexes.length, 28);
+  assert.equal(new Set(indexes).size, 28);
   assert.deepEqual([...indexes].sort((a, b) => a - b), [
     ...Array.from({ length: 33 }, (_, i) => i).filter((i) => ![18, 33, 34, 35, 36, 37, 38, 39, 40, 41, ...hidden].includes(i)), 52, 53,
   ]);
@@ -102,7 +102,7 @@ test('PID, thermal protection and calibration live only under NANG CAO; operatin
   assert.deepEqual(of('GIA NHIET'), [19]);                       // only the power ceiling is left of the old PID group
   assert.deepEqual(of('BAO VE NHIET'), [20, 21, 22, 23, 24, 25]);
   assert.deepEqual(of('HIEU CHUAN'), [7, 52, 32, 53]);      // + Bo tao am (hardware) and DPG cam bien, both behind the technical PIN
-  assert.deepEqual(of('HE THONG'), [14, 29]);
+  assert.deepEqual(of('HE THONG'), [14]);
   assert.match(hmi, /bool advGroup\(uint8_t group\) \{ return group == 4U \|\| group == 5U \|\| group == 8U; \}/);
   assert.match(hmi, /CHUNG_GROUP_IDS\[\] = \{1U, 2U, 3U, 6U, 7U\}/);
   assert.match(bodyOf('const char *chungItemLabel('), /"NANG CAO"/);
@@ -183,21 +183,23 @@ test('PID Monitor is a read-only view of what the firmware measured and commande
   assert.doesNotMatch(monCase, /queueCommand|startConfigSave/);
 });
 
-test('HE THONG: Thong tin ket noi gathers Doi wifi / Ma QR / Dat lai PIN / Thiet bi ket noi; Thoi gian ngu is a system item', () => {
+test('HE THONG: Ket noi gathers Wifi / Ma QR / Dat lai PIN; Thoi gian ngu and Nang cao are system items', () => {
   const slots = bodyOf('GroupExtra groupExtraSlot(');
   assert.match(slots, /group == 3 && slot == 0\) return GroupExtra::ConnectionInfo/);
   assert.match(slots, /group == 3 && slot == 1\) return GroupExtra::SleepTime/);
   assert.match(slots, /group == 3 && slot == 2\) return GroupExtra::FirmwareWebUpdate/);
+  assert.match(slots, /group == 3 && slot == 3\) return GroupExtra::Advanced/);
   for (const moved of ['WifiChange', 'QrCode', 'CloudPinReset']) assert.doesNotMatch(slots, new RegExp(`return GroupExtra::${moved}`));
-  // the sub-menu: Chi tiet is the old "Thong tin ket noi" view; cloud-backed items only while Online
+  // the sub-menu: Wifi merges Detail & Portal; QrCode merges QR & Members; cloud-backed items only while Online
   const items = bodyOf('ConnItem connMenuItemAt(');
-  const order = ['Detail', 'WifiChange', 'QrCode', 'PinReset', 'Members', 'Exit'].map((n) => items.indexOf(`ConnItem::${n}`));
-  assert.ok(order.every((v, i) => v >= 0 && (i === 0 || v > order[i - 1])), 'order Chi tiet, Doi wifi, QR, PIN, Thiet bi, Thoat');
-  assert.match(items, /if \(online\) items\[n\+\+\] = ConnItem::WifiChange/);
-  assert.match(items, /if \(online\) \{ items\[n\+\+\] = ConnItem::PinReset; items\[n\+\+\] = ConnItem::Members; \}/);
+  const order = ['Wifi', 'QrCode', 'PinReset', 'Exit'].map((n) => items.indexOf(`ConnItem::${n}`));
+  assert.ok(order.every((v, i) => v >= 0 && (i === 0 || v > order[i - 1])), 'order Wifi, QR, PIN, Thoat');
+  assert.match(items, /items\[n\+\+\] = ConnItem::Wifi/);
+  assert.match(items, /items\[n\+\+\] = ConnItem::QrCode/);
+  assert.match(items, /if \(online\) \{ items\[n\+\+\] = ConnItem::PinReset; \}/);
   const input = bodyOf('void handleInput()');
-  assert.match(input, /case ConnItem::Detail: view = View::ConnectionInfo/);
-  assert.match(input, /case ConnItem::Members: openMemberList\(\)/);
+  assert.match(input, /case ConnItem::Wifi:/);
+  assert.match(input, /case ConnItem::QrCode:/);
   // every sub screen returns to the sub-menu, the sub-menu returns to HE THONG
   const back = bodyOf('void goBack()');
   for (const v of ['WifiChange', 'ConnectionInfo', 'QrCode', 'MemberList']) assert.match(back, new RegExp(`case View::${v}:[\\s\\S]*?view = View::ConnMenu`));
@@ -288,7 +290,7 @@ test('Che do 2 tai khoan: only in HMI Nang cao, needs Online, the machine asks t
   const cloud = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'cloud_alert_link.h'), 'utf8');
   // Advanced list: the item sits after "Quyen Web" and before "Doi ma ky thuat"; the screen belongs to the Advanced session (PIN keep-alive, lock on leave)
   assert.match(hmi, /enum AdvItem : uint8_t \{[^}]*ADV_WEB, ADV_WEBCTL, ADV_GUEST, ADV_PINCHG, ADV_EXIT \}/);
-  assert.match(hmi, /constexpr uint8_t ADV_ITEM_COUNT = 10U;/);
+  assert.match(hmi, /constexpr uint8_t ADV_ITEM_COUNT = 12U;/);
   assert.match(bodyOf('bool viewInAdvanced('), /case View::GuestMode:/);
   assert.match(bodyOf('void advSelect()'), /case ADV_GUEST: openGuestMode\(\); break;/);
   assert.match(bodyOf('void goBack()'), /case View::GuestMode: view = View::AdvMenu; advIndex = ADV_GUEST;/);
