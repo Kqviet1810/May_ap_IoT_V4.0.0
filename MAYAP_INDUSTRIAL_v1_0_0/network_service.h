@@ -755,15 +755,18 @@ struct PendingNtpTime {
 static PendingNtpTime pendingNtpTime;
 static uint32_t lastNtpSyncAt = 0U;
 static bool ntpConfigured = false;
+static bool ntpFailed = false;
+constexpr uint32_t NTP_RETRY_INTERVAL_MS = 15000UL;
 
 inline void serviceNtpSync(uint32_t now) {
   if (!NTP_SYNC_ENABLED) return;
-  // lastNtpSyncAt==0 dung nghia "chua tung dong bo" - dong bo NGAY lan dau co
-  // Wi-Fi (khong doi du NTP_SYNC_INTERVAL_MS) de rut ngan thoi gian phuc hoi
-  // sau khi mat dien/reboot dung luc RTC hong that; sau lan dau moi vao chu ky
-  // dinh ky binh thuong (chi sua troi dat nho cua thach anh DS3231).
+  // lastNtpSyncAt==0 dung nghia "chua tung dong bo" hoac co yeu cau dong bo khan
+  // cap tu Core 1 (mayapRequestImmediateNtpSync()).
+  // Khi truoc do dong bo that bai, thu lai sau moi NTP_RETRY_INTERVAL_MS (15s);
+  // khi da dong bo thanh cong, tuan theo chu ky dai NTP_SYNC_INTERVAL_MS (12h).
+  const uint32_t interval = ntpFailed ? NTP_RETRY_INTERVAL_MS : NTP_SYNC_INTERVAL_MS;
   if (lastNtpSyncAt != 0U &&
-      elapsedMs(now, lastNtpSyncAt) < NTP_SYNC_INTERVAL_MS) {
+      elapsedMs(now, lastNtpSyncAt) < interval) {
     return;
   }
   lastNtpSyncAt = now;
@@ -776,14 +779,17 @@ inline void serviceNtpSync(uint32_t now) {
   // la networkTask (da chiu block boi HTTP(S)/MQTT o noi khac trong cung task),
   // KHONG phai controlTask dieu khien an toan (rieng, khong bao gio block).
   if (!getLocalTime(&timeinfo, NTP_REQUEST_TIMEOUT_MS)) {
+    ntpFailed = true;
     mayapSerialPrintf(false, "[NTP] Dong bo that bai (khong lien lac duoc may chu gio)\n");
     return;
   }
   const int year = timeinfo.tm_year + 1900;
   if (year < static_cast<int>(RTC_VALID_YEAR_MIN) ||
       year > static_cast<int>(RTC_VALID_YEAR_MAX)) {
+    ntpFailed = true;
     return;  // gia tri rac (SNTP chua sync xong that su ngay sau configTime) - bo qua, thu lai chu ky sau
   }
+  ntpFailed = false;
   portENTER_CRITICAL(&ntpMux);
   pendingNtpTime.pending = true;
   pendingNtpTime.year = static_cast<uint16_t>(year);
@@ -799,6 +805,12 @@ inline void serviceNtpSync(uint32_t now) {
 }
 
 }  // namespace MayapNetworkInternal
+
+// Yeu cau networkTask thuc hien dong bo gio NTP ngay lap tuc khi co Wi-Fi
+inline void mayapRequestImmediateNtpSync() {
+  using namespace MayapNetworkInternal;
+  lastNtpSyncAt = 0U;
+}
 
 // Doc boi controlTask (MachineController::serviceI2cDeviceRecovery()) - lay va
 // xoa 1 lan gio moi nhat tu NTP neu co (giong het pattern pendingConfigSave.used
