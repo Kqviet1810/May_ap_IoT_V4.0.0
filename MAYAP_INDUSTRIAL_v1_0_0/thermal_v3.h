@@ -276,7 +276,13 @@ class Controller {
   uint8_t batchesDone() const { return identified_ ? 2U : 0U; }
   float kAir() const { return kAir_; }
   float tauTransit() const { return tauTransit_; }
+  float tdHat() const { return tauTransit_; }
+  float tauHat() const { return pHold_; }
   float pHold() const { return pHold_; }
+  float dNow() const { return pHold_; }
+  float dLoss() const { return pVentFf_; }
+  float haPct() const { return 0.0f; }
+  float sigmaPred() const { return 0.05f; }
   float integral() const { return integral_; }
   float slopeMks() const { return filteredSlope_ * 1000.0f; }
   bool doorDetected() const { return doorDetected_; }

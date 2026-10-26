@@ -14,7 +14,7 @@
 #include "tech_access.h"
 #include "advanced_history.h"
 #include "tech_request.h"
-#include "thermal_v2_adapter.h"
+#include "thermal_v3_adapter.h"
 #include "pid_log.h"
 #include <esp_system.h>
 #include <esp_timer.h>
@@ -5119,11 +5119,11 @@ class MachineController {
     m.requestPct = runtime_.heaterPower;
     m.actualAvgPct = pidMonActual_;
     m.cycleLastUs = cycleLastUs_; m.cycleMaxUs = cycleMaxUs_;
-    const thermalv2::Controller &v2 = thermalV2_.controller();
-    m.predictedC = v2.predicted();
-    m.phase = !v2.identified() ? 0U : static_cast<uint8_t>(1U + std::min<uint8_t>(v2.batchesDone(), 2U));
-    m.suspect = v2.responseSuspect();
-    m.v2State = thermalV2_.last().state;
+    const thermalv3::Controller &v3 = thermalV3_.controller();
+    m.predictedC = v3.predicted();
+    m.phase = !v3.identified() ? 0U : static_cast<uint8_t>(1U + std::min<uint8_t>(v3.batchesDone(), 2U));
+    m.suspect = v3.responseSuspect();
+    m.v2State = thermalV3_.last().state;
     m.slotLastUs = slotLastUs_; m.slotMaxUs = slotMaxUs_;
     if (m.valid && elapsedMs(now, pidLogAt_) >= MayapPidLog::SAMPLE_PERIOD_MS) {          // one sample per 10 s into the log ring (the Web page downloads it as CSV)
       pidLogAt_ = now;
@@ -5134,18 +5134,18 @@ class MachineController {
       s.flags = static_cast<uint8_t>((m.phase & MayapPidLog::FlPhaseMask) | (m.suspect ? MayapPidLog::FlSuspect : 0U) | (o.ventFan ? MayapPidLog::FlVentFan : 0U) |
           (o.heaterSsr ? MayapPidLog::FlSsr : 0U) | (o.heatMaster ? MayapPidLog::FlMaster : 0U) | (batchRunning_ ? MayapPidLog::FlBatch : 0U) |
           (sensorUsable_ ? MayapPidLog::FlSensorOk : 0U));
-      s.spare = static_cast<uint8_t>((m.v2State & 0x0FU) | (static_cast<uint8_t>(thermalV2_.last().trustQ & 0x0FU) << 4));
+      s.spare = static_cast<uint8_t>((m.v2State & 0x0FU) | (static_cast<uint8_t>(thermalV3_.last().trustQ & 0x0FU) << 4));
       MayapPidLog::ring().push(s);
     }
   }
 
-  // ---- Thermal V2 slot glue (the host rig compiles buildThermalV2SlotIn() textually from here) ----
-  float thermalV2SensorStepC() const {                          // the step of the value the controller sees: the locked sensor format decides, an unlocked one is treated as the coarse 0.1
+  // ---- Thermal V3 slot glue ----
+  float thermalV3SensorStepC() const {                          // the step of the value the controller sees: the locked sensor format decides, an unlocked one is treated as the coarse 0.1
     const SensorProfile p = sensor_.sensorProfile();
     return (p == SensorProfile::X100RhX10 || p == SensorProfile::Sht30Native) ? 0.01f : 0.1f;
   }
-  ThermalV2SlotIn buildThermalV2SlotIn(uint32_t now, bool permit, bool shadow = false) const {
-    ThermalV2SlotIn si;
+  ThermalV3SlotIn buildThermalV3SlotIn(uint32_t now, bool permit, bool shadow = false) const {
+    ThermalV3SlotIn si;
     si.nowMs = now; si.pv = temperature_; si.sp = config_.targetTemp; si.newSample = newSensorSample_; si.permit = permit; si.shadow = shadow && !permit;
     si.capPct = static_cast<float>(config_.maxHeaterPower);
     const float offsetDown = std::max(0.0f, -config_.tempOffset);
@@ -5155,7 +5155,7 @@ class MachineController {
     si.deliveredPct = (st.heaterSsr && st.heatMaster) ? 100.0f : 0.0f;
     const float stuckLimitMs = static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f;
     si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterStuckAccumOnMs_) / stuckLimitMs : 0.0f;
-    si.dQ = thermalV2SensorStepC();
+    si.dQ = thermalV3SensorStepC();
     si.ventFan = st.ventFan;                                                // the fan that really runs: it takes heat out of the box
     if (config_.ventAutoEnabled && batchRunning_ && !warmupVentHold_) {     // the automatic profile knows when it starts and ends: the controller pays for the loss in advance
       const uint32_t cycleSec = static_cast<uint32_t>(config_.ventCycleMinutes) * 60UL;
@@ -5169,9 +5169,9 @@ class MachineController {
     }
     return si;
   }
-  float thermalV2Command(uint32_t now, bool permit, bool shadow) {
+  float thermalV3Command(uint32_t now, bool permit, bool shadow) {
     const uint32_t t0 = static_cast<uint32_t>(esp_timer_get_time());
-    const float u = thermalV2_.step(buildThermalV2SlotIn(now, permit, shadow));
+    const float u = thermalV3_.step(buildThermalV3SlotIn(now, permit, shadow));
     slotLastUs_ = static_cast<uint32_t>(esp_timer_get_time()) - t0;
     if (slotLastUs_ > slotMaxUs_) slotMaxUs_ = slotLastUs_;
     return u;
@@ -6505,8 +6505,8 @@ class MachineController {
     // heater request in percent. Protection (High / Emergency / sensor / contactor / SSR inhibit) is decided above
     // and below it and never reads this value. The request is clamped to [0, cap] by the adapter and then goes through
     // the burst scheduler and the output arbiter like any other request.
-    const bool v2Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && ventTemperatureActive_ && actuatorReady;   // blocked ONLY by the vent line
-    float commandedPower = thermalV2Command(now, normalSsrPermit && actuatorReady, v2Shadow);
+    const bool v3Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && ventTemperatureActive_ && actuatorReady;   // blocked ONLY by the vent line
+    float commandedPower = thermalV3Command(now, normalSsrPermit && actuatorReady, v3Shadow);
     // ====================================================================================================
     newSensorSample_ = false;
 
@@ -7483,10 +7483,10 @@ class MachineController {
     a.alarmMask = runtime_.alarmMask; a.faultCode = runtime_.primaryFaultCode; a.stateCode = static_cast<uint8_t>(runtime_.stateCode);
     a.kp = config_.kp; a.ki = config_.ki; a.kd = config_.kd;
     {
-      const thermalv2::Controller &v2 = thermalV2_.controller();          // Thermal V2 columns (schema 2, see serial_log.h)
-      a.pidCorr = v2.integral(); a.holdFf = v2.dNow(); a.ventFf = v2.dLoss();
-      a.learnState = static_cast<uint8_t>(runtime_.pidMon.phase + (runtime_.pidMon.suspect ? 4U : 0U)); a.confidence = v2.batchesDone();
-      a.gain = v2.kAir() * 1000.0f; a.delaySec = v2.tdHat(); a.holdPct = v2.tauHat(); a.coastC = v2.haPct(); a.ventGain = v2.sigmaPred(); a.predErr = v2.predicted();
+      const thermalv3::Controller &v3 = thermalV3_.controller();          // Thermal V3 columns
+      a.pidCorr = v3.integral(); a.holdFf = v3.dNow(); a.ventFf = v3.dLoss();
+      a.learnState = static_cast<uint8_t>(runtime_.pidMon.phase + (runtime_.pidMon.suspect ? 4U : 0U)); a.confidence = v3.batchesDone();
+      a.gain = v3.kAir() * 1000.0f; a.delaySec = v3.tdHat(); a.holdPct = v3.tauHat(); a.coastC = v3.haPct(); a.ventGain = v3.sigmaPred(); a.predErr = v3.predicted();
     }
     a.flags = static_cast<uint16_t>(
         (runtime_.batchRunning ? FlBatch : 0U) | (runtime_.autoMode ? FlAuto : 0U) | (sensorUsable_ ? FlSensorOk : 0U) |
@@ -8132,7 +8132,7 @@ class MachineController {
   bool networkStatusInitialized_ = false;
 
   HeaterBurstScheduler heaterBurst_{HEATER_GROUP_COUNT, HEATER_BURST_QUANTUM_MS};
-  ThermalV2Slot thermalV2_;                          // Thermal V2.0.0 controller (RAM ~6.5 KB, nothing stored)
+  ThermalV3Slot thermalV3_;                          // Thermal V3.0.0 controller (RAM ~350 bytes)
   uint32_t pidLogAt_ = 0;                            // last PID log ring sample
   uint32_t slotLastUs_ = 0, slotMaxUs_ = 0;          // controller slot time [us], reported to the PID monitor
   bool previousFanCommand_ = false;
