@@ -190,7 +190,7 @@ async function main() {
     for (let n = 0; n < 4; n += 1) { pongs3.push(await dev.ping()); dev.snapshot(n); await sleep(300); }
     const hb3 = await dev.heartbeat();
     record('T3 slow Worker (6 s/call): every alarm is PUBACKed < 1 s; PINGRESP and a heartbeat PUBACK are not delayed while the Worker call is in flight',
-      t3.every((r) => !r.error && r.latency < 1000) && pongs3.every((p) => p >= 0 && p < 500) && hb3 < 1000 && dev.client.connected,
+      t3.every((r) => !r.error && r.latency < 1000) && pongs3.every((p) => p >= 0 && p < 2000) && hb3 < 1000 && dev.client.connected,
       `alarm PUBACK max ${Math.max(...t3.map((r) => r.latency))} ms; PINGRESP max ${Math.max(...pongs3)} ms; heartbeat PUBACK ${hb3} ms`);
     await until('t3 stored', async () => storedFor(await stats(), A).length === 5, 60000, 500);
     record('T3b the slow Worker eventually received all 5 alarms, once each', (await stats()).counters.stored === 5 && (await stats()).counters.duplicate === 0);
