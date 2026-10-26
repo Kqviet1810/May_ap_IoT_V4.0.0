@@ -18,6 +18,11 @@
 
 namespace thermalv3 {
 
+constexpr float KP_UP = 30.0f;      // Proportional gain below SP [% / degC]
+constexpr float KP_DOWN = 90.0f;    // Proportional gain above SP (3x asymmetric)
+constexpr float KI = 0.020f;        // Integral rate [% / (degC * s)]
+constexpr float I_CLAMP = 15.0f;    // Hard anti-windup clamp [%]
+
 enum State : uint8_t {
   StIdle = 0,    // Standby / Not permitted to heat
   StClimb = 1,   // Phase 1: High-power climb with automatic parameter discovery
@@ -279,11 +284,6 @@ class Controller {
   bool doorDetected() const { return doorDetected_; }
 
  private:
-  static constexpr float KP_UP = 30.0f;      // Proportional gain below SP [% / degC]
-  static constexpr float KP_DOWN = 90.0f;    // Proportional gain above SP (3x asymmetric)
-  static constexpr float KI = 0.020f;        // Integral rate [% / (degC * s)]
-  static constexpr float I_CLAMP = 15.0f;    // Hard anti-windup clamp [%]
-
   void updateSlope(float pv, float nowS) {
     if (slopeHistCount_ < SLOPE_HIST_CAP) {
       slopePvHist_[slopeHistHead_] = pv;
