@@ -14,6 +14,7 @@
 #include "tech_access.h"
 #include "advanced_history.h"
 #include "tech_request.h"
+#include "thermal_v2_adapter.h"
 #include "thermal_v3_adapter.h"
 #include "pid_log.h"
 #include <esp_system.h>
@@ -5144,6 +5145,32 @@ class MachineController {
     const SensorProfile p = sensor_.sensorProfile();
     return (p == SensorProfile::X100RhX10 || p == SensorProfile::Sht30Native) ? 0.01f : 0.1f;
   }
+  float thermalV2SensorStepC() const { return thermalV3SensorStepC(); }
+  ThermalV2SlotIn buildThermalV2SlotIn(uint32_t now, bool permit, bool shadow = false) const {
+    ThermalV2SlotIn si;
+    si.nowMs = now; si.pv = temperature_; si.sp = config_.targetTemp; si.newSample = newSensorSample_; si.permit = permit; si.shadow = shadow && !permit;
+    si.capPct = static_cast<float>(config_.maxHeaterPower);
+    const float offsetDown = std::max(0.0f, -config_.tempOffset);
+    si.headroomC = std::min(config_.highTempAlarm, config_.ventOnTemp) - offsetDown - config_.targetTemp;
+    si.alarmHeadroomC = config_.emergencyTemp - offsetDown - config_.targetTemp;
+    const auto &st = outputs_.state();
+    si.deliveredPct = (st.heaterSsr && st.heatMaster) ? 100.0f : 0.0f;
+    const float stuckLimitMs = static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f;
+    si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterStuckAccumOnMs_) / stuckLimitMs : 0.0f;
+    si.dQ = thermalV2SensorStepC();
+    si.ventFan = st.ventFan;
+    if (config_.ventAutoEnabled && batchRunning_ && !warmupVentHold_) {
+      const uint32_t cycleSec = static_cast<uint32_t>(config_.ventCycleMinutes) * 60UL;
+      if (cycleSec > 0UL) {
+        const uint32_t elapsedSec = elapsedBatchSec(now);
+        const uint8_t duty = ventProfileDutyPercent(config_, elapsedSec / 86400UL + 1UL, humidityLowActive_);
+        const uint32_t onSec = cycleSec * duty / 100UL, phase = elapsedSec % cycleSec;
+        if (phase < onSec) { si.ventOnInS = 0.0f; si.ventOffInS = static_cast<float>(onSec - phase); }
+        else if (onSec > 0UL) { si.ventOnInS = static_cast<float>(cycleSec - phase); si.ventOffInS = si.ventOnInS + static_cast<float>(onSec); }
+      }
+    }
+    return si;
+  }
   ThermalV3SlotIn buildThermalV3SlotIn(uint32_t now, bool permit, bool shadow = false) const {
     ThermalV3SlotIn si;
     si.nowMs = now; si.pv = temperature_; si.sp = config_.targetTemp; si.newSample = newSensorSample_; si.permit = permit; si.shadow = shadow && !permit;
@@ -5169,12 +5196,15 @@ class MachineController {
     }
     return si;
   }
-  float thermalV3Command(uint32_t now, bool permit, bool shadow) {
+  float thermalV2Command(uint32_t now, bool permit, bool shadow) {
     const uint32_t t0 = static_cast<uint32_t>(esp_timer_get_time());
     const float u = thermalV3_.step(buildThermalV3SlotIn(now, permit, shadow));
     slotLastUs_ = static_cast<uint32_t>(esp_timer_get_time()) - t0;
     if (slotLastUs_ > slotMaxUs_) slotMaxUs_ = slotLastUs_;
     return u;
+  }
+  float thermalV3Command(uint32_t now, bool permit, bool shadow) {
+    return thermalV2Command(now, permit, shadow);
   }
   // ---- Web output control (HMI "Nang cao > Dieu khien Web" grants it per output; the Web can only ask) ----
   static constexpr uint32_t WEB_OVERRIDE_MS = 15UL * 60UL * 1000UL;   // vent / circulation overrides fall back to automatic after this
@@ -6505,8 +6535,8 @@ class MachineController {
     // heater request in percent. Protection (High / Emergency / sensor / contactor / SSR inhibit) is decided above
     // and below it and never reads this value. The request is clamped to [0, cap] by the adapter and then goes through
     // the burst scheduler and the output arbiter like any other request.
-    const bool v3Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && ventTemperatureActive_ && actuatorReady;   // blocked ONLY by the vent line
-    float commandedPower = thermalV3Command(now, normalSsrPermit && actuatorReady, v3Shadow);
+    const bool v2Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && ventTemperatureActive_ && actuatorReady;   // blocked ONLY by the vent line
+    float commandedPower = thermalV2Command(now, normalSsrPermit && actuatorReady, v2Shadow);
     // ====================================================================================================
     newSensorSample_ = false;
 
