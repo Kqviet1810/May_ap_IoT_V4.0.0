@@ -19,6 +19,8 @@
 
 // Transport-neutral application transaction bridge. Network owners may attach
 // a bounded publish callback in a later phase; this baseline attaches none.
+void mayapHandleMgmtResponse(const JsonDocument &doc);
+
 namespace MayapRealtimeInternal {
 
 inline uint32_t elapsedMs(uint32_t now, uint32_t then) {
@@ -1334,6 +1336,10 @@ inline void dispatchApplicationMessage(const char *channel, const uint8_t *paylo
   if (strcmp(channel, "session") != 0 || (wireDoc["active"] | false)) MayapWifiPower::noteWebActivity(millis());
   if (!strcmp(channel, "session")) {
     handleSessionMessage(wireDoc);
+    return;
+  }
+  if (!strcmp(channel, "mgmt/response")) {
+    mayapHandleMgmtResponse(wireDoc);
     return;
   }
 

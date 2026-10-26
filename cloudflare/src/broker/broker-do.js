@@ -546,6 +546,7 @@ export class MqttBrokerDO {
       try { ws.serializeAttachment(att); } catch {}
     }
     if (UPLINK_SUFFIXES.has(parsed.suffix)) return this._handleUplink(ws, parsed.suffix, pkt);
+    if (parsed.suffix === Topics.mgmtRequest) return this._handleMgmt(ws, pkt);
     // QoS1 PUBACK to publisher before fanout — this is a transport ACK,
     // never an application ACK (see TRANSACTION_V2_SPEC.md).
     if (pkt.qos > 0) ws.send(encodePuback(pkt.packetId));
@@ -588,6 +589,39 @@ export class MqttBrokerDO {
     if (kind === 'alarm') await this._publishUplinkStatus(!ok);
   }
 
+  async _handleMgmt(ws, pkt) {
+    if (pkt.qos > 0 && (ws.readyState === undefined || ws.readyState === 1)) {
+      ws.send(encodePuback(pkt.packetId));
+    }
+    let data;
+    try { data = JSON.parse(new TextDecoder().decode(pkt.payload)); } catch { return; }
+    if (!data || typeof data !== 'object') return;
+    try {
+      const res = await this._postInternal('/api/internal/mgmt', JSON.stringify({
+        device_id: this.deviceId,
+        ...data,
+      }));
+      let reply = null;
+      if (res && res.ok) {
+        reply = await res.json();
+      } else {
+        reply = { success: false, type: data.type, error: res ? `HTTP_${res.status}` : 'NO_INGEST' };
+      }
+      if (reply) {
+        const payload = new TextEncoder().encode(JSON.stringify(reply));
+        await this._fanoutPublish({
+          topic: `${TOPIC_ROOT}/${this.deviceId}/${Topics.mgmtResponse}`,
+          qos: 1,
+          retain: false,
+          payload,
+          originWs: null,
+        });
+      }
+    } catch (error) {
+      console.error('[mgmt] error handling request', String((error && error.message) || error));
+    }
+  }
+
   async _wakeSoon() {
     if (typeof this.storage.setAlarm !== 'function') return;
     const now = this._now();
@@ -597,12 +631,12 @@ export class MqttBrokerDO {
     } catch {}
   }
 
-  async _postUplink(body) {
+  async _postInternal(path, body) {
     const ingest = this.env && this.env.CLOUD_INGEST;
     const secret = this.env && this.env.BROKER_DEVICE_SECRET;
     if (!ingest || !secret) throw Object.assign(new Error('NO_INGEST'), { code: 'NO_INGEST' });
     const ts = this._now();
-    return ingest.fetch('https://ingest.internal/api/internal/uplink', {
+    return ingest.fetch(`https://ingest.internal${path}`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -612,6 +646,10 @@ export class MqttBrokerDO {
       body,
       signal: AbortSignal.timeout(UQ.FORWARD_TIMEOUT_MS),
     });
+  }
+
+  async _postUplink(body) {
+    return this._postInternal('/api/internal/uplink', body);
   }
 
   // Forwards queued alarms (batches, oldest first) and the latest heartbeat to the Worker. Runs inside the DO alarm, never
