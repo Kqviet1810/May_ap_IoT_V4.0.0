@@ -15,6 +15,7 @@
 #include <ArduinoJson.h>
 #include <mbedtls/md.h>
 #include <time.h>
+#include <cmath>
 
 // Transport-neutral application transaction bridge. Network owners may attach
 // a bounded publish callback in a later phase; this baseline attaches none.
@@ -84,7 +85,7 @@ static bool reportActive = false;
 inline void resetReportProgress() { reportActive = false; reportPartsSent = 0U; }
 static MayapRealtimePublish::BootstrapCadence bootstrapCadence;
 static uint32_t lastSnapshotPublishAt = 0U;
-static bool forceSnapshotPublish = false;
+static volatile bool forceSnapshotPublish = false;
 
 // --------------------------- Hop thu cau hinh/runtime --------------------------
 // Ghi boi controlTask qua mayapRealtimeSetConfig/mayapRealtimeSetRuntime; doc boi
@@ -1687,8 +1688,31 @@ inline void mayapRealtimeUpdate(uint32_t now) {
 inline void mayapRealtimeSetRuntime(const MachineRuntime &runtime) {
   using namespace MayapRealtimeInternal;
   portENTER_CRITICAL(&realtimeMux);
+  const bool tempChanged = std::isnan(knownRuntime.temperature) != std::isnan(runtime.temperature) ||
+      (!std::isnan(runtime.temperature) && !std::isnan(knownRuntime.temperature) &&
+       fabsf(knownRuntime.temperature - runtime.temperature) >= 0.1f);
+  const bool humChanged = std::isnan(knownRuntime.humidity) != std::isnan(runtime.humidity) ||
+      (!std::isnan(runtime.humidity) && !std::isnan(knownRuntime.humidity) &&
+       fabsf(knownRuntime.humidity - runtime.humidity) >= 1.0f);
+  const bool stateChanged = knownRuntimeValid && (
+    tempChanged || humChanged ||
+    knownRuntime.primaryFaultCode != runtime.primaryFaultCode ||
+    knownRuntime.alarmMask != runtime.alarmMask ||
+    knownRuntime.heaterOn != runtime.heaterOn ||
+    knownRuntime.circulationFanOn != runtime.circulationFanOn ||
+    knownRuntime.ventFanOn != runtime.ventFanOn ||
+    knownRuntime.humidifierOn != runtime.humidifierOn ||
+    knownRuntime.lightOn != runtime.lightOn ||
+    knownRuntime.sirenOn != runtime.sirenOn ||
+    knownRuntime.turnState != runtime.turnState ||
+    knownRuntime.batchRunning != runtime.batchRunning ||
+    knownRuntime.autoMode != runtime.autoMode
+  );
   knownRuntime = runtime;
   knownRuntimeValid = true;
+  if (stateChanged && webSessionActive) {
+    forceSnapshotPublish = true;
+  }
   portEXIT_CRITICAL(&realtimeMux);
 }
 
