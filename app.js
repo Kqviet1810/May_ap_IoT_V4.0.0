@@ -125,20 +125,29 @@
   // One in-flight /api/mqtt-session per device. The same reply carries the broker
   // credentials and, for owners/operators, the signed control grant.
   const mqttSessionRequests = new Map();
+  const cachedMqttSessions = new Map();
   const readOnlyDevices = new Set();   // /api/mqtt-session returned control:null
-  function fetchMqttSession(device) {
+  function fetchMqttSession(device, force = false) {
+    if (!force) {
+      const cached = cachedMqttSessions.get(device.id);
+      if (cached?.mqtt && Number(cached.mqtt.expiresAt || 0) > Math.floor(Date.now() / 1000) + 60) {
+        return Promise.resolve(cached);
+      }
+    }
     const running = mqttSessionRequests.get(device.id);
     if (running) return running;
     const request = (async () => {
       const reply = await postCloudJson('/api/mqtt-session',
         { device_id: device.id, client_id: controlClientId }, 8000);
       if (!reply.success || !reply.mqtt) {
+        cachedMqttSessions.delete(device.id);
         const error = new Error(reply.status === 401 || reply.status === 403
           ? 'Cần đăng nhập lại hoặc không có quyền với máy này'
           : 'Chưa lấy được phiên kết nối máy chủ');
         error.code = reply.status === 401 || reply.status === 403 ? 'AUTH_ERROR' : 'TRANSPORT_ERROR';
         throw error;
       }
+      cachedMqttSessions.set(device.id, reply);
       if (reply.control) { readOnlyDevices.delete(device.id); await storeControlSession(device, reply.control); }
       else readOnlyDevices.add(device.id);
       // A reconnect of the socket that is already open must not be refused for an old token: refresh what it will send, without
@@ -3561,7 +3570,7 @@
     const job = standbyRenewal = { done: false };
     const finish = (retry) => { job.done = true; if (standbyRenewal === job) standbyRenewal = null; if (retry) renewRetryAt = Date.now() + RENEW_RETRY_MS; };
     const token = realtimeToken;
-    fetchMqttSession(device).then((reply) => {
+    fetchMqttSession(device, true).then((reply) => {
       if (job.done) return;
       if (token !== realtimeToken || state.realtime !== active) { finish(false); return; }
       let next = null, latestPresence = null, swapped = false;
@@ -4586,7 +4595,7 @@
     if (!ids.has(state.selectedId)) state.selectedId = state.devices[0]?.id || '';
   }
   window.addEventListener('mayap-logout', () => {
-    controlSessions.clear(); state.devices = [];
+    controlSessions.clear(); cachedMqttSessions.clear(); state.devices = [];
   });
   async function init() {
     if (!window.MayapAccount) return; // Production always installs the account gate.
