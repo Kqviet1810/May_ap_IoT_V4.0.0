@@ -10,7 +10,6 @@
 //      PV_predicted = PV + k_air * sum(P_pipe - P_hold)
 // 4. Asymmetric Anti-Windup Proportional-Integral tracking with slow base hold adaptation.
 // 5. Active Disturbance Rejection:
-//      - Vent Fan Feedforward (instant power offset when vent fan runs).
 //      - Door-Open Guard (prevents dangerous heat accumulation while doors are open).
 // =========================================================================================
 #include <cmath>
@@ -66,12 +65,12 @@ class Controller {
     capPct_ = 100.0f;
 
     kAir_ = 0.00025f;          // Initial prior: 0.025 degC/s per 100% power
-    tauTransit_ = 110.0f;      // Initial nominal transport delay [seconds]
+    tauTransit_ = 15.0f;       // Initial nominal transport delay [seconds]
     pHold_ = 18.0f;            // Initial nominal hold power [%]
     integral_ = 0.0f;
     pvPredicted_ = 30.0f;
 
-    pipeLen_ = 150U;
+    pipeLen_ = 20U;
     pipeIdx_ = 0U;
     for (uint16_t i = 0U; i < MAX_PIPE_LEN; ++i) pipe_[i] = static_cast<uint8_t>(pHold_);
 
@@ -90,7 +89,6 @@ class Controller {
       slopeTimeHist_[i] = 0.0f;
     }
 
-    pVentFf_ = 0.0f;
     doorDetected_ = false;
     doorTimer_ = 0.0f;
     stuckTimer_ = 0.0f;
@@ -136,9 +134,9 @@ class Controller {
     if (!identified_ && heaterOnTime_ >= 0.0f && std::isfinite(pvAtOn_)) {
       if ((pv_ - pvAtOn_) >= 0.15f) {
         const float measuredDelay = clockS_ - heaterOnTime_;
-        tauTransit_ = std::max(45.0f, std::min(220.0f, measuredDelay * 1.05f));
+        tauTransit_ = std::max(5.0f, std::min(180.0f, measuredDelay * 1.05f));
         // Total effective prediction horizon includes heater lag ~ 1.35x
-        pipeLen_ = std::max<uint16_t>(15U, std::min<uint16_t>(MAX_PIPE_LEN - 1U, static_cast<uint16_t>(tauTransit_ * 1.35f)));
+        pipeLen_ = std::max<uint16_t>(5U, std::min<uint16_t>(MAX_PIPE_LEN - 1U, static_cast<uint16_t>(tauTransit_ * 1.35f)));
         identified_ = true;
       }
     }
@@ -153,13 +151,6 @@ class Controller {
     // -------------------------------------------------------------------------
     // 3. Active Disturbance Rejection
     // -------------------------------------------------------------------------
-    // Vent Fan Feedforward (+12% while exhaust fan runs)
-    if (in.ventFan) {
-      pVentFf_ = std::min(12.0f, pVentFf_ + 2.5f * dt);
-    } else {
-      pVentFf_ = std::max(0.0f, pVentFf_ - 1.2f * dt);
-    }
-
     // Door Open Plunge Detection: temperature falling fast (< -0.7 C/min) below SP
     if (filteredSlope_ < -0.012f && (sp_ - pv_) > 0.40f) {
       doorDetected_ = true;
@@ -178,7 +169,7 @@ class Controller {
     float pipeSum = 0.0f;
     for (uint16_t i = 0U; i < pipeLen_; ++i) pipeSum += static_cast<float>(pipe_[i]);
     const float excessEnergy = pipeSum - static_cast<float>(pipeLen_) * pHold_;
-    pvPredicted_ = pv_ + kAir_ * excessEnergy;
+    pvPredicted_ = std::max(pv_ - 0.20f, pv_ + kAir_ * excessEnergy);
 
     const float errPred = sp_ - pvPredicted_;
     const float errTrue = sp_ - pv_;
@@ -218,7 +209,7 @@ class Controller {
     }
 
     // Raw commanded power
-    float cmd = pHold_ + pTerm + integral_ + pVentFf_;
+    float cmd = pHold_ + pTerm + integral_;
 
     // Door open guard clamp
     if (doorDetected_) {
@@ -280,7 +271,7 @@ class Controller {
   float tauHat() const { return pHold_; }
   float pHold() const { return pHold_; }
   float dNow() const { return pHold_; }
-  float dLoss() const { return pVentFf_; }
+  float dLoss() const { return 0.0f; }
   float haPct() const { return 0.0f; }
   float sigmaPred() const { return 0.05f; }
   float integral() const { return integral_; }
@@ -319,12 +310,12 @@ class Controller {
   float capPct_ = 100.0f;
 
   float kAir_ = 0.00025f;
-  float tauTransit_ = 110.0f;
+  float tauTransit_ = 15.0f;
   float pHold_ = 18.0f;
   float integral_ = 0.0f;
   float pvPredicted_ = 30.0f;
 
-  uint16_t pipeLen_ = 150U;
+  uint16_t pipeLen_ = 20U;
   uint16_t pipeIdx_ = 0U;
   uint8_t pipe_[MAX_PIPE_LEN] = {};
 
@@ -341,7 +332,6 @@ class Controller {
   float slopePvHist_[SLOPE_HIST_CAP] = {};
   float slopeTimeHist_[SLOPE_HIST_CAP] = {};
 
-  float pVentFf_ = 0.0f;
   bool doorDetected_ = false;
   float doorTimer_ = 0.0f;
   float stuckTimer_ = 0.0f;

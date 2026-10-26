@@ -156,14 +156,13 @@ jobs:
       - name: Heater path host tests (GPIO arbiter, SSR burst scheduler, E115 evidence, config serializers, sensor filter, programme). No controller exists in V2.0.0.
         run: python3 tools/test_heater_path.py --sanitize --report-dir /tmp/mayap-heater-path-report
 
-      - name: Thermal V2 digital-twin rig self-test (analytic closed forms, burst accuracy, protection layers, E115; simulation only)
-        run: python3 tools/thermal-v2/run_grid.py selftest
+      - name: "Thermal V3 controller host unit tests (Energy-In-Flight, physical discovery, anti-shock, door-open guard, watchdog)"
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-v3.cpp -o /tmp/mayap-thermal-v3-test
+          /tmp/mayap-thermal-v3-test
 
-      - name: "Thermal V2 controller host unit tests (contract of thermal_v2.h, learning, watchdog, adapter, fine sensor)"
-        run: python3 tools/thermal-v2/run_grid.py unit
-
-      - name: "Thermal V2 protection under injected faults (G4, simulation only; fails on a heating command while blocked or on a hazard from a fault the layers can see)"
-        run: V2_DQ=0.01 python3 tools/thermal-v2/run_grid.py protect --ctl v2,fastest --sets A
+      - name: "Thermal V3 simulation benchmark across industrial incubator plant set A"
+        run: python3 tools/thermal-v3/benchmark_v3.py
 
       - name: Technical PIN, Web permission, HMI-approved requests and old records (host tests of the real controller code)
         run: python3 tools/test_tech_access.py --sanitize

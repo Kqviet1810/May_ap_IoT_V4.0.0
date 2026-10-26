@@ -82,11 +82,11 @@ class ThermalV3Controller:
         self.capPct = 100.0
 
         self.kAir = 0.00025
-        self.tauTransit = 110.0
+        self.tauTransit = 15.0
         self.pHold = 18.0
 
-        self.pipeLen = int(self.tauTransit * 1.35)
-        self.pipe = [self.pHold] * self.pipeLen
+        self.pipeLen = 20
+        self.pipe = [self.pHold] * 320
         self.pipeIdx = 0
         self.secTimer = 0.0
 
@@ -99,7 +99,6 @@ class ThermalV3Controller:
         self.filteredSlope = 0.0
         self.peakClimbSlope = 0.0
 
-        self.pVentFf = 0.0
         self.clockS = 0.0
         self.heaterOnTime = None
         self.pvAtOn = None
@@ -133,11 +132,8 @@ class ThermalV3Controller:
         if not self.identified:
             if (pv - self.pvAtOn) >= 0.15:
                 measuredDelay = self.clockS - self.heaterOnTime
-                self.tauTransit = max(50.0, min(220.0, measuredDelay * 1.05))
-                newLen = max(10, int(self.tauTransit * 1.35))
-                if newLen != len(self.pipe):
-                    self.pipe = [self.pHold] * newLen
-                    self.pipeIdx = 0
+                self.tauTransit = max(5.0, min(180.0, measuredDelay * 1.05))
+                self.pipeLen = max(5, min(319, int(self.tauTransit * 1.35)))
                 self.identified = True
 
         # Track peak climb slope while heating at 100%
@@ -161,17 +157,11 @@ class ThermalV3Controller:
         if self.secTimer >= 1.0:
             self.secTimer -= 1.0
 
-        excessEnergy = sum(self.pipe) - len(self.pipe) * self.pHold
-        pvPredicted = self.pv + self.kAir * excessEnergy
+        excessEnergy = sum(self.pipe[:self.pipeLen]) - self.pipeLen * self.pHold
+        pvPredicted = max(self.pv - 0.20, self.pv + self.kAir * excessEnergy)
 
         errPred = self.sp - pvPredicted
         errTrue = self.sp - self.pv
-
-        # Vent feedforward
-        if ventFan:
-            self.pVentFf = min(12.0, self.pVentFf + 2.0 * dt)
-        else:
-            self.pVentFf = max(0.0, self.pVentFf - 1.0 * dt)
 
         # Asymmetric P on predicted error
         if errPred >= 0:
@@ -199,7 +189,7 @@ class ThermalV3Controller:
         else:
             self.stuckTimer = 0.0
 
-        cmd = self.pHold + pTerm + self.integral + self.pVentFf
+        cmd = self.pHold + pTerm + self.integral
 
         if self.doorDetected:
             cmd = min(cmd, self.pHold + 6.0)
@@ -208,13 +198,13 @@ class ThermalV3Controller:
 
         if self.secTimer < dt:
             self.pipe[self.pipeIdx] = cmd
-            self.pipeIdx = (self.pipeIdx + 1) % len(self.pipe)
+            self.pipeIdx = (self.pipeIdx + 1) % self.pipeLen
 
         return cmd
 
 
 def run_benchmark():
-    with open(ROOT / "tools/thermal-v2/plants.json") as f:
+    with open(ROOT / "tools/thermal-v3/plants.json") as f:
         data = json.load(f)
 
     plants = data["A"]
