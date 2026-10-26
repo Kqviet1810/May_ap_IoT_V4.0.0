@@ -1,19 +1,19 @@
 
 /* ============================== Design tokens ============================== */
 :root{
-  --ink:#1d1d1f;--muted:#86868b;--label:#424245;
-  --line:#e5e5ea;--lineSoft:#f2f2f7;--tile:#f5f5f7;--tileRo:#e5e5ea;
-  --surface:#fff;--wash:#f5f5f7;
-  --primary:#0071e3;--onPrimary:#fff;--primary2:#0071e3;--chartLine:#0071e3;--dangerAction:#ff3b30;--attentionBg:#ff9500;--primarySoft:#f0f7ff;
+  --ink:#203a43;--muted:#526c76;--label:#36565f;
+  --line:#dfecef;--lineSoft:#eaf2f4;--tile:#f5fafb;--tileRo:#dde7ea;
+  --surface:#fff;--wash:#f0f8f9;
+  --primary:#64c9d1;--onPrimary:#173e45;--primary2:#286974;--chartLine:#286974;--dangerAction:#b52645;--attentionBg:#815713;--primarySoft:#e5f6f7;
 
-  --danger:#ff3b30;--dangerSoft:#fff2f1;
-  --warning:#ff9500;--warningDark:#b25e00;--warningSoft:#fff9f0;
-  --emergency:#d70015;--emergencySoft:#ffeff0;
-  --faint:#86868b;
-  --ring:#0071e3;
-  --shadow:0 2px 12px rgba(0,0,0,.04);--shadowSm:0 1px 3px rgba(0,0,0,.03);
-  --radius:20px;--radius-md:14px;--radius-sm:10px;--navH:86px;
-  --ease:.18s cubic-bezier(0.16,1,0.3,1);
+  --danger:#be4147;--dangerSoft:#fff0f1;
+  --warning:#e29b1d;--warningDark:#8a5a0a;--warningSoft:#fdf1de;
+  --emergency:#7a1f1f;--emergencySoft:#f6dede;
+  --faint:#5e767e;
+  --ring:#286974;
+  --shadow:0 2px 8px rgba(21,44,57,.035);--shadowSm:0 1px 3px rgba(21,44,57,.025);
+  --radius:18px;--radius-md:14px;--radius-sm:10px;--navH:86px;
+  --ease:.16s ease;
   --safeTop:env(safe-area-inset-top,0px);--safeBottom:env(safe-area-inset-bottom,0px);
   --safeBottomMax:env(safe-area-max-inset-bottom,env(safe-area-inset-bottom,0px));
   --workspaceColumns:minmax(0,1.35fr) minmax(340px,.65fr);--workspaceGap:18px;
@@ -25,15 +25,15 @@
      thai bat/tat, chip nhe...) - tach thanh token de giao dien toi (xem
      [data-theme="dark"] o cuoi file) doi duoc dong bo, khong phai do lai
      tung noi. Mau thuong hieu va chu tren nut duoc tach rieng de du tuong phan. */
-  --bodyBg:#f5f5f7;--topbarBg:#f5f5f7;
-  --softBg:#f5f5f7;--softText:#86868b;
-  --successText:#34c759;--successTextStrong:#248a3d;--successTextSoft:#248a3d;
-  --dangerTextStrong:#d70015;
-  --onBorder:#d1d1d6;--dangerBorder:#ffcdd2;--warningBorder:#ffe0b2;--emergencyBorder:#ffcdd2;
-  --invalidBorder:#ff3b30;--invalidBg:#fff2f1;--invalidRing:#ff3b3020;
-  --chipBg:#f5f5f7;
-  --navBg:#fff;--navText:#86868b;--navHover:#f5f5f7;--navActive:#f5f5f7;--navActiveText:#0071e3;--navBorder:#e5e5ea;
-  --switchOff:#e5e5ea;
+  --bodyBg:#f3f8f9;--topbarBg:#f3f8f9;
+  --softBg:#f4fafc;--softText:#526c76;
+  --successText:#187746;--successTextStrong:#087b51;--successTextSoft:#0f6b52;
+  --dangerTextStrong:#9c3b40;
+  --onBorder:#b7dfe4;--dangerBorder:#eeb3b6;--warningBorder:#eecf9e;--emergencyBorder:#d59a9a;
+  --invalidBorder:#d95d62;--invalidBg:#fff8f8;--invalidRing:#d95d6218;
+  --chipBg:#edf7f8;
+  --navBg:#fff;--navText:#4b6872;--navHover:#edf8f9;--navActive:#d9f1f3;--navActiveText:#235760;--navBorder:#dfecef;
+  --switchOff:#d4e4e8;
   color-scheme:light
 }
 /* Giao dien toi: bam nut trong "Cai dat > Giao dien" ghi data-theme len
@@ -44,60 +44,60 @@
 @media(prefers-color-scheme:dark){
   :root:not([data-theme="light"]){
     color-scheme:dark;
-    --ink:#f5f5f7;--muted:#86868b;--label:#aeaeb2;
-    --line:#2c2c2e;--lineSoft:#1c1c1e;--tile:#1c1c1e;--tileRo:#2c2c2e;
-    --surface:#1c1c1e;--wash:#2c2c2e;
-    --primary:#0a84ff;--onPrimary:#fff;--primary2:#0a84ff;--chartLine:#0a84ff;--dangerAction:#ff453a;--attentionBg:#ff9f0a;--primarySoft:#162840;
+    --ink:#f4fafc;--muted:#c4d5dc;--label:#deedf3;
+    --line:#4a6774;--lineSoft:#36515e;--tile:#304b58;--tileRo:#213845;
+    --surface:#243944;--wash:#36515e;
+    --primary:#64c9d1;--onPrimary:#173e45;--primary2:#92dce2;--chartLine:#64c9d1;--dangerAction:#b52645;--attentionBg:#815713;--primarySoft:#2b5561;
 
-    --danger:#ff453a;--dangerSoft:#2c1517;
-    --warning:#ff9f0a;--warningDark:#ff9f0a;--warningSoft:#2c2010;
-    --emergency:#ff453a;--emergencySoft:#301416;
-    --faint:#636366;
-    --ring:#0a84ff;
+    --danger:#ff7a7a;--dangerSoft:#2a151a;
+    --warning:#f5a742;--warningDark:#f5a742;--warningSoft:#332512;
+    --emergency:#ff8a8a;--emergencySoft:#331515;
+    --faint:#c4d5dc;
+    --ring:#92dce2;
     --shadow:none;--shadowSm:none;
-    --bodyBg:#000;--topbarBg:#000;
-    --softBg:#2c2c2e;--softText:#aeaeb2;
-    --successText:#30d158;--successTextStrong:#30d158;--successTextSoft:#30d158;
-    --dangerTextStrong:#ff6961;
-    --onBorder:#3a3a3c;--dangerBorder:#4a1e20;--warningBorder:#4a3215;--emergencyBorder:#4a1e20;
-    --invalidBorder:#ff453a;--invalidBg:#2c1517;--invalidRing:#ff453a33;
-    --chipBg:#1c1c1e;
-    --navBg:#1c1c1e;--navText:#86868b;--navHover:#2c2c2e;--navActive:#2c2c2e;--navActiveText:#0a84ff;--navBorder:#2c2c2e;
-    --switchOff:#3a3a3c
+    --bodyBg:#17272f;--topbarBg:#17272f;
+    --softBg:#304b58;--softText:#deedf3;
+    --successText:#4ade80;--successTextStrong:#34d399;--successTextSoft:#2dd4a0;
+    --dangerTextStrong:#ff9a9a;
+    --onBorder:#4b737c;--dangerBorder:#5a2328;--warningBorder:#5a4020;--emergencyBorder:#5a2626;
+    --invalidBorder:#ff7a7a;--invalidBg:#2a151a;--invalidRing:#ff7a7a33;
+    --chipBg:#304b58;
+    --navBg:#243944;--navText:#c4d5dc;--navHover:#365865;--navActive:#315864;--navActiveText:#f4fcff;--navBorder:#4a6774;
+    --switchOff:#4a6774
   }
   /* Mui ten <select> la SVG data-URI (khong doi mau qua var duoc) - doi rieng
      sang net sang de con thay ro tren nen input toi. */
   :root:not([data-theme="light"]) select,
   :root:not([data-theme="light"]) .customSelectTrigger{
-    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2386868b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E")
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2392dce2' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E")
   }
 }
 :root[data-theme="dark"]{
   color-scheme:dark;
-  --ink:#f5f5f7;--muted:#86868b;--label:#aeaeb2;
-  --line:#2c2c2e;--lineSoft:#1c1c1e;--tile:#1c1c1e;--tileRo:#2c2c2e;
-  --surface:#1c1c1e;--wash:#2c2c2e;
-  --primary:#0a84ff;--onPrimary:#fff;--primary2:#0a84ff;--chartLine:#0a84ff;--dangerAction:#ff453a;--attentionBg:#ff9f0a;--primarySoft:#162840;
+  --ink:#f4fafc;--muted:#c4d5dc;--label:#deedf3;
+  --line:#4a6774;--lineSoft:#36515e;--tile:#304b58;--tileRo:#213845;
+  --surface:#243944;--wash:#36515e;
+  --primary:#64c9d1;--onPrimary:#173e45;--primary2:#92dce2;--chartLine:#64c9d1;--dangerAction:#b52645;--attentionBg:#815713;--primarySoft:#2b5561;
 
-  --danger:#ff453a;--dangerSoft:#2c1517;
-  --warning:#ff9f0a;--warningDark:#ff9f0a;--warningSoft:#2c2010;
-  --emergency:#ff453a;--emergencySoft:#301416;
-  --faint:#636366;
-  --ring:#0a84ff;
+  --danger:#ff7a7a;--dangerSoft:#2a151a;
+  --warning:#f5a742;--warningDark:#f5a742;--warningSoft:#332512;
+  --emergency:#ff8a8a;--emergencySoft:#331515;
+  --faint:#c4d5dc;
+  --ring:#92dce2;
   --shadow:none;--shadowSm:none;
-  --bodyBg:#000;--topbarBg:#000;
-  --softBg:#2c2c2e;--softText:#aeaeb2;
-  --successText:#30d158;--successTextStrong:#30d158;--successTextSoft:#30d158;
-  --dangerTextStrong:#ff6961;
-  --onBorder:#3a3a3c;--dangerBorder:#4a1e20;--warningBorder:#4a3215;--emergencyBorder:#4a1e20;
-  --invalidBorder:#ff453a;--invalidBg:#2c1517;--invalidRing:#ff453a33;
-  --chipBg:#1c1c1e;
-  --navBg:#1c1c1e;--navText:#86868b;--navHover:#2c2c2e;--navActive:#2c2c2e;--navActiveText:#0a84ff;--navBorder:#2c2c2e;
-  --switchOff:#3a3a3c
+  --bodyBg:#17272f;--topbarBg:#17272f;
+  --softBg:#304b58;--softText:#deedf3;
+  --successText:#4ade80;--successTextStrong:#34d399;--successTextSoft:#2dd4a0;
+  --dangerTextStrong:#ff9a9a;
+  --onBorder:#4b737c;--dangerBorder:#5a2328;--warningBorder:#5a4020;--emergencyBorder:#5a2626;
+  --invalidBorder:#ff7a7a;--invalidBg:#2a151a;--invalidRing:#ff7a7a33;
+  --chipBg:#304b58;
+  --navBg:#243944;--navText:#c4d5dc;--navHover:#365865;--navActive:#315864;--navActiveText:#f4fcff;--navBorder:#4a6774;
+  --switchOff:#4a6774
 }
 :root[data-theme="dark"] select,
 :root[data-theme="dark"] .customSelectTrigger{
-  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2386868b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E")
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2392dce2' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E")
 }
 /* text-size-adjust khai bao tren html{} khong du: Chrome/Safari dien thoai
    "font boosting" (TextAutosizer) danh gia RIENG tung khoi/cum chu hep (vd
@@ -111,7 +111,7 @@ body{width:100%;max-width:100%;overflow-x:clip}
 /* Cam bam giu/sao chep chu de tao cam giac ung dung, khong phai trang wed - giu lai cho o nhap lieu de con go/dan duoc. */
 html,body{-webkit-user-select:none;-moz-user-select:none;user-select:none;-webkit-touch-callout:none}
 input,textarea,[contenteditable]{-webkit-user-select:text;-moz-user-select:text;user-select:text;-webkit-touch-callout:default}
-body{margin:0;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","SF Pro",Inter,system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:var(--fs-base);line-height:1.45;background:var(--bodyBg);min-height:100vh;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;transition:background var(--ease),color var(--ease)}
+body{margin:0;color:var(--ink);font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;font-size:var(--fs-base);line-height:1.4;background:var(--bodyBg);min-height:100vh;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;transition:background var(--ease),color var(--ease)}
 /* Khóa chiều ngang: mọi khối co theo viewport, không sinh thanh cuộn ngang. */
 .appShell,.main,.topbar,.page,.panel,.batchPanel,.batchGrid,.batchGrid>*,
 .compactTile,.compactTile input,.batchActions,.batchActions>*{min-width:0;max-width:100%}
@@ -128,27 +128,27 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:none}
 
 /* ================================= Shell ==================================== */
 .appShell{min-height:100vh;display:grid;grid-template-columns:240px minmax(0,1fr)}
-.sidebar{position:fixed;inset:0 auto 0 0;width:240px;padding:24px 20px;background:var(--surface);color:var(--ink);border-right:1px solid var(--line);display:flex;flex-direction:column;z-index:40}
+.sidebar{position:fixed;inset:0 auto 0 0;width:240px;padding:24px 20px;background:#103a33;color:#fff;display:flex;flex-direction:column;z-index:40}
 .brand{display:flex;align-items:center;gap:12px}
 .brandMark{width:44px;height:44px;border-radius:14px;display:grid;place-items:center;background:var(--primary);color:var(--onPrimary);font-weight:950;font-size:21px}
 .brand strong,.brand small{display:block}
 .brand strong{font-size:var(--fs-md);letter-spacing:.2px}
-.brand small{margin-top:3px;color:var(--muted);font-size:var(--fs-xs)}
+.brand small{margin-top:3px;color:#a9c8c2;font-size:var(--fs-xs)}
 
 .nav{display:grid;gap:6px;margin-top:36px}
-.nav button{border:0;border-radius:14px;background:transparent;color:var(--muted);min-height:52px;padding:8px 14px;display:flex;align-items:center;gap:12px;cursor:pointer;text-align:left;transition:background var(--ease),color var(--ease)}
+.nav button{border:0;border-radius:14px;background:transparent;color:#bfd4d0;min-height:52px;padding:8px 14px;display:flex;align-items:center;gap:12px;cursor:pointer;text-align:left;transition:background var(--ease),color var(--ease)}
 .nav button span{display:grid;place-items:center;flex:0 0 24px;width:24px;height:24px;font-size:20px;line-height:1;text-align:center}
 .nav button span svg{display:block;width:22px;height:22px;margin:auto}
 .nav button b{font-size:var(--fs-sm);font-weight:700;line-height:1.25}
-.nav button:hover{background:var(--tile);color:var(--ink)}
-.nav button.active{background:var(--tile);color:var(--primary)}
-.nav button.active:hover{background:var(--tile)}
+.nav button:hover{background:#1a4941;color:#fff}
+.nav button.active{background:#205b51;color:#fff}
+.nav button.active:hover{background:#205b51}
 
-.sideState{margin-top:auto;display:flex;align-items:center;gap:10px;padding:13px;border:1px solid var(--line);border-radius:14px;background:var(--tile)}
-.sideState i{width:10px;height:10px;border-radius:50%;background:var(--successText);box-shadow:0 0 0 4px color-mix(in srgb,var(--successText) 20%,transparent);animation:pulse 2.6s ease-in-out infinite}
+.sideState{margin-top:auto;display:flex;align-items:center;gap:10px;padding:13px;border:1px solid #315c55;border-radius:14px}
+.sideState i{width:10px;height:10px;border-radius:50%;background:#53d7a4;box-shadow:0 0 0 5px #53d7a422;animation:pulse 2.6s ease-in-out infinite}
 .sideState strong,.sideState small{display:block}
 .sideState strong{font-size:var(--fs-xs)}
-.sideState small{margin-top:2px;color:var(--muted);font-size:var(--fs-2xs)}
+.sideState small{margin-top:2px;color:#a8c5c0;font-size:var(--fs-2xs)}
 
 .main{grid-column:2;padding:0 28px 44px;max-width:1320px;width:100%;min-width:0;margin:0 auto}
 .topbar{position:sticky;top:0;z-index:30;display:grid;grid-template-columns:var(--workspaceColumns);gap:var(--workspaceGap);align-items:center;padding:calc(20px + var(--safeTop)) 0 16px;background:var(--topbarBg);transition:background var(--ease)}
@@ -227,10 +227,10 @@ body[data-page="settings"] .topbar{max-width:none;width:100%}
 .field{display:grid;gap:8px}
 .field>span{font-size:var(--fs-sm);font-weight:700;color:var(--label)}
 input,select,textarea,.customSelectTrigger{width:100%;min-height:52px;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface);color:var(--ink);font-size:var(--fs-md);padding:0 14px;outline:0;transition:border-color var(--ease),box-shadow var(--ease),background var(--ease),color var(--ease)}
-select,.customSelectTrigger{appearance:none;-webkit-appearance:none;padding-right:44px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2386868b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 16px center;background-size:16px}
+select,.customSelectTrigger{appearance:none;-webkit-appearance:none;padding-right:44px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23286974' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 16px center;background-size:16px}
 textarea{padding:12px 14px;font-family:inherit;resize:vertical}
-input:hover,select:hover,textarea:hover,.customSelectTrigger:hover{border-color:var(--muted)}
-input:focus,select:focus,textarea:focus,.customSelectTrigger:focus-visible{border-color:var(--ring);box-shadow:0 0 0 3px #0071e326}
+input:hover,select:hover,textarea:hover,.customSelectTrigger:hover{border-color:#a9c2bc}
+input:focus,select:focus,textarea:focus,.customSelectTrigger:focus-visible{border-color:var(--ring);box-shadow:0 0 0 3px #64c9d133}
 input::placeholder,textarea::placeholder{color:var(--faint)}
 input:disabled,select:disabled,textarea:disabled,.customSelectTrigger:disabled{opacity:.6;cursor:not-allowed;background-color:var(--tile)}
 
@@ -240,8 +240,8 @@ input:disabled,select:disabled,textarea:disabled,.customSelectTrigger:disabled{o
    khi nam trong .compactTile/.quickField. Thieu quy tac nay la nguyen nhan
    "khung vo hinh" trong cac muc nay truoc do. */
 .field>.unit{border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface);padding:0 14px;min-height:52px;transition:border-color var(--ease),box-shadow var(--ease),background var(--ease)}
-.field>.unit:hover{border-color:var(--muted)}
-.field>.unit:focus-within{border-color:var(--ring);box-shadow:0 0 0 3px #0071e326}
+.field>.unit:hover{border-color:#a9c2bc}
+.field>.unit:focus-within{border-color:var(--ring);box-shadow:0 0 0 3px #64c9d133}
 .field>.unit input{font-size:var(--fs-md);font-weight:700;min-height:50px}
 .field>.unit b{font-size:var(--fs-sm)}
 
@@ -272,14 +272,14 @@ input:disabled,select:disabled,textarea:disabled,.customSelectTrigger:disabled{o
    doc/ngang; 4 goc bo (giong may quet chuyen nghiep) thay vi 1 khung vien
    lien tuc - de mat nguoi dung tu nhien don vao vung giua khung. */
 .qrViewfinder{position:relative;z-index:2;flex:1;margin:0 auto;width:min(72vw,72vh,320px);aspect-ratio:1;align-self:center}
-.qrCorner{position:absolute;width:34px;height:34px;border:3px solid var(--primary)}
+.qrCorner{position:absolute;width:34px;height:34px;border:3px solid #64c9d1}
 .qrCornerTl{top:0;left:0;border-right:0;border-bottom:0;border-top-left-radius:10px}
 .qrCornerTr{top:0;right:0;border-left:0;border-bottom:0;border-top-right-radius:10px}
 .qrCornerBl{bottom:0;left:0;border-right:0;border-top:0;border-bottom-left-radius:10px}
 .qrCornerBr{bottom:0;right:0;border-left:0;border-top:0;border-bottom-right-radius:10px}
 .qrScanLine{position:absolute;left:6%;right:6%;top:0;height:2px;background:var(--primary);box-shadow:none;animation:qrScanMove 2.2s ease-in-out infinite}
 @keyframes qrScanMove{0%,100%{top:4%}50%{top:94%}}
-.qrScanFooter{position:relative;z-index:2;padding:18px 24px calc(28px + var(--safeBottomMax));text-align:center;background:#1c1c1e}
+.qrScanFooter{position:relative;z-index:2;padding:18px 24px calc(28px + var(--safeBottomMax));text-align:center;background:#10232d}
 .qrScanFooter p{margin:0;color:#fff;font-size:var(--fs-sm);font-weight:700}
 .qrScanFooter small{display:block;margin-top:6px;color:#b7ccc6;font-size:var(--fs-xs)}
 @media(prefers-reduced-motion:reduce){.qrScanLine{animation:none;top:50%}}
@@ -543,10 +543,10 @@ input.invalid,select.invalid,.compactTile.invalid{border-color:var(--invalidBord
 .dangerButton:hover{filter:brightness(1.06)}
 .dangerButton:active{filter:brightness(.92);transform:translateY(1px)}
 
-.toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,16px);z-index:100;width:min(calc(100% - 28px),460px);padding:14px 16px;border-radius:var(--radius-md);background:rgba(28,28,30,.92);color:#fff;font-size:var(--fs-sm);box-shadow:0 10px 30px rgba(0,0,0,.22);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);opacity:0;pointer-events:none;transition:.2s ease}
+.toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,16px);z-index:100;width:min(calc(100% - 28px),460px);padding:14px 16px;border-radius:var(--radius-md);background:#103a33;color:#fff;font-size:var(--fs-sm);box-shadow:0 14px 36px #071e1a55;opacity:0;pointer-events:none;transition:.2s ease}
 .toast.show{opacity:1;transform:translate(-50%,0)}
-dialog{width:min(calc(100% - 24px),520px);border:0;border-radius:var(--radius);padding:0;box-shadow:0 24px 60px rgba(0,0,0,.25)}
-dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+dialog{width:min(calc(100% - 24px),520px);border:0;border-radius:var(--radius);padding:0;box-shadow:0 30px 80px #071e1a66}
+dialog::backdrop{background:#071e1a88;backdrop-filter:blur(3px)}
 .dialogBody{padding:26px;display:grid;gap:16px}
 .iconButton{width:44px;height:44px;border:0;border-radius:12px;background:var(--chipBg);color:var(--primary2);font-size:22px;cursor:pointer;transition:background var(--ease)}
 .iconButton:hover{background:var(--primarySoft)}
@@ -878,31 +878,31 @@ body[data-page="batch"] .telemetryCanvasWrap{flex:1 1 0;height:0;min-height:72px
   html[data-ui="modern"]{--navH:62px;--navGap:max(4px,calc(var(--safeBottomMax) - 12px))}
   /* Thanh tab noi dang vien thuoc, cach day toi thieu */
   html[data-ui="modern"] .sidebar{inset:auto 0 0 0;width:auto;height:calc(var(--navH) + var(--navGap));bottom:0;padding:0 8px var(--navGap);background:transparent;display:block;pointer-events:none}
-  html[data-ui="modern"] .nav{width:100%;max-width:480px;height:var(--navH);margin:0 auto;padding:6px;border:1px solid var(--line);border-radius:24px;background:color-mix(in srgb,var(--navBg) 90%,transparent);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);box-shadow:0 4px 20px rgba(0,0,0,.06)}
-  html[data-ui="modern"] .nav button{border-radius:18px}
+  html[data-ui="modern"] .nav{width:100%;max-width:480px;height:var(--navH);margin:0 auto;padding:6px;border:1px solid color-mix(in srgb,var(--primary) 18%,var(--navBorder));border-radius:26px;background:color-mix(in srgb,var(--navBg) 90%,transparent);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);box-shadow:0 8px 26px rgba(16,35,45,.16)}
+  html[data-ui="modern"] .nav button{border-radius:20px}
   html[data-ui="modern"] .main{padding-bottom:calc(var(--navH) + var(--navGap) + 14px)}
   html[data-ui="modern"] body[data-page="device"] .main,html[data-ui="modern"] body[data-page="batch"] .main{padding-bottom:calc(var(--navH) + var(--navGap) + 8px)}
   html[data-ui="modern"] .toast{bottom:calc(var(--navH) + var(--navGap) + 12px)}
 
-  /* Mot o tong: phong cach Apple toi gian, vien thanh manh, khong mau me, phan cach 1px */
-  html[data-ui="modern"] .deviceStatusGrid,html[data-ui="modern"] .batchGrid{position:relative;overflow:hidden;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:minmax(76px,auto);gap:0;padding:0;margin:12px 0;border:1px solid var(--line);border-radius:20px;background:var(--surface);box-shadow:var(--shadow)}
-  html[data-ui="modern"] .deviceStatusGrid::before,html[data-ui="modern"] .batchGrid::before{display:none}
-  html[data-ui="modern"] .deviceStatusGrid::after,html[data-ui="modern"] .batchGrid::after{content:"";position:absolute;left:50%;top:16px;bottom:16px;width:1px;background:var(--line);pointer-events:none}
+  /* Mot o tong: khong con o con co vien. Vach chia mo dan o hai dau, khong cham vien; cham trang thai o goc. */
+  html[data-ui="modern"] .deviceStatusGrid,html[data-ui="modern"] .batchGrid{position:relative;overflow:hidden;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:minmax(76px,auto);gap:0;padding:0;margin:12px 0;border:1px solid color-mix(in srgb,var(--primary) 24%,var(--line));border-radius:24px;background:radial-gradient(120% 80% at 0% 0%,color-mix(in srgb,var(--primary) 9%,transparent),transparent 62%),var(--surface);box-shadow:inset 0 1px 0 color-mix(in srgb,#fff 60%,transparent),0 10px 28px -16px color-mix(in srgb,var(--primary) 45%,transparent)}
+  html[data-ui="modern"] .deviceStatusGrid::before,html[data-ui="modern"] .batchGrid::before{content:"";position:absolute;top:0;left:20%;right:20%;height:2px;background:linear-gradient(90deg,transparent,var(--primary),transparent);opacity:.8;pointer-events:none}
+  html[data-ui="modern"] .deviceStatusGrid::after,html[data-ui="modern"] .batchGrid::after{content:"";position:absolute;left:50%;top:16px;bottom:16px;width:1px;background:linear-gradient(180deg,transparent,var(--line) 16%,var(--line) 84%,transparent);pointer-events:none}
   html[data-ui="modern"] .deviceStatusGrid:has(.outputStrip.hasHumidifier)::after{bottom:92px}
   html[data-ui="modern"] .batchGrid.noHumidity::after{bottom:84px}
   html[data-ui="modern"] body[data-page="device"] .quickGrid,html[data-ui="modern"] body[data-page="device"] .outputStrip{display:contents}
-  html[data-ui="modern"] body[data-page="device"] .quickField,html[data-ui="modern"] body[data-page="device"] .outputStrip>div:not([hidden]),html[data-ui="modern"] body[data-page="device"] .outputStrip>button,html[data-ui="modern"] .batchGrid>.compactTile{position:relative;display:flex;flex-direction:column;justify-content:center;gap:4px;min-width:0;min-height:76px;padding:14px 18px;border:0;border-radius:0;background:transparent}
+  html[data-ui="modern"] body[data-page="device"] .quickField,html[data-ui="modern"] body[data-page="device"] .outputStrip>div:not([hidden]),html[data-ui="modern"] body[data-page="device"] .outputStrip>button,html[data-ui="modern"] .batchGrid>.compactTile{position:relative;display:flex;flex-direction:column;justify-content:center;gap:5px;min-width:0;min-height:76px;padding:14px 18px;border:0;border-radius:0;background:transparent}
   html[data-ui="modern"] body[data-page="device"] .quickField:nth-child(n+3),html[data-ui="modern"] body[data-page="device"] .outputStrip>div:not([hidden]),html[data-ui="modern"] body[data-page="device"] .outputStrip>button,html[data-ui="modern"] .batchGrid>.compactTile:nth-child(n+3){background-image:none}
-  html[data-ui="modern"] body[data-page="device"] .outputStrip>div:not([hidden])::before,html[data-ui="modern"] body[data-page="device"] .outputStrip>button::before,html[data-ui="modern"] .batchGrid>.compactTile:nth-child(n+3)::before{content:"";position:absolute;left:16px;right:16px;top:0;height:1px;background:var(--line);pointer-events:none}
-  html[data-ui="modern"] body[data-page="device"] .quickField>span,html[data-ui="modern"] body[data-page="device"] .outputStrip span,html[data-ui="modern"] .batchGrid>.compactTile>span,html[data-ui="modern"] .batchGrid .tileLabel{font-size:11px;font-weight:600;letter-spacing:.3px;text-transform:uppercase;color:var(--muted)}
-  html[data-ui="modern"] body[data-page="device"] .outputStrip strong{margin-top:0;font-size:16px;font-weight:700;letter-spacing:-.2px}
-  html[data-ui="modern"] .batchGrid>.compactTile:focus-within,html[data-ui="modern"] body[data-page="device"] .quickField:focus-within{background:var(--tile)}
-  /* Chi bao trang thai: cham tron don gian tinh te kieu Apple Home */
-  html[data-ui="modern"] body[data-page="device"] .outputStrip>div:not([hidden])::after,html[data-ui="modern"] body[data-page="device"] .outputStrip>button::after{content:"";position:absolute;top:18px;right:18px;width:7px;height:7px;border-radius:50%;background:var(--line);transition:background var(--ease)}
-  html[data-ui="modern"] body[data-page="device"] .outputStrip>div.on,html[data-ui="modern"] body[data-page="device"] .outputStrip>button.on{background:var(--tile);border-color:transparent}
-  html[data-ui="modern"] body[data-page="device"] .outputStrip>div.on::after,html[data-ui="modern"] body[data-page="device"] .outputStrip>button.on::after{background:var(--successText)}
-  html[data-ui="modern"] body[data-page="device"] .outputStrip>div.on:has(#outputSiren),html[data-ui="modern"] body[data-page="device"] .outputStrip>button.on:has(#outputSiren){background:var(--dangerSoft)}
-  html[data-ui="modern"] body[data-page="device"] .outputStrip>button.on:has(#outputSiren)::after{background:var(--danger)}
+  html[data-ui="modern"] body[data-page="device"] .outputStrip>div:not([hidden])::before,html[data-ui="modern"] body[data-page="device"] .outputStrip>button::before,html[data-ui="modern"] .batchGrid>.compactTile:nth-child(n+3)::before{content:"";position:absolute;left:16px;right:16px;top:0;height:1px;background:linear-gradient(90deg,transparent,var(--line),transparent);pointer-events:none}
+  html[data-ui="modern"] body[data-page="device"] .quickField>span,html[data-ui="modern"] body[data-page="device"] .outputStrip span,html[data-ui="modern"] .batchGrid>.compactTile>span,html[data-ui="modern"] .batchGrid .tileLabel{font-size:11px;font-weight:700;letter-spacing:.9px;text-transform:uppercase;color:var(--muted)}
+  html[data-ui="modern"] body[data-page="device"] .outputStrip strong{margin-top:0;font-size:17px;letter-spacing:.2px}
+  html[data-ui="modern"] .batchGrid>.compactTile:focus-within,html[data-ui="modern"] body[data-page="device"] .quickField:focus-within{background:color-mix(in srgb,var(--primary) 7%,transparent)}
+  /* chi bao trang thai (dau cham) o goc phai tren cua tung dau ra */
+  html[data-ui="modern"] body[data-page="device"] .outputStrip>div:not([hidden])::after,html[data-ui="modern"] body[data-page="device"] .outputStrip>button::after{content:"";position:absolute;top:16px;right:18px;width:8px;height:8px;border-radius:50%;border:1.5px solid var(--faint);background:transparent}
+  html[data-ui="modern"] body[data-page="device"] .outputStrip>div.on,html[data-ui="modern"] body[data-page="device"] .outputStrip>button.on{background:linear-gradient(135deg,color-mix(in srgb,var(--primary) 13%,transparent),transparent 72%);border-color:transparent}
+  html[data-ui="modern"] body[data-page="device"] .outputStrip>div.on::after,html[data-ui="modern"] body[data-page="device"] .outputStrip>button.on::after{border-color:var(--primary);background:var(--primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 22%,transparent),0 0 12px var(--primary)}
+  html[data-ui="modern"] body[data-page="device"] .outputStrip>div.on:has(#outputSiren),html[data-ui="modern"] body[data-page="device"] .outputStrip>button.on:has(#outputSiren){background:linear-gradient(135deg,color-mix(in srgb,var(--danger,#d64545) 14%,transparent),transparent 72%)}
+  html[data-ui="modern"] body[data-page="device"] .outputStrip>button.on:has(#outputSiren)::after{border-color:var(--danger,#d64545);background:var(--danger,#d64545);box-shadow:0 0 0 3px color-mix(in srgb,var(--danger,#d64545) 22%,transparent),0 0 12px var(--danger,#d64545)}
   html[data-ui="modern"] body[data-page="device"] .outputStrip.hasHumidifier>button:last-child{grid-column:1/-1;width:auto;justify-self:stretch}
   html[data-ui="modern"] .batchGrid.noHumidity .compactToggle{grid-column:1/-1;min-height:76px}
   html[data-ui="modern"] .batchGrid .compactToggle{flex-direction:row;align-items:center;justify-content:space-between;gap:12px}
@@ -917,21 +917,21 @@ body[data-page="batch"] .telemetryCanvasWrap{flex:1 1 0;height:0;min-height:72px
 .settingsTools,.settingsEmpty{display:none}
 .searchHidden{display:none!important}
 .srOnly{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-html[data-ui="modern"] .settingsTools{display:grid;gap:10px;position:sticky;top:0;z-index:6;margin:0 -10px 2px;padding:8px 10px 10px;background:color-mix(in srgb,var(--bodyBg) 92%,transparent);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px)}
-html[data-ui="modern"] .settingsSearch input{width:100%;box-sizing:border-box;min-height:44px;padding:0 16px 0 44px;border:1px solid var(--line);border-radius:12px;background:var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%2386868b' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.5-3.5'/%3E%3C/svg%3E") no-repeat 15px 50%;color:var(--ink);font:inherit;font-size:var(--fs-sm)}
+html[data-ui="modern"] .settingsTools{display:grid;gap:10px;position:sticky;top:0;z-index:6;margin:0 -10px 2px;padding:8px 10px 10px;background:linear-gradient(180deg,var(--bodyBg) 82%,transparent)}
+html[data-ui="modern"] .settingsSearch input{width:100%;box-sizing:border-box;min-height:46px;padding:0 16px 0 44px;border:1px solid color-mix(in srgb,var(--primary) 22%,var(--line));border-radius:16px;background:var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23778' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.5-3.5'/%3E%3C/svg%3E") no-repeat 15px 50%;color:var(--ink);font:inherit;font-size:var(--fs-sm)}
 html[data-ui="modern"] .settingsSearch input:focus{outline:2px solid var(--ring);outline-offset:1px}
 html[data-ui="modern"] .settingsJump{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px}
 html[data-ui="modern"] .settingsJump::-webkit-scrollbar{display:none}
-html[data-ui="modern"] .settingsJump button{flex:none;min-height:32px;padding:0 14px;border:1px solid var(--line);border-radius:999px;background:var(--surface);color:var(--muted);font:inherit;font-size:var(--fs-xs);font-weight:600;cursor:pointer}
-html[data-ui="modern"] .settingsJump button:hover,html[data-ui="modern"] .settingsJump button:focus-visible{border-color:var(--primary);color:var(--primary)}
+html[data-ui="modern"] .settingsJump button{flex:none;min-height:34px;padding:0 14px;border:1px solid var(--line);border-radius:999px;background:var(--surface);color:var(--label);font:inherit;font-size:var(--fs-xs);font-weight:700;cursor:pointer}
+html[data-ui="modern"] .settingsJump button:hover,html[data-ui="modern"] .settingsJump button:focus-visible{border-color:var(--primary);color:var(--primary2)}
 html[data-ui="modern"] .settingsEmpty:not([hidden]){display:block;margin:18px 4px;text-align:center;color:var(--muted)}
 html[data-ui="modern"] .settingsStack{gap:14px}
-html[data-ui="modern"] .settingGroup{position:relative;gap:0;margin:0;overflow:hidden;border:1px solid var(--line);border-radius:18px;background:var(--surface);box-shadow:var(--shadowSm);scroll-margin-top:118px}
-html[data-ui="modern"] .settingGroup .settingGroupLabel{margin:0;padding:14px 18px 6px;font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--muted);scroll-margin-top:118px}
+html[data-ui="modern"] .settingGroup{position:relative;gap:0;margin:0;overflow:hidden;border:1px solid color-mix(in srgb,var(--primary) 20%,var(--line));border-radius:22px;background:radial-gradient(120% 70% at 0% 0%,color-mix(in srgb,var(--primary) 7%,transparent),transparent 60%),var(--surface);scroll-margin-top:118px}
+html[data-ui="modern"] .settingGroup .settingGroupLabel{margin:0;padding:15px 18px 6px;font-size:11px;letter-spacing:1.1px;color:var(--primary2);scroll-margin-top:118px}
 html[data-ui="modern"] .settingGroup>.settingCard{position:relative;border:0;border-radius:0;background:transparent;box-shadow:none}
-html[data-ui="modern"] .settingGroup>.settingCard:not([hidden])~.settingCard:not([hidden])::before,html[data-ui="modern"] .settingGroup>.settingCard+.settingCard::before{content:"";position:absolute;z-index:1;left:18px;right:18px;top:0;height:1px;background:var(--line);pointer-events:none}
-html[data-ui="modern"] .settingCard>summary{min-height:60px;padding:11px 16px 11px 18px;grid-template-columns:36px minmax(0,1fr) 28px;gap:13px}
-html[data-ui="modern"] .settingIcon{width:36px;height:36px;border-radius:10px}
-html[data-ui="modern"] .settingIcon svg{width:18px;height:18px}
-html[data-ui="modern"] .settingSummary small{margin-top:2px}
-html[data-ui="modern"] .settingCard[open]{background:var(--wash)}
+html[data-ui="modern"] .settingGroup>.settingCard:not([hidden])~.settingCard:not([hidden])::before,html[data-ui="modern"] .settingGroup>.settingCard+.settingCard::before{content:"";position:absolute;z-index:1;left:18px;right:18px;top:0;height:1px;background:linear-gradient(90deg,transparent,var(--line),transparent);pointer-events:none}
+html[data-ui="modern"] .settingCard>summary{min-height:66px;padding:11px 16px 11px 18px;grid-template-columns:38px minmax(0,1fr) 30px;gap:13px}
+html[data-ui="modern"] .settingIcon{width:38px;height:38px;border-radius:12px}
+html[data-ui="modern"] .settingIcon svg{width:19px;height:19px}
+html[data-ui="modern"] .settingSummary small{margin-top:3px}
+html[data-ui="modern"] .settingCard[open]{background:color-mix(in srgb,var(--primary) 5%,transparent)}
