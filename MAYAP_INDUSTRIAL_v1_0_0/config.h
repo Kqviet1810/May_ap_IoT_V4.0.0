@@ -951,7 +951,7 @@ constexpr float TARGET_TEMP_MAX_C = 40.0f;
 constexpr float LOW_ALARM_GAP_C = 0.1f;
 constexpr float HIGH_ALARM_GAP_C = 0.1f;
 constexpr float EMERGENCY_ABOVE_HIGH_C = 0.1f;
-constexpr float VENT_OFF_ABOVE_SV_C = 0.20f;
+constexpr float VENT_OFF_ABOVE_SV_C = 0.10f;
 constexpr float VENT_ON_ABOVE_SV_C = 0.40f;
 constexpr float VENT_HYSTERESIS_C = 0.15f;
 // Chuoi rang buoc: SV <= HUT OFF < HUT ON <= BAO CAO < KHAN CAP.
@@ -1042,7 +1042,7 @@ struct MachineConfig {
 
   bool circulationFanEnabled = true;
   float ventOnTemp = 38.0f;
-  float ventOffTemp = 37.7f;
+  float ventOffTemp = 37.6f;
   // Thong gio dinh ky theo RTC. Nut BAT/TAT nam o nhom NHIET DO; chi tiet
   // lich nam o NANG CAO. Mac dinh TAT de khong thay doi hanh vi may cu.
   bool ventScheduleEnabled = false;
