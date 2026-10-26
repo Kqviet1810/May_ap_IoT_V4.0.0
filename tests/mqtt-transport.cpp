@@ -119,7 +119,7 @@ static void installBroker() {
     if (frame.opcode == 8) { ++g_clientCloses; return; }
     if (frame.opcode != 2 || g_silentBroker || frame.payload.empty()) return;
     if ((frame.payload[0] >> 4) == 1) inject({0x20, 0x02, 0x00, g_connackCode});
-    if ((frame.payload[0] >> 4) == 8) inject({0x90, 0x06, 0x00, 0x01, g_subackFirst, 0x01, 0x01, 0x00});
+    if ((frame.payload[0] >> 4) == 8) inject({0x90, 0x07, 0x00, 0x01, g_subackFirst, 0x01, 0x01, 0x00, 0x01});
   };
 }
 static void resetWorld() {
@@ -185,9 +185,9 @@ int main() {
   const Packet &subscribe = sent[1];
   CHECK(subscribe.type == 8 && subscribe.flags == 2);
   const std::string subs = str(subscribe.body.data(), subscribe.body.size());
-  for (const char *channel : {"/command", "/config/set", "/history/request", "/session"})
+  for (const char *channel : {"/command", "/config/set", "/history/request", "/session", "/mgmt/response"})
     CHECK(subs.find(std::string("mayap/v1/MAP-AABBCCDDEEFF") + channel) != std::string::npos);
-  CHECK(subscribe.body.back() == 0U);                     // session is QoS0
+  CHECK(subscribe.body.back() == 1U);                     // mgmt/response is QoS1
   const Packet &presence = sent[2];
   CHECK(presence.type == 3 && presence.flags == (0x02 | 0x01));   // QoS1, retained
   CHECK(inflightCount == 1U);                             // presence awaits its PUBACK

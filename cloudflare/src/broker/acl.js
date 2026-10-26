@@ -23,6 +23,9 @@ export const Topics = Object.freeze({
   // and PUBACKs only once the Worker confirms a durable write.
   alarm: 'alarm',
   heartbeat: 'heartbeat',
+  // Bidirectional device management channel (guest-mode, members, reset-pin)
+  mgmtRequest: 'mgmt/request',
+  mgmtResponse: 'mgmt/response',
   // Broker -> Web only (live, not retained): what the uplink queue still has to hand to the Worker.
   uplink: 'uplink',
 });
@@ -35,12 +38,12 @@ export const Topics = Object.freeze({
 const DEVICE_PUB = new Set([
   Topics.presence, Topics.snapshot, Topics.ack, Topics.log,
   Topics.configReported, Topics.remindersReported, Topics.historyReported,
-  Topics.alarm, Topics.heartbeat,
+  Topics.alarm, Topics.heartbeat, Topics.mgmtRequest,
 ]);
 
 const DEVICE_SUB = new Set([
   Topics.command, Topics.configSet, Topics.remindersSet,
-  Topics.historyRequest, Topics.session,
+  Topics.historyRequest, Topics.session, Topics.mgmtResponse,
 ]);
 
 const WEB_PUB = new Set([
@@ -60,7 +63,7 @@ export const RETAIN_FORBIDDEN = new Set([
   Topics.command, Topics.configSet, Topics.remindersSet,
   Topics.historyRequest, Topics.snapshot, Topics.ack, Topics.log,
   Topics.historyReported, Topics.configReported, Topics.session,
-  Topics.alarm, Topics.heartbeat, Topics.uplink,
+  Topics.alarm, Topics.heartbeat, Topics.mgmtRequest, Topics.mgmtResponse, Topics.uplink,
 ]);
 
 // Suffixes handled by the ingest path instead of subscriber fanout.
@@ -94,6 +97,8 @@ const PUB_QOS_REQUIREMENT = Object.freeze({
   [Topics.session]: 0,
   [Topics.alarm]: 1,
   [Topics.heartbeat]: 1,
+  [Topics.mgmtRequest]: 1,
+  [Topics.mgmtResponse]: 1,
 });
 
 export function requiredPublishQos(suffix) {

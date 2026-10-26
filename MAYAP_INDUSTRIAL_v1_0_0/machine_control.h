@@ -1009,6 +1009,8 @@ class PowerManager {
 // ============================================================================
 // DS3231: DOC CO TIMEOUT, KIEM TRA OSF, KHONG DUNG WIFI/RTC
 // ============================================================================
+constexpr uint32_t RTC_NTP_HEAL_GRACE_MS = 45000UL;
+
 class RtcDs3231 {
  public:
   void begin(uint32_t now) {
@@ -3954,8 +3956,19 @@ class MachineController {
     serviceI2cDeviceRecovery(now);
     serviceBatchClear(now);
     eventLog_.syncClock(now, rtc_.epoch());
-    faults_.set(FaultCode::RtcFailure, !rtc_.valid(), now,
-                rtc_.online() ? (rtc_.oscillatorStopped() ? 1 : 3) : 2);
+    const bool rtcValid = rtc_.valid();
+    if (rtcValid) {
+      rtcInvalidSince_ = 0U;
+      faults_.set(FaultCode::RtcFailure, false, now);
+    } else {
+      if (rtcInvalidSince_ == 0U) {
+        rtcInvalidSince_ = now ? now : 1U;
+        mayapRequestImmediateNtpSync();
+      }
+      const bool graceExpired = elapsedMs(now, rtcInvalidSince_) >= RTC_NTP_HEAL_GRACE_MS;
+      faults_.set(FaultCode::RtcFailure, graceExpired, now,
+                  rtc_.online() ? (rtc_.oscillatorStopped() ? 1 : 3) : 2);
+    }
     adjustResumeElapsedFromRtc(now);
     const bool operationsReady = mayapBootOperationsReady();
     if (operationsReady) processInputModeTransition(now);
@@ -8002,6 +8015,7 @@ class MachineController {
   uint32_t savedElapsedAtCheckpoint_ = 0U;
   uint32_t lastCheckpointEpoch_ = 0U;
   bool resumeClockAdjusted_ = true;
+  uint32_t rtcInvalidSince_ = 0U;
   uint32_t lastTurnCounterDay_ = 0;
   uint16_t turnCountToday_ = 0;
   uint32_t turnCountBatch_ = 0;
