@@ -43,7 +43,9 @@ inline uint32_t mayapI2cRecoveryEpoch() {
 }
 inline void mayapI2cSupervisorUpdate(uint32_t now) {
   using namespace MayapI2cSupervisor;
-  if (static_cast<uint32_t>(now - lastCheckAt) < 1000U) return;
+  const bool linesStuckFast = digitalRead(PIN_I2C_SDA) == LOW || digitalRead(PIN_I2C_SCL) == LOW;
+  const uint32_t checkInterval = linesStuckFast ? 100U : 1000U;
+  if (static_cast<uint32_t>(now - lastCheckAt) < checkInterval) return;
   lastCheckAt = now;
   if (recoveredBefore && static_cast<uint32_t>(now - lastRecoveryAt) < 30000U) return;
   if (!mayapI2cLock(0U)) return; // Never wait behind a storage transaction.
