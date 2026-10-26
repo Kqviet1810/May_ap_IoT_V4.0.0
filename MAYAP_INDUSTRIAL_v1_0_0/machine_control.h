@@ -1009,7 +1009,6 @@ class PowerManager {
 // DS3231: DOC CO TIMEOUT, KIEM TRA OSF, KHONG DUNG WIFI/RTC
 // ============================================================================
 constexpr uint32_t RTC_NTP_HEAL_GRACE_MS = 45000UL;
-void mayapRequestImmediateNtpSync();
 
 class RtcDs3231 {
  public:
