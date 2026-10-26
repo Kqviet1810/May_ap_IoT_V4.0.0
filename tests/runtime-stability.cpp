@@ -52,6 +52,11 @@ struct HTTPClient {
 #include "actual-bounded_http.inc"
 struct BackoffTimer {void reset(uint32_t){}bool ready(uint32_t){return true;}};
 constexpr uint8_t CLOUD_OUTBOX_SIZE=16;
+namespace MayapUplink {
+enum class Kind : uint8_t { Alarm, Heartbeat, Mgmt };
+inline bool linkUp() { return false; }
+inline int8_t offer(Kind, const char *, size_t, uint32_t) { return -1; }
+}
 namespace MayapCloudInternal {
 enum class NotifyLevel : uint8_t { Info, Warning, Critical, System };
 #include "actual-cloud-outbox.inc"
