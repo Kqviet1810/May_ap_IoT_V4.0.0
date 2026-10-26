@@ -1336,12 +1336,13 @@ inline void mayapHandleMgmtResponse(const JsonDocument &doc) {
       MemberListSnapshot next;
       next.state = ok ? MemberListState::Ready : MemberListState::Error;
       if (ok) {
-        for (JsonObject item : doc["members"].as<JsonArray>()) {
+        for (JsonObjectConst item : doc["members"].as<JsonArrayConst>()) {
           if (next.count >= MEMBER_LIST_MAX) break;
           MemberEntry &entry = next.entry[next.count++];
           snprintf(entry.ref, sizeof(entry.ref), "%s", item["ref"] | "");
           snprintf(entry.name, sizeof(entry.name), "%s", item["name"] | "");
-          entry.owner = String(item["role"] | "") == "owner" ? 1U : 0U;
+          const char *role = item["role"] | "";
+          entry.owner = strcmp(role, "owner") == 0 ? 1U : 0U;
         }
       }
       portENTER_CRITICAL(&cloudMux);
@@ -1371,6 +1372,7 @@ inline void mayapHandleMgmtResponse(const JsonDocument &doc) {
 
 inline void mayapCloudAlertBegin() {
   MayapCloudInternal::eventBootHigh=esp_random();MayapCloudInternal::eventBootLow=esp_random();
+  MayapRealtimeInternal::mgmtCallback = mayapHandleMgmtResponse;
   // Khong can khoi tao gi truoc: moi client HTTPS la ngan han, tao khi can goi.
 }
 

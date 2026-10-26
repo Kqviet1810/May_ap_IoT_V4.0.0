@@ -19,8 +19,6 @@
 
 // Transport-neutral application transaction bridge. Network owners may attach
 // a bounded publish callback in a later phase; this baseline attaches none.
-void mayapHandleMgmtResponse(const JsonDocument &doc);
-
 namespace MayapRealtimeInternal {
 
 inline uint32_t elapsedMs(uint32_t now, uint32_t then) {
@@ -65,8 +63,10 @@ using PublishCallback = bool (*)(const char *, const char *, size_t);
 // a rebuilt-and-discarded 38-field JSON document (plus up to five serialised chunks) per retry, hundreds of times per minute, and the
 // transient allocations took the heap down to 15 KB. nullptr = no limit (host tests, other transports).
 using CapacityCallback = uint8_t (*)();
+using MgmtCallback = void (*)(const JsonDocument &);
 static PublishCallback publishCallback = nullptr;
 static CapacityCallback bulkCapacityCallback = nullptr;
+static MgmtCallback mgmtCallback = nullptr;
 // May a frame of this lane go out RIGHT NOW? The transport answers from its socket (one select(), nothing built, nothing signed), so
 // the bridge asks BEFORE it builds a snapshot, signs an acknowledgement or serialises a report: a closed wire used to cost the whole
 // document per retry, and the snapshot that was retried on every pass won the first writable moment against the terminal ack that
@@ -1339,7 +1339,7 @@ inline void dispatchApplicationMessage(const char *channel, const uint8_t *paylo
     return;
   }
   if (!strcmp(channel, "mgmt/response")) {
-    mayapHandleMgmtResponse(wireDoc);
+    if (mgmtCallback) mgmtCallback(wireDoc);
     return;
   }
 
