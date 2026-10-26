@@ -812,6 +812,13 @@ inline void mayapRequestImmediateNtpSync() {
   lastNtpSyncAt = 0U;
 }
 
+namespace Mayap {
+inline void mayapRequestImmediateNtpSync() {
+  using namespace MayapNetworkInternal;
+  lastNtpSyncAt = 0U;
+}
+}
+
 // Doc boi controlTask (MachineController::serviceI2cDeviceRecovery()) - lay va
 // xoa 1 lan gio moi nhat tu NTP neu co (giong het pattern pendingConfigSave.used
 // o transaction_bridge.h). Tra ve true + dien du 6 truong neu co du lieu moi.
