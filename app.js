@@ -22,6 +22,12 @@
   const UI_STYLE_STORAGE = 'mayap.ui';
   const PROTOCOL_VERSION = 1;
   const DEVICE_ID_RE = /^MAP-[A-F0-9]{12}$/;
+  // Vent thresholds chain of the machine (config.h): SV + 0.10 <= off <= on - 0.15, SV + 0.40 <= on <= High alarm.
+  const VENT_ON_ABOVE_SV_C = 0.40;
+  const VENT_OFF_ABOVE_SV_C = 0.10;
+  const VENT_HYSTERESIS_C = 0.15;
+  const fmt2 = (v) => v.toFixed(2).replace('.', ',');
+
   const VENT_PROFILE_KEYS = Object.freeze([
     'ventAutoEnabled', 'ventProfileLevel', 'ventCycleMinutes',
     'ventDutyDay1To3', 'ventDutyDay4To7', 'ventDutyDay8To11',
@@ -1679,10 +1685,18 @@
     renderTech(device, runtime);
     renderPidMonitor(device, runtime);
 
+    // First climb of the batch: tell the user once when it is finished (the machine does not judge E110 until then).
+    if (device.warmingUpSeen && !runtime.warmingUp && runtime.batchRunning && device.id === state.selectedId) {
+      toast(`Đã lên nhiệt xong: ${numberVi(runtime.temperature)}°C`, 6000);
+    }
+    device.warmingUpSeen = Boolean(runtime.warmingUp);
+
     if (turn === 1 || turn === 2) {
       setCurrentActivity(`Đang đảo trứng sang ${turn === 1 ? 'trái' : 'phải'}`, 'Đang chờ công tắc hành trình', 'active');
     } else if (runtime.ventFanOn) {
       setCurrentActivity(`Quạt hút đang chạy${VENT_WHY[Number(runtime.ventWhy)] ? ` · ${VENT_WHY[Number(runtime.ventWhy)]}` : ''}`, `Nhiệt độ ${numberVi(runtime.temperature)}°C`, 'active');
+    } else if (runtime.warmingUp) {
+      setCurrentActivity(`Đang lên nhiệt lần đầu ${numberVi(runtime.temperature)}°C`, `Chưa báo nhiệt thấp (E110) · công suất ${numberVi(runtime.heaterPower, 0)}%`, 'active');
     } else if (heaterActive) {
       setCurrentActivity(`Đang gia nhiệt ${numberVi(runtime.temperature)}°C`, `Công suất ${numberVi(runtime.heaterPower, 0)}%`, 'active');
     } else if (runtime.batchRunning) {
@@ -1907,10 +1921,10 @@
     check('temperatureForm', 'highTempAlarmWithoutBatch', config.highTempAlarmWithoutBatch);
     assign('ventForm', 'ventOn', config.ventOnTemp);
     assign('ventForm', 'ventOff', config.ventOffTemp);
-    $('ventOn').min = (Number(config.targetTemp) + 0.05).toFixed(2);
+    $('ventOn').min = (Number(config.targetTemp) + VENT_ON_ABOVE_SV_C).toFixed(2);
     $('ventOn').max = Number(config.highTempAlarm).toFixed(2);
-    $('ventOff').min = Number(config.targetTemp).toFixed(2);
-    $('ventOff').max = Number(config.highTempAlarm).toFixed(2);
+    $('ventOff').min = (Number(config.targetTemp) + VENT_OFF_ABOVE_SV_C).toFixed(2);
+    $('ventOff').max = (Number(config.highTempAlarm) - VENT_HYSTERESIS_C).toFixed(2);
     check('ventForm', 'ventAutoEnabled', config.ventAutoEnabled);
     assign('ventForm', 'ventProfileLevel', config.ventProfileLevel ?? 1);
     assign('ventForm', 'ventCycleMinutes', config.ventCycleMinutes ?? 40);
@@ -3894,18 +3908,23 @@
     return true;
   }
 
+  // The vent thresholds follow the machine's own chain (config.h): SV + 0.10 <= off <= on - 0.15, SV + 0.40 <= on <= High alarm.
+  // The machine used to clamp a value outside it silently, so the form looked accepted and then jumped back; say the limit instead.
   function validateVentForm() {
     clearInvalid('ventForm');
     const on = Number($('ventOn').value);
     const off = Number($('ventOff').value);
-    const target = Number(currentDevice()?.config?.targetTemp);
-    if (!Number.isFinite(on) || on < target + 0.05 - 0.0005)
-      return invalidate('ventForm', 'ventOn', 'Ngưỡng bật quạt phải cao hơn nhiệt độ đặt ít nhất 0,05°C.');
-    if (!Number.isFinite(off) || off < target - 0.0005)
-      return invalidate('ventForm', 'ventOff', 'Ngưỡng tắt quạt không được thấp hơn nhiệt độ đặt.');
-    if (on - off < 0.05 - 0.0005) return invalidate('ventForm', 'ventOn', 'Ngưỡng bật phải cao hơn ngưỡng tắt ít nhất 0,05°C.');
-    if (!(on <= Number(currentDevice()?.config?.highTempAlarm)))
-      return invalidate('ventForm', 'ventOn', 'Ngưỡng bật quạt không được cao hơn cảnh báo nhiệt cao.');
+    const cfg = currentDevice()?.config;
+    const target = Number(cfg?.targetTemp);
+    const high = Number(cfg?.highTempAlarm);
+    if (!Number.isFinite(on) || on < target + VENT_ON_ABOVE_SV_C - 0.0005)
+      return invalidate('ventForm', 'ventOn', `Ngưỡng bật quạt phải từ ${fmt2(target + VENT_ON_ABOVE_SV_C)}°C (nhiệt độ đặt + ${fmt2(VENT_ON_ABOVE_SV_C)}).`);
+    if (!(on <= high + 0.0005))
+      return invalidate('ventForm', 'ventOn', `Ngưỡng bật quạt tối đa ${fmt2(high)}°C (bằng cảnh báo nhiệt cao). Muốn cao hơn, dừng mẻ rồi nâng cảnh báo cao trước.`);
+    if (!Number.isFinite(off) || off < target + VENT_OFF_ABOVE_SV_C - 0.0005)
+      return invalidate('ventForm', 'ventOff', `Ngưỡng tắt quạt phải từ ${fmt2(target + VENT_OFF_ABOVE_SV_C)}°C (nhiệt độ đặt + ${fmt2(VENT_OFF_ABOVE_SV_C)}).`);
+    if (on - off < VENT_HYSTERESIS_C - 0.0005)
+      return invalidate('ventForm', 'ventOff', `Ngưỡng tắt phải thấp hơn ngưỡng bật ít nhất ${fmt2(VENT_HYSTERESIS_C)}°C (tối đa ${fmt2(on - VENT_HYSTERESIS_C)}°C).`);
     if (!supportsVentProfile(currentDevice()?.config)) return true;
     const cycle = Number($('ventCycleMinutes').value);
     const level = Number($('ventProfileLevel').value);

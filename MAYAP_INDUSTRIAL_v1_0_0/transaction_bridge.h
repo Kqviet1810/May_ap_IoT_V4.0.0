@@ -449,6 +449,7 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
   r["circulationFanOn"] = rt.circulationFanOn;
   r["ventFanOn"] = rt.ventFanOn;
   r["ventWhy"] = rt.ventReason;                // why the exhaust fan runs (see MachineRuntime::ventReason)
+  r["warmingUp"] = rt.warmingUp;               // first climb of the batch (E110 not judged yet)
   r["humidifierOn"] = rt.humidifierOn;
   r["lightOn"] = rt.lightOn;
   r["sirenOn"] = rt.sirenOn;
