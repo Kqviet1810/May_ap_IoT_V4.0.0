@@ -22,6 +22,11 @@ constexpr float KP_UP = 30.0f;      // Proportional gain below SP [% / degC]
 constexpr float KP_DOWN = 90.0f;    // Proportional gain above SP (3x asymmetric)
 constexpr float KI = 0.020f;        // Integral rate [% / (degC * s)]
 constexpr float I_CLAMP = 15.0f;    // Hard anti-windup clamp [%]
+// Near SP the controller decides from the MEASURED PV only (no energy-in-flight model): a PI whose gain follows the two measured
+// numbers of the oven (heater gain and transport delay).  The model drives the climb only; between the two the weight fades linearly.
+constexpr float MODEL_FAR_C = 1.0f;     // |error| at/above this: the energy-in-flight model decides (climb)
+constexpr float MODEL_NEAR_C = 0.3f;    // |error| at/below this: measured PV only (hold)
+constexpr float KP_HOLD_MIN = 4.0f;     // lowest hold-regime proportional gain [% / degC]
 
 enum State : uint8_t {
   StIdle = 0,    // Standby / Not permitted to heat
@@ -173,8 +178,13 @@ class Controller {
     }
 
     // -------------------------------------------------------------------------
-    // 4. Energy-In-Flight Predictive Calculation
+    // 4. Energy-In-Flight Predictive Calculation (drives the climb; fades out near SP)
     // -------------------------------------------------------------------------
+    // Every threshold below that compares PV with SP is a multiple of the sensor step dQ (0.1 or 0.01 degC): the same code is flat on a
+    // coarse sensor and tight on a fine one, and one quantum of a coarse sensor never counts as a real error.
+    const float dQ = (std::isfinite(in.dQ) && in.dQ >= 0.005f && in.dQ <= 0.2f) ? in.dQ : 0.1f;
+    auto deadZone = [dQ](float e) { return e > 0.5f * dQ ? e - 0.5f * dQ : (e < -0.5f * dQ ? e + 0.5f * dQ : 0.0f); };
+
     float pipeSum = 0.0f;
     for (uint16_t i = 0U; i < pipeLen_; ++i) pipeSum += static_cast<float>(pipe_[i]);
     const float excessEnergy = pipeSum - static_cast<float>(pipeLen_) * pHold_;
@@ -184,15 +194,17 @@ class Controller {
     const float errTrue = sp_ - pv_;
 
     // -------------------------------------------------------------------------
-    // 5. Control Law: Asymmetric P on Predicted Error + Conditional Anti-Windup I
+    // 5. Control Law: P on a blend of predicted (far) and measured (near) error + Conditional Anti-Windup I
     // -------------------------------------------------------------------------
-    // Proportional term
-    float pTerm = 0.0f;
-    if (errPred >= 0.0f) {
-      pTerm = KP_UP * errPred;
-    } else {
-      pTerm = KP_DOWN * errPred; // Strong damping above SP to strictly prevent overshoot
-    }
+    const float wModel = std::max(0.0f, std::min(1.0f, (std::fabs(errTrue) - MODEL_NEAR_C) / (MODEL_FAR_C - MODEL_NEAR_C)));
+    const float kpHold = std::max(KP_HOLD_MIN, std::min(KP_UP, 1.0f / (2.0f * kAir_ * static_cast<float>(pipeLen_))));
+    const float kp = wModel * KP_UP + (1.0f - wModel) * kpHold;
+    // Near SP the model may only BRAKE (it sees power already on its way that will carry PV over SP); it may not ADD power for an
+    // energy "deficit" it infers from the commanded history (a held heater, a changed hold level): the measured PV decides that.
+    const float errMeas = deadZone(errTrue);
+    const float errModel = deadZone(errPred);
+    const float errCtl = wModel * errModel + (1.0f - wModel) * std::min(errMeas, errModel);
+    const float pTerm = errCtl >= 0.0f ? kp * errCtl : KP_DOWN * errCtl;   // strong damping above SP against overshoot
 
     // The vent line holds the heater at 0 %: the controller is not in charge, so nothing is learned from the error (no integral, no hold,
     // no stuck rule). But the held heater is also a measurement: every 3 minutes of hold, if PV stayed at/above SP - 0.05 and did not fall
@@ -202,7 +214,7 @@ class Controller {
       if (shadowS_ <= 0.0f) { shadowRefPv_ = pv_; shadowRefS_ = 0.0f; shadowFade_ = false; }
       shadowS_ += dt;
       if (shadowS_ - shadowRefS_ >= 180.0f) {
-        shadowFade_ = pv_ >= sp_ - 0.05f && pv_ >= shadowRefPv_ - 0.101f;
+        shadowFade_ = pv_ >= sp_ - 0.5f * dQ && pv_ >= shadowRefPv_ - 1.01f * dQ;
         shadowRefPv_ = pv_;
         shadowRefS_ = shadowS_;
       }
@@ -215,7 +227,7 @@ class Controller {
 
     // Integral term on True Error (active within +-0.75 degC)
     if (!in.shadow && !doorDetected_ && std::fabs(errTrue) <= 0.75f) {
-      integral_ += KI * errTrue * dt;
+      integral_ += std::min(KI, kpHold / (4.0f * static_cast<float>(pipeLen_))) * deadZone(errTrue) * dt;   // Ti >= 4 x the measured delay (SIMC), never faster than before
       integral_ = std::max(-I_CLAMP, std::min(I_CLAMP, integral_));
 
       // Slow absorption of persistent integral into pHold (time constant ~300s)
@@ -226,8 +238,8 @@ class Controller {
       integral_ *= std::max(0.0f, 1.0f - 0.05f * dt);
     }
 
-    // Anti-Stuck protection: if temperature rests flat below SP - 0.08 degC > 120s
-    if (!in.shadow && !doorDetected_ && errTrue >= 0.08f && std::fabs(filteredSlope_) < 0.0015f) {
+    // Anti-Stuck protection: if temperature rests flat more than max(0.08, 3 sensor steps) below SP for > 120 s
+    if (!in.shadow && !doorDetected_ && errTrue >= std::max(0.08f, 3.0f * dQ) && std::fabs(filteredSlope_) < 0.0015f) {
       stuckTimer_ += dt;
       if (stuckTimer_ > 120.0f) {
         pHold_ = std::min(45.0f, pHold_ + 0.025f * dt);
@@ -261,7 +273,8 @@ class Controller {
     secAcc_ += dt;
     if (secAcc_ >= 1.0f) {
       secAcc_ -= 1.0f;
-      pipe_[pipeIdx_] = static_cast<uint8_t>(std::round(cmd));
+      // A heater held off by the vent line is not a command the model should count as missing energy: it records the hold level.
+      pipe_[pipeIdx_] = static_cast<uint8_t>(std::round(in.shadow ? pHold_ : cmd));
       pipeIdx_ = static_cast<uint16_t>((pipeIdx_ + 1U) % pipeLen_);
     }
 

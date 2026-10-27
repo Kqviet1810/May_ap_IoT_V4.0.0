@@ -4,6 +4,8 @@
 #include <vector>
 #include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_v3.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_v3_adapter.h"
+using std::isfinite;
+#include "../MAYAP_INDUSTRIAL_v1_0_0/sensor_format.h"
 
 // Simple FOPDT Plant model for testing
 struct TestPlant {
@@ -193,6 +195,47 @@ void testShadowHold() {
   printf("  -> Pass: hold %.1f%% -> %.1f%% when PV stays at SP, unchanged (%.1f%%) when it falls\n", fadeFrom, fadeTo, h);
 }
 
+// After the heater was held by a line above SP, the first command must come back near the hold level: the "pipe" was neutral, so no phantom deficit.
+void testResumeAfterHold() {
+  printf("[TEST] Resume after a held heater: command returns near the hold level...\n");
+  for (float dQ : {0.1f, 0.01f}) {
+    thermalv3::Controller c;
+    thermalv3::Input in;
+    in.sp = 37.5f; in.pv = 37.5f; in.dQ = dQ; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f;
+    float u = 0.0f;
+    for (int i = 0; i < 3000; ++i) u = c.step(in).powerPct;               // 5 min flat at SP
+    const float before = u;
+    in.permit = false; in.shadow = true;
+    for (int i = 0; i < 1800; ++i) c.step(in);                            // 3 min held off, PV stays at SP
+    in.permit = true; in.shadow = false;
+    for (int i = 0; i < 10; ++i) u = c.step(in).powerPct;
+    assert(u <= before + 3.0f);
+    printf("  -> Pass (dQ %.2f): %.1f%% before the hold, %.1f%% right after\n", dQ, before, u);
+  }
+}
+
+// 0.01 C preferred: a x10 module is read as x100 (3.75 C, outside the start envelope) until the decoder falls back and says so.
+void testSensorFallback() {
+  printf("[TEST] Sensor 0.01 preferred: fallback to 0.1 and the flag...\n");
+  SensorFormatDecoder x100;                                               // a real x100 module
+  x100.setRuntimeMode(2U);
+  for (int i = 0; i < 6; ++i) x100.accept(3750U, 600U);
+  assert(x100.locked() && x100.profile() == SensorProfile::X100RhX10 && !x100.fellBack() && std::fabs(x100.temperature() - 37.5f) < 1e-4f);
+  SensorFormatDecoder x10;                                                // the module of this machine: 375 = 37.5 C
+  x10.setRuntimeMode(2U);
+  for (int i = 0; i < SensorFormatDecoder::FALLBACK_MISSES - 1; ++i) assert(!x10.accept(375U, 600U) && !x10.fellBack());
+  bool ok = false;
+  for (int i = 0; i < 20 && !ok; ++i) ok = x10.accept(375U, 600U);
+  assert(ok && x10.fellBack() && x10.profile() == SensorProfile::X10RhX10 && std::fabs(x10.temperature() - 37.5f) < 1e-4f);
+  SensorFormatDecoder strict;                                             // 0.1 chosen on purpose: never falls back
+  strict.setRuntimeMode(1U);
+  for (int i = 0; i < 30; ++i) strict.accept(3750U, 600U);
+  assert(!strict.locked() && !strict.fellBack());
+  x10.setRuntimeMode(2U); assert(x10.locked());                           // the same choice again changes nothing
+  x10.setRuntimeMode(1U); assert(!x10.locked() && !x10.fellBack());      // a new choice starts over
+  printf("  -> Pass\n");
+}
+
 int main() {
   printf("=========================================\n");
   printf("RUNNING THERMAL V3 CONTROLLER UNIT TESTS\n");
@@ -202,6 +245,8 @@ int main() {
   testEnergyInFlightLowerBound();
   testPlantSimulation();
   testShadowHold();
+  testResumeAfterHold();
+  testSensorFallback();
   printf("=========================================\n");
   printf("ALL THERMAL V3 TESTS PASSED SUCCESSFULLY!\n");
   printf("=========================================\n");

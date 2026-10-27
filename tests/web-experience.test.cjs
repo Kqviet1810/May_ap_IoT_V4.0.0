@@ -122,11 +122,15 @@ test('technical section is hidden unless the HMI grants it; unlocked only with a
 test('Heater monitor shows measured values only and lists every figure the firmware still sends', () => {
   const h = browser();
   const keys = h.PM_ITEMS.map((item) => item[0]);
-  assert.deepEqual(JSON.parse(JSON.stringify(keys)), ['pv', 'sp', 'err', 'req', 'act', 'pred', 'phase', 'slot']);
+  assert.deepEqual(JSON.parse(JSON.stringify(keys)), ['pv', 'sp', 'err', 'req', 'act', 'pred', 'phase', 'fmt', 'slot']);
   const none = h.pmValues({ config: {} }, { temperature: 37.5 });          // firmware without pidMon: nothing invented
-  for (const key of keys) assert.ok(key === 'phase' ? none[key] === '' : Number.isNaN(none[key]), key);
+  for (const key of keys) assert.ok(key === 'phase' || key === 'fmt' ? none[key] === '' : Number.isNaN(none[key]), key);
   const live = h.pmValues({ config: {} }, { temperature: 37.4, pidMon: { valid: true, sp: 37.5, err: 0.1, req: 11, act: 10.5 } });
   assert.equal(live.pv, 37.4); assert.equal(live.sp, 37.5); assert.equal(live.err, 0.1); assert.equal(live.req, 11); assert.equal(live.act, 10.5);
+  assert.equal(h.pmValues({ config: {} }, { temperature: 37.4, pidMon: { valid: true, fmt: 2 } }).fmt, '0,01 °C');
+  assert.equal(h.pmValues({ config: {} }, { temperature: 37.4, pidMon: { valid: true, fmt: 1 } }).fmt, '0,1 °C');
+  assert.match(h.pmValues({ config: {} }, { temperature: 37.4, pidMon: { valid: true, fmt: 1, fb: true } }).fmt, /đã tự hạ/);
+  assert.equal(h.pmValues({ config: {} }, { temperature: 37.4, pidMon: { valid: true, fmt: 0 } }).fmt, 'đang dò định dạng');
   const webSource = fs.readFileSync(require.resolve('../app.js'), 'utf8');
   assert.match(webSource, /\.\.\.\(mon \? \{ mon: true \} : \{\}\)/);                              // lease asks for pidMon only while the card is open
 });
