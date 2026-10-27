@@ -134,7 +134,7 @@ test('Heater monitor shows measured values only and lists every figure the firmw
 test('PID log: chunks of the machine ring are assembled by index and saved as CSV', () => {
   const h = browser();
   h.pidMon.log = new Map(); h.pidMon.series = []; h.pidMon.logHead = 0;
-  h.pmIngestLog({ h: 30, s: 20, d: [3750, 3750, 3751, 40, 22, 0x41, 0, 3752, 3750, 3752, 42, 23, 0x45, 6 | (8 << 4)] });    // samples 20 and 21 (the 7th value: low 4 bits = V2 state, 6 = brake; high 4 bits = trust in the prediction, 8/15)
+  h.pmIngestLog({ h: 30, s: 20, d: [3750, 3750, 3751, 40, 22, 0x41, 0, 3752, 3750, 3752, 42, 23, 0x45, 4 | (8 << 4)] });    // samples 20 and 21 (the 7th value: low 4 bits = V3 state, 4 = frozen (heater held); high 4 bits = trust in the prediction, 8/15)
   h.pmIngestLog({ h: 30, s: 20, d: [3750, 3750, 3751, 40, 22, 0x41, 0] });                                          // a repeat changes nothing
   h.pmIngestLog({ h: 30, s: 28, d: [3760, 3750, 3760, 0, 0, 0x03, 5] });
   assert.equal(h.pidMon.log.size, 3);
@@ -147,7 +147,7 @@ test('PID log: chunks of the machine ring are assembled by index and saved as CS
   assert.equal(lines[1], 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,trust_pct,source');
   assert.equal(lines.length, 5);
   const second = lines[3].split(',');
-  assert.equal(second[1], '21'); assert.equal(second[7], '1'); assert.equal(second[8], '1'); assert.equal(second[14], 'brake'); assert.equal(second[15], '53'); assert.equal(second[16], 'machine');   // phase 1, suspect flag
+  assert.equal(second[1], '21'); assert.equal(second[7], '1'); assert.equal(second[8], '1'); assert.equal(second[14], 'frozen'); assert.equal(second[15], '53'); assert.equal(second[16], 'machine');   // phase 1, suspect flag
 });
 
 test('fan config requires complete capabilities and preserves legacy schedules', () => {

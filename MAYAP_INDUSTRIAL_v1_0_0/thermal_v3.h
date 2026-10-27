@@ -70,12 +70,12 @@ class Controller {
     capPct_ = 100.0f;
 
     kAir_ = 0.00025f;          // Initial prior: 0.025 degC/s per 100% power
-    tauTransit_ = 15.0f;       // Initial nominal transport delay [seconds]
+    tauTransit_ = 110.0f;      // Initial nominal transport delay [seconds]
     pHold_ = 18.0f;            // Initial nominal hold power [%]
     integral_ = 0.0f;
     pvPredicted_ = 30.0f;
 
-    pipeLen_ = 20U;
+    pipeLen_ = 150U;
     pipeIdx_ = 0U;
     for (uint16_t i = 0U; i < MAX_PIPE_LEN; ++i) pipe_[i] = static_cast<uint8_t>(pHold_);
 
@@ -97,6 +97,10 @@ class Controller {
     doorDetected_ = false;
     doorTimer_ = 0.0f;
     stuckTimer_ = 0.0f;
+    shadowS_ = 0.0f;
+    shadowRefPv_ = NAN;
+    shadowRefS_ = 0.0f;
+    shadowFade_ = false;
     respSuspect_ = false;
     respHighPwrTimer_ = 0.0f;
     respPvStart_ = NAN;
@@ -139,9 +143,9 @@ class Controller {
     if (!identified_ && heaterOnTime_ >= 0.0f && std::isfinite(pvAtOn_)) {
       if ((pv_ - pvAtOn_) >= 0.15f) {
         const float measuredDelay = clockS_ - heaterOnTime_;
-        tauTransit_ = std::max(5.0f, std::min(180.0f, measuredDelay * 1.05f));
+        tauTransit_ = std::max(45.0f, std::min(220.0f, measuredDelay * 1.05f));
         // Total effective prediction horizon includes heater lag ~ 1.35x
-        pipeLen_ = std::max<uint16_t>(5U, std::min<uint16_t>(MAX_PIPE_LEN - 1U, static_cast<uint16_t>(tauTransit_ * 1.35f)));
+        pipeLen_ = std::max<uint16_t>(15U, std::min<uint16_t>(MAX_PIPE_LEN - 1U, static_cast<uint16_t>(tauTransit_ * 1.35f)));
         identified_ = true;
       }
     }
@@ -190,26 +194,45 @@ class Controller {
       pTerm = KP_DOWN * errPred; // Strong damping above SP to strictly prevent overshoot
     }
 
+    // The vent line holds the heater at 0 %: the controller is not in charge, so nothing is learned from the error (no integral, no hold,
+    // no stuck rule). But the held heater is also a measurement: every 3 minutes of hold, if PV stayed at/above SP - 0.05 and did not fall
+    // more than one 0.1 degC step, the oven loses little heat and the stored hold level is too big (eggs warm): it then fades (time constant
+    // 180 s). If PV falls later the normal rules raise the hold again.
+    if (in.shadow) {
+      if (shadowS_ <= 0.0f) { shadowRefPv_ = pv_; shadowRefS_ = 0.0f; shadowFade_ = false; }
+      shadowS_ += dt;
+      if (shadowS_ - shadowRefS_ >= 180.0f) {
+        shadowFade_ = pv_ >= sp_ - 0.05f && pv_ >= shadowRefPv_ - 0.101f;
+        shadowRefPv_ = pv_;
+        shadowRefS_ = shadowS_;
+      }
+      if (shadowFade_) pHold_ = std::max(0.0f, pHold_ - pHold_ * (dt / 180.0f));
+      stuckTimer_ = 0.0f;
+    } else {
+      shadowS_ = 0.0f;
+      shadowFade_ = false;
+    }
+
     // Integral term on True Error (active within +-0.75 degC)
-    if (!doorDetected_ && std::fabs(errTrue) <= 0.75f) {
+    if (!in.shadow && !doorDetected_ && std::fabs(errTrue) <= 0.75f) {
       integral_ += KI * errTrue * dt;
       integral_ = std::max(-I_CLAMP, std::min(I_CLAMP, integral_));
 
       // Slow absorption of persistent integral into pHold (time constant ~300s)
       const float shift = integral_ * (dt / 300.0f);
-      pHold_ = std::max(5.0f, std::min(45.0f, pHold_ + shift));
+      pHold_ = std::max(0.0f, std::min(45.0f, pHold_ + shift));
       integral_ -= shift;
-    } else if (!doorDetected_) {
+    } else if (!in.shadow && !doorDetected_) {
       integral_ *= std::max(0.0f, 1.0f - 0.05f * dt);
     }
 
     // Anti-Stuck protection: if temperature rests flat below SP - 0.08 degC > 120s
-    if (!doorDetected_ && errTrue >= 0.08f && std::fabs(filteredSlope_) < 0.0015f) {
+    if (!in.shadow && !doorDetected_ && errTrue >= 0.08f && std::fabs(filteredSlope_) < 0.0015f) {
       stuckTimer_ += dt;
       if (stuckTimer_ > 120.0f) {
         pHold_ = std::min(45.0f, pHold_ + 0.025f * dt);
       }
-    } else {
+    } else if (!in.shadow) {
       stuckTimer_ = 0.0f;
     }
 
@@ -310,12 +333,12 @@ class Controller {
   float capPct_ = 100.0f;
 
   float kAir_ = 0.00025f;
-  float tauTransit_ = 15.0f;
+  float tauTransit_ = 110.0f;
   float pHold_ = 18.0f;
   float integral_ = 0.0f;
   float pvPredicted_ = 30.0f;
 
-  uint16_t pipeLen_ = 20U;
+  uint16_t pipeLen_ = 150U;
   uint16_t pipeIdx_ = 0U;
   uint8_t pipe_[MAX_PIPE_LEN] = {};
 
@@ -335,6 +358,10 @@ class Controller {
   bool doorDetected_ = false;
   float doorTimer_ = 0.0f;
   float stuckTimer_ = 0.0f;
+  float shadowS_ = 0.0f;         // seconds the vent line has been holding the heater at 0 %
+  float shadowRefPv_ = NAN;      // PV at the last 3-minute checkpoint of that hold
+  float shadowRefS_ = 0.0f;
+  bool shadowFade_ = false;      // the hold level is fading (heater held off, PV did not fall)
 
   bool respSuspect_ = false;
   float respHighPwrTimer_ = 0.0f;

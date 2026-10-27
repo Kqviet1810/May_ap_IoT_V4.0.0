@@ -3363,10 +3363,10 @@
   const PM_ITEMS = Object.freeze([
     ['pv', 'PV nhiệt độ', '°C', 2], ['sp', 'SP đặt', '°C', 2], ['err', 'Sai số (SP−PV)', '°C', 2],
     ['req', 'Yêu cầu cuối', '%', 1], ['act', 'SSR thực tế TB 60 s', '%', 1],
-    ['pred', 'PV dự đoán', '°C', 2], ['phase', 'Pha học V2', '', 0], ['slot', 'Slot V2 lớn nhất', 'µs', 0]]);
+    ['pred', 'PV dự đoán', '°C', 2], ['phase', 'Pha học', '', 0], ['slot', 'Bước điều khiển lớn nhất', 'µs', 0]]);
   const PM_PHASES = Object.freeze(['Nhìn/đo', 'Đã nhận dạng', 'Đã khớp lần 1', 'Đã khớp lần 2']);
-  const PM_STATES = Object.freeze({ 0: 'idle', 1: 'climb', 2: 'track', 3: 'frozen', 4: 'e115', 5: 'shadow', 6: 'brake', 7: 'recover', 8: 'degraded' });
-  const PM_STATE_TEXT = Object.freeze({ 5: ' · CHẠY NGẦM (quạt hút chặn sưởi)', 6: ' · PHANH', 7: ' · HỒI NHIỆT (bám PV đo)', 8: ' · BÁM PV ĐO (dự đoán kém tin)' });
+  const PM_STATES = Object.freeze({ 0: 'idle', 1: 'climb', 2: 'track', 3: 'door', 4: 'frozen' });
+  const PM_STATE_TEXT = Object.freeze({ 3: ' · MỞ CỬA (giới hạn công suất)', 4: ' · BỊ CHẶN SƯỞI (quạt hút / chưa cho phép)' });
   const PM_LOG_MAX = 1500;
   const PM_MAX_POINTS = 900;
   const PM_SAMPLE_MS = 2000;
