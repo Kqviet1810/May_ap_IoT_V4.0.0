@@ -168,6 +168,31 @@ void testPlantSimulation() {
   printf("  -> Pass: Full plant simulation passed criteria!\n");
 }
 
+// Vent-line hold (shadow): nothing is learned while the heater is held at 0 %; the hold level fades only when PV stays at SP, never when PV falls.
+void testShadowHold() {
+  printf("[TEST] Vent-line hold: learning frozen, hold fades only while PV stays at SP...\n");
+  auto run = [](double pvAfter, double minutes, float &holdOut, float &intOut) {
+    thermalv3::Controller c;
+    thermalv3::Input in;
+    in.sp = 37.5f; in.pv = 37.4f; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f;
+    for (int i = 0; i < 6000; ++i) c.step(in);                 // 10 min below SP: the controller learns a hold level
+    const float holdBefore = c.pHold();
+    in.permit = false; in.shadow = true; in.pv = static_cast<float>(pvAfter);
+    for (int i = 0; i < static_cast<int>(minutes * 600.0); ++i) c.step(in);
+    holdOut = c.pHold(); intOut = c.integral();
+    return holdBefore;
+  };
+  float h = 0, itg = 0;
+  float before = run(37.5, 1.0, h, itg);                         // 1 min: no checkpoint yet, nothing changes
+  assert(std::fabs(h - before) < 0.01f);
+  before = run(37.5, 12.0, h, itg);                              // PV held at SP for 12 min with the heater held off: hold fades
+  assert(h < before * 0.2f);
+  const float fadeFrom = before, fadeTo = h;
+  before = run(37.0, 12.0, h, itg);                              // PV below SP - 0.05: hold must not fade
+  assert(std::fabs(h - before) < 0.01f);
+  printf("  -> Pass: hold %.1f%% -> %.1f%% when PV stays at SP, unchanged (%.1f%%) when it falls\n", fadeFrom, fadeTo, h);
+}
+
 int main() {
   printf("=========================================\n");
   printf("RUNNING THERMAL V3 CONTROLLER UNIT TESTS\n");
@@ -176,6 +201,7 @@ int main() {
   testDoorDetection();
   testEnergyInFlightLowerBound();
   testPlantSimulation();
+  testShadowHold();
   printf("=========================================\n");
   printf("ALL THERMAL V3 TESTS PASSED SUCCESSFULLY!\n");
   printf("=========================================\n");

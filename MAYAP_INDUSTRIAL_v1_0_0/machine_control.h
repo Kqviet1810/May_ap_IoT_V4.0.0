@@ -5679,11 +5679,21 @@ class MachineController {
     }
     if (emergencyActive_) highTemperatureActive_ = true;
 
-    if (!ventTemperatureActive_ && validSafety &&
-        safetyTemp >= config_.ventOnTemp) ventTemperatureActive_ = true;
-    if (ventTemperatureActive_ && validSafety &&
-        safetyTemp <= config_.ventOffTemp) ventTemperatureActive_ = false;
-    if (!validSafety) ventTemperatureActive_ = false;
+    // The vent line (fan + heater hold) changes state only after the reading has stayed past the threshold for VENT_LINE_CONFIRM_MS and
+    // not within VENT_LINE_MIN_HOLD_MS of the last change: one quantum of the 0.1 degC sensor flickering over a threshold must not chatter
+    // the heater. The release compares with a small tolerance: the 3/8 filter ends one float step above the level it settles on
+    // (37.5 -> 37.5000038), which with off = SV never satisfied "<= off" until the raw reading dipped a whole quantum lower.
+    const bool ventOnPast = validSafety && safetyTemp >= config_.ventOnTemp;
+    const bool ventOffPast = validSafety && safetyTemp <= config_.ventOffTemp + VENT_LINE_EPS_C;
+    const bool ventOnConfirmed = ventOnTimer_.update(now, !ventTemperatureActive_ && ventOnPast, VENT_LINE_CONFIRM_MS);
+    const bool ventOffConfirmed = ventOffTimer_.update(now, ventTemperatureActive_ && ventOffPast, VENT_LINE_CONFIRM_MS);
+    const bool ventHoldOver = timeReached(now, ventLineNotBefore_);
+    if (!ventTemperatureActive_ && ventOnConfirmed && ventHoldOver) {
+      ventTemperatureActive_ = true; ventLineNotBefore_ = now + VENT_LINE_MIN_HOLD_MS; ventOnTimer_.reset();
+    } else if (ventTemperatureActive_ && ventOffConfirmed && ventHoldOver) {
+      ventTemperatureActive_ = false; ventLineNotBefore_ = now + VENT_LINE_MIN_HOLD_MS; ventOffTimer_.reset();
+    }
+    if (!validSafety) { ventTemperatureActive_ = false; ventOnTimer_.reset(); ventOffTimer_.reset(); }
 
     if ((!wasHigh && highTemperatureActive_) ||
         (!wasEmergency && emergencyActive_)) {
@@ -8088,6 +8098,9 @@ class MachineController {
   ConditionTimer emergencyClearTimer_{};
   ConditionTimer humidityTimer_{};
   bool ventTemperatureActive_ = false;
+  ConditionTimer ventOnTimer_{};
+  ConditionTimer ventOffTimer_{};
+  uint32_t ventLineNotBefore_ = 0U;
   uint8_t ventReason_ = 0U;
   bool lowTemperatureActive_ = false;
   bool warmupDone_ = false;                          // the first climb of the batch reached SV (or timed out): E110 is judged from here on

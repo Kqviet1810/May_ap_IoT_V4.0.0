@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.3.0";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.3.1";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -597,6 +597,10 @@ constexpr uint32_t SENSOR_FROZEN_TIMEOUT_MS = 1200000UL; // 20 phut
 constexpr float WARMUP_VENT_HOLD_ERR_C = 1.0f;
 constexpr float WARMUP_VENT_RELEASE_ERR_C = 0.5f;
 constexpr uint32_t WARMUP_VENT_HOLD_MAX_MS = 1800000UL;   // 30 phut
+// Vent line (fan + heater hold at the vent temperature): confirmation, minimum time between changes, release tolerance (see updateAlarms).
+constexpr uint32_t VENT_LINE_CONFIRM_MS = 20000UL;
+constexpr uint32_t VENT_LINE_MIN_HOLD_MS = 60000UL;
+constexpr float VENT_LINE_EPS_C = 0.005f;
 constexpr uint32_t LOW_TEMP_STARTUP_GRACE_MS = 300000UL; // 5 phut
 constexpr uint32_t LOW_TEMP_CONFIRM_MS = 300000UL;       // thap lien tuc 5 phut
 // Lan len nhiet dau cua me: nhiet thap la DUONG DI (khong phai su co) nen E110 chua duoc xet. "Da len nhiet" khi PV cham
@@ -1194,7 +1198,7 @@ struct PidMonitorData {
   float predictedC = 0;               // V2: where the PV is heading with the power already on its way [degC]
   uint8_t phase = 0;                  // V2 learning phase: 0 looking / probing, 1 identified, 2 first fit done, 3 second fit done
   bool suspect = false;               // V2 response watchdog: power arrived but the PV did not move (request withdrawn)
-  uint8_t v2State = 0;                // V2 output state of the last step: 0 idle, 1 climb, 2 track, 3 frozen, 4 E115 boost, 5 shadow (vent line blocks), 6 brake (first approach)
+  uint8_t v2State = 0;                // V3 state of the last step: 0 idle, 1 climb, 2 track, 3 door (power clamped), 4 frozen (no permit, or the vent line holds the heater)
   uint32_t slotLastUs = 0, slotMaxUs = 0;     // V2 controller slot time [us] (esp_timer)
 };
 
