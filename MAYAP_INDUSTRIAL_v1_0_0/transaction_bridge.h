@@ -496,6 +496,8 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
     m["sus"] = rt.pidMon.suspect;
     m["sl"] = rt.pidMon.slotMaxUs;
     m["stt"] = rt.pidMon.v2State;
+    m["fmt"] = rt.pidMon.sensorFmt;
+    m["fb"] = rt.pidMon.sensorFellBack;
     m["valid"] = rt.pidMon.valid;
     // The log ring, a few samples per snapshot, cycling from the oldest to the newest and around again: "h" = how many samples the machine ever took
     // (the newest has index h-1, 10 s apart), "s" = index of the first sample here, "d" = 6 numbers per sample. Only while the frame has room.

@@ -58,12 +58,12 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "fc06ae406a7a61c794bed40a157abbc026e2ae1bfe408de0fd931ca5291fa0af",
+      "sha256": "4ffe4d1b18f2b905b6b6a5c1367a5bc1b7d5683b15830bd267b686dafcddb188",
       "filter": "config"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "7f037482b30fe931b0f07494179f3e1841abacf42fdc19f21cb8ca69c00866d9",
+      "sha256": "bc0177a38a689bcc4c698fcebadbbb4f001f8d21d4b32564faccc29150fac815",
       "signature": "class MachineController {"
     },
     {
@@ -360,7 +360,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/sensor_format.h",
-      "sha256": "0f8a2185d0add53ba314dbeab86522e660084f939c53d2b8e5c6debb685eec6e"
+      "sha256": "ee79a78e1c4c5ecb0c2ada563af74a785cee839866af11ee93c2566cd4637c3e"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/heater_burst_scheduler.h",

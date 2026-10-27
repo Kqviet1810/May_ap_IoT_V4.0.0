@@ -3363,7 +3363,7 @@
   const PM_ITEMS = Object.freeze([
     ['pv', 'PV nhiệt độ', '°C', 2], ['sp', 'SP đặt', '°C', 2], ['err', 'Sai số (SP−PV)', '°C', 2],
     ['req', 'Yêu cầu cuối', '%', 1], ['act', 'SSR thực tế TB 60 s', '%', 1],
-    ['pred', 'PV dự đoán', '°C', 2], ['phase', 'Pha học', '', 0], ['slot', 'Bước điều khiển lớn nhất', 'µs', 0]]);
+    ['pred', 'PV dự đoán', '°C', 2], ['phase', 'Pha học', '', 0], ['fmt', 'Độ phân giải cảm biến', '', 0], ['slot', 'Bước điều khiển lớn nhất', 'µs', 0]]);
   const PM_PHASES = Object.freeze(['Nhìn/đo', 'Đã nhận dạng', 'Đã khớp lần 1', 'Đã khớp lần 2']);
   const PM_STATES = Object.freeze({ 0: 'idle', 1: 'climb', 2: 'track', 3: 'door', 4: 'frozen' });
   const PM_STATE_TEXT = Object.freeze({ 3: ' · MỞ CỬA (giới hạn công suất)', 4: ' · BỊ CHẶN SƯỞI (quạt hút / chưa cho phép)' });
@@ -3388,6 +3388,13 @@
     }
   }
 
+  function pmSensorFormat(m) {
+    const fmt = Number(m.fmt);
+    if (fmt === 2) return '0,01 °C';
+    if (fmt === 1) return m.fb ? '0,1 °C (0,01 không được module hỗ trợ, đã tự hạ)' : '0,1 °C';
+    return 'đang dò định dạng';
+  }
+
   function pmValues(device, runtime) {
     const m = runtime?.pidMon;
     const ok = Boolean(m && m.valid);
@@ -3399,6 +3406,7 @@
     v.act = ok ? Number(m.act) : NaN;
     v.pred = ok ? Number(m.pr) : NaN;
     v.phase = ok && Number.isFinite(Number(m.ph)) ? `${PM_PHASES[Math.min(3, Number(m.ph))]}${m.sus ? ' · NGHI' : ''}${PM_STATE_TEXT[Number(m.stt) & 15] || ''}` : '';
+    v.fmt = ok ? pmSensorFormat(m) : '';
     v.slot = ok ? Number(m.sl) : NaN;
     return v;
   }

@@ -28,20 +28,23 @@ class SensorFormatDecoder {
     return NAN;
   }
 
-  // HMI sensor-resolution choice: 0 = auto-detect (unchanged), 1 = 0.1 C (X10), 2 = 0.01 C (X100). A change forgets the locked format, so the
-  // sensor must be verified again with the new choice before it can be used.
+  // HMI sensor-resolution choice: 0 = auto-detect (unchanged), 1 = 0.1 C (X10), 2 = 0.01 C (X100) PREFERRED: when the module does not answer in
+  // that format for FALLBACK_MISSES samples in a row (a x10 module read as x100 gives 3.75 C), the decoder falls back to auto-detect and says so
+  // (fellBack()). A change forgets the locked format, so the sensor must be verified again with the new choice before it can be used.
   void setRuntimeMode(uint8_t mode) {
     const SensorProfile want = mode == 1U ? SensorProfile::X10RhX10 : mode == 2U ? SensorProfile::X100RhX10 : SensorProfile::Auto;
     if (configured_ != SensorProfile::Auto || want == runtime_) return;
     runtime_ = want;
     profile_ = SensorProfile::Auto; candidateMask_ = 0U; consecutive_ = 0U; valid_ = false; hasLast_ = false;
+    missed_ = 0U; fellBack_ = false;
   }
+  static constexpr uint8_t FALLBACK_MISSES = 12U;
   bool accept(uint16_t rawTemperature, uint16_t rawHumidity) {
     valid_ = false;
     // A compile-time profile keeps its old behaviour. A chosen resolution drops the guessing (one candidate) and needs two matching samples;
     // it keeps the 10..60 C start envelope, so a wrong choice (x10 error) is rejected instead of read as 3.75 C or 250 C.
-    const SensorProfile chosen = configured_ != SensorProfile::Auto ? configured_ : runtime_;
-    const bool runtimeChoice = configured_ == SensorProfile::Auto && runtime_ != SensorProfile::Auto;
+    const SensorProfile chosen = configured_ != SensorProfile::Auto ? configured_ : (fellBack_ ? SensorProfile::Auto : runtime_);
+    const bool runtimeChoice = configured_ == SensorProfile::Auto && chosen != SensorProfile::Auto;
     if (!locked()) {
       uint8_t candidates = 0U;
       for (uint8_t i = 1U; i <= 3U; ++i) {
@@ -55,7 +58,12 @@ class SensorFormatDecoder {
         if (t >= minimum && t <= 60.0f && rh >= 0.0f && rh <= 100.0f)
           candidates |= static_cast<uint8_t>(1U << i);
       }
-      if (!candidates || (candidates & (candidates - 1U))) { rejectSample(); return false; }
+      if (!candidates || (candidates & (candidates - 1U))) {
+        rejectSample();
+        if (!candidates && configured_ == SensorProfile::Auto && runtime_ == SensorProfile::X100RhX10 && !fellBack_ && ++missed_ >= FALLBACK_MISSES) fellBack_ = true;
+        return false;
+      }
+      missed_ = 0U;
       if (candidates != candidateMask_) { candidateMask_ = candidates; consecutive_ = 0U; }
       if (++consecutive_ < (runtimeChoice ? 2U : 6U)) return false;
       for (uint8_t i = 1U; i <= 3U; ++i)
@@ -81,6 +89,7 @@ class SensorFormatDecoder {
   bool locked() const { return profile_ != SensorProfile::Auto; }
   bool valid() const { return locked() && valid_; }
   SensorProfile profile() const { return profile_; }
+  bool fellBack() const { return fellBack_; }   // 0.01 C was preferred but the module does not speak it: auto-detect is in charge
   float temperature() const { return valid() ? temperature_ : NAN; }
   float humidity() const { return valid() ? humidity_ : NAN; }
 
@@ -90,6 +99,8 @@ class SensorFormatDecoder {
   SensorProfile profile_ = SensorProfile::Auto;
   uint8_t candidateMask_ = 0U;
   uint8_t consecutive_ = 0U;
+  uint8_t missed_ = 0U;
+  bool fellBack_ = false;
   bool valid_ = false;
   bool hasLast_ = false;
   float lastTemperature_ = 0.0f;

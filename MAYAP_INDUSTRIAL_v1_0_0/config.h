@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.3.1";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.3.2";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -601,6 +601,10 @@ constexpr uint32_t WARMUP_VENT_HOLD_MAX_MS = 1800000UL;   // 30 phut
 constexpr uint32_t VENT_LINE_CONFIRM_MS = 20000UL;
 constexpr uint32_t VENT_LINE_MIN_HOLD_MS = 60000UL;
 constexpr float VENT_LINE_EPS_C = 0.005f;
+// Heater block line: max(vent ON, SV + max(MIN, STEPS * sensor step)); released RELEASE degC lower.
+constexpr float VENT_HEATER_BLOCK_MIN_C = 0.3f;
+constexpr float VENT_HEATER_BLOCK_STEPS = 3.0f;
+constexpr float VENT_HEATER_BLOCK_RELEASE_C = 0.1f;
 constexpr uint32_t LOW_TEMP_STARTUP_GRACE_MS = 300000UL; // 5 phut
 constexpr uint32_t LOW_TEMP_CONFIRM_MS = 300000UL;       // thap lien tuc 5 phut
 // Lan len nhiet dau cua me: nhiet thap la DUONG DI (khong phai su co) nen E110 chua duoc xet. "Da len nhiet" khi PV cham
@@ -1200,6 +1204,8 @@ struct PidMonitorData {
   bool suspect = false;               // V2 response watchdog: power arrived but the PV did not move (request withdrawn)
   uint8_t v2State = 0;                // V3 state of the last step: 0 idle, 1 climb, 2 track, 3 door (power clamped), 4 frozen (no permit, or the vent line holds the heater)
   uint32_t slotLastUs = 0, slotMaxUs = 0;     // V2 controller slot time [us] (esp_timer)
+  uint8_t sensorFmt = 0;              // the module format the decoder locked: 0 still looking, 1 = 0.1 degC, 2 = 0.01 degC
+  bool sensorFellBack = false;        // 0.01 degC was chosen but the module does not speak it: auto-detect took over
 };
 
 struct MachineRuntime {

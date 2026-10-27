@@ -3034,6 +3034,7 @@ class SHT485Industrial {
     return decoder_.temperature();
   }
   SensorProfile sensorProfile() const { return decoder_.profile(); }
+  bool sensorFellBack() const { return decoder_.fellBack(); }
   uint16_t rawTemperatureRegister() const { return rawTempRegister_; }
   bool formatLocked() const { return decoder_.locked(); }
   // Why the sensor is not usable yet (boot diagnosis; the control decision still comes from processSensor()):
@@ -5138,6 +5139,9 @@ class MachineController {
     m.suspect = v3.responseSuspect();
     m.v2State = thermalV3_.last().state;
     m.slotLastUs = slotLastUs_; m.slotMaxUs = slotMaxUs_;
+    { const SensorProfile sp = sensor_.sensorProfile();
+      m.sensorFmt = sp == SensorProfile::X10RhX10 ? 1U : (sp == SensorProfile::X100RhX10 || sp == SensorProfile::Sht30Native) ? 2U : 0U;
+      m.sensorFellBack = sensor_.sensorFellBack(); }
     if (m.valid && elapsedMs(now, pidLogAt_) >= MayapPidLog::SAMPLE_PERIOD_MS) {          // one sample per 10 s into the log ring (the Web page downloads it as CSV)
       pidLogAt_ = now;
       MayapPidLog::Sample s;
@@ -5694,6 +5698,17 @@ class MachineController {
       ventTemperatureActive_ = false; ventLineNotBefore_ = now + VENT_LINE_MIN_HOLD_MS; ventOffTimer_.reset();
     }
     if (!validSafety) { ventTemperatureActive_ = false; ventOnTimer_.reset(); ventOffTimer_.reset(); }
+
+    // The heater is blocked by its OWN, higher line: the fan follows the user's vent threshold (it removes heat), but the controller keeps
+    // the heater below it by itself (measured error, KP_DOWN). Only when the reading runs well past SV does the heater switch off hard, and it
+    // comes back 0.1 degC lower. "Well past" scales with the sensor step so a coarse 0.1 sensor and a fine 0.01 one are treated alike.
+    {
+      const float dQ = thermalV3SensorStepC();
+      const float blockAt = std::max(config_.ventOnTemp, config_.targetTemp + std::max(VENT_HEATER_BLOCK_MIN_C, VENT_HEATER_BLOCK_STEPS * dQ));
+      if (!validSafety) ventHeaterBlock_ = false;
+      else if (!ventHeaterBlock_ && safetyTemp >= blockAt) ventHeaterBlock_ = true;
+      else if (ventHeaterBlock_ && safetyTemp <= blockAt - VENT_HEATER_BLOCK_RELEASE_C) ventHeaterBlock_ = false;
+    }
 
     if ((!wasHigh && highTemperatureActive_) ||
         (!wasEmergency && emergencyActive_)) {
@@ -6524,7 +6539,7 @@ class MachineController {
         batchAllowsHeat && sensorUsable_ && fanAllowsHeat &&
         timeReached(now, heatRestartNotBefore_);
     const bool normalSsrPermit = normalMasterPermit && heaterPidConditions &&
-        !faults_.ssrInhibited() && !ventTemperatureActive_;
+        !faults_.ssrInhibited() && !ventHeaterBlock_;
     const bool actuatorReady = outputs_.heaterReady(now) && mayapBootOperationsReady() &&
         !mayapSystemTripLatched() && !mayapFirmwareMaintenanceActive();
 
@@ -6533,7 +6548,7 @@ class MachineController {
     // heater request in percent. Protection (High / Emergency / sensor / contactor / SSR inhibit) is decided above
     // and below it and never reads this value. The request is clamped to [0, cap] by the adapter and then goes through
     // the burst scheduler and the output arbiter like any other request.
-    const bool v3Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && ventTemperatureActive_ && actuatorReady;   // blocked ONLY by the vent line
+    const bool v3Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && ventHeaterBlock_ && actuatorReady;   // blocked ONLY by the heater block line
     float commandedPower = thermalV3Command(now, normalSsrPermit && actuatorReady, v3Shadow);
     // ====================================================================================================
     newSensorSample_ = false;
@@ -8101,6 +8116,7 @@ class MachineController {
   ConditionTimer ventOnTimer_{};
   ConditionTimer ventOffTimer_{};
   uint32_t ventLineNotBefore_ = 0U;
+  bool ventHeaterBlock_ = false;                     // the heater is held off well above SV (see updateAlarms); the fan has its own line
   uint8_t ventReason_ = 0U;
   bool lowTemperatureActive_ = false;
   bool warmupDone_ = false;                          // the first climb of the batch reached SV (or timed out): E110 is judged from here on
