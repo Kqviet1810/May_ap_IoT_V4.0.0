@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.2.1";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.2.2";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -955,9 +955,9 @@ constexpr float TARGET_TEMP_MAX_C = 40.0f;
 constexpr float LOW_ALARM_GAP_C = 0.1f;
 constexpr float HIGH_ALARM_GAP_C = 0.1f;
 constexpr float EMERGENCY_ABOVE_HIGH_C = 0.1f;
-constexpr float VENT_OFF_ABOVE_SV_C = 0.10f;
-constexpr float VENT_ON_ABOVE_SV_C = 0.40f;
-constexpr float VENT_HYSTERESIS_C = 0.15f;
+constexpr float VENT_OFF_ABOVE_SV_C = 0.0f;
+constexpr float VENT_ON_ABOVE_SV_C = 0.05f;
+constexpr float VENT_HYSTERESIS_C = 0.05f;
 // Chuoi rang buoc: SV <= HUT OFF < HUT ON <= BAO CAO < KHAN CAP.
 // VENT_HYSTERESIS_C la khoang cach toi thieu giua nguong tat va bat quat hut.
 constexpr float HIGH_ALARM_MAX_C = 42.0f;

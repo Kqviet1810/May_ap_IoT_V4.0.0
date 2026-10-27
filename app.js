@@ -22,10 +22,10 @@
   const UI_STYLE_STORAGE = 'mayap.ui';
   const PROTOCOL_VERSION = 1;
   const DEVICE_ID_RE = /^MAP-[A-F0-9]{12}$/;
-  // Vent thresholds chain of the machine (config.h): SV + 0.10 <= off <= on - 0.15, SV + 0.40 <= on <= High alarm.
-  const VENT_ON_ABOVE_SV_C = 0.40;
-  const VENT_OFF_ABOVE_SV_C = 0.10;
-  const VENT_HYSTERESIS_C = 0.15;
+  // Vent thresholds chain of the machine (config.h): SV <= off <= on - 0.05, SV + 0.05 <= on <= High alarm.
+  const VENT_ON_ABOVE_SV_C = 0.05;
+  const VENT_OFF_ABOVE_SV_C = 0.0;
+  const VENT_HYSTERESIS_C = 0.05;
   const fmt2 = (v) => v.toFixed(2).replace('.', ',');
 
   const VENT_PROFILE_KEYS = Object.freeze([
@@ -3908,7 +3908,7 @@
     return true;
   }
 
-  // The vent thresholds follow the machine's own chain (config.h): SV + 0.10 <= off <= on - 0.15, SV + 0.40 <= on <= High alarm.
+  // The vent thresholds follow the machine's own chain (config.h): SV <= off <= on - 0.05, SV + 0.05 <= on <= High alarm.
   // The machine used to clamp a value outside it silently, so the form looked accepted and then jumped back; say the limit instead.
   function validateVentForm() {
     clearInvalid('ventForm');
