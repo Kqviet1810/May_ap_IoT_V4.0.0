@@ -599,6 +599,10 @@ constexpr float WARMUP_VENT_RELEASE_ERR_C = 0.5f;
 constexpr uint32_t WARMUP_VENT_HOLD_MAX_MS = 1800000UL;   // 30 phut
 constexpr uint32_t LOW_TEMP_STARTUP_GRACE_MS = 300000UL; // 5 phut
 constexpr uint32_t LOW_TEMP_CONFIRM_MS = 300000UL;       // thap lien tuc 5 phut
+// Lan len nhiet dau cua me: nhiet thap la DUONG DI (khong phai su co) nen E110 chua duoc xet. "Da len nhiet" khi PV cham
+// SV - LOW_TEMP_WARMUP_DONE_ERR_C; neu qua LOW_TEMP_WARMUP_MAX_MS ma chua toi thi E110 duoc xet nhu cu (lo khong len nhiet duoc).
+constexpr float LOW_TEMP_WARMUP_DONE_ERR_C = 0.3f;
+constexpr uint32_t LOW_TEMP_WARMUP_MAX_MS = 7200000UL;   // 120 phut
 constexpr uint32_t HIGH_TEMP_CONFIRM_MS = 1000UL;
 constexpr float HIGH_TEMP_CLEAR_HYSTERESIS_C = 0.2f;
 constexpr uint32_t HIGH_TEMP_CLEAR_CONFIRM_MS = 10000UL;
@@ -1209,6 +1213,7 @@ struct MachineRuntime {
   bool heaterOn = false;
   bool circulationFanOn = false;
   bool ventFanOn = false;
+  bool warmingUp = false;          // batch running and the first climb to SV is not finished yet (E110 is not judged meanwhile)
   uint8_t ventReason = 0;          // why the exhaust fan runs (0 off/unknown, 1 emergency, 2 high, 3 vent line, 4 protection, 5 sensor fault, 6 Web, 7 automatic vent, 8 schedule)
   bool humidifierOn = false;
   bool lightOn = false;

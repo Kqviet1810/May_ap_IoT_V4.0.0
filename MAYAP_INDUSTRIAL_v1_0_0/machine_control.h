@@ -5697,7 +5697,12 @@ class MachineController {
       sirenMutedUntil_ = 0;
     }
 
-    const bool lowEligible = batchRunning_ && sensorUsable_ &&
+    // First climb of the batch: the oven is cold on purpose, so "temperature low" is the way, not a fault.
+    if (!batchRunning_) warmupDone_ = false;
+    else if (!warmupDone_ && sensorUsable_ &&
+             (temperature_ >= config_.targetTemp - LOW_TEMP_WARMUP_DONE_ERR_C ||
+              elapsedBatchMs(now) >= LOW_TEMP_WARMUP_MAX_MS)) warmupDone_ = true;
+    const bool lowEligible = batchRunning_ && sensorUsable_ && warmupDone_ &&
         elapsedBatchMs(now) >= LOW_TEMP_STARTUP_GRACE_MS;
     const bool lowCondition = lowEligible && temperature_ <= config_.lowTempAlarm;
     lowTemperatureActive_ = lowTempTimer_.update(now, lowCondition,
@@ -7368,6 +7373,7 @@ class MachineController {
     runtime_.circulationFanOn = outputs_.state().circulationFan;
     runtime_.ventFanOn = outputs_.state().ventFan;
     runtime_.ventReason = runtime_.ventFanOn ? ventReason_ : 0U;
+    runtime_.warmingUp = batchRunning_ && !warmupDone_;
     runtime_.humidifierOn = outputs_.state().humidifier;
     runtime_.lightOn = outputs_.state().light;
     runtime_.sirenOn = outputs_.state().siren;
@@ -8084,6 +8090,7 @@ class MachineController {
   bool ventTemperatureActive_ = false;
   uint8_t ventReason_ = 0U;
   bool lowTemperatureActive_ = false;
+  bool warmupDone_ = false;                          // the first climb of the batch reached SV (or timed out): E110 is judged from here on
   bool highTemperatureActive_ = false;
   bool emergencyActive_ = false;
   bool humidityLowActive_ = false;
