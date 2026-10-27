@@ -15,6 +15,7 @@
 #include <ArduinoJson.h>
 #include <mbedtls/md.h>
 #include <time.h>
+#include <cmath>
 
 // Transport-neutral application transaction bridge. Network owners may attach
 // a bounded publish callback in a later phase; this baseline attaches none.
@@ -62,8 +63,10 @@ using PublishCallback = bool (*)(const char *, const char *, size_t);
 // a rebuilt-and-discarded 38-field JSON document (plus up to five serialised chunks) per retry, hundreds of times per minute, and the
 // transient allocations took the heap down to 15 KB. nullptr = no limit (host tests, other transports).
 using CapacityCallback = uint8_t (*)();
+using MgmtCallback = void (*)(const JsonDocument &);
 static PublishCallback publishCallback = nullptr;
 static CapacityCallback bulkCapacityCallback = nullptr;
+static MgmtCallback mgmtCallback = nullptr;
 // May a frame of this lane go out RIGHT NOW? The transport answers from its socket (one select(), nothing built, nothing signed), so
 // the bridge asks BEFORE it builds a snapshot, signs an acknowledgement or serialises a report: a closed wire used to cost the whole
 // document per retry, and the snapshot that was retried on every pass won the first writable moment against the terminal ack that
@@ -84,7 +87,7 @@ static bool reportActive = false;
 inline void resetReportProgress() { reportActive = false; reportPartsSent = 0U; }
 static MayapRealtimePublish::BootstrapCadence bootstrapCadence;
 static uint32_t lastSnapshotPublishAt = 0U;
-static bool forceSnapshotPublish = false;
+static volatile bool forceSnapshotPublish = false;
 
 // --------------------------- Hop thu cau hinh/runtime --------------------------
 // Ghi boi controlTask qua mayapRealtimeSetConfig/mayapRealtimeSetRuntime; doc boi
@@ -369,7 +372,7 @@ inline bool publishConfigReport(const MachineConfig &cfg, uint32_t revision) {
   c["circulationFanEnabled"] = cfg.circulationFanEnabled;
   c["turningEnabled"] = cfg.turningEnabled;
   c["manualTurnReanchorsSchedule"] = cfg.manualTurnReanchorsSchedule;
-  c["sirenSelfTestEnabled"] = cfg.sirenSelfTestEnabled;
+  c["sirenSelfTestEnabled"] = false;
   // Ten field khac firmware (autoResumeOnPowerLoss) vi web da dung ten nay
   // truoc: giu nguyen giao thuc web, chi anh xa ten trong firmware.
   c["autoResumeAfterPower"] = cfg.autoResumeOnPowerLoss;
@@ -1191,8 +1194,6 @@ inline void handleConfigSetMessage(const JsonDocument &doc) {
   candidate.turningEnabled = configObj["turningEnabled"] | candidate.turningEnabled;
   candidate.manualTurnReanchorsSchedule =
       configObj["manualTurnReanchorsSchedule"] | candidate.manualTurnReanchorsSchedule;
-  candidate.sirenSelfTestEnabled =
-      configObj["sirenSelfTestEnabled"] | candidate.sirenSelfTestEnabled;
   candidate.autoResumeOnPowerLoss =
       configObj["autoResumeAfterPower"] | candidate.autoResumeOnPowerLoss;
   candidate.allowHeatWithoutBatch =
@@ -1335,6 +1336,10 @@ inline void dispatchApplicationMessage(const char *channel, const uint8_t *paylo
   if (strcmp(channel, "session") != 0 || (wireDoc["active"] | false)) MayapWifiPower::noteWebActivity(millis());
   if (!strcmp(channel, "session")) {
     handleSessionMessage(wireDoc);
+    return;
+  }
+  if (!strcmp(channel, "mgmt/response")) {
+    if (mgmtCallback) mgmtCallback(wireDoc);
     return;
   }
 
@@ -1689,8 +1694,31 @@ inline void mayapRealtimeUpdate(uint32_t now) {
 inline void mayapRealtimeSetRuntime(const MachineRuntime &runtime) {
   using namespace MayapRealtimeInternal;
   portENTER_CRITICAL(&realtimeMux);
+  const bool tempChanged = std::isnan(knownRuntime.temperature) != std::isnan(runtime.temperature) ||
+      (!std::isnan(runtime.temperature) && !std::isnan(knownRuntime.temperature) &&
+       fabsf(knownRuntime.temperature - runtime.temperature) >= 0.1f);
+  const bool humChanged = std::isnan(knownRuntime.humidity) != std::isnan(runtime.humidity) ||
+      (!std::isnan(runtime.humidity) && !std::isnan(knownRuntime.humidity) &&
+       fabsf(knownRuntime.humidity - runtime.humidity) >= 1.0f);
+  const bool stateChanged = knownRuntimeValid && (
+    tempChanged || humChanged ||
+    knownRuntime.primaryFaultCode != runtime.primaryFaultCode ||
+    knownRuntime.alarmMask != runtime.alarmMask ||
+    knownRuntime.heaterOn != runtime.heaterOn ||
+    knownRuntime.circulationFanOn != runtime.circulationFanOn ||
+    knownRuntime.ventFanOn != runtime.ventFanOn ||
+    knownRuntime.humidifierOn != runtime.humidifierOn ||
+    knownRuntime.lightOn != runtime.lightOn ||
+    knownRuntime.sirenOn != runtime.sirenOn ||
+    knownRuntime.turnState != runtime.turnState ||
+    knownRuntime.batchRunning != runtime.batchRunning ||
+    knownRuntime.autoMode != runtime.autoMode
+  );
   knownRuntime = runtime;
   knownRuntimeValid = true;
+  if (stateChanged && webSessionActive) {
+    forceSnapshotPublish = true;
+  }
   portEXIT_CRITICAL(&realtimeMux);
 }
 

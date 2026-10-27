@@ -21,12 +21,31 @@ inline void mayapI2cReport(uint8_t address, bool ok) {
     if (n < 255U) __atomic_store_n(&failures[i], n + 1U, __ATOMIC_RELEASE);
   }
 }
+inline void mayapI2cBusClearEarly() {
+  pinMode(PIN_I2C_SDA, INPUT_PULLUP);
+  pinMode(PIN_I2C_SCL, OUTPUT_OPEN_DRAIN);
+  digitalWrite(PIN_I2C_SCL, HIGH);
+  delayMicroseconds(5);
+  for (uint8_t pulse = 0U; pulse < 9U && digitalRead(PIN_I2C_SDA) == LOW; ++pulse) {
+    digitalWrite(PIN_I2C_SCL, LOW); delayMicroseconds(5);
+    digitalWrite(PIN_I2C_SCL, HIGH); delayMicroseconds(5);
+    if (digitalRead(PIN_I2C_SCL) == LOW) break;
+  }
+  pinMode(PIN_I2C_SDA, OUTPUT_OPEN_DRAIN);
+  digitalWrite(PIN_I2C_SDA, LOW); delayMicroseconds(5);
+  digitalWrite(PIN_I2C_SCL, HIGH); delayMicroseconds(5);
+  digitalWrite(PIN_I2C_SDA, HIGH); delayMicroseconds(5);
+  pinMode(PIN_I2C_SDA, INPUT_PULLUP);
+  pinMode(PIN_I2C_SCL, INPUT_PULLUP);
+}
 inline uint32_t mayapI2cRecoveryEpoch() {
   return __atomic_load_n(&MayapI2cSupervisor::epoch, __ATOMIC_ACQUIRE);
 }
 inline void mayapI2cSupervisorUpdate(uint32_t now) {
   using namespace MayapI2cSupervisor;
-  if (static_cast<uint32_t>(now - lastCheckAt) < 1000U) return;
+  const bool linesStuckFast = digitalRead(PIN_I2C_SDA) == LOW || digitalRead(PIN_I2C_SCL) == LOW;
+  const uint32_t checkInterval = linesStuckFast ? 100U : 1000U;
+  if (static_cast<uint32_t>(now - lastCheckAt) < checkInterval) return;
   lastCheckAt = now;
   if (recoveredBefore && static_cast<uint32_t>(now - lastRecoveryAt) < 30000U) return;
   if (!mayapI2cLock(0U)) return; // Never wait behind a storage transaction.

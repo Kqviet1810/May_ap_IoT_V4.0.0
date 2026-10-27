@@ -630,12 +630,6 @@ constexpr uint32_t RESUME_CONFIRM_ALERT_MS = 900000UL; // 15 phut
 // coi va quyet dinh, nhung khong de may giu am vo thoi han neu bi bo quen.
 constexpr uint32_t BATCH_OVERDUE_AUTO_STOP_GRACE_SEC = 12UL * 3600UL;
 
-// Tu kiem tra coi dinh ky (backlog, khong thuoc audit v3.7.1) - xem
-// MachineConfig::sirenSelfTestEnabled va updateSirenSelfTest() trong
-// machine_control.h. 7 ngay/lan la du dan cach de khong gay phien, PULSE_MS
-// chi 1.5s - vua du nghe thay "coi con keu", khong keu dai nhu canh bao that.
-constexpr uint32_t SIREN_SELF_TEST_INTERVAL_MS = 7UL * 24UL * 3600UL * 1000UL;
-constexpr uint32_t SIREN_SELF_TEST_PULSE_MS = 1500UL;
 // Khi cho phuc hoi me ma RTC khong hop le (ResumeBlockReason::Rtc) - khac voi
 // man hinh xac nhan tren (co nguoi thao tac duoc), truong hop nay may KHONG
 // TU LAM GI DUOC (dang cho RTC song lai qua auto-repair/NTP), nen can canh
@@ -692,15 +686,12 @@ constexpr uint32_t OTA_TASK_PERIOD_MS = 30UL;
 constexpr size_t CONTROL_TASK_STACK_BYTES = 8192U;
 constexpr size_t HMI_TASK_STACK_BYTES = 10240U;
 constexpr size_t SUPERVISOR_TASK_STACK_BYTES = 4096U;
-// 12288 giu nguyen sau khi go ArduinoOTA: task van chay WiFiClientSecure+HTTPClient (TLS toi Cloudflare)
-// + buffer 1 kB doc firmware + mbedtls_sha256_context. Dinh stack luc TAI THAT chua duoc do tren
-// mach (log [TASK] chi moi ghi 5,8 kB luc nhan roi); do truoc khi thu nho hoac gop vao task khac.
-constexpr size_t OTA_TASK_STACK_BYTES = 12288U;
-// Bench measurement (PILOT log, 60 s [TASK] report, Wi-Fi + NTP + MQTT + Cloud running): network task used
-// 2.5 kB of 12 kB at its peak. Stacks are static RAM, so every kB removed here is a kB of heap for TLS.
-// 8 kB keeps >3x the measured peak; the Wi-Fi portal (WebServer/DNS/scan) path was NOT in that log, so it
-// must be exercised during the soak and `net=` (bytes never used) must stay >= 2048 before going lower.
-constexpr size_t NETWORK_TASK_STACK_BYTES = 8192U;
+// 12288 -> 8192: Task van chay WiFiClientSecure+HTTPClient (TLS toi Cloudflare) + buffer 1 kB doc firmware + mbedtls_sha256_context.
+// Dinh stack do duoc 5.8 kB luc nhan roi, 8192 giu >2.3 kB du phong an toan, tra 4 KB static RAM ve cho TLS heap.
+constexpr size_t OTA_TASK_STACK_BYTES = 8192U;
+// Bench measurement (PILOT log, 60 s [TASK] report): network task used 2.5 kB of 12 kB at its peak.
+// 6144 giu >3.6 kB du phong an toan, tra 2 KB static RAM ve cho TLS heap.
+constexpr size_t NETWORK_TASK_STACK_BYTES = 6144U;
 constexpr uint32_t TASK_STACK_MONITOR_MS = 60000UL;
 // 5 s: du bien cho giao dich I2C huu han nhung van phat hien task bi treo.
 constexpr uint32_t CONTROL_WDT_TIMEOUT_MS = 5000UL;
@@ -1117,12 +1108,6 @@ struct MachineConfig {
   bool manualTurnReanchorsSchedule = false;
   // Tu kiem tra coi dinh ky (de xuat backlog, khong thuoc audit truoc phat
   // hanh v3.7.1) - opt-in, mac dinh TAT. Muc dich: phat hien som coi bao
-  // (loa/relay coi that) bi hong/dut day ma khong ai biet, tranh den luc
-  // that su can canh bao khan cap thi coi khong keu. Chi la 1 tieng "bip"
-  // NGAN dinh ky (xem SIREN_SELF_TEST_INTERVAL_MS/PULSE_MS), khong phai
-  // canh bao that, khong can ACK, tu dong bo qua neu dang co canh bao/loi
-  // that nao dang hoat dong.
-  bool sirenSelfTestEnabled = false;
 };
 
 
@@ -1255,10 +1240,6 @@ struct MachineRuntime {
   // F-06: me da qua so ngay ap du kien, dang cho xac nhan "tiep tuc u am"
   // (BatchOverdueContinue) hoac tu dong dung sau 12h - xem updateBatchOverdue().
   bool batchOverdueConfirmationPending = false;
-  // Dang phat tieng "bip" tu kiem tra coi dinh ky (xem sirenSelfTestEnabled
-  // o tren) - HMI/web dung de hien mot dong trang thai than thien ("Dang tu
-  // kiem tra coi") thay vi de nguoi dung tuong nham day la canh bao that.
-  bool sirenSelfTestActive = false;
   // ATtiny backup-alarm diagnostics (RAM only).
   bool attinyLinkHealthy = false;
   bool attinyBatchSynced = false;
@@ -1321,7 +1302,8 @@ enum class HmiCommandType : uint8_t {
   // unless the matching permission bit is set). Appended: every older value keeps its number.
   WebCtlSet,          // Local only: alarmMask = permission bits (WebCtl* below) the Web may use
   WebVentToggle, WebCircToggle, WebHeaterToggle, WebSirenToggle,
-  WebTurnHold         // Remote: alarmMask = direction (0 stop, 1 left, 2 right) | lease ms << 8 (the machine stops by itself when the lease ends)
+  WebTurnHold,        // Remote: alarmMask = direction (0 stop, 1 left, 2 right) | lease ms << 8 (the machine stops by itself when the lease ends)
+  FactoryReset        // Local only: khoi phuc cai dat goc (MachineConfig, NVS, EEPROM) va khoi dong lai
 };
 // Permission bits of the Web output control (HMI Advanced). Heater, vent, circulation, light, siren, egg turning.
 enum : uint8_t { WebCtlHeater = 1, WebCtlVent = 2, WebCtlCirc = 4, WebCtlLight = 8, WebCtlSiren = 16, WebCtlTurn = 32, WebCtlAutoUpdate = 64, WebCtlAll = 127 };

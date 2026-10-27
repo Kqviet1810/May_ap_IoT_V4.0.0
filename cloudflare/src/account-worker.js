@@ -1,8 +1,9 @@
 import physicalWorker from './reliability-wrapper.js';
 import legacy from './index.js';
 import { alarmStatusSnapshot } from './alarm-delivery.js';
-import { randomToken, verifyDeviceKey, timingSafeEqual } from './auth.js';
-import { signWebToken } from './broker/acl.js';
+import { randomToken, verifyDeviceKey, timingSafeEqual, hashDeviceKey } from './auth.js';
+import { setDevicePinHash } from './db.js';
+import { signWebToken, verifyUplink } from './broker/acl.js';
 import { hash, json, session,
   deviceList, permission, createSession, verifyGoogle, controlGrant } from './account-auth.js';
 
@@ -348,8 +349,74 @@ async function handleDeviceMembers(request, env, remove) {
   ]);
   return json({ success:true });
 }
+
+async function handleInternalMgmt(request, env) {
+  const bodyText = await request.text();
+  const secret = String(env.MQTT_DEVICE_SECRET || '');
+  if (bodyText.length > 16384 ||
+      !await verifyUplink(secret, request.headers.get('x-mayap-ts'), bodyText, request.headers.get('x-mayap-sig'))) {
+    return json({ success: false, error: 'MGMT_AUTH' }, 401);
+  }
+  let data;
+  try { data = JSON.parse(bodyText); } catch { return json({ success: false, error: 'BAD_JSON' }, 400); }
+  const id = String(data?.device_id || '').trim();
+  if (!idRe.test(id)) return json({ success: false, error: 'BAD_DEVICE_ID' }, 400);
+  const type = String(data?.type || '');
+
+  if (type === 'guest_mode') {
+    const action = String(data?.action || 'status');
+    if (!['status', 'on', 'off'].includes(action)) return json({ success: false, type: 'guest_mode', error: 'INVALID_REQUEST' }, 400);
+    const now = Date.now();
+    if (action === 'on') {
+      await env.DB.prepare(`INSERT INTO device_guest_mode(device_id,enabled,join_until,updated_at) VALUES(?,1,?,?)
+        ON CONFLICT(device_id) DO UPDATE SET enabled=1, join_until=excluded.join_until, updated_at=excluded.updated_at`)
+        .bind(id, now + GUEST_JOIN_WINDOW_MS, now).run();
+    } else if (action === 'off') {
+      await env.DB.batch([
+        env.DB.prepare(`INSERT INTO device_guest_mode(device_id,enabled,join_until,updated_at) VALUES(?,0,0,?)
+          ON CONFLICT(device_id) DO UPDATE SET enabled=0, join_until=0, updated_at=excluded.updated_at`).bind(id, now),
+        env.DB.prepare('DELETE FROM push_subscriptions WHERE device_id=? AND user_sub IN (SELECT user_sub FROM user_devices WHERE device_id=? AND role!=\'owner\')').bind(id, id),
+        env.DB.prepare("DELETE FROM user_devices WHERE device_id=? AND role!='owner'").bind(id),
+      ]);
+    }
+    const st = await guestState(env, id, now);
+    return json({ success: true, type: 'guest_mode', ...st });
+  }
+
+  if (type === 'members') {
+    const remove = Boolean(data?.remove);
+    const { results } = await env.DB.prepare(`SELECT ud.user_sub, ud.role, u.name FROM user_devices ud JOIN users u ON u.google_sub=ud.user_sub
+      WHERE ud.device_id=? ORDER BY CASE ud.role WHEN 'owner' THEN 0 ELSE 1 END, ud.created_at LIMIT 8`).bind(id).all();
+    const rows = [];
+    for (const row of results) rows.push({ sub:row.user_sub, ref:await memberRef(env, row.user_sub), role:row.role, name:String(row.name || '').trim().slice(0, 16) || 'Tài khoản' });
+    if (!remove) return json({ success: true, type: 'members', members: rows.map(({ ref, role, name }) => ({ ref, role, name })) });
+    const target = rows.find(row => row.ref === String(data?.ref || ''));
+    if (!target) return json({ success: false, type: 'members', error: 'MEMBER_NOT_FOUND' }, 404);
+    if (target.role === 'owner') return json({ success: false, type: 'members', error: 'OWNER_PROTECTED' }, 403);
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM user_devices WHERE device_id=? AND user_sub=? AND role!='owner'").bind(id, target.sub),
+      env.DB.prepare('DELETE FROM push_subscriptions WHERE device_id=? AND user_sub=?').bind(id, target.sub),
+    ]);
+    return json({ success: true, type: 'members' });
+  }
+
+  if (type === 'reset_pin') {
+    const device = await env.DB.prepare('SELECT device_id FROM devices WHERE device_id=?').bind(id).first();
+    if (!device) return json({ success: false, type: 'reset_pin', error: 'DEVICE_NOT_FOUND' }, 404);
+    const bytes = new Uint32Array(1);
+    crypto.getRandomValues(bytes);
+    const pin = String(100000 + (bytes[0] % 900000));
+    const pinHash = await hashDeviceKey(pin, env.DEVICE_KEY_PEPPER);
+    await setDevicePinHash(env.DB, id, pinHash);
+    return json({ success: true, type: 'reset_pin', web_pin: pin });
+  }
+
+  return json({ success: false, error: 'UNKNOWN_MGMT_TYPE' }, 400);
+}
+
 async function fetchAccount(request, env, ctx) {
   const url=new URL(request.url), path=url.pathname, method=request.method;
+  if (method==='POST' && path==='/api/internal/mgmt') return handleInternalMgmt(request, env);
   if (method==='POST' && (path==='/api/device/members' || path==='/api/device/members/remove')) return handleDeviceMembers(request, env, path.endsWith('/remove'));
   if (method==='POST' && path==='/api/device/guest-mode') return handleGuestMode(request, env);
   // Existing physical-device authentication and task architecture stay unchanged.

@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const read = (f) => fs.readFileSync(path.join(__dirname, '..', '.github/workflows', f), 'utf8');
+const read = (f) => fs.readFileSync(path.join(__dirname, '..', '.github/workflows', f), 'utf8').replace(/\r\n/g, '\n');
 
 test('release button: main only, green CI required, no overwrite of a tag, builds on the tag', () => {
   const w = read('release-firmware.yml');

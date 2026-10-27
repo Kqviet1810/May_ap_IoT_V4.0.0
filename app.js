@@ -42,7 +42,7 @@
     'nextDirection', 'heaterStuckMinRiseC', 'heaterStuckDurationSec',
     'tempRateLimitC', 'tempRateWindowSec', 'tempOscillationCrossLimit',
     'tempOscillationWindowSec', 'autotuneRelayPowerPercent', 'autotuneBandC',
-    'manualTurnReanchorsSchedule', 'sirenSelfTestEnabled'
+    'manualTurnReanchorsSchedule'
   ]);
   const CONFIG_KEYS = Object.freeze([...REQUIRED_CONFIG_KEYS, ...VENT_PROFILE_KEYS, 'adaptiveThermalBalanceEnabled']);
 
@@ -125,20 +125,29 @@
   // One in-flight /api/mqtt-session per device. The same reply carries the broker
   // credentials and, for owners/operators, the signed control grant.
   const mqttSessionRequests = new Map();
+  const cachedMqttSessions = new Map();
   const readOnlyDevices = new Set();   // /api/mqtt-session returned control:null
-  function fetchMqttSession(device) {
+  function fetchMqttSession(device, force = false) {
+    if (!force) {
+      const cached = cachedMqttSessions.get(device.id);
+      if (cached?.mqtt && Number(cached.mqtt.expiresAt || 0) > Math.floor(Date.now() / 1000) + 60) {
+        return Promise.resolve(cached);
+      }
+    }
     const running = mqttSessionRequests.get(device.id);
     if (running) return running;
     const request = (async () => {
       const reply = await postCloudJson('/api/mqtt-session',
         { device_id: device.id, client_id: controlClientId }, 8000);
       if (!reply.success || !reply.mqtt) {
+        cachedMqttSessions.delete(device.id);
         const error = new Error(reply.status === 401 || reply.status === 403
           ? 'Cần đăng nhập lại hoặc không có quyền với máy này'
           : 'Chưa lấy được phiên kết nối máy chủ');
         error.code = reply.status === 401 || reply.status === 403 ? 'AUTH_ERROR' : 'TRANSPORT_ERROR';
         throw error;
       }
+      cachedMqttSessions.set(device.id, reply);
       if (reply.control) { readOnlyDevices.delete(device.id); await storeControlSession(device, reply.control); }
       else readOnlyDevices.add(device.id);
       // A reconnect of the socket that is already open must not be refused for an old token: refresh what it will send, without
@@ -1919,7 +1928,6 @@
     assign('advancedForm', 'humidityOffset', config.humidityOffset);
 
     check('lightAlarmForm', 'lightAfterBatchAlarmEnabled', config.lightAfterBatchAlarmEnabled);
-    check('lightAlarmForm', 'sirenSelfTestEnabled', config.sirenSelfTestEnabled);
 
     assign('advancedForm', 'advMaxHeaterPower', config.maxHeaterPower);
     assign('advancedForm', 'advTempRateLimitC', config.tempRateLimitC);
@@ -2020,7 +2028,6 @@
       config.nextDirection = $('nextDirection').value === 'right' ? 1 : 0;
     } else if (group === 'lightAlarm') {
       config.lightAfterBatchAlarmEnabled = $('lightAfterBatchAlarmEnabled').checked;
-      config.sirenSelfTestEnabled = $('sirenSelfTestEnabled').checked;
     } else if (group === 'humidifier') {
       if (!config.humidifierInstalled) return null;
       const off = Number($('humidifierOffHumidity').value);
@@ -2083,6 +2090,17 @@
         clearBatchActionPending(device);
         device.batchUiAwaitingConfirmTarget = batchTargetForAction(pending.action);
         if (device.id === state.selectedId) setFormError('batchForm', 'Chưa nhận xác nhận cuối · đang kiểm tra trạng thái máy');
+      }
+      if (pending.action === 'light_toggle' && device) {
+        device.lightPendingId = null;
+        if (device.snapshot?.runtime) updateOutput('outputLight', bool(device.snapshot.runtime.lightOn));
+        if ($('outputLightBtn')) {
+          $('outputLightBtn').setAttribute('aria-busy', 'false');
+          $('outputLightBtn').classList.toggle('pending', false);
+        }
+        if (device.id === state.selectedId) {
+          try { renderDevice(); } catch (_) {}
+        }
       }
       // Doc lich su EEPROM la tac vu nen tu chay khi mo trang Me ap. Neu
       // ESP32 tra cham, chi cap nhat trang thai ngay trong bieu do; khong
@@ -2296,7 +2314,10 @@
     }
     startTransaction(id, { kind: 'command', operation: action.replaceAll('_', '.'),
       deviceId: device.id, action }, WEB.commandTimeoutMs);
-    if (action === 'light_toggle') { device.lightPendingId = id; if (device.id === state.selectedId) renderDevice(); }
+    if (action === 'light_toggle') {
+      device.lightPendingId = id;
+      if (device.id === state.selectedId) renderDevice();
+    }
 
     try {
       const envelope = await signRealtimeWrite(device, 'command', payload);
@@ -2320,6 +2341,18 @@
     const pending = state.pending.get(id);
     if (pending?.timeout) clearTimeout(pending.timeout);
     if (pending?.retryTimer) clearTimeout(pending.retryTimer);
+    const device = pending?.deviceId ? state.devices.find((item) => item.id === pending.deviceId) : null;
+    if (device && device.lightPendingId === id) {
+      device.lightPendingId = null;
+      if (device.snapshot?.runtime) updateOutput('outputLight', bool(device.snapshot.runtime.lightOn));
+      if ($('outputLightBtn')) {
+        $('outputLightBtn').setAttribute('aria-busy', 'false');
+        $('outputLightBtn').classList.toggle('pending', false);
+      }
+      if (device.id === state.selectedId) {
+        try { renderDevice(); } catch (_) {}
+      }
+    }
     state.pending.delete(id);
     transactions.remove(id);
   }
@@ -2448,6 +2481,20 @@
         }
         addBatchLog(device, message);
       } else if (device.id === state.selectedId) setFormError('batchForm', '');
+    }
+    if (pending.action === 'light_toggle') {
+      if (ok && device.snapshot?.runtime) {
+        device.snapshot.runtime.lightOn = !device.snapshot.runtime.lightOn;
+        updateOutput('outputLight', bool(device.snapshot.runtime.lightOn));
+      }
+      device.lightPendingId = null;
+      if ($('outputLightBtn')) {
+        $('outputLightBtn').setAttribute('aria-busy', 'false');
+        $('outputLightBtn').classList.toggle('pending', false);
+      }
+      if (device.id === state.selectedId) {
+        try { renderDevice(); } catch (_) {}
+      }
     }
     if (pending.action && pending.action.startsWith('tech_')) { techOnAck(pending.action, ok, message); return; }
     toast(ok ? message : `Máy từ chối: ${message}`, 5000);
@@ -3523,7 +3570,7 @@
     const job = standbyRenewal = { done: false };
     const finish = (retry) => { job.done = true; if (standbyRenewal === job) standbyRenewal = null; if (retry) renewRetryAt = Date.now() + RENEW_RETRY_MS; };
     const token = realtimeToken;
-    fetchMqttSession(device).then((reply) => {
+    fetchMqttSession(device, true).then((reply) => {
       if (job.done) return;
       if (token !== realtimeToken || state.realtime !== active) { finish(false); return; }
       let next = null, latestPresence = null, swapped = false;
@@ -4548,7 +4595,7 @@
     if (!ids.has(state.selectedId)) state.selectedId = state.devices[0]?.id || '';
   }
   window.addEventListener('mayap-logout', () => {
-    controlSessions.clear(); state.devices = [];
+    controlSessions.clear(); cachedMqttSessions.clear(); state.devices = [];
   });
   async function init() {
     if (!window.MayapAccount) return; // Production always installs the account gate.

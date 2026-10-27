@@ -78,6 +78,44 @@ inline void setCompileDate(char out[11]) {
   snprintf(out, 11, "%02u/%02u/%04u", day, month, year);
 }
 
+inline bool parseBuildDateTime(uint16_t &year, uint8_t &month, uint8_t &day,
+                               uint8_t &hour, uint8_t &minute, uint8_t &second) {
+  static const char *const months[] = {
+    "Jan","Feb","Mar","Apr","May","Jun",
+    "Jul","Aug","Sep","Oct","Nov","Dec"
+  };
+  char monthText[4] = {__DATE__[0], __DATE__[1], __DATE__[2], '\0'};
+  month = 1;
+  for (uint8_t i = 0; i < 12; ++i) {
+    if (strncmp(monthText, months[i], 3) == 0) { month = i + 1U; break; }
+  }
+  day = static_cast<uint8_t>(
+      (__DATE__[4] == ' ' ? 0 : __DATE__[4] - '0') * 10 + (__DATE__[5] - '0'));
+  year = static_cast<uint16_t>(
+      (__DATE__[7]-'0')*1000 + (__DATE__[8]-'0')*100 +
+      (__DATE__[9]-'0')*10 + (__DATE__[10]-'0'));
+  hour = static_cast<uint8_t>((__TIME__[0] - '0') * 10 + (__TIME__[1] - '0'));
+  minute = static_cast<uint8_t>((__TIME__[3] - '0') * 10 + (__TIME__[4] - '0'));
+  second = static_cast<uint8_t>((__TIME__[6] - '0') * 10 + (__TIME__[7] - '0'));
+  return (year >= 2020 && month >= 1 && month <= 12 && day >= 1 && day <= 31 &&
+          hour < 24 && minute < 60 && second < 60);
+}
+
+inline uint32_t buildEpochTimestamp() {
+  uint16_t y; uint8_t m, d, hh, mm, ss;
+  if (!parseBuildDateTime(y, m, d, hh, mm, ss)) return 0U;
+  uint32_t days = 0U;
+  for (uint16_t cur = 1970U; cur < y; ++cur) {
+    days += ((cur % 4U == 0U && cur % 100U != 0U) || cur % 400U == 0U) ? 366U : 365U;
+  }
+  static const uint8_t mdays[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+  for (uint8_t curM = 1U; curM < m; ++curM) {
+    days += mdays[curM - 1U] + ((curM == 2U && ((y % 4U == 0U && y % 100U != 0U) || y % 400U == 0U)) ? 1U : 0U);
+  }
+  days += static_cast<uint32_t>(d - 1U);
+  return days * 86400UL + static_cast<uint32_t>(hh) * 3600UL + static_cast<uint32_t>(mm) * 60UL + ss;
+}
+
 inline const char *resetReasonText(esp_reset_reason_t reason) {
   switch (reason) {
     case ESP_RST_POWERON: return "POWERON";
@@ -820,6 +858,11 @@ class SafetyJournal {
   }
   bool ready() const { return ready_; }
 
+  bool clear() {
+    if (!ready_) return false;
+    return prefs_.clear();
+  }
+
   bool stopIntentPending() {
     return ready_ && prefs_.getUInt(SAFETY_NVS_STOP_KEY, 0U) ==
         BATCH_STOP_INTENT_MAGIC;
@@ -965,6 +1008,8 @@ class PowerManager {
 // ============================================================================
 // DS3231: DOC CO TIMEOUT, KIEM TRA OSF, KHONG DUNG WIFI/RTC
 // ============================================================================
+constexpr uint32_t RTC_NTP_HEAL_GRACE_MS = 45000UL;
+
 class RtcDs3231 {
  public:
   void begin(uint32_t now) {
@@ -1526,8 +1571,8 @@ struct PackedMachineConfigV1 {
   float autotuneBandC;
   // schema 9+: F-13 - dao tay co dong lich dao tu dong hay khong.
   uint8_t manualTurnReanchorsSchedule;
-  // schema 10+: tu kiem tra coi dinh ky (backlog, opt-in, mac dinh TAT).
-  uint8_t sirenSelfTestEnabled;
+  // schema 10+: giu nguyen offset cho schema cu (truoc day la sirenSelfTestEnabled).
+  uint8_t reservedSirenSelfTest;
   // schema 11+: lich thong gio dinh ky theo RTC. Them CUOI de schema 10 cu
   // van la prefix nguyen ven va migrate bang memcpy an toan.
   uint8_t ventScheduleEnabled;
@@ -1660,9 +1705,9 @@ struct ConfigRecordLegacyV7 {
 constexpr size_t CONFIG_V8_PAYLOAD_BYTES =
     offsetof(PackedMachineConfigV1, manualTurnReanchorsSchedule);
 static_assert(CONFIG_V8_PAYLOAD_BYTES + 1U * sizeof(uint8_t) ==
-                  offsetof(PackedMachineConfigV1, sirenSelfTestEnabled),
+                  offsetof(PackedMachineConfigV1, reservedSirenSelfTest),
               "manualTurnReanchorsSchedule (schema 9) phai nam ngay truoc "
-              "sirenSelfTestEnabled (schema 10) trong PackedMachineConfigV1");
+              "reservedSirenSelfTest (schema 10) trong PackedMachineConfigV1");
 struct ConfigRecordLegacyV8 {
   uint32_t magic;
   uint16_t schema;
@@ -1672,13 +1717,13 @@ struct ConfigRecordLegacyV8 {
   uint32_t crc;
 };
 // Config schema 9 (ban truoc tinh nang tu kiem tra coi dinh ky) co payload
-// giong schema 10 tru sirenSelfTestEnabled. Dung de nang cap tai cho khong
+// giong schema 10 tru reservedSirenSelfTest. Dung de nang cap tai cho khong
 // mat cau hinh cu, giong het cach lam voi cac schema truoc do.
 constexpr size_t CONFIG_V9_PAYLOAD_BYTES =
-    offsetof(PackedMachineConfigV1, sirenSelfTestEnabled);
+    offsetof(PackedMachineConfigV1, reservedSirenSelfTest);
 static_assert(CONFIG_V9_PAYLOAD_BYTES + 1U * sizeof(uint8_t) ==
                   offsetof(PackedMachineConfigV1, ventScheduleEnabled),
-              "sirenSelfTestEnabled phai la truong cuoi schema 10");
+              "reservedSirenSelfTest phai la truong cuoi schema 10");
 struct ConfigRecordLegacyV9 {
   uint32_t magic;
   uint16_t schema;
@@ -1820,7 +1865,7 @@ inline PackedMachineConfigV1 packConfig(const MachineConfig &c) {
   p.autotuneRelayPowerPercent = c.autotuneRelayPowerPercent;
   p.autotuneBandC = c.autotuneBandC;
   p.manualTurnReanchorsSchedule = c.manualTurnReanchorsSchedule ? 1U : 0U;
-  p.sirenSelfTestEnabled = c.sirenSelfTestEnabled ? 1U : 0U;
+  p.reservedSirenSelfTest = 0U;
   p.ventScheduleEnabled = c.ventScheduleEnabled ? 1U : 0U;
   p.ventScheduleCount = c.ventScheduleCount;
   p.ventScheduleDurationMin = c.ventScheduleDurationMin;
@@ -1890,7 +1935,7 @@ inline MachineConfig unpackConfig(const PackedMachineConfigV1 &p) {
   c.autotuneRelayPowerPercent = p.autotuneRelayPowerPercent;
   c.autotuneBandC = p.autotuneBandC;
   c.manualTurnReanchorsSchedule = p.manualTurnReanchorsSchedule != 0U;
-  c.sirenSelfTestEnabled = p.sirenSelfTestEnabled != 0U;
+  (void)p.reservedSirenSelfTest;
   c.ventScheduleEnabled = p.ventScheduleEnabled != 0U;
   c.ventScheduleCount = p.ventScheduleCount;
   c.ventScheduleDurationMin = p.ventScheduleDurationMin;
@@ -2470,7 +2515,7 @@ class PersistentStore {
       const ConfigRecordLegacyV9 &best9 = useA9 ? la9 : lb9;
       configPayload_ = packConfig(MachineConfig{});
       memcpy(&configPayload_, best9.payload, sizeof(best9.payload));
-      configPayload_.sirenSelfTestEnabled = 0U;
+      configPayload_.reservedSirenSelfTest = 0U;
       configCacheValid_ = true;
       configCurrentIsA_ = useA9;
       configSequence_ = best9.sequence;
@@ -3711,6 +3756,27 @@ class MachineController {
   void beginStorage() {
     if (startupStorageInitialized_) return;
     rtc_.begin(millis());
+    // Auto-sync RTC from compile timestamp if newly flashed from computer or invalid
+    uint16_t bYear = 2000;
+    uint8_t bMonth = 1, bDay = 1, bHour = 0, bMin = 0, bSec = 0;
+    if (parseBuildDateTime(bYear, bMonth, bDay, bHour, bMin, bSec)) {
+      const uint32_t bEpoch = buildEpochTimestamp();
+      Preferences flashPrefs;
+      bool flashedNew = false;
+      if (flashPrefs.begin("mayap_flash", false)) {
+        String lastBuild = flashPrefs.getString("build", "");
+        const char *currentBuild = __DATE__ " " __TIME__;
+        if (lastBuild != currentBuild) {
+          flashedNew = true;
+          flashPrefs.putString("build", currentBuild);
+        }
+        flashPrefs.end();
+      }
+      if (flashedNew || !rtc_.valid() || rtc_.oscillatorStopped() || rtc_.epoch() < bEpoch) {
+        rtc_.set(bYear, bMonth, bDay, bHour, bMin, bSec);
+        rtc_.update(millis());
+      }
+    }
     startupStoreReady_ = store_.begin();
     startupStorageInitialized_ = true;
   }
@@ -3889,8 +3955,19 @@ class MachineController {
     serviceI2cDeviceRecovery(now);
     serviceBatchClear(now);
     eventLog_.syncClock(now, rtc_.epoch());
-    faults_.set(FaultCode::RtcFailure, !rtc_.valid(), now,
-                rtc_.online() ? (rtc_.oscillatorStopped() ? 1 : 3) : 2);
+    const bool rtcValid = rtc_.valid();
+    if (rtcValid) {
+      rtcInvalidSince_ = 0U;
+      faults_.set(FaultCode::RtcFailure, false, now);
+    } else {
+      if (rtcInvalidSince_ == 0U) {
+        rtcInvalidSince_ = now ? now : 1U;
+        mayapRequestImmediateNtpSync();
+      }
+      const bool graceExpired = elapsedMs(now, rtcInvalidSince_) >= RTC_NTP_HEAL_GRACE_MS;
+      faults_.set(FaultCode::RtcFailure, graceExpired, now,
+                  rtc_.online() ? (rtc_.oscillatorStopped() ? 1 : 3) : 2);
+    }
     adjustResumeElapsedFromRtc(now);
     const bool operationsReady = mayapBootOperationsReady();
     if (operationsReady) processInputModeTransition(now);
@@ -3902,7 +3979,6 @@ class MachineController {
     updateAlarms(now);
     if (operationsReady) {
       updateBatchOverdue(now);
-      updateSirenSelfTest(now);
       updateTurning(now);
       updateHeatingAndOutputs(now);
     } else {
@@ -4065,7 +4141,7 @@ class MachineController {
     if (healthHeapSampleGate_.due(now, true)) {
       const uint32_t freeHeap = ESP.getFreeHeap();
       if (freeHeap < 16384U) mayapSetOnlineMemoryPressure(true);
-      else if (freeHeap >= 73728U && ESP.getMaxAllocHeap() >= 24576U)
+      else if (freeHeap >= 61440U && ESP.getMaxAllocHeap() >= 20480U)
         mayapSetOnlineMemoryPressure(false);
       healthHeapWindowBest_ = std::max(healthHeapWindowBest_, freeHeap);
       healthHeapWindowWorst_ = std::min(healthHeapWindowWorst_, freeHeap);
@@ -4503,7 +4579,6 @@ class MachineController {
           requested.powerRestoreDelaySec != config_.powerRestoreDelaySec ||
           requested.sensorTimeoutSec != config_.sensorTimeoutSec ||
           requested.allowHeatWithoutBatch != config_.allowHeatWithoutBatch ||
-          requested.sirenSelfTestEnabled != config_.sirenSelfTestEnabled ||
           (requested.connectivityMode == ConnectivityMode::Online &&
            config_.connectivityMode != ConnectivityMode::Online));
       const MachineConfig previousConfig = config_;
@@ -4688,6 +4763,28 @@ class MachineController {
             message = "KHONG CO BAN CU DE QUAY LAI";
           }
           break;
+        case HmiCommandType::FactoryReset: {
+          mayapSerialPrintf(false, "[SYSTEM] Factory Reset requested from HMI Advanced menu\n");
+          MachineConfig defConfig{};
+          sanitizeMachineConfig(defConfig);
+          config_ = defConfig;
+          MachineConfig verify{};
+          (void)store_.saveConfig(config_, verify);
+          const char *stopMsg = nullptr;
+          (void)stopBatch(now, stopMsg);
+          PackedBatchV1 emptyBatch{};
+          (void)store_.saveBatch(emptyBatch);
+          safetyJournal_.clear();
+          Preferences p;
+          if (p.begin("mayap_ui", false)) { p.clear(); p.end(); }
+          if (p.begin("mayap_tech", false)) { p.clear(); p.end(); }
+          if (p.begin("mayap_flash", false)) { p.clear(); p.end(); }
+          ok = true;
+          message = "DANG KHOI PHUC CAI DAT GOC...";
+          delay(200);
+          mayapRestart(MayapBoot::RestartReason::None, "Factory Reset");
+          break;
+        }
         case HmiCommandType::WebVentToggle:
         case HmiCommandType::WebCircToggle:
         case HmiCommandType::WebHeaterToggle:
@@ -6445,11 +6542,8 @@ class MachineController {
     // F-06: coi cung reo cho me qua han chua xac nhan, dung chung co che
     // tam tat (sirenMutedUntil_) voi Nhiet do khan cap - AlarmAck se tu lam
     // moi lai dinh ky dung nhu duoc yeu cau ("keu dinh ky neu bi tat tam").
-    // Tu kiem tra coi (sirenSelfTestActive_) la 1 tieng bip NGAN, KHONG lien
-    // quan co che tam tat/ACK cua canh bao that (updateSirenSelfTest() da tu
-    // bo qua neu dang co canh bao that de khong bao gio trung voi nhanh nay).
     req.siren = ((emergencyActive_ || batchOverdueSirenActive_) &&
-                 timeReached(now, sirenMutedUntil_)) || sirenSelfTestActive_ || webOverrideLive(webSirenUntil_, now);
+                 timeReached(now, sirenMutedUntil_)) || webOverrideLive(webSirenUntil_, now);
 
     // Tao am chi hoat dong trong me, khi cam bien hop le. Hysteresis 2%%RH:
     // dang OFF thi chi bat khi <= SV-2; dang ON thi giu den khi dat SV.
@@ -6777,47 +6871,6 @@ class MachineController {
   }
 
   // Tu kiem tra coi dinh ky (de xuat backlog, khong thuoc audit truoc phat
-  // hanh v3.7.1) - opt-in, mac dinh TAT (sirenSelfTestEnabled). Muc dich:
-  // phat hien som coi bao (loa/relay coi that) bi hong/dut day ma khong ai
-  // biet, tranh den luc that su can canh bao khan cap thi coi khong keu.
-  // Chi la 1 tieng "bip" NGAN dinh ky, KHONG dung chung co che voi canh bao
-  // that (sirenMutedUntil_/AlarmAck) - khong can ACK, tu dong bo qua va doi
-  // sang chu ky sau neu dang co bat ky canh bao/loi that nao dang hoat dong,
-  // dang o Test Mode, hoac coi dang duoc dung cho muc dich khac (khan cap/
-  // me qua han) - tranh nham lan voi tinh huong that.
-  void updateSirenSelfTest(uint32_t now) {
-    if (!config_.sirenSelfTestEnabled) {
-      sirenSelfTestNextAt_ = 0U;
-      sirenSelfTestPulseUntil_ = 0U;
-      sirenSelfTestActive_ = false;
-      return;
-    }
-    // Lan dau bat cai dat: doi du 1 chu ky roi moi tu kiem tra lan dau,
-    // khong keu ngay luc vua bat (nguoi dung co the dang dung canh may).
-    if (sirenSelfTestNextAt_ == 0U) {
-      sirenSelfTestNextAt_ = now + SIREN_SELF_TEST_INTERVAL_MS;
-    }
-    if (sirenSelfTestPulseUntil_ != 0U && timeReached(now, sirenSelfTestPulseUntil_)) {
-      sirenSelfTestPulseUntil_ = 0U;
-    }
-    sirenSelfTestActive_ = sirenSelfTestPulseUntil_ != 0U;
-    if (sirenSelfTestActive_ || !timeReached(now, sirenSelfTestNextAt_)) return;
-    if (faults_.alarmMask() != AlarmNone || testModeActive_ ||
-        emergencyActive_ || batchOverdueSirenActive_) {
-      // Dang co viec quan trong hon dung den coi - thu lai vao chu ky sau
-      // thay vi chen ngang hoac tro thanh 1 tieng bip lac long giua canh
-      // bao that.
-      sirenSelfTestNextAt_ = now + SIREN_SELF_TEST_INTERVAL_MS;
-      return;
-    }
-    sirenSelfTestPulseUntil_ = now + SIREN_SELF_TEST_PULSE_MS;
-    sirenSelfTestActive_ = true;
-    sirenSelfTestNextAt_ = now + SIREN_SELF_TEST_INTERVAL_MS;
-    mayapSerialPrintf(false, "[SIREN] Tu kiem tra coi dinh ky - phat 1 tieng bip ngan\n");
-    eventLog_.push(now, EventType::System,
-                   static_cast<uint16_t>(EventCode::SirenSelfTest));
-  }
-
   // Bao mat dien qua ATtiny13A - protocol v4.
   // Trong me: EEPROM batch state cua Tiny arm bao mat dien nhu cu.
   // Ngoai me: activity arm neu OUTPUT THUC TE cua it nhat mot tai sau ON:
@@ -7268,7 +7321,6 @@ class MachineController {
                                   !sensorUsable_;
     runtime_.resumeConfirmationRequired = resumeConfirmationRequired_;
     runtime_.batchOverdueConfirmationPending = batchOverdueSirenActive_;
-    runtime_.sirenSelfTestActive = sirenSelfTestActive_;
     runtime_.powerLossRecovery = powerLossRecovery_;
     runtime_.timeValid = rtc_.valid();
     const NetworkStatus &network = lastNetworkStatus_;
@@ -7933,6 +7985,7 @@ class MachineController {
   uint32_t savedElapsedAtCheckpoint_ = 0U;
   uint32_t lastCheckpointEpoch_ = 0U;
   bool resumeClockAdjusted_ = true;
+  uint32_t rtcInvalidSince_ = 0U;
   uint32_t lastTurnCounterDay_ = 0;
   uint16_t turnCountToday_ = 0;
   uint32_t turnCountBatch_ = 0;
@@ -7960,13 +8013,6 @@ class MachineController {
   // F-06: xem updateBatchOverdue()/SafetyJournal::batchOverdueAcknowledged().
   bool batchOverdueAcknowledged_ = false;
   bool batchOverdueSirenActive_ = false;
-  // Tu kiem tra coi dinh ky (backlog, khong thuoc audit v3.7.1) - xem
-  // updateSirenSelfTest(). Chi ton tai trong RAM (khong can song sot qua
-  // reboot - tinh nang khong an toan quan trong, mat lich 1 lan sau reset
-  // khong sao, se tu tinh lai chu ky moi tu luc khoi dong lai).
-  uint32_t sirenSelfTestNextAt_ = 0U;
-  uint32_t sirenSelfTestPulseUntil_ = 0U;
-  bool sirenSelfTestActive_ = false;
   // Bao mat dien qua ATtiny13A protocol v4. Batch + activity duoc Tiny
   // luu EEPROM co verify; 9V sense/E502 van giu nguyen.
   bool attinySirenMirrorOn_ = false;

@@ -138,6 +138,9 @@ inline bool mayapBootHomeRequested() { return __atomic_load_n(&MayapBootInternal
 inline void mayapBootShowReady() {
   __atomic_store_n(&MayapBootInternal::readyStatus, 1U, __ATOMIC_RELEASE);
 }
+inline bool mayapBootReadyShown() {
+  return __atomic_load_n(&MayapBootInternal::readyStatus, __ATOMIC_ACQUIRE) != 0U;
+}
 inline MayapBoot::Status mayapBootStatus() {
   return __atomic_load_n(&MayapBootInternal::readyStatus, __ATOMIC_ACQUIRE)
       ? MayapBoot::Status::Ready : MayapBoot::statusFor(mayapBootStage());

@@ -60,8 +60,8 @@ constexpr uint32_t STEP_TIMEOUT_MS = 8000UL;        // WebSocket upgrade / CONNA
 // One arbiter decides who gets the wire (mqtt_tx_arbiter.h has the rules): PUBACKs owed to the broker are a queue of packet ids that
 // is never dropped (overflow restarts the link, visibly), the bridge asks laneGate() BEFORE it builds a frame, and the lanes are
 // served in priority order - so a 2 KB snapshot can no longer take the writable moment a 300-byte terminal ack was waiting for.
-constexpr uint32_t TX_STALL_MS = 25000UL;           // nothing could be written for this long -> the uplink is really dead
-constexpr uint32_t TX_STALL_SILENCE_MS = 10000UL;   // ... and the broker has been silent this long as well
+constexpr uint32_t TX_STALL_MS = 4000UL;            // nothing could be written for this long -> the uplink is really dead
+constexpr uint32_t TX_STALL_SILENCE_MS = 2500UL;    // ... and the broker has been silent this long as well
 constexpr uint8_t CTRL_QUEUE = 6U;                  // PINGREQ / PONG waiting for a writable socket (PUBACKs have their own queue)
 constexpr size_t CTRL_FRAME_MAX = 96U;              // finished (masked) WebSocket frame
 // "received" acknowledgements are advisory (the terminal ack still follows): they are shed first when the QoS1 window is nearly full.
@@ -142,6 +142,7 @@ static constexpr ChannelPolicy POLICY[] = {
   {"presence", 1, true}, {"snapshot", 0, false}, {"ack", 1, false}, {"log", 0, false},
   {"config/reported", 1, false}, {"history/reported", 1, false},
   {"alarm", 1, false}, {"heartbeat", 1, false},   // device -> cloud ingest, see mqtt_uplink.h
+  {"mgmt/request", 1, false},                      // device -> cloud management requests
 };
 
 inline const char *brokerHost() { return MAYAP_BROKER_HOST; }
@@ -625,22 +626,22 @@ inline Connect connectClient() {
     net.stop();
     return Connect::Failed;
   }
-  char topics[4][64];
-  static constexpr struct { const char *channel; uint8_t qos; } SUBSCRIBE[4] = {
-    {"command", 1}, {"config/set", 1}, {"history/request", 1}, {"session", 0},
+  char topics[5][64];
+  static constexpr struct { const char *channel; uint8_t qos; } SUBSCRIBE[5] = {
+    {"command", 1}, {"config/set", 1}, {"history/request", 1}, {"session", 0}, {"mgmt/response", 1},
   };
-  Subscription subs[4];
-  for (uint8_t i = 0U; i < 4U; ++i) {
+  Subscription subs[5];
+  for (uint8_t i = 0U; i < 5U; ++i) {
     snprintf(topics[i], sizeof(topics[i]), "%s%s", prefix, SUBSCRIBE[i].channel);
     subs[i] = Subscription{topics[i], SUBSCRIBE[i].qos};
   }
-  if (!sendPacket(encodeSubscribe(txMqtt(), PACKET_BUFFER, 1U, subs, 4U)) || !awaitPacket(SUBACK) ||
-      parser.bodyLength() != 6U) {
+  if (!sendPacket(encodeSubscribe(txMqtt(), PACKET_BUFFER, 1U, subs, 5U)) || !awaitPacket(SUBACK) ||
+      parser.bodyLength() != 7U) {
     mayapSerialPrintf(false, "[MQTT] subscribe failed\n");
     net.stop();
     return Connect::Failed;
   }
-  for (uint8_t i = 0U; i < 4U; ++i) {
+  for (uint8_t i = 0U; i < 5U; ++i) {
     if (parser.body()[2U + i] > 1U) {  // 0x80: the broker refused it (ACL)
       mayapSerialPrintf(false, "[MQTT] subscribe refused (%u)\n", static_cast<unsigned>(i));
       net.stop();
@@ -728,8 +729,11 @@ inline void pumpUplink(uint32_t now) {
     const int8_t slot = MayapUplink::nextQueued();
     if (slot < 0) return;
     uint16_t id = 0U;
-    const bool alarm = MayapUplink::kind(slot) == MayapUplink::Kind::Alarm;
-    if (publishChannel(alarm ? "alarm" : "heartbeat", MayapUplink::payload(slot), MayapUplink::length(slot), false, &id)) {
+    const MayapUplink::Kind k = MayapUplink::kind(slot);
+    const char *ch = (k == MayapUplink::Kind::Alarm) ? "alarm"
+                   : (k == MayapUplink::Kind::Heartbeat) ? "heartbeat"
+                   : "mgmt/request";
+    if (publishChannel(ch, MayapUplink::payload(slot), MayapUplink::length(slot), false, &id)) {
       MayapUplink::markSent(slot, id, now);
     } else {
       if (linkFailed) return;   // the watchdog below drops the link; onLinkDown() fails the slots

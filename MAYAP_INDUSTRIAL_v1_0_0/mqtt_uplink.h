@@ -25,7 +25,7 @@ constexpr uint32_t ACK_WAIT_MIN_MS = 1500UL;    // ... and never shorter than th
 constexpr uint32_t SLOT_MAX_AGE_MS = 30000UL;   // safety net: no slot outlives this
 constexpr uint32_t PROBE_MIN_GAP_MS = 2000UL;   // an unanswered probe is not repeated sooner than this
 
-enum class Kind : uint8_t { Alarm, Heartbeat };
+enum class Kind : uint8_t { Alarm, Heartbeat, Mgmt };
 enum class State : uint8_t { Free, Queued, Sent, Acked, Failed, Orphan };
 
 // What the MQTT owner knows about its own link, published for the Cloud task so alarm routing can tell a link that is

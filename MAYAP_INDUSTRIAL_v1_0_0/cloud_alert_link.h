@@ -113,6 +113,8 @@ static volatile int8_t memberRemoveIndex = -1;   // pending removal from the HMI
 static MemberListSnapshot memberSnap;            // guarded by cloudMux
 static volatile uint8_t guestRequest = 0xFFU;   // pending "Che do 2 tai khoan" action from the HMI (0xFF none)
 static GuestModeSnapshot guestSnap;              // guarded by cloudMux
+static uint32_t guestReqSentAt = 0U;
+static uint32_t memberReqSentAt = 0U;
 
 // -------------------------------- Hang doi gui ----------------------------------
 // Chi networkTask dung (ca ghi lan doc) - moi logic quyet dinh gui gi cung
@@ -635,9 +637,7 @@ inline bool postJson(const char *path, const JsonDocument &doc, const char *logT
   return ok;
 }
 
-inline void storeProvisioningFromResponse(const String &response) {
-  JsonDocument parsed;
-  if (deserializeJson(parsed, response)) return;
+inline void storeProvisioningFromDoc(const JsonDocument &parsed) {
   if (!parsed["success"].as<bool>()) return;
   // Worker chi tra web_pin cho may moi, may vua reset PIN, hoac ban ghi cu
   // chua co PIN. May cu da co PIN phai giu PIN cu; danh dau da dong bo de
@@ -656,6 +656,12 @@ inline void storeProvisioningFromResponse(const String &response) {
   if (mqttPassword[0] && !mayapStoreMqttKey(mqttPassword)) {
     mayapSerialPrintf(false, "[CLOUD] mqtt_password khong hop le/khong luu duoc\n");
   }
+}
+
+inline void storeProvisioningFromResponse(const String &response) {
+  JsonDocument parsed;
+  if (deserializeJson(parsed, response)) return;
+  storeProvisioningFromDoc(parsed);
 }
 
 inline bool rotateLegacyDeviceKey() {
@@ -700,7 +706,7 @@ inline bool sendResetPin() {
   doc["device_key"] = mayapDeviceSecret();
   String response;
   int code = 0;
-  if (!postJson("/api/device/reset-pin", doc, "reset-pin", &response, &code)) {
+  if (!postJson("/api/device/reset-pin", doc, "reset-pin", &response, &code, true)) {
     if (code == 403) {
       mayapSetProvisioningState(MayapProvisioningState::ServerDenied);
     } else if (code == 401) {
@@ -1129,6 +1135,12 @@ inline void servicePinReset() {
     mayapSerialPrintf(false, "[CLOUD] reset-pin bi huy: khong online luc yeu cau\n");
     return;
   }
+  if (MayapUplink::linkUp()) {
+    const char *buf = "{\"type\":\"reset_pin\"}";
+    if (MayapUplink::offer(MayapUplink::Kind::Mgmt, buf, strlen(buf), millis()) >= 0) {
+      return;
+    }
+  }
   if (!sendResetPin() && requestDeferred) {
     // No HTTP request was sent: retain the user's intent while admission is
     // busy. Never automatically replay a reset after an ambiguous HTTP error.
@@ -1147,7 +1159,7 @@ inline bool sendMembers(bool remove, const char *ref) {
   if (remove) doc["ref"] = ref;
   String response;
   int code = 0;
-  if (!postJson(remove ? "/api/device/members/remove" : "/api/device/members", doc, remove ? "member-remove" : "member-list", &response, &code)) return false;
+  if (!postJson(remove ? "/api/device/members/remove" : "/api/device/members", doc, remove ? "member-remove" : "member-list", &response, &code, true)) return false;
   if (remove) return true;
   JsonDocument parsed;
   if (deserializeJson(parsed, response) != DeserializationError::Ok || !parsed["success"].as<bool>()) return false;
@@ -1175,6 +1187,11 @@ inline void memberSetState(MemberListState state, uint8_t removeResult = 0xFFU) 
   portEXIT_CRITICAL(&cloudMux);
 }
 inline void serviceMembers() {
+  if (memberSnap.state == MemberListState::Loading && memberReqSentAt != 0U &&
+      elapsedMs(millis(), memberReqSentAt) >= 8000U) {
+    memberSetState(MemberListState::Error);
+    memberReqSentAt = 0U;
+  }
   const int8_t removeAt = __atomic_exchange_n(&memberRemoveIndex, static_cast<int8_t>(-1), __ATOMIC_ACQ_REL);
   bool list = __atomic_exchange_n(&memberListRequestFlag, 0U, __ATOMIC_ACQ_REL) != 0U;
   if (removeAt < 0 && !list) return;
@@ -1192,12 +1209,37 @@ inline void serviceMembers() {
       allowed = true;
     }
     portEXIT_CRITICAL(&cloudMux);
-    if (!allowed) { memberSetState(MemberListState::Ready, 2U); }
-    else if (sendMembers(true, ref)) { memberSetState(MemberListState::Loading, 1U); list = true; }
-    else if (requestDeferred) { __atomic_store_n(&memberRemoveIndex, removeAt, __ATOMIC_RELEASE); return; }
-    else { memberSetState(MemberListState::Ready, 2U); }
+    if (!allowed) {
+      memberSetState(MemberListState::Ready, 2U);
+    } else {
+      if (MayapUplink::linkUp()) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "{\"type\":\"members\",\"remove\":true,\"ref\":\"%s\"}", ref);
+        if (MayapUplink::offer(MayapUplink::Kind::Mgmt, buf, strlen(buf), millis()) >= 0) {
+          memberSetState(MemberListState::Loading, 1U);
+          memberReqSentAt = millis();
+          return;
+        }
+      }
+      if (sendMembers(true, ref)) {
+        memberSetState(MemberListState::Loading, 1U);
+        list = true;
+      } else if (requestDeferred) {
+        __atomic_store_n(&memberRemoveIndex, removeAt, __ATOMIC_RELEASE);
+        return;
+      } else {
+        memberSetState(MemberListState::Ready, 2U);
+      }
+    }
   }
   if (list) {
+    if (MayapUplink::linkUp()) {
+      const char *buf = "{\"type\":\"members\",\"remove\":false}";
+      if (MayapUplink::offer(MayapUplink::Kind::Mgmt, buf, strlen(buf), millis()) >= 0) {
+        memberReqSentAt = millis();
+        return;
+      }
+    }
     if (!sendMembers(false, nullptr)) {
       if (requestDeferred) __atomic_store_n(&memberListRequestFlag, 1U, __ATOMIC_RELEASE);
       else memberSetState(MemberListState::Error);
@@ -1221,7 +1263,7 @@ inline bool sendGuestMode(uint8_t action) {
   doc["action"] = action == 1U ? "on" : action == 2U ? "off" : "status";
   String response;
   int code = 0;
-  if (!postJson("/api/device/guest-mode", doc, "guest-mode", &response, &code)) return false;
+  if (!postJson("/api/device/guest-mode", doc, "guest-mode", &response, &code, true)) return false;
   JsonDocument parsed;
   if (deserializeJson(parsed, response) != DeserializationError::Ok || !parsed["success"].as<bool>()) return false;
   portENTER_CRITICAL(&cloudMux);
@@ -1235,12 +1277,25 @@ inline bool sendGuestMode(uint8_t action) {
   return true;
 }
 inline void serviceGuestMode() {
+  if (guestSnap.state == GuestModeState::Loading && guestReqSentAt != 0U &&
+      elapsedMs(millis(), guestReqSentAt) >= 8000U) {
+    guestSetState(GuestModeState::Error, 2U);
+    guestReqSentAt = 0U;
+  }
   const uint8_t action = __atomic_exchange_n(&guestRequest, static_cast<uint8_t>(0xFFU), __ATOMIC_ACQ_REL);
   if (action == 0xFFU) return;
   const NetworkStatus netStatus = mayapGetRawNetworkStatus();
   if (netStatus.requestedMode != ConnectivityMode::Online || !netStatus.connected) {
     guestSetState(GuestModeState::Offline, action != 0U ? 2U : 0xFFU);
     return;
+  }
+  if (MayapUplink::linkUp()) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"type\":\"guest_mode\",\"action\":\"%s\"}", action == 1U ? "on" : action == 2U ? "off" : "status");
+    if (MayapUplink::offer(MayapUplink::Kind::Mgmt, buf, strlen(buf), millis()) >= 0) {
+      guestReqSentAt = millis();
+      return;
+    }
   }
   if (!sendGuestMode(action)) {
     if (requestDeferred) __atomic_store_n(&guestRequest, action, __ATOMIC_RELEASE);   // no request was sent: keep the intent
@@ -1250,10 +1305,68 @@ inline void serviceGuestMode() {
 
 }  // namespace MayapCloudInternal
 
+inline void mayapHandleMgmtResponse(const JsonDocument &doc) {
+  using namespace MayapCloudInternal;
+  const char *type = doc["type"] | "";
+  const bool ok = doc["success"].as<bool>();
+  if (!strcmp(type, "guest_mode") || doc.containsKey("enabled")) {
+    guestReqSentAt = 0U;
+    portENTER_CRITICAL(&cloudMux);
+    if (ok) {
+      guestSnap.state = GuestModeState::Ready;
+      guestSnap.enabled = doc["enabled"].as<bool>();
+      guestSnap.joined = doc["joined"].as<bool>();
+      guestSnap.windowLeftS = static_cast<uint16_t>(constrain(doc["window_left_s"] | 0, 0, 65535));
+      guestSnap.result = 1U;
+    } else {
+      guestSnap.state = GuestModeState::Error;
+      guestSnap.result = 2U;
+    }
+    ++guestSnap.seq;
+    portEXIT_CRITICAL(&cloudMux);
+  } else if (!strcmp(type, "members") || doc.containsKey("members")) {
+    memberReqSentAt = 0U;
+    if (doc.containsKey("members")) {
+      MemberListSnapshot next;
+      next.state = ok ? MemberListState::Ready : MemberListState::Error;
+      if (ok) {
+        for (JsonObjectConst item : doc["members"].as<JsonArrayConst>()) {
+          if (next.count >= MEMBER_LIST_MAX) break;
+          MemberEntry &entry = next.entry[next.count++];
+          snprintf(entry.ref, sizeof(entry.ref), "%s", item["ref"] | "");
+          snprintf(entry.name, sizeof(entry.name), "%s", item["name"] | "");
+          const char *role = item["role"] | "";
+          entry.owner = strcmp(role, "owner") == 0 ? 1U : 0U;
+        }
+      }
+      portENTER_CRITICAL(&cloudMux);
+      next.removeResult = memberSnap.removeResult;
+      next.seq = memberSnap.seq + 1U;
+      memberSnap = next;
+      portEXIT_CRITICAL(&cloudMux);
+    } else {
+      if (ok) {
+        memberSetState(MemberListState::Loading, 1U);
+        const char *buf = "{\"type\":\"members\",\"remove\":false}";
+        MayapUplink::offer(MayapUplink::Kind::Mgmt, buf, strlen(buf), millis());
+      } else {
+        memberSetState(MemberListState::Ready, 2U);
+      }
+    }
+  } else if (!strcmp(type, "reset_pin") || doc.containsKey("web_pin")) {
+    if (ok) {
+      storeProvisioningFromDoc(doc);
+    } else {
+      mayapSetProvisioningState(MayapProvisioningState::CloudError);
+    }
+  }
+}
+
 // ================================ API cong khai ================================
 
 inline void mayapCloudAlertBegin() {
   MayapCloudInternal::eventBootHigh=esp_random();MayapCloudInternal::eventBootLow=esp_random();
+  MayapRealtimeInternal::mgmtCallback = mayapHandleMgmtResponse;
   // Khong can khoi tao gi truoc: moi client HTTPS la ngan han, tao khi can goi.
 }
 

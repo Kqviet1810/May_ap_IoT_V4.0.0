@@ -119,7 +119,7 @@ static void installBroker() {
     if (frame.opcode == 8) { ++g_clientCloses; return; }
     if (frame.opcode != 2 || g_silentBroker || frame.payload.empty()) return;
     if ((frame.payload[0] >> 4) == 1) inject({0x20, 0x02, 0x00, g_connackCode});
-    if ((frame.payload[0] >> 4) == 8) inject({0x90, 0x06, 0x00, 0x01, g_subackFirst, 0x01, 0x01, 0x00});
+    if ((frame.payload[0] >> 4) == 8) inject({0x90, 0x07, 0x00, 0x01, g_subackFirst, 0x01, 0x01, 0x00, 0x01});
   };
 }
 static void resetWorld() {
@@ -185,9 +185,9 @@ int main() {
   const Packet &subscribe = sent[1];
   CHECK(subscribe.type == 8 && subscribe.flags == 2);
   const std::string subs = str(subscribe.body.data(), subscribe.body.size());
-  for (const char *channel : {"/command", "/config/set", "/history/request", "/session"})
+  for (const char *channel : {"/command", "/config/set", "/history/request", "/session", "/mgmt/response"})
     CHECK(subs.find(std::string("mayap/v1/MAP-AABBCCDDEEFF") + channel) != std::string::npos);
-  CHECK(subscribe.body.back() == 0U);                     // session is QoS0
+  CHECK(subscribe.body.back() == 1U);                     // mgmt/response is QoS1
   const Packet &presence = sent[2];
   CHECK(presence.type == 3 && presence.flags == (0x02 | 0x01));   // QoS1, retained
   CHECK(inflightCount == 1U);                             // presence awaits its PUBACK
@@ -621,9 +621,9 @@ int main() {
     CHECK(mayapMqttTransportConnected());                                                // 40 s unwritable but the broker keeps talking
     resetWorld(); connectNow(); inflightClear();
     net.txReady = false; publishFromBridge("ack", "{\"v\":2}", 7U);
-    for (unsigned i = 0U; i < 24U && mayapMqttTransportConnected(); ++i) tick(1000);
-    CHECK(mayapMqttTransportConnected());                                                // 24 s: not yet
-    for (unsigned i = 0U; i < 4U && mayapMqttTransportConnected(); ++i) tick(1000);
+    for (unsigned i = 0U; i < 3U && mayapMqttTransportConnected(); ++i) tick(1000);
+    CHECK(mayapMqttTransportConnected());                                                // 3 s: not yet
+    for (unsigned i = 0U; i < 2U && mayapMqttTransportConnected(); ++i) tick(1000);
     CHECK(!mayapMqttTransportConnected() && logged("link lost reason=tx-stall"));
     // The reason of a plain write failure is explained too, and the socket recovers into a fresh connection quickly.
     resetWorld(); connectNow(); net.failWrite = true; publishFromBridge("ack", "{\"v\":2}", 7U); tick(1);
@@ -741,9 +741,9 @@ int main() {
   {
     resetWorld(); connectNow(); inflightClear();
     net.txReady = false;
-    for (unsigned i = 0U; i < 24U && mayapMqttTransportConnected(); ++i) { laneGate(static_cast<uint8_t>(MayapTx::Lane::Ack)); tick(1000); }
-    CHECK(mayapMqttTransportConnected());                                                              // 24 s: not yet
-    for (unsigned i = 0U; i < 4U && mayapMqttTransportConnected(); ++i) { laneGate(static_cast<uint8_t>(MayapTx::Lane::Ack)); tick(1000); }
+    for (unsigned i = 0U; i < 3U && mayapMqttTransportConnected(); ++i) { laneGate(static_cast<uint8_t>(MayapTx::Lane::Ack)); tick(1000); }
+    CHECK(mayapMqttTransportConnected());                                                              // 3 s: not yet
+    for (unsigned i = 0U; i < 2U && mayapMqttTransportConnected(); ++i) { laneGate(static_cast<uint8_t>(MayapTx::Lane::Ack)); tick(1000); }
     CHECK(!mayapMqttTransportConnected() && logged("link lost reason=tx-stall"));
   }
 
