@@ -22,6 +22,9 @@
 // Nothing here can heat by itself: the output goes through the production OutputArbiter / HeaterBurstScheduler / protection.
 #include <cmath>
 #include <cstdint>
+#if defined(V2_G9_DBG) || defined(V2_G9_DBG2)
+#include <cstdio>
+#endif
 
 namespace thermalv2 {
 
@@ -104,14 +107,19 @@ constexpr float LIM_H_LO = 12.0f;          // lowest hold power seen
 constexpr float LIM_NEW_S = 60.0f;         // horizon over which a newly commanded % is priced
 constexpr float LIM_MARGIN_C = 0.4f;       // below the Emergency line
 // host experiments only (-DV2_Fn=0 switches one G7 feature off); the firmware never defines them
+// G9 (the owner's log of 24 Oct, 09:04..09:22, doc/THERMAL_V2_G9_DESIGN.md): the law no longer reads a PREDICTED PV at all.  It works on the measured PV, the measured
+// slope of the PV and the power it really delivered; a measured stopping distance (slope x the coast time the oven itself showed) limits the power.  V2_G9=0 is G8.
+#ifndef V2_G9
+#define V2_G9 0                            // WIP: G9 is NOT validated (grid set A worse than G8); off until it is
+#endif
 #ifndef V2_F1
-#define V2_F1 1
+#define V2_F1 (!V2_G9)
 #endif
 #ifndef V2_F2
-#define V2_F2 1
+#define V2_F2 (!V2_G9)
 #endif
 #ifndef V2_F3
-#define V2_F3 1
+#define V2_F3 (!V2_G9)
 #endif
 #ifndef V2_F4A
 #define V2_F4A 1
@@ -171,10 +179,13 @@ constexpr float LIM_MARGIN_C = 0.4f;       // below the Emergency line
 #define V2_F7 1
 #endif
 #ifndef V2_F8
-#define V2_F8 1
+#define V2_F8 (!V2_G9)
 #endif
 #ifndef V2_F9
 #define V2_F9 1
+#endif
+#ifndef V2_REJECT_FIT
+#define V2_REJECT_FIT 0                    // host experiments only: every batch fit is rejected (the real oven of 24 Oct never got a fit accepted: the law must work without one)
 #endif
 // ---- G8 (the owner's log of 24 Oct, doc/THERMAL_V2_G8_DESIGN.md): the air sat 0.1..0.3 degC under SP for 20 minutes with 0..15 % requested because the prediction said "arriving"
 #ifndef V2_F10A
@@ -190,7 +201,7 @@ constexpr float LIM_MARGIN_C = 0.4f;       // below the Emergency line
 #define V2_F12 1                           // the exhaust fan is an input: its loss is learned apart from the oven's own level and paid for in advance
 #endif
 #ifndef V2_F11
-#define V2_F11 1                           // the law trusts its prediction only as far as the prediction agrees with the air when the air stands still
+#define V2_F11 (!V2_G9)                           // the law trusts its prediction only as far as the prediction agrees with the air when the air stands still
 #endif
 #ifndef V2_GAP_TAU
 #define V2_GAP_TAU 300.0f
@@ -291,6 +302,25 @@ constexpr int CHASE_FALL = V2_CHASE_FALL;         // 1: a falling air also count
 constexpr float CHASE_ARR_PCT = V2_CHASE_ARR;      // a flat deficit counts only while the power that ARRIVES is this much above the hold: a step of the air (tray, quick door) is no loss   // only a deficit this deep is a disturbance; a shallow one is the integral's job
 constexpr float GUARD_K_FACTOR = V2_GUARDK;   // the below-SP guard uses the LEARNED k times this (the above-SP limiter keeps its fixed worst-case constant)
 constexpr bool F7_SHADOW = V2_F7;           // the vent line blocks the heater: keep predicting and anchoring the level, command nothing
+// ---- G9: the measured stopping distance.  Nothing below reads a model; every number is the PV, its slope over 120 s or the power the arbiter really delivered. ----
+#ifndef V2_G9_TC
+#define V2_G9_TC 240.0f
+#endif
+#ifndef V2_G9_KB
+#define V2_G9_KB 6.7e-4f
+#endif
+constexpr bool G9_ON = V2_G9;
+constexpr float G9_TC_PRIOR_S = V2_G9_TC;      // coast time assumed before the oven has shown one: the longest transit of the family (T_MAX_S)
+constexpr float G9_TC_MIN_S = 60.0f, G9_TC_MAX_S = 450.0f;
+#ifndef V2_G9_TH
+#define V2_G9_TH 0.8f
+#endif
+constexpr float G9_THETA_FRAC = V2_G9_TH;      // effective delay of the gains >= this x the measured coast time
+constexpr float G9_MARGIN_C = 0.05f;
+constexpr float G9_SAFETY = 1.2f;              // the distance is priced 20 % long: the slope of a climb that is still speeding up is the slope of the past           // the air may be expected to end this far under SP
+constexpr float G9_SLOPE_FLOOR_MKS = 0.8f;     // a 120 s slope under this (or under 3 standard errors) is a staircase of the sensor, not a climb
+constexpr float G9_K_BOUND = V2_G9_KB;         // degC/s per %: the fastest oven of the family; bounds how much power may be ADDED to what is already in flight
+constexpr float G9_CUT_END_MKS = 0.3f;         // a coast is over when the slope falls under this
 constexpr float PERMIT_RECOMPUTE_S = 120.0f;
 constexpr float PV_BAD_FREEZE_S = 10.0f;   // a missing / absurd sensor value for longer than this: no power (the arbiter has its own sensor supervision; this block does not heat on a stale reading)
 constexpr float PV_MIN_C = -20.0f, PV_MAX_C = 100.0f, SP_MIN_C = 20.0f, SP_MAX_C = 50.0f;
@@ -356,6 +386,7 @@ class Controller {
     lostS_ = 0; lastU_ = 0; haveSample_ = false; pvPred_ = 0;
     dQ_ = 0.1f; slopeMks_ = 0.0f; pvPredModel_ = 0.0f; eSm_ = NAN; farAgeS_ = 0.0f; coastGain_ = 1.0f; predMeas_ = 0.0f; slopeOk_ = false; shadowNow_ = false; cutActive_ = false;
     brakeActive_ = false; brakeDone_ = false; atSpOnce_ = false; tcN_ = 0; gateCnt_ = 0; gateSign_ = 0; patienceObs_ = 0.0f; stallRef_ = NAN; stallRunS_ = 0.0f; flatDeficitS_ = 0.0f; fallS_ = 0.0f; stuckS_ = 0.0f; slopeSeMks_ = 0.0f; gapEma_ = 0.0f; trust_ = 1.0f; dFan_ = 0.0f; fanF_ = fanFut_ = fanW_ = fanWin_ = 0.0f; fanNow_ = false; fanPrev_ = false; fanFutPrev_ = 0.0f; fanChgS_ = 1.0e6f;
+    tcS_ = G9_TC_PRIOR_S; slope120Mks_ = 0.0f; slope120SeMks_ = 0.0f; slope120Ok_ = false; gCutActive_ = false; gCutT0_ = gCutPv0_ = gCutS0_ = gCutPeak_ = 0.0f; govLim_ = 1.0e9f; govActive_ = false; tcN_g_ = 0;
   }
   // read-outs (telemetry and tests)
   float kEst() const { return th_[0] * 1e-5f; }
@@ -376,6 +407,8 @@ class Controller {
   float gapEma() const { return gapEma_; }
   float slopeMks() const { return slopeOk_ ? slopeMks_ : 0.0f; }
   float coastGain() const { return coastGain_; }
+  float coastTimeS() const { return tcS_; }           // G9: the coast time the oven itself showed (seconds of slope that still lands after a cut)
+  bool governing() const { return govActive_; }
   uint8_t coastSamples() const { return tcN_; }
   float patienceSeconds() const { return patienceS(); }
   bool brakeRunning() const { return brakeActive_; }
@@ -465,16 +498,19 @@ class Controller {
     const float k = kUsed();
     const float Ttr = tdPrime() + tau_;
     // the demand grows with the air while it climbs (egg flow ~ PV - Te): pay for it at the middle of the predicted trajectory, not at the present PV
-    const float Etr = transitEnergy();
+    float Etr = 0.0f, pMid = pv_, dMid = 0.0f;
+    if (!G9_ON) {
+    Etr = transitEnergy();
     fanW_ = fanWin_;                                             // the prediction looks over the whole horizon, the feed-forward only at the moment a power asked now lands
     const float p0 = pv_ + k * (Etr - clampPos(demandAt(pv_)) * Ttr);
-    const float pMid = 0.5f * (pv_ + (p0 < in.sp ? p0 : in.sp));
-    const float dMid = clampPos(demandAt(pMid));
+    pMid = 0.5f * (pv_ + (p0 < in.sp ? p0 : in.sp));
+    dMid = clampPos(demandAt(pMid));
     pvPredModel_ = pv_ + k * (Etr - dMid * Ttr);
     pvPred_ = pvPredModel_;
+    } else { pvPredModel_ = pvPred_ = pv_; }                     // G9: no predicted PV exists; the read-outs show the measured one
     // G7/F1: the model's loss level can be wrong (a door, a wet tray, a level learned in a climb); the air's own measured slope cannot.  What the air will still
     // gain if the power were cut now is at least its slope times the coast time (learned from every cut), so the crest is the higher of the two.
-    if (F1_KIN_PRED && trusted_ && slopeOk_ && ringCount_ >= SLOPE_N) {
+    if (!G9_ON && F1_KIN_PRED && trusted_ && slopeOk_ && ringCount_ >= SLOPE_N) {
       // the same energy balance with the demand the air itself just showed: D_meas = arriving power - slope / k (what levelUpdate() uses), over the energy really in flight
       float pam = 0.0f; for (uint8_t i = RING_N - SLOPE_N; i < RING_N; ++i) pam += paRing_[i]; pam *= 1.0f / SLOPE_N;
       // G8/F10C: the crest is raised only by a rise the slope shows beyond its own noise (a 0.1 degC step of the sensor looks like 2 mK/s over 60 s), and a negative demand is bounded
@@ -495,10 +531,12 @@ class Controller {
     const float e = in.sp - predUsed;
     const float eFar = in.sp - pvPred_;                                           // far mode and the brake work on the prediction itself
     // uncertainty of that prediction: k (relative), and the demand model (learner covariance) paid over the transit
-    sigPred_ = predictionSigma(k, Etr, dMid, Ttr, pMid);
+    sigPred_ = G9_ON ? 0.0f : predictionSigma(k, Etr, dMid, Ttr, pMid);
     const float eOn = std::fmax(E_ON_MIN, Z_SIGMA * sigPred_);
-    const float Kc = 1.0f / (k * 3.0f * theta_);                 // SIMC for an integrating plant, tau_c = 2*theta
-    const float tauI = TAUI_FACTOR * theta_;
+    // G9: the effective delay of the gains is not below the coast time the oven itself showed (it contains the sensor's lag, which the identified delay does not)
+    const float thetaG = (G9_ON && G9_THETA_FRAC * tcS_ > theta_) ? G9_THETA_FRAC * tcS_ : theta_;
+    const float Kc = 1.0f / (k * 3.0f * thetaG);                 // SIMC for an integrating plant, tau_c = 2*theta
+    const float tauI = TAUI_FACTOR * thetaG;
     const bool airUnderSp = atSpOnce_ && in.sp - pv_ > -0.05f;          // G8: the crest is predicted above SP but the air is not (the prediction wobbles +-0.15 degC, a gain of ASYM would rectify it into a lower mean)
     const float K = (e >= 0.0f) ? KUP * Kc : (airUnderSp ? ASYM_HOLD : ASYM) * Kc;
     if (shadowNow_) {                                            // the vent line blocks the heater: the model keeps running (predicting, anchoring the level), nothing is commanded, the integral waits
@@ -510,7 +548,7 @@ class Controller {
       if (!std::isfinite(eSm_)) eSm_ = eFar;
       eSm_ += (eFar - eSm_) * (dt >= FAR_SMOOTH_S ? 1.0f : dt / FAR_SMOOTH_S);
       farAgeS_ += dt;
-      if (!far_) { if (eSm_ > eOn && eFar > eOn) { far_ = true; farAgeS_ = 0.0f; } }
+      if (!far_) { if (!G9_ON && eSm_ > eOn && eFar > eOn) { far_ = true; farAgeS_ = 0.0f; } }       // G9: no far mode: the proportional action and the governor do the work on the measured error
       else if (eFar <= 0.0f || (eFar < FAR_OFF_FRAC * eOn && farAgeS_ >= FAR_MIN_DWELL_S)) far_ = false;
     } else if (eFar > eOn) far_ = true; else if (eFar < 0.5f * eOn) far_ = false;
     // G7/F3: the first approach is stopped at the predicted crest and the coast is measured (the oven may drift on by itself: remember it)
@@ -525,7 +563,11 @@ class Controller {
     const float eP = e > dz ? e - dz : (e < -dz ? e + dz : 0.0f);
     const float uRaw = far_ ? cap : feedForward() + K * eP + I_;
     float u = uRaw < 0.0f ? 0.0f : (uRaw > cap ? cap : uRaw);
-    const bool satHigh = uRaw >= cap, satLow = uRaw < 0.0f;
+    govLim_ = governorLimit(in);                                  // G9: from the measured PV, its slope and the delivered power only
+#ifdef V2_G9_DBG2
+    { static int cnt2 = 0; if (++cnt2 % 100 == 0) std::fprintf(stderr, "L t=%.0f pv=%.2f e=%.2f FF=%.1f Ke=%.1f I=%.1f far=%d uRaw=%.1f lim=%.1f k=%.2e th=%.0f trusted=%d\n", absS_, pv_, e, feedForward(), K * eP, I_, far_ ? 1 : 0, uRaw, govLim_, k, thetaG, trusted_ ? 1 : 0); }
+#endif
+    const bool satHigh = uRaw >= cap || (G9_ON && uRaw > govLim_), satLow = uRaw < 0.0f;
     if (!chaseOn && !((satHigh && e > 0.0f) || (satLow && e < 0.0f && !(F4_UNWIND && I_ > 0.0f)))) {      // conditional integration (a positive integral may still unwind)
       float eI = e, gI = 1.0f;
       if (F10A_STUCK && stuckS_ >= STUCK_AFTER_S && in.sp - pv_ > e) { eI = in.sp - pv_; gI = STUCK_GAIN; }     // G8: the measured deficit, faster
@@ -533,7 +575,7 @@ class Controller {
       if (I_ > I_MAX) I_ = I_MAX; else if (I_ < -I_MAX) I_ = -I_MAX;
     }
     // G7/F4: the air has overtaken the integral (the crest is above SP): it leaks away instead of waiting to be integrated out, which takes tens of minutes
-    if (F4_UNWIND && e < -0.05f && I_ > 0.0f && !(F10B_LEAK && pv_ < in.sp - UNWIND_PV_C && (!F10B_FLAT || (slopeOk_ && std::fabs(slopeMks_) <= flatLimit())))) { I_ -= I_ * dt / (UNWIND_TAU_FACTOR * theta_); if (I_ < 0.0f) I_ = 0.0f; }
+    if (F4_UNWIND && e < -0.05f && I_ > 0.0f && !(F10B_LEAK && pv_ < in.sp - UNWIND_PV_C && (!F10B_FLAT || (slopeOk_ && std::fabs(slopeMks_) <= flatLimit())))) { I_ -= I_ * dt / (UNWIND_TAU_FACTOR * thetaG); if (I_ < 0.0f) I_ = 0.0f; }
     if (idPhase_ == 1 || idPhase_ == 2) {                           // blind / probe phase: power from the CURRENT room below SP, never above the safe level
       const float pp = probePower(in.sp, pv_);
       idPower_ = pp; u = pp < cap ? pp : cap; out.state = StClimb; far_ = false;
@@ -576,6 +618,8 @@ class Controller {
         if (uG < u) u = uG;
       } else if (V2_MONO && pv_ >= in.sp && slopeOk_ && slopeMks_ >= 0.0f && u > lastU_) u = lastU_;
     }
+    bool governed = false;
+    if (G9_ON && u > govLim_) { u = govLim_ > 0.0f ? govLim_ : 0.0f; governed = true; far_ = false; }
     out.state = StTrack;
     if (F11_TRUST && trust_ < 0.5f) out.state = StDegraded;
     if (F10A_STUCK && stuckS_ >= STUCK_AFTER_S) out.state = StRecover;
@@ -584,6 +628,7 @@ class Controller {
       const float boost = E115_BOOST_MAX * (in.e115Frac - E115_CLIMB_FRAC) / (1.0f - E115_CLIMB_FRAC);
       const float ub = u + boost; u = ub > cap ? cap : ub; out.state = StE115;
     } else if (u >= cap && e > 0.0f) out.state = StClimb;
+    if (governed && out.state == StTrack) out.state = StBrake;       // G9: the measured stopping distance is holding the power down
     if (respSuspect_) { u = 0.0f; far_ = false; }                    // power that arrived did nothing: withdraw the request until the PV moves
     if (!(u >= 0.0f)) u = 0.0f;                                     // also catches NaN
     if (u > cap) u = cap;
@@ -638,6 +683,77 @@ class Controller {
     slopeSeMks_ = sdd > 0.0f ? 1000.0f * std::sqrt(sse / (n - 2) / sdd) : 0.0f;
     slopeMks_ = 1000.0f * b;
     slopeOk_ = std::isfinite(slopeMks_);
+    // G9: the same fit over the whole ring (120 s): its standard error is a third of the 60 s one, which is what lets a 0.14 degC/min climb of a 0.1 degC staircase be seen
+    slope120Ok_ = false;
+    if (ringCount_ >= RING_N) {
+      const uint8_t m = RING_N; float tx = 0, ty = 0, txx = 0, txy = 0;
+      for (uint8_t i = 0; i < m; ++i) { const float t = i * 10.0f, y = pvRing_[i]; tx += t; ty += y; txx += t * t; txy += t * y; }
+      const float dd = txx - tx * tx / m, bb = (m * txy - tx * ty) / (m * txx - tx * tx), aa = (ty - bb * tx) / m;
+      float ss = 0.0f; for (uint8_t i = 0; i < m; ++i) { const float r = pvRing_[i] - (aa + bb * i * 10.0f); ss += r * r; }
+      slope120SeMks_ = dd > 0.0f ? 1000.0f * std::sqrt(ss / (m - 2) / dd) : 0.0f;
+      slope120Mks_ = 1000.0f * bb;
+      slope120Ok_ = std::isfinite(slope120Mks_);
+    }
+  }
+  // G9: the coast time of THIS oven, from every cut of the power (this law, the vent line, a safety layer): how long the slope the air had at the cut still lands.
+  // Measured: (the rise after the cut) / (the slope at the cut).  A longer coast is believed at once, a shorter one only half-way.
+  void tcTrack() {
+    if (!G9_ON) return;
+    const float aNow = binAvg(1, 20), aBefore = binAvg(21, 140);
+    if (!gCutActive_) {
+      if (aNow <= CUT_AVG_LO && aBefore >= 15.0f && slope120Ok_ && slope120Mks_ >= 3.0f * slope120SeMks_ && slope120Mks_ >= G9_SLOPE_FLOOR_MKS) {
+        gCutActive_ = true; gCutT0_ = absS_; gCutPv0_ = pv_; gCutS0_ = slope120Mks_ * 1e-3f; gCutPeak_ = pv_;
+      }
+      return;
+    }
+    if (pv_ > gCutPeak_) gCutPeak_ = pv_;
+    const float el = absS_ - gCutT0_;
+    if (aNow >= 10.0f && el < 90.0f) { gCutActive_ = false; return; }          // the power came back too early: not a clean coast
+    const float sNow = slope120Ok_ ? slope120Mks_ * 1e-3f : 0.0f;
+    const bool ended = el >= 240.0f || (el >= 90.0f && sNow <= 0.35f * gCutS0_) || pv_ < gCutPeak_ - 0.15f;
+    if (!ended) return;
+    gCutActive_ = false;
+    if (!(gCutS0_ > 0.0f)) return;
+    float obs = (gCutPeak_ - gCutPv0_ + (sNow > 0.0f ? sNow * 60.0f : 0.0f)) / gCutS0_;     // seconds of the cut-time slope that landed (+ what the slope still had left)
+    if (obs < G9_TC_MIN_S) obs = G9_TC_MIN_S; else if (obs > G9_TC_MAX_S) obs = G9_TC_MAX_S;
+    tcS_ = (obs >= tcS_) ? obs : tcS_ + 0.7f * (obs - tcS_);
+    if (tcN_g_ < 255) ++tcN_g_;
+  }
+  // G9: the most power the law may ask now, from the MEASURED PV only.
+  //  (A) stopping distance: the slope the air shows now, times the coast time, is how far it still goes with the power cut this instant.  If that is more than the room
+  //      left under SP, the power in flight is scaled down by room / distance (to nothing at or above SP).
+  //  (B) what is already in flight: the room left under SP, priced with the fastest oven of the family, is all that may be ADDED to the power delivered over the last
+  //      coast time.  Together they replace the predicted PV: nothing here can disagree with the air.
+  float governorLimit(const Input &in) {
+    govActive_ = false;
+    if (!G9_ON) return 1.0e9f;
+    const float e = in.sp - pv_;
+    uint16_t w = static_cast<uint16_t>(tcS_ + 0.5f); if (w < 30) w = 30; if (w > 300) w = 300;
+    const float pf = binAvg(1, w);                                  // delivered over the last coast time: the power the air has not fully shown yet
+    const float pHold = binAvg(1, 600);                             // delivered over 10 minutes: what the oven has needed lately (after a cut the base of (B) must not fall to nothing)
+    float lim = 1.0e9f;
+    const float room = e - G9_MARGIN_C;
+    if (slope120Ok_) {
+      const float sn = std::fmax(G9_SLOPE_FLOOR_MKS, 3.0f * slope120SeMks_);
+      if (slope120Mks_ > sn) {
+        const float dist = G9_SAFETY * slope120Mks_ * 1e-3f * tcS_;
+        if (room <= 0.0f) lim = 0.0f;
+        else if (dist > room) {                                     // the power in flight is faded out between "distance = room" and "distance = 2 x room"
+          float g = (room / dist - 0.5f) * 2.0f; if (g < 0.0f) g = 0.0f;
+          lim = (pf > pHold ? pf : pHold) * g;
+        }
+      }
+    }
+    if (e > 0.0f) {
+      const float base = pf > pHold ? pf : pHold;
+      const float up = base + (room > 0.0f ? room / (G9_K_BOUND * tcS_) : 0.0f);
+      if (up < lim) lim = up;
+    }
+    if (lim < 1.0e8f) govActive_ = true;
+#ifdef V2_G9_DBG
+    { static int cnt = 0; if (++cnt % 100 == 0) std::fprintf(stderr, "G9 t=%.0f pv=%.2f e=%.2f s120=%.2f se=%.2f tc=%.0f pf=%.1f ph=%.1f lim=%.1f\n", absS_, pv_, e, slope120Mks_, slope120SeMks_, tcS_, pf, pHold, lim); }
+#endif
+    return lim;
   }
   // every cut of the power, whoever made it (this law, the vent line, a safety layer), is a free measurement of the coast
   void coastTrack() {
@@ -814,7 +930,7 @@ class Controller {
             else if (respE_ >= respNeed_ && pv_ < spNow_ - RESP_DEFICIT_C) respSuspect_ = true;
           }
           if (!batchActive_ && firstPowerAbs_ >= 0.0f && batchStage_ < 2 && absS_ - firstPowerAbs_ >= (batchStage_ == 0 ? BATCH1_S : BATCH2_S)) batchDue_ = true;
-          slopeUpdate(gap); flatTrack(); coastTrack(); stallTrack();
+          slopeUpdate(gap); flatTrack(); coastTrack(); stallTrack(); tcTrack();
           if (rlsHold_ > 0 && !gap) --rlsHold_;
           else if (!gap) { if (shadowNow_ || (F12_VENT && fanF_ > 0.05f)) levelUpdate(); else { eggObserver(); rlsUpdate(); levelUpdate(); } }       // shadow: the vent changes the loss, only the level may follow
         }
@@ -1054,7 +1170,7 @@ class Controller {
     // a fit is accepted only if it is inside the searched family and explains the data: not on the delay grid edge, k not on its clamp, residual small
     const bool edge = bestTd_ <= TD_MIN_S + 0.1f || bestTd_ >= TD_MAX_S - 0.1f;
     const bool kEdge = bestTh_[0] <= K_MIN * 1e5f * 1.02 || bestTh_[0] >= K_MAX_EST * 1e5f * 0.98;
-    const bool bad = !bestFound_ || respSuspect_ || edge || kEdge || bestRms_ > FIT_RMS_MAX_MKS || (batchStage_ > 0 && prevFitRms_ > 0.0f && bestRms_ > FIT_RMS_WORSE * prevFitRms_);
+    const bool bad = V2_REJECT_FIT || !bestFound_ || respSuspect_ || edge || kEdge || bestRms_ > FIT_RMS_MAX_MKS || (batchStage_ > 0 && prevFitRms_ > 0.0f && bestRms_ > FIT_RMS_WORSE * prevFitRms_);
     if (bad) {
       ++fitRejects_;
       if (batchStage_ == 0 && fitRejects_ <= FIT_RETRIES) firstPowerAbs_ = absS_ - BATCH1_S + FIT_RETRY_S;   // try again later with more data
@@ -1142,6 +1258,9 @@ class Controller {
   uint8_t tcN_ = 0, gateCnt_ = 0; int8_t gateSign_ = 0;
   float cutT0_ = 0, cutPv0_ = 0, cutRise_ = 0, cutPeak_ = 0, brakeT0_ = 0, brakePv0_ = 0, brakeRise_ = 0, brakePeak_ = 0;
   bool atSpOnce_ = false;
+  // G9 state: slope over the whole 120 s ring, the coast time the oven showed, the cut being watched, the limit of the last step
+  float tcS_ = G9_TC_PRIOR_S, slope120Mks_ = 0.0f, slope120SeMks_ = 0.0f, gCutT0_ = 0.0f, gCutPv0_ = 0.0f, gCutS0_ = 0.0f, gCutPeak_ = 0.0f, govLim_ = 1.0e9f;
+  bool slope120Ok_ = false, gCutActive_ = false, govActive_ = false; uint8_t tcN_g_ = 0;
   float patienceObs_ = 0.0f, stallRef_ = NAN, stallRunS_ = 0.0f, flatDeficitS_ = 0.0f, fallS_ = 0.0f, stuckS_ = 0.0f, slopeSeMks_ = 0.0f, gapEma_ = 0.0f, trust_ = 1.0f, dFan_ = 0.0f, fanF_ = 0.0f, fanFut_ = 0.0f, fanW_ = 0.0f, fanWin_ = 0.0f, fanFutPrev_ = 0.0f, fanChgS_ = 1.0e6f; bool fanNow_ = false, fanPrev_ = false;
 };
 
