@@ -136,7 +136,10 @@
   function fetchMqttSession(device, force = false) {
     if (!force) {
       const cached = cachedMqttSessions.get(device.id);
-      if (cached?.mqtt && Number(cached.mqtt.expiresAt || 0) > Math.floor(Date.now() / 1000) + 60) {
+      const mqttValid = cached?.mqtt && Number(cached.mqtt.expiresAt || 0) > Math.floor(Date.now() / 1000) + 60;
+      const controlValid = readOnlyDevices.has(device.id) ||
+        (cached?.control && Number(cached.control.expiresAt || 0) > Math.floor(Date.now() / 1000) + 90);
+      if (mqttValid && controlValid) {
         return Promise.resolve(cached);
       }
     }
@@ -169,7 +172,7 @@
   async function controlSession(device) {
     const cached = controlSessions.get(device.id);
     if (cached && cached.expiresAt > Math.floor(Date.now() / 1000) + 30) return cached;
-    await fetchMqttSession(device);
+    await fetchMqttSession(device, true);
     const control = controlSessions.get(device.id);
     if (control) return control;
     // A click must never weaken command authentication: viewers get no grant.
@@ -3567,7 +3570,7 @@
     if (readOnlyDevices.has(device.id)) return;
     const control = controlSessions.get(device.id);
     if (control && control.expiresAt > Math.floor(Date.now() / 1000) + 90) return;
-    fetchMqttSession(device).then(() => { if (device.id === state.selectedId) renderDevice(); }).catch(() => {});
+    fetchMqttSession(device, true).then(() => { if (device.id === state.selectedId) renderDevice(); }).catch(() => {});
   }
 
   // The broker token is short-lived and bound to this device and account, and the broker checks it only when a socket
@@ -4676,7 +4679,12 @@
   });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { persistRuntimeCache(currentDevice(), true); deactivateSession(); }
-    else { renderDevice(); activateSelectedSession(true); }
+    else {
+      const device = currentDevice();
+      if (device) ensureControlGrant(device);
+      renderDevice();
+      activateSelectedSession(true);
+    }
   });
 
   let notesUi;

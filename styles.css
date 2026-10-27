@@ -671,7 +671,7 @@ dialog::backdrop{background:#071e1a88;backdrop-filter:blur(3px)}
    cuộn khi tổng nội dung thật sự lớn hơn vùng có thể hiển thị. */
 body[data-page="device"],body[data-page="batch"]{height:100dvh;min-height:0;overflow:hidden}
 body[data-page="device"] .appShell,body[data-page="batch"] .appShell{height:100dvh;min-height:0;overflow:hidden}
-body[data-page="device"] .main,body[data-page="batch"] .main{height:100dvh;min-height:0;overflow-y:auto;overscroll-behavior-y:none;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;padding-bottom:20px}
+body[data-page="device"] .main,body[data-page="batch"] .main{height:100dvh;min-height:0;overflow-y:auto;overscroll-behavior-y:auto;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;padding-bottom:20px}
 body[data-page="device"] .topbar,body[data-page="batch"] .topbar{flex:0 0 auto}
 body[data-page="device"] #page-device.active,body[data-page="batch"] #page-batch.active{flex:1 1 auto;min-height:min-content;display:flex;flex-direction:column;gap:12px}
 body[data-page="device"] .deviceCompact,body[data-page="device"] #quickForm,body[data-page="batch"] .batchPanel{flex:0 0 auto}

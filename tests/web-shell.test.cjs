@@ -138,7 +138,7 @@ test('phones: no hamburger - the bottom tab bar is always visible, full width, f
   assert.match(barBlock, /\.nav\{[^}]*width:100%;[^}]*padding:6px 8px var\(--safeBottom\);[^}]*border-radius:18px 18px 0 0/);   // full width, safe area INSIDE the bar
   assert.doesNotMatch(barBlock, /\.nav\{display:none/);
   // device / batch pages: the content area scrolls only when the content really does not fit
-  assert.match(css, /body\[data-page="device"\] \.main,body\[data-page="batch"\] \.main\{height:100dvh;min-height:0;overflow-y:auto;overscroll-behavior-y:none/);
+  assert.match(css, /body\[data-page="device"\] \.main,body\[data-page="batch"\] \.main\{height:100dvh;min-height:0;overflow-y:auto;overscroll-behavior-y:auto/);
   assert.match(css, /@media\(max-height:840px\)\{/);                                        // compaction ladder reaches XS-class phones (812 px)
   assert.match(notes, /bar && getComputedStyle\(bar\)\.position === 'fixed'/);                // the notes bubble never sits on the bar
   assert.match(app, /querySelectorAll\('\.nav button'\)\.forEach\(\(button\) => button\.addEventListener\('click', \(\) => showPage/);
