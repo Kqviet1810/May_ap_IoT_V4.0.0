@@ -4,6 +4,7 @@
 #include "boot_diagnostic.h"
 #include "firmware_update_guard.h"
 #include <Arduino.h>
+#include <esp_app_format.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 

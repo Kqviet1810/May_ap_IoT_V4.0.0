@@ -18,6 +18,10 @@
 #include <mbedtls/base64.h>
 #include <algorithm>
 #include <esp_ota_ops.h>
+#include <esp_partition.h>
+#include <esp_wifi.h>
+
+void mayapOtaRollbackBegin();
 
 // Cap nhat firmware TU XA qua Cloudflare Worker (la cach cap nhat qua mang DUY NHAT: ArduinoOTA da
 // go bo, nap truc tiep chi bang cap USB). Dung kenh HTTPS da co san toi CLOUD_API_HOST (cung host

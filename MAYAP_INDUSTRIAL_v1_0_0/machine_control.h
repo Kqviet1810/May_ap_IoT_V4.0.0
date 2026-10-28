@@ -4739,7 +4739,8 @@ class MachineController {
           }
           if (batchRunning_) {
             checkpointBatch();
-            outputs_.setHeater(false, false);
+            outputs_.forceSafe(now);
+            webHeaterOff_ = true;
             mayapSerialPrintf(false, "[OTA] Chot checkpoint me ap truoc khi nap firmware\n");
           }
           // Chi dat co hieu cho otaTask (mayapFirmwareWebUpdate() trong

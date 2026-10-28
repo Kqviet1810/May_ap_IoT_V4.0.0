@@ -1317,7 +1317,7 @@
       $('firmwareUpdateBtn')?.addEventListener('click', () => {
         const isDev = Boolean(device?.tech?.devMode || state.telemetry?.tech?.devMode);
         if (isDev) {
-          sendCommand('firmware_apply_now');
+          sendCommand('apply_firmware_now');
           toast('Chế độ nhà phát triển: Đã ra lệnh tải và cập nhật firmware từ xa...', 6000);
         } else {
           sendCommand('firmware_check_now');

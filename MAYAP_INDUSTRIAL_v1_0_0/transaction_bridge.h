@@ -754,7 +754,7 @@ inline HmiCommandType mapCommandAction(const char *action) {
   // update.h + hmi.h::openFirmwareWebConfirm()).
   if (!strcmp(action, "firmware_check_now")) return HmiCommandType::FirmwareWebCheckNow;
   // CD nha phat trien (Developer Mode) cho phep tai va ap dung OTA ngay lap tuc tu xa:
-  if (!strcmp(action, "firmware_apply_now")) return HmiCommandType::FirmwareWebApply;
+  if (!strcmp(action, "apply_firmware_now")) return HmiCommandType::FirmwareWebApply;
   // Quay lai firmware truoc do (xem ota_rollback.h) - KHAC voi cap nhat
   // (chi "kiem tra", phai xac nhan vat ly tren HMI), lenh nay ap dung
   // NGAY qua web vi ban chat la doi ve firmware DA TUNG chay on dinh
@@ -1006,7 +1006,7 @@ inline void handleCommandMessage(const JsonDocument &doc) {
   if (type == HmiCommandType::FirmwareWebApply) {
     bool devAllowed = false;
     portENTER_CRITICAL(&realtimeMux);
-    devAllowed = knownRuntimeValid && knownRuntime.tech.devMode;
+    devAllowed = knownRuntimeValid && ((knownRuntime.tech.webCtlMask & WebCtlAutoUpdate) != 0U);
     portEXIT_CRITICAL(&realtimeMux);
     if (!devAllowed) {
       publishAck(requestId, "rejected", "CAN_BAT_CD_NHA_PHAT_TRIEN");
