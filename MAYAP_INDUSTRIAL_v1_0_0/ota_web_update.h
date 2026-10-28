@@ -6,6 +6,7 @@
 #include "network_io_guard.h"
 #include "bounded_http.h"
 #include "firmware_update_guard.h"
+#include "maintenance_policy.h"
 #include "firmware_check_policy.h"
 #include "firmware_check_parse.h"
 #include <Arduino.h>
@@ -70,6 +71,7 @@ static uint32_t autoReadySince = 0U;
 static char autoTriedVersion[16] = "";
 static uint32_t autoTriedAt = 0U;
 static uint32_t applyFailedAt = 0U;
+static uint32_t lastApplyFailedAt = 0U;      // when the last attempt ended without a restart (for the "update now" throttle)
 constexpr uint32_t AUTO_UPDATE_DELAY_MS = 60000UL;
 
 static portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
@@ -154,6 +156,16 @@ inline void mayapRequestFirmwareWebApply() {
   __atomic_store_n(&downloadPercent, 0U, __ATOMIC_RELEASE);
   applyFailedAt = 0U;
   __atomic_store_n(&applyRequestFlag, 1U, __ATOMIC_RELEASE);
+}
+
+inline uint8_t mayapFirmwareApplyPhase() { return __atomic_load_n(&MayapFirmwareWebInternal::applyPhase, __ATOMIC_ACQUIRE); }
+
+// May a REMOTE "update now" start? Not while a download runs and not within 10 minutes after a failed attempt (every attempt is a 1.3 MB
+// download). The operator on the HMI is never throttled except by a running download.
+inline bool mayapFirmwareApplyAllowed(uint32_t now, bool fromHmi) {
+  using namespace MayapFirmwareWebInternal;
+  const bool downloading = __atomic_load_n(&applyPhase, __ATOMIC_ACQUIRE) == 1U;
+  return MayapMaintenance::applyAllowed(now, downloading, fromHmi ? 0U : lastApplyFailedAt);
 }
 
 inline void mayapSetFirmwareAutoUpdate(bool allowed) {
@@ -507,6 +519,7 @@ inline void mayapFirmwareWebUpdate(uint32_t now) {
     __atomic_store_n(&applyRequestFlag, 0U, __ATOMIC_RELEASE);
     mayapFirmwareWebApplyNow();
     mayapReleaseCloudTlsYield();   // a failed update returns here: realtime may reconnect
+    lastApplyFailedAt = millis() | 1U;
     return;
   }
 

@@ -1006,7 +1006,7 @@ inline void handleCommandMessage(const JsonDocument &doc) {
   if (type == HmiCommandType::FirmwareWebApply) {
     bool devAllowed = false;
     portENTER_CRITICAL(&realtimeMux);
-    devAllowed = knownRuntimeValid && ((knownRuntime.tech.webCtlMask & 64U) != 0U);
+    devAllowed = knownRuntimeValid && knownRuntime.tech.devMode;
     portEXIT_CRITICAL(&realtimeMux);
     if (!devAllowed) {
       publishAck(requestId, "rejected", "CAN_BAT_CD_NHA_PHAT_TRIEN");

@@ -60,6 +60,10 @@ enum Field : uint8_t {
   F_OSC_CROSS, F_OSC_WINDOW, F_TUNE_POWER, F_TUNE_BAND, F_TEMP_OFFSET, F_HUM_OFFSET, F_COUNT
 };
 static_assert(F_COUNT == 16, "the field mask is 16 bits");
+// Fields that calibrate the sensors or set the protections. Even in developer mode a Web request touching any of them still waits for
+// the HMI "yes": a wrong value here silently moves the temperature a batch runs at, or blinds a protection.
+constexpr uint16_t ProtectedMask = static_cast<uint16_t>((1U << F_MAX_POWER) | (1U << F_STUCK_RISE) | (1U << F_STUCK_DURATION) |
+    (1U << F_RATE_LIMIT) | (1U << F_RATE_WINDOW) | (1U << F_OSC_CROSS) | (1U << F_OSC_WINDOW) | (1U << F_TEMP_OFFSET) | (1U << F_HUM_OFFSET));
 // JSON keys (same names as the configuration patch the Web already uses).
 static const char *const FieldKeys[F_COUNT] = {
   "kp", "ki", "kd", "maxHeaterPower", "pidCycleSec", "adaptiveThermalBalanceEnabled", "heaterStuckMinRiseC", "heaterStuckDurationSec",
