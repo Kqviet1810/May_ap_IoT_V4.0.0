@@ -3999,13 +3999,13 @@ class MachineController {
     serviceBatchLog(now);
     {
       const OutputState &maintenanceOut = outputs_.state();
-      MayapMaintenance::ReadyInputs ready;
-      ready.batchRunning = batchRunning_; ready.resumePending = resumePending_; ready.batchClearPending = batchClearPending_;
-      ready.testMode = testModeActive_; ready.turning = maintenanceOut.turnLeft || maintenanceOut.turnRight;
-      ready.emergency = emergencyActive_; ready.highTemp = highTemperatureActive_;
-      ready.developerMode = techGate_.developerMode(); ready.sensorUsable = sensorUsable_;
-      ready.temperature = temperature_; ready.setpoint = config_.targetTemp;
-      mayapSetFirmwareMaintenanceReady(MayapMaintenance::ready(ready));
+      MayapMaintenance::ReadyInputs gate;
+      gate.batchRunning = batchRunning_; gate.resumePending = resumePending_; gate.batchClearPending = batchClearPending_;
+      gate.testMode = testModeActive_; gate.turning = maintenanceOut.turnLeft || maintenanceOut.turnRight;
+      gate.emergency = emergencyActive_; gate.highTemp = highTemperatureActive_;
+      gate.developerMode = techGate_.developerMode(); gate.sensorUsable = sensorUsable_;
+      gate.temperature = temperature_; gate.setpoint = config_.targetTemp;
+      mayapSetFirmwareMaintenanceReady(MayapMaintenance::ready(gate));
       // Whoever starts an update (HMI, Web, or the automatic path), a running batch is checkpointed once when the download begins.
       const bool downloading = mayapFirmwareApplyPhase() == 1U;
       if (downloading && batchRunning_ && !otaCheckpointDone_) {
@@ -4742,19 +4742,21 @@ class MachineController {
           mayapRequestCloudPinReset();
           ok = true; message = "DA GUI YEU CAU DAT LAI PIN";
           break;
-        case HmiCommandType::FirmwareWebApply:
+        case HmiCommandType::FirmwareWebApply: {
           if (!mayapFirmwareMaintenanceReady() || mayapFirmwareMaintenanceActive()) {
             message = "DUNG ME/TEST VA TAT CONG TAC NHIET TRUOC"; break;
           }
-          if (remote && !techGate_.developerMode()) { message = "CAN_BAT_CD_NHA_PHAT_TRIEN"; break; }
-          if (!mayapFirmwareApplyAllowed(now, !remote)) { message = "DANG TAI HOAC MOI LOI, THU LAI SAU 10 PHUT"; break; }
-          // Khong cat thanh nhiet o day: thanh nhiet van chay binh thuong trong luc tai; chi giu tat vai giay o buoc ghi flash cuoi.
+          const bool fromWeb = command.source == HmiCommandSource::Remote;
+          if (fromWeb && !techGate_.developerMode()) { message = "CAN_BAT_CD_NHA_PHAT_TRIEN"; break; }
+          if (!mayapFirmwareApplyAllowed(now, !fromWeb)) { message = "DANG TAI HOAC MOI LOI, THU LAI SAU 10 PHUT"; break; }
+          // Khong dat webHeaterOff_ o day: thanh nhiet chi dung trong pham vi MayapFirmwareMaintenance (xoa o moi duong thoat), khong dinh lai.
           // Chi dat co hieu cho otaTask (mayapFirmwareWebUpdate() trong
           // ota_web_update.h) - viec tai ve/flash thuc su co the mat vai
           // chuc giay, controlTask khong duoc phep block.
           mayapRequestFirmwareWebApply();
           ok = true; message = "DANG TAI FIRMWARE...";
           break;
+        }
         case HmiCommandType::FirmwareWebCheckNow:
           // Nut "Cap nhat" tren web dashboard - CHI yeu cau kiem tra ngay
           // (bo qua nhip 6h dinh ky), KHONG tu tai ve/flash gi ca. Neu co
@@ -6590,9 +6592,8 @@ class MachineController {
         storageAllowsHeat && !abnormalResetLatched_ &&
         batchAllowsHeat && sensorUsable_ && fanAllowsHeat &&
         timeReached(now, heatRestartNotBefore_);
-    const bool otaHold = mayapFirmwareHeaterHoldActive(now);   // the final flash write of an update (self-expiring)
     const bool normalSsrPermit = normalMasterPermit && heaterPidConditions &&
-        !faults_.ssrInhibited() && !ventHeaterBlock_ && !otaHold;
+        !faults_.ssrInhibited() && !ventHeaterBlock_;
     const bool actuatorReady = outputs_.heaterReady(now) && mayapBootOperationsReady() &&
         !mayapSystemTripLatched() && !mayapFirmwareMaintenanceActive();
 
@@ -6601,7 +6602,7 @@ class MachineController {
     // heater request in percent. Protection (High / Emergency / sensor / contactor / SSR inhibit) is decided above
     // and below it and never reads this value. The request is clamped to [0, cap] by the adapter and then goes through
     // the burst scheduler and the output arbiter like any other request.
-    const bool v3Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && (ventHeaterBlock_ || otaHold) && actuatorReady;   // blocked ONLY by the heater block line or the final flash write
+    const bool v3Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && ventHeaterBlock_ && actuatorReady;   // blocked ONLY by the heater block line
     float commandedPower = thermalV3Command(now, normalSsrPermit && actuatorReady, v3Shadow);
     // ====================================================================================================
     newSensorSample_ = false;

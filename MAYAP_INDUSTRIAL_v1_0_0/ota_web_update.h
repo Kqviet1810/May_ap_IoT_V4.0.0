@@ -486,10 +486,7 @@ inline void mayapFirmwareWebApplyNow() {
     return;
   }
 
-  // Only now, for the final write, the heater request is held off (it expires by itself and is dropped when this scope ends).
-  mayapFirmwareHeaterHoldFor(millis(), MayapMaintenance::HEATER_HOLD_MS);
   if (!Update.end(false)) {
-    mayapFirmwareHeaterHoldClear();
     mayapSerialPrintf(false, "[FWWEB] Update.end() THAT BAI: %s\n", Update.errorString());
     setError("GHI FLASH THAT BAI");
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);

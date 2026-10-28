@@ -9,7 +9,6 @@ namespace MayapMaintenance {
 // A batch may be interrupted for an update only in developer mode, only while the temperature is inside this band around SV, and never
 // while the machine waits to resume a batch or to record a stop. The band follows SV (a 30 degC hatcher is judged like a 37.5 degC one).
 constexpr float BATCH_UPDATE_MAX_DEV_C = 1.0f;
-constexpr uint32_t HEATER_HOLD_MS = 30000UL;            // the heater stays off at most this long for the final flash write; it expires by itself
 constexpr uint32_t RETRY_AFTER_FAIL_MS = 600000UL;      // a remote "update now" is refused for this long after a failed attempt
 constexpr uint32_t REMOTE_OUTPUT_GAP_MS = 2000UL;       // the same remote output toggle is not repeated faster than this
 

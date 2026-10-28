@@ -70,7 +70,6 @@ int main() {
   assert(commandGapOk(1500, 0xFFFFFFFFUL - 500, REMOTE_OUTPUT_GAP_MS, false));                // millis() wrap
   assert(applyAllowed(1000, false, 0) && !applyAllowed(1000, true, 0));                        // never while downloading
   assert(!applyAllowed(1000 + RETRY_AFTER_FAIL_MS - 1, false, 1000) && applyAllowed(1000 + RETRY_AFTER_FAIL_MS, false, 1000));
-  assert(HEATER_HOLD_MS <= 30000UL);                                                           // the heater is never held for long
   std::puts("firmware check cadence host tests PASS");
   return 0;
 }
