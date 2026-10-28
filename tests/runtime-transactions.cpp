@@ -19,7 +19,7 @@ void leave(int *p){if(p==&hmiApiMux)--hmiDepth;if(autoRun&&!hmiDepth&&!inControl
 #define portENTER_CRITICAL(p) enter(p)
 #define portEXIT_CRITICAL(p) leave(p)
 constexpr uint8_t COMMAND_QUEUE_SIZE=4;
-constexpr uint32_t WebCtlHeater=1,WebCtlVent=2,WebCtlCirc=4,WebCtlLight=8,WebCtlSiren=16,WebCtlTurn=32;
+constexpr uint32_t WebCtlHeater=1,WebCtlVent=2,WebCtlCirc=4,WebCtlLight=8,WebCtlSiren=16,WebCtlTurn=32,WebCtlAutoUpdate=64;
 constexpr size_t REALTIME_REQUEST_ID_CAPACITY=40;
 constexpr uint32_t AlarmNone=0,ALARM_KNOWN_MASK=0xffff,REALTIME_COMMAND_ACK_TIMEOUT_MS=8000,REALTIME_CONFIG_SAVE_ACK_TIMEOUT_MS=8000;
 constexpr uint16_t COMMAND_DEFAULT_VALID_MS=5000,COMMAND_AUTOTUNE_VALID_MS=5000;
