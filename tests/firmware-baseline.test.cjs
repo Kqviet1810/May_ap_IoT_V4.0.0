@@ -28,6 +28,11 @@ test('Cloud and OTA transient TLS users share nonblocking admission with memory 
 test('OTA keeps physical confirmation, maintenance interlock and strict byte/signature boundaries', () => {
   const app = read('app.js');
   assert.match(app, /sendCommand\('firmware_check_now'\)/);
+  // Developer mode: the Update button sends apply_firmware_now, and reads the flag from where the machine publishes it (runtime.tech.devMode).
+  assert.match(app, /sendCommand\('apply_firmware_now'\)/);
+  assert.match(app, /device\?\.snapshot\?\.runtime\?\.tech\?\.devMode === true/);
+  assert.doesNotMatch(app, /state\.telemetry|device\?\.tech\?\.devMode/);
+  assert.match(read('MAYAP_INDUSTRIAL_v1_0_0/transaction_bridge.h'), /tech\["devMode"\]/);
   assert.doesNotMatch(app, /sendCommand\('firmware_apply'\)/);
   assert.match(ota, /if \(!mayapFirmwareMaintenanceReady\(\)\)/);
   assert.match(ota, /std::min<size_t>\(static_cast<size_t>\(remaining\)/);
