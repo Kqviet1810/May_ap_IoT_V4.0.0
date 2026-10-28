@@ -34,4 +34,17 @@ inline bool due(uint32_t now, uint32_t lastCheckAt, bool checkNow, uint32_t firs
   return true;
 }
 
+// Automatic update retries. A download that fails because of the LINK (cannot connect, HTTP error, connection lost) is tried again after
+// 5, 15, then 30 minutes, at most AUTO_MAX_TRIES times for one version per boot; a failure of the release itself (size, checksum,
+// signature, flash write) is tried once only, because trying again cannot help. A different version starts afresh.
+constexpr uint8_t AUTO_MAX_TRIES = 5;
+inline uint32_t autoRetryDelayMs(uint8_t failedTries) {
+  return failedTries <= 1U ? 5UL * 60000UL : failedTries == 2U ? 15UL * 60000UL : 30UL * 60000UL;
+}
+inline bool autoMayTry(bool sameVersionTriedBefore, bool lastFailureRetryable, uint8_t tries, uint32_t now, uint32_t retryAt) {
+  if (!sameVersionTriedBefore) return true;
+  if (!lastFailureRetryable || tries >= AUTO_MAX_TRIES) return false;
+  return static_cast<int32_t>(now - retryAt) >= 0;
+}
+
 }  // namespace MayapFirmwareCheck

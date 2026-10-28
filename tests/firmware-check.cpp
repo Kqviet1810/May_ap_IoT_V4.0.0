@@ -39,6 +39,20 @@ int main() {
   assert(!due(lastOk + DAY + 10, lastOk, false, FIRST, DAY, 0));
   assert(due(lastOk + DAY + MayapFirmwareCheck::MAX_DEFER_MS, lastOk, false, FIRST, DAY, 0));
   MayapFirmwareCheck::busyProbe() = nullptr;
+  // Automatic update retries: a link failure is repeated after 5, 15, 30, 30 ... minutes (at most AUTO_MAX_TRIES), a failure of the release itself is not,
+  // a new version starts afresh, and millis() wrap-around is safe.
+  using MayapFirmwareCheck::autoMayTry; using MayapFirmwareCheck::autoRetryDelayMs;
+  assert(autoMayTry(false, false, 0, 0, 0));                                          // first attempt for a version
+  assert(autoRetryDelayMs(1) == 5 * MIN && autoRetryDelayMs(2) == 15 * MIN && autoRetryDelayMs(3) == 30 * MIN && autoRetryDelayMs(9) == 30 * MIN);
+  const uint32_t failedAt = 1000000UL;
+  assert(!autoMayTry(true, true, 1, failedAt + 5 * MIN - 1, failedAt + 5 * MIN));    // too early
+  assert(autoMayTry(true, true, 1, failedAt + 5 * MIN, failedAt + 5 * MIN));         // time to repeat a link failure
+  assert(!autoMayTry(true, false, 1, failedAt + 99 * MIN, failedAt + 5 * MIN));      // a bad release is not repeated
+  assert(!autoMayTry(true, true, MayapFirmwareCheck::AUTO_MAX_TRIES, failedAt + 99 * MIN, failedAt));   // out of tries
+  assert(autoMayTry(true, true, MayapFirmwareCheck::AUTO_MAX_TRIES - 1, failedAt + 99 * MIN, failedAt));
+  assert(autoMayTry(false, false, MayapFirmwareCheck::AUTO_MAX_TRIES, 0, 0));        // a different version starts afresh
+  const uint32_t wrapRetry = 0xFFFFFFFFUL - MIN;                                     // retry time just before the wrap
+  assert(!autoMayTry(true, true, 1, wrapRetry - 1, wrapRetry) && autoMayTry(true, true, 1, 3 * MIN, wrapRetry));
   std::puts("firmware check cadence host tests PASS");
   return 0;
 }

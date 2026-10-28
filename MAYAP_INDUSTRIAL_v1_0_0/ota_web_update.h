@@ -65,6 +65,10 @@ static volatile uint8_t autoUpdateAllowed = 1U;
 static volatile uint8_t autoCountdownS = 255U;
 static uint32_t autoReadySince = 0U;
 static char autoTriedVersion[16] = "";
+static uint8_t autoTries = 0U;                 // attempts made for autoTriedVersion in this boot
+static uint32_t autoRetryAt = 0U;              // earliest next attempt after a failure that is worth repeating
+static bool autoInFlight = false;              // an automatic attempt is running (its outcome sets autoRetryAt)
+static volatile bool lastFailureRetryable = false;   // set by mayapFirmwareWebApplyNow(): true for link failures
 constexpr uint32_t AUTO_UPDATE_DELAY_MS = 60000UL;
 
 static portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
@@ -255,7 +259,9 @@ inline bool mayapFirmwareWebCheck() {
 // rieng, khong anh huong controlTask/hmiTask) toi khi xong hoac loi.
 inline void mayapFirmwareWebApplyNow() {
   using namespace MayapFirmwareWebInternal;
+  lastFailureRetryable = false;
   if (!mayapFirmwareMaintenanceReady()) {
+    lastFailureRetryable = true;
     setError("DUNG ME/TEST VA TAT CONG TAC NHIET TRUOC");
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
     return;
@@ -278,6 +284,7 @@ inline void mayapFirmwareWebApplyNow() {
   char path[64];
   snprintf(path, sizeof(path), "/api/firmware/download/%s", status.version);
   if (!beginRequest(http, client, path)) {
+    lastFailureRetryable = true;
     setError("KHONG MO DUOC KET NOI TAI VE");
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
     return;
@@ -287,6 +294,7 @@ inline void mayapFirmwareWebApplyNow() {
   const int code = http.GET();
   if (code != 200) {
     mayapSerialPrintf(false, "[FWWEB] Tai firmware THAT BAI, ma HTTP=%d\n", code);
+    lastFailureRetryable = true;
     setError("TAI FIRMWARE THAT BAI");
     http.end();
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
@@ -348,6 +356,7 @@ inline void mayapFirmwareWebApplyNow() {
   if (ioError || remaining != 0) {
     mbedtls_sha256_free(&sha);
     Update.abort();
+    lastFailureRetryable = true;
     setError("MAT KET NOI GIUA LUC TAI - DA HUY, GIU FIRMWARE CU");
     mayapSerialPrintf(false, "[FWWEB] Tai firmware bi ngat giua chung, HUY OTA, GIU NGUYEN firmware dang chay\n");
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
@@ -441,6 +450,12 @@ inline void mayapFirmwareWebUpdate(uint32_t now) {
     __atomic_store_n(&applyRequestFlag, 0U, __ATOMIC_RELEASE);
     mayapFirmwareWebApplyNow();
     mayapReleaseCloudTlsYield();   // a failed update returns here: realtime may reconnect
+    if (autoInFlight) {            // an automatic attempt failed (success restarts the machine): when may it be repeated
+      autoInFlight = false;
+      autoRetryAt = millis() + MayapFirmwareCheck::autoRetryDelayMs(autoTries);
+      mayapSerialPrintf(false, "[FWWEB] cap nhat tu dong that bai (lan %u)%s\n", static_cast<unsigned>(autoTries),
+                        lastFailureRetryable && autoTries < MayapFirmwareCheck::AUTO_MAX_TRIES ? ", se thu lai" : ", dung thu");
+    }
     return;
   }
 
@@ -459,12 +474,17 @@ inline void mayapFirmwareWebUpdate(uint32_t now) {
     const FirmwareWebStatus waiting = mayapFirmwareWebStatus();
     const bool idle = mayapFirmwareMaintenanceReady() && !mayapFirmwareMaintenanceActive();
     const bool allowed = __atomic_load_n(&autoUpdateAllowed, __ATOMIC_ACQUIRE) != 0U;
-    const bool already = waiting.version[0] != '\0' && strcmp(autoTriedVersion, waiting.version) == 0;
-    if (allowed && idle && waiting.available && waiting.applyPhase == 0U && !already) {
+    const bool sameVersion = waiting.version[0] != '\0' && strcmp(autoTriedVersion, waiting.version) == 0;
+    // applyPhase 2 = the last attempt failed; it stays 2 until the next attempt starts, so it must not block a retry.
+    const bool mayTry = waiting.version[0] != '\0' &&
+        MayapFirmwareCheck::autoMayTry(sameVersion, lastFailureRetryable, autoTries, now, autoRetryAt);
+    if (allowed && idle && waiting.available && (waiting.applyPhase == 0U || waiting.applyPhase == 2U) && mayTry) {
       if (autoReadySince == 0U) { autoReadySince = now | 1U; mayapSerialPrintf(false, "[FWWEB] cap nhat tu dong v%s: bat dau dem 60 s\n", waiting.version); }
       const uint32_t waited = now - autoReadySince;
       if (waited >= AUTO_UPDATE_DELAY_MS) {
+        autoTries = sameVersion ? static_cast<uint8_t>(autoTries + 1U) : 1U;
         snprintf(autoTriedVersion, sizeof(autoTriedVersion), "%s", waiting.version);
+        autoInFlight = true;
         autoReadySince = 0U;
         __atomic_store_n(&autoCountdownS, 255U, __ATOMIC_RELEASE);
         __atomic_store_n(&applyRequestFlag, 1U, __ATOMIC_RELEASE);
