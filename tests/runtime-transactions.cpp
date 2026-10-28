@@ -41,7 +41,7 @@ void mayapRealtimeConfirmCommand(uint32_t,bool,const char*);
 namespace MayapRealtimeInternal {
 static bool activeAckKeyValid=true;static uint8_t activeAckKey[32]={7};static char activeOperation[40]="light.toggle";
 static uint32_t bootId=123,lastCommandSequence=0;static char lastCommandRequestId[40]="";
-static bool knownRuntimeValid=true;static struct{uint32_t alarmMask=0;struct{bool webAllowed=false,webSession=false;uint32_t webCtlMask=63;}tech;}knownRuntime;
+static bool knownRuntimeValid=true;static struct{uint32_t alarmMask=0;struct{bool webAllowed=false,webSession=false,devMode=false;uint32_t webCtlMask=63;}tech;}knownRuntime;
 static MachineConfig knownConfig;static bool knownConfigValid=true;
 static bool configDirty=false;
 static uint32_t realtimeConfigRevision=0,lastVerifiedConfigRevision=0;
@@ -120,6 +120,12 @@ static void techTests(){
  reset();techState(true,true);
  { JsonDocument d=techCommand("autotune_start");handleCommandMessage(d);assert(acks.back()=="unsupported"&&commandCount==0);MayapTech::Staged s;assert(!MayapTech::take(s)); }
  { JsonDocument d=techCommand("tech_request");d["kind"]="autotune";handleCommandMessage(d);assert(acks.back()=="invalid"&&commandCount==0);MayapTech::Staged s;assert(!MayapTech::take(s)); }
+ // "update now" from the Web: only in developer mode (the machine's published state), whatever the auto-update permission bit says.
+ reset();knownRuntime.tech.webCtlMask=127;knownRuntime.tech.devMode=false;
+ { JsonDocument d=techCommand("apply_firmware_now");handleCommandMessage(d);assert(acks.back()=="rejected"&&commandCount==0); }
+ reset();knownRuntime.tech.webCtlMask=0;knownRuntime.tech.devMode=true;
+ { JsonDocument d=techCommand("apply_firmware_now");handleCommandMessage(d);assert(acks.back()!="rejected"&&commandCount==1); }
+ knownRuntime.tech.webCtlMask=63;knownRuntime.tech.devMode=false;
  // saturation: a full tracker / full queue leaves nothing parked
  reset();techState(true,true);for(auto &p:pendingCommands)p.used=true;
  { JsonDocument d=techCommand("tech_request");d["kind"]="config";d["fields"]["kp"]=9.0;handleCommandMessage(d);assert(acks.back()=="busy");MayapTech::Staged s;assert(!MayapTech::take(s)); }

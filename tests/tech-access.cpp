@@ -253,8 +253,46 @@ static void historyTests() {
   static_assert(sizeof(Snapshot) == 44, "");
 }
 
+// Developer mode is ON by default: the firmware applies it once to a record that never recorded a choice; an explicit HMI choice is final.
+static void developerDefault() {
+  FakeAuthStore st; Gate<FakeAuthStore> g(st);
+  CHECK(g.applyDeveloperDefault() == Result::NotSet && !g.developerMode());              // no PIN record: stays closed
+  { // a PIN is created (record as the HMI writes it): the gate itself is still hidden by default ...
+    CHECK(g.setPin(10, "1357") == Result::Ok);
+    CHECK(!g.webAllowed() && !g.developerMode() && g.webCtlMask() == WebCtlDefaultMask);
+    // ... and the firmware applies the default once, without a PIN
+    CHECK(g.applyDeveloperDefault() == Result::Ok);
+    CHECK(g.webAllowed() && g.developerMode() && g.webCtlMask() == 0x7FU && g.webSessionActive(11));
+    CHECK((g.record().reserved & ReservedDevDefaultDone) != 0U);
+    const unsigned saves = st.saves;
+    CHECK(g.applyDeveloperDefault() == Result::Ok && st.saves == saves);                // idempotent: no second write
+  }
+  { Gate<FakeAuthStore> r(st); r.begin(0); CHECK(r.developerMode() && r.webCtlMask() == 0x7FU); }   // persists across a reboot
+  // an explicit OFF is never undone by the default
+  g.lockHmi();
+  CHECK(g.setDeveloperMode(20, false) == Result::NotUnlocked);                           // the HMI session ended: needs the PIN
+  CHECK(g.unlockHmi(20, "1357") == Result::Ok && g.setDeveloperMode(20, false) == Result::Ok);
+  CHECK(!g.developerMode() && !g.webAllowed() && g.webCtlMask() == WebCtlDefaultMask && !g.webSessionActive(21));
+  CHECK(g.applyDeveloperDefault() == Result::Ok && !g.developerMode());
+  { Gate<FakeAuthStore> r(st); r.begin(0); CHECK(r.applyDeveloperDefault() == Result::Ok && !r.developerMode()); }
+  CHECK(g.setDeveloperMode(22, true) == Result::Ok && g.developerMode());
+  // an older record (reserved = 0, Web hidden, custom mask) migrates to developer mode on the first boot
+  { FakeAuthStore old; Gate<FakeAuthStore> h(old); CHECK(h.setPin(1, "2468") == Result::Ok); CHECK(h.setWebCtlMask(1, 0x0AU) == Result::Ok);
+    CHECK(!h.developerMode()); Gate<FakeAuthStore> r(old); r.begin(0);
+    CHECK(r.applyDeveloperDefault() == Result::Ok && r.developerMode() && r.webCtlMask() == 0x7FU); }
+  // a storage error keeps the old state (and the marker unset, so it is retried at the next boot)
+  { FakeAuthStore bad; Gate<FakeAuthStore> h(bad); CHECK(h.setPin(1, "2468") == Result::Ok); bad.failWrites = 1;
+    CHECK(h.applyDeveloperDefault() == Result::StorageError && !h.developerMode() && (h.record().reserved & ReservedDevDefaultDone) == 0U); }
+  // the fields that calibrate or protect always wait for the HMI, even in developer mode
+  CHECK((AdvancedHistory::ProtectedMask & (1U << AdvancedHistory::F_TEMP_OFFSET)) && (AdvancedHistory::ProtectedMask & (1U << AdvancedHistory::F_STUCK_RISE)));
+  CHECK((AdvancedHistory::ProtectedMask & (1U << AdvancedHistory::F_MAX_POWER)) && (AdvancedHistory::ProtectedMask & (1U << AdvancedHistory::F_RATE_LIMIT)));
+  CHECK(!(AdvancedHistory::ProtectedMask & ((1U << AdvancedHistory::F_KP) | (1U << AdvancedHistory::F_KI) | (1U << AdvancedHistory::F_KD) |
+                                              (1U << AdvancedHistory::F_PID_CYCLE) | (1U << AdvancedHistory::F_TUNE_POWER))));
+}
+
 int main() {
   shaVectors();
+  developerDefault();
   pinAndLockout();
   sessions();
   storagePowerCut();

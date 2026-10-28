@@ -135,6 +135,8 @@ struct AuthRecord {
   uint32_t crc = 0;
 };
 constexpr uint8_t FlagWebAllowed = 0x01;
+// AuthRecord::reserved bit 0: the developer-mode default has been applied (or the technician chose explicitly). Older records read 0.
+constexpr uint8_t ReservedDevDefaultDone = 0x01;
 constexpr uint8_t FlagWebCtlShift = 1;         // flags bits 1..7: which outputs the Web may switch (heater, vent, circulation, light, siren, turning) + bit 7 (value 64): the Web may update the firmware by itself
 constexpr uint8_t FlagWebCtlBits = 0xFE;
 // Factory default of the Web output permissions: vent fan, circulation fan, light and siren ON; heater and egg turning OFF; automatic firmware update ON.
@@ -274,20 +276,31 @@ class Gate {
     return Result::Ok;
   }
 
+  // Developer mode is ON by default: once, for a record that has never recorded a choice, the firmware itself turns it on (no PIN
+  // needed: it is the factory default, not a technician action). An explicit choice on the HMI sets the same marker, so a later
+  // "OFF" is never undone. A device with no PIN record stays closed.
+  Result applyDeveloperDefault() {
+    if (!loaded_) return Result::NotSet;
+    if ((rec_.reserved & ReservedDevDefaultDone) != 0U) return Result::Ok;
+    AuthRecord next = rec_;
+    enableDeveloperFields(next);
+    next.reserved = static_cast<uint8_t>(next.reserved | ReservedDevDefaultDone);
+    return persist(next) ? Result::Ok : Result::StorageError;
+  }
+
   // Developer mode: full remote authority (webAllowed + all webCtlMask outputs + persistent session).
   Result setDeveloperMode(uint32_t now, bool enable) {
     if (!loaded_) return Result::NotSet;
     if (!hmiUnlocked(now)) return Result::NotUnlocked;
     AuthRecord next = rec_;
+    next.reserved = static_cast<uint8_t>(next.reserved | ReservedDevDefaultDone);
     if (enable) {
-      next.flags = static_cast<uint8_t>(next.flags | FlagWebAllowed);
-      const uint8_t mask = 0x7FU;
-      next.flags = static_cast<uint8_t>((next.flags & ~FlagWebCtlBits) | ((static_cast<uint8_t>((mask & 0x7F) ^ WebCtlDefaultMask) << FlagWebCtlShift) & FlagWebCtlBits));
+      enableDeveloperFields(next);
     } else {
       next.flags = static_cast<uint8_t>(next.flags & ~FlagWebAllowed);
       next.flags = static_cast<uint8_t>(next.flags & ~FlagWebCtlBits);
     }
-    if (next.flags != rec_.flags && !persist(next)) return Result::StorageError;
+    if ((next.flags != rec_.flags || next.reserved != rec_.reserved) && !persist(next)) return Result::StorageError;
     if (!enable) revokeWeb();
     return Result::Ok;
   }
@@ -314,6 +327,11 @@ class Gate {
   const AuthRecord &record() const { return rec_; }
 
  private:
+  static void enableDeveloperFields(AuthRecord &r) {
+    r.flags = static_cast<uint8_t>(r.flags | FlagWebAllowed);
+    const uint8_t mask = 0x7FU;
+    r.flags = static_cast<uint8_t>((r.flags & ~FlagWebCtlBits) | ((static_cast<uint8_t>((mask & 0x7F) ^ WebCtlDefaultMask) << FlagWebCtlShift) & FlagWebCtlBits));
+  }
   void startLock(uint32_t now) {
     uint32_t ms = LockBaseMs;
     for (uint8_t i = 1; i < rec_.lockLevel && ms < LockMaxMs; ++i) ms *= 2U;

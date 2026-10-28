@@ -22,7 +22,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/firmware_update_guard.h",
-      "sha256": "e669f1363f29ddc63e65616881c4f76efdf25a5219d4e0fd8eb418c08643d488"
+      "sha256": "d4a08fcaf2e209578a9b80198050418d8d569ee515e684afb60f81437708f115"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/network_io_guard.h",
@@ -58,12 +58,12 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "b537c847ce9b14dca4583bef6e6fdbc23673def0a69774868b32920d88ac3999",
+      "sha256": "4af63a2c519f19894b5f08e7f40fd0eef3e668e6f99f6bbae7bf917d62d6cefc",
       "filter": "config"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "51e32cca2f92d4a764e669c7a861595e1590229eb63563732f9db1b6e39c702d",
+      "sha256": "6e70d43ad15953c95e356c4f3e6f832a30d88b469c16beb046328ebcdc4014ab",
       "signature": "class MachineController {"
     },
     {
@@ -145,13 +145,13 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/ota_web_update.h",
-      "sha256": "b1a9958e737c3cc5d8d53e1a3c117ea7758a8d283d4e8f6b643f277dc0e87670",
+      "sha256": "baaa2379f2c25c98f94701007ff4fcac5c72110e5d43dc25bd4cac5784706ff0",
       "signature": "inline void mayapFirmwareWebApplyNow()",
       "filter": "webBeat"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/ota_web_update.h",
-      "sha256": "920def01bbd7761d5abbada3317a023327939b53404038f323934128fe2c0b1a",
+      "sha256": "68c66d6d4898b3ef459611ed38fef820df651e0e0d07baa8c0ece004df1eb1c2",
       "signature": "inline void mayapFirmwareWebUpdate("
     },
     {
@@ -445,6 +445,7 @@
   "firmwareCheckFeedbackReviewNote": "2026-10-20: mayapFirmwareWebUpdate() only gained setError() on a refused TLS admission for a check-now request (no change to admission, timing, thresholds or apply path). The HMI now reports the check result (checkPhase/lastError) instead of always showing 'DANG KIEM TRA'. No control, thermal, output, OTA verification or rollback logic touched.",
   "holdWindowReviewNote": "2026-10-20: reviewed the hold measurement window (field log: PV sat 0.5 C under SP while the hold stayed at 0.3 percent). thermal_control.h ThermalStartupController::decide(), slow-oven branch only (apparent delay above 80 s, PV just under SP, heater not cleared): the 'PV is flat' test is now a window test (the slow PV average moved less than 0.02 C over one 6 minute window, and PV below SP by more than 0.08 C and not rising) instead of six uninterrupted minutes of per-sample flatness, which a 0.1 C probe never allowed. The measured duty is still 95 percent of the actual duty, up only, bounded by the same ceiling; it only removes braking, cannot raise the cap above what PID asks, and a rise or overshoot still cuts the hold. ThermalController (PID), RelayAutoTune, High 38.2 C / Emergency 39.0 C, OutputArbiter, schemas and EEPROM are unchanged. Simulation only: tests/thermal-slow-oven.cpp gains six runs (hold 4-5 percent, delay 60 s, strong heater, ventilation, three modes) that sat 0.5 C under SP before; the 788-case matrix moves 186 -> 185 PASS (one borderline cold-start row), total MAE improves, High/Emergency stay 0.",
   "release1111ReviewNote": "2026-10-20: reviewed 1.1.11: version-only config.h change (MAYAP_FIRMWARE_VERSION 1.1.10 -> 1.1.11); MachineConfig layout, schemas and defaults untouched. Firmware changes of this release are reviewed in holdWindowReviewNote (thermal_control.h hold measurement window) and firmwareCheckFeedbackReviewNote (HMI shows the firmware check result).",
+  "release234ReviewNote": "2026-10-28: reviewed 2.3.4 (groups: update during a batch, developer mode default). firmware_update_guard.h: a self-expiring heater hold (30 s) that mayapFirmwareMaintenance drops on every exit. ota_web_update.h: mayapFirmwareWebApplyNow() sets the hold only before the final Update.end() and clears it on failure; mayapFirmwareWebUpdate() records when an attempt ended without a restart (throttle of the remote update-now); download, SHA-256, signature, partition switch, rollback and the automatic countdown are unchanged. machine_control.h: the update-ready rule moved into maintenance_policy.h (host-tested: developer mode only, PV within 1 C of SV, never while resume/stop-record is pending); a running batch is checkpointed once when any update starts; the Web update command no longer forces outputs safe or sets webHeaterOff_ (the heater stays under control during the download); remote output spacing per kind, the heater being switched back ON is never delayed; developer mode is applied once as the factory default and a Web technical request that touches a calibration or protection field still waits for the HMI. config.h: firmware version only. No thermal, E115, High/Emergency or OutputArbiter logic changed. Evidence: tests/firmware-check.cpp, tests/tech-access.cpp, tests/tech-controller.cpp.",
   "firmwareCheckParserReviewNote": "2026-10-20: ota_web_update.h: the answer of POST /api/firmware/check is read into a 2560-byte heap buffer (was a 1024-byte stack buffer that silently dropped the 1117-byte answer carrying the release notes) and parsed by the new host-tested firmware_check_parse.h (ArduinoJson filter, version/hash/signature syntax, numeric version compare); every outcome sets checkPhase/lastError and a [FWWEB] line. mayapFirmwareWebUpdate() only gains setError() texts when a manual check is waiting (offline / TLS admission refused); admission, thresholds, timing and the apply path (download, SHA-256, signature, rollback) are unchanged.",
   "thermalStartup1112ReviewNote": "2026-10-20: reviewed 1.1.12. thermal_control.h, class ThermalStartupController only (ThermalController PID, RelayAutoTune, High 38.2 C / Emergency 39.0 C, OutputArbiter, E115, schemas and EEPROM are unchanged and keep their hashes). (1) First rise is also recognised by a PV rise of 0.25 C since the first heat, not only by an IIR slope above 0.003 C/s which a weak or heavy oven never reaches (the hold learner, the delay estimate and the measured gain stayed switched off and PV sat 0.5 C under SP for hours). (2) The heater gain is measured from the ON-time older than the apparent delay (ring of ON-time snapshots, 80 x 10 s) and scales the legacy energy coast by 4 x measured / assumed (floor 0.2, never above 1); it is revoked for good when PV exceeds SP + 0.15 C. A 2x reserve was tried and rejected: three holdout rows (90 s dead time, 31 C room) reached 0.8 C over SP. (3) The slow-oven hold measurement reads the ACTUAL duty over the flat window shifted back by the apparent delay instead of the last 4 minutes. (4) The controller enters HOLD (integral thawed) when PV is within 0.12 C of its 150 s average even though the 10 s IIR slope spikes at every 0.1 C probe step; before, a 0.1 C probe never reached HOLD and the integral stayed frozen 0.1 C under SP. Evidence (simulation only, not validated on a real oven): 4608-case grid never-reached-SP 315 -> 162 (legacy) / 154 -> 62 (Adaptive), median rise -10 percent, MAE 0.223 -> 0.165 / 0.089 -> 0.067, High/Emergency 0; commissioning 788 matrix, 2160 matrix and holdout A/B: no extra High/Emergency row, PASS 700 -> 722, 1605 -> 1674, 301 -> 323 (audit/smart-thermal/baseline-slow-oven regenerated, see its README). tests/thermal-sensor-path-baseline.json FALSE_TRIP_NO_FAULT ceiling 4 -> 5 with the reason recorded there; tests/thermal-fastpath-baseline.json gains the production MAE/P95/ripple ceilings. config.h: version only.",
   "release1112ReviewNote": "2026-10-20: reviewed 1.1.12: version-only config.h change (MAYAP_FIRMWARE_VERSION 1.1.11 -> 1.1.12); MachineConfig layout, schemas and defaults untouched. Firmware changes of this release: thermal_control.h (thermalStartup1112ReviewNote) and the OTA check-answer parser (firmwareCheckParserReviewNote).",

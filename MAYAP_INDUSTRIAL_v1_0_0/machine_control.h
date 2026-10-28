@@ -3,6 +3,7 @@
 #include "config.h"
 #include "turn_schedule_policy.h"
 #include "firmware_update_guard.h"
+#include "maintenance_policy.h"
 #include "boot_diagnostic.h"
 #include "startup_output_policy.h"
 #include "attiny_state_sync.h"
@@ -3835,7 +3836,8 @@ class MachineController {
     }
     storageFaultLatched_ = EXTERNAL_EEPROM_REQUIRED && (!storeReady || !configLoaded_);
     faults_.set(FaultCode::StorageUnavailable, storageFaultLatched_, bootAt_);
-    techGate_.begin(bootAt_);      // PIN record (a read error keeps the gate closed), strike counters, Web permission (default HIDDEN)
+    techGate_.begin(bootAt_);      // PIN record (a read error keeps the gate closed), strike counters, Web permission
+    (void)techGate_.applyDeveloperDefault();   // developer mode is ON by default for a record that never recorded a choice
     history_.begin();
     refreshHistoryCache();
     mayapSetConnectivityMode(config_.connectivityMode);
@@ -3995,16 +3997,23 @@ class MachineController {
     updateAttinyLink(now);
     updateBatchTime(now);
     serviceBatchLog(now);
-    const OutputState &maintenanceOut = outputs_.state();
-    const bool devMode = techGate_.developerMode();
-    // Safety Interlocks: Developer mode allows OTA during batch if thermal envelope is stable!
-    const bool tempSafe = !batchRunning_ || (sensorUsable_ && isfinite(temperature_) &&
-                          temperature_ >= 36.0f && temperature_ <= 38.5f &&
-                          !highTemperatureActive_ && !emergencyActive_);
-    const bool batchPermit = (!batchRunning_ && !resumePending_ && !batchClearPending_) || (devMode && tempSafe);
-    mayapSetFirmwareMaintenanceReady(batchPermit && !testModeActive_ &&
-        !maintenanceOut.turnLeft && !maintenanceOut.turnRight &&
-        !emergencyActive_);
+    {
+      const OutputState &maintenanceOut = outputs_.state();
+      MayapMaintenance::ReadyInputs ready;
+      ready.batchRunning = batchRunning_; ready.resumePending = resumePending_; ready.batchClearPending = batchClearPending_;
+      ready.testMode = testModeActive_; ready.turning = maintenanceOut.turnLeft || maintenanceOut.turnRight;
+      ready.emergency = emergencyActive_; ready.highTemp = highTemperatureActive_;
+      ready.developerMode = techGate_.developerMode(); ready.sensorUsable = sensorUsable_;
+      ready.temperature = temperature_; ready.setpoint = config_.targetTemp;
+      mayapSetFirmwareMaintenanceReady(MayapMaintenance::ready(ready));
+      // Whoever starts an update (HMI, Web, or the automatic path), a running batch is checkpointed once when the download begins.
+      const bool downloading = mayapFirmwareApplyPhase() == 1U;
+      if (downloading && batchRunning_ && !otaCheckpointDone_) {
+        checkpointBatch();
+        mayapSerialPrintf(false, "[OTA] Chot checkpoint me ap truoc khi nap firmware\n");
+      }
+      otaCheckpointDone_ = downloading;
+    }
     serviceHealthMonitor(now);
     // Lich su nhiet tach khoi Flash ESP32/Cloud: chi ghi AT24C32 moi 5 phut.
     // Ham tu bo qua neu RTC/cam bien khong hop le va tu tranh ghi lap sau reboot.
@@ -4737,12 +4746,9 @@ class MachineController {
           if (!mayapFirmwareMaintenanceReady() || mayapFirmwareMaintenanceActive()) {
             message = "DUNG ME/TEST VA TAT CONG TAC NHIET TRUOC"; break;
           }
-          if (batchRunning_) {
-            checkpointBatch();
-            outputs_.forceSafe(now);
-            webHeaterOff_ = true;
-            mayapSerialPrintf(false, "[OTA] Chot checkpoint me ap truoc khi nap firmware\n");
-          }
+          if (remote && !techGate_.developerMode()) { message = "CAN_BAT_CD_NHA_PHAT_TRIEN"; break; }
+          if (!mayapFirmwareApplyAllowed(now, !remote)) { message = "DANG TAI HOAC MOI LOI, THU LAI SAU 10 PHUT"; break; }
+          // Khong cat thanh nhiet o day: thanh nhiet van chay binh thuong trong luc tai; chi giu tat vai giay o buoc ghi flash cuoi.
           // Chi dat co hieu cho otaTask (mayapFirmwareWebUpdate() trong
           // ota_web_update.h) - viec tai ve/flash thuc su co the mat vai
           // chuc giay, controlTask khong duoc phep block.
@@ -4973,7 +4979,7 @@ class MachineController {
         if (!pinOk) { message = "MA KHONG HOP LE"; break; }
         const TechAccess::Result r = techGate_.setPin(now, pin);
         ok = techResultText(r, now, false, message);
-        if (ok) message = "DA LUU MA KY THUAT";
+        if (ok) { (void)techGate_.applyDeveloperDefault(); message = "DA LUU MA KY THUAT"; }
         break;
       }
       case HmiCommandType::TechLock:
@@ -5061,7 +5067,8 @@ class MachineController {
     techPending_ = next;
     techResult_ = TechResult::Pending;
     snprintf(techResultId_, sizeof(techResultId_), "%s", next.requestId);
-    if (techGate_.developerMode()) {
+    // Developer mode applies a request at once, except one that touches a sensor calibration or a protection: that still waits for the HMI.
+    if (techGate_.developerMode() && (next.mask & AdvancedHistory::ProtectedMask) == 0U) {
       return executeTechPending(now, message);
     }
     message = "PENDING_HMI";
@@ -5110,6 +5117,7 @@ class MachineController {
     if (techGate_.storageError() && timeReached(now, techRetryAt_)) {
       techRetryAt_ = now + 3000UL;
       techGate_.retryLoad(now);
+      (void)techGate_.applyDeveloperDefault();
       history_.begin();
       refreshHistoryCache();
     }
@@ -5238,11 +5246,15 @@ class MachineController {
   }
   bool handleWebOutput(uint32_t now, const HmiCommand &command, const char *&message) {
     if (command.source != HmiCommandSource::Remote) { message = "CHI WEB DUOC GUI"; return false; }
-    static uint32_t lastRemoteCmdAt = 0U;
-    if (lastRemoteCmdAt != 0U && static_cast<uint32_t>(now - lastRemoteCmdAt) < 2000UL) {
-      message = "LENH QUA NHANH, CHO 2S";
-      return false;
-    }
+    // The same toggle is not repeated faster than REMOTE_OUTPUT_GAP_MS; a command that RESTORES a safe state (heater back on) and every
+    // other kind of command is never delayed.
+    auto gapOk = [&](uint32_t &last, bool restores) {
+      if (!MayapMaintenance::commandGapOk(now, last, MayapMaintenance::REMOTE_OUTPUT_GAP_MS, restores)) {
+        message = "LENH QUA NHANH, CHO 2S";
+        return false;
+      }
+      return true;
+    };
     uint8_t need = 0U;
     switch (command.type) {
       case HmiCommandType::WebVentToggle: need = WebCtlVent; break;
@@ -5257,15 +5269,17 @@ class MachineController {
     const OutputState &o = outputs_.state();
     switch (command.type) {
       case HmiCommandType::WebVentToggle: {
-        if (webOverrideLive(webVentUntil_, now)) { webVentUntil_ = 0U; message = "QUAT HUT: TU DONG"; lastRemoteCmdAt = now; return true; }
+        if (!gapOk(lastWebVentCmdAt_, false)) return false;
+        lastWebVentCmdAt_ = now;
+        if (webOverrideLive(webVentUntil_, now)) { webVentUntil_ = 0U; message = "QUAT HUT: TU DONG"; return true; }
         webVentValue_ = !o.ventFan;
         webVentUntil_ = now + WEB_OVERRIDE_MS; if (webVentUntil_ == 0U) webVentUntil_ = 1U;
         message = webVentValue_ ? "DA BAT QUAT HUT (15 PHUT)" : "DA TAT QUAT HUT (15 PHUT)";
-        lastRemoteCmdAt = now;
         return true;
       }
       case HmiCommandType::WebCircToggle: {
-        if (webOverrideLive(webCircUntil_, now)) { webCircUntil_ = 0U; message = "QUAT TUAN HOAN: TU DONG"; lastRemoteCmdAt = now; return true; }
+        if (!gapOk(lastWebCircCmdAt_, false)) return false;
+        if (webOverrideLive(webCircUntil_, now)) { webCircUntil_ = 0U; message = "QUAT TUAN HOAN: TU DONG"; lastWebCircCmdAt_ = now; return true; }
         if (o.circulationFan && (o.heaterSsr || o.heatMaster || temperature_ > 38.0f)) {
           message = "NGUY HIEM: THANH NHIET NONG, KHONG THE TAT QUAT";
           return false;
@@ -5273,12 +5287,13 @@ class MachineController {
         webCircValue_ = !o.circulationFan;
         webCircUntil_ = now + WEB_OVERRIDE_MS; if (webCircUntil_ == 0U) webCircUntil_ = 1U;
         message = webCircValue_ ? "DA BAT QUAT TUAN HOAN (15 PHUT)" : "DA TAT QUAT TUAN HOAN (15 PHUT)";
-        lastRemoteCmdAt = now;
+        lastWebCircCmdAt_ = now;
         return true;
       }
       case HmiCommandType::WebHeaterToggle:
+        if (!gapOk(lastWebHeaterCmdAt_, webHeaterOff_)) return false;   // switching the heater back ON is never delayed
         webHeaterOff_ = !webHeaterOff_;
-        lastRemoteCmdAt = now;
+        lastWebHeaterCmdAt_ = now;
         message = webHeaterOff_ ? "DA NGAT THANH NHIET TU XA" : "DA CHO THANH NHIET HOAT DONG LAI";
         return true;
       case HmiCommandType::WebSirenToggle:
@@ -6575,8 +6590,9 @@ class MachineController {
         storageAllowsHeat && !abnormalResetLatched_ &&
         batchAllowsHeat && sensorUsable_ && fanAllowsHeat &&
         timeReached(now, heatRestartNotBefore_);
+    const bool otaHold = mayapFirmwareHeaterHoldActive(now);   // the final flash write of an update (self-expiring)
     const bool normalSsrPermit = normalMasterPermit && heaterPidConditions &&
-        !faults_.ssrInhibited() && !ventHeaterBlock_;
+        !faults_.ssrInhibited() && !ventHeaterBlock_ && !otaHold;
     const bool actuatorReady = outputs_.heaterReady(now) && mayapBootOperationsReady() &&
         !mayapSystemTripLatched() && !mayapFirmwareMaintenanceActive();
 
@@ -6585,7 +6601,7 @@ class MachineController {
     // heater request in percent. Protection (High / Emergency / sensor / contactor / SSR inhibit) is decided above
     // and below it and never reads this value. The request is clamped to [0, cap] by the adapter and then goes through
     // the burst scheduler and the output arbiter like any other request.
-    const bool v3Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && ventHeaterBlock_ && actuatorReady;   // blocked ONLY by the heater block line
+    const bool v3Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && (ventHeaterBlock_ || otaHold) && actuatorReady;   // blocked ONLY by the heater block line or the final flash write
     float commandedPower = thermalV3Command(now, normalSsrPermit && actuatorReady, v3Shadow);
     // ====================================================================================================
     newSensorSample_ = false;
@@ -8153,6 +8169,8 @@ class MachineController {
   ConditionTimer ventOnTimer_{};
   ConditionTimer ventOffTimer_{};
   uint32_t ventLineNotBefore_ = 0U;
+  uint32_t lastWebVentCmdAt_ = 0U, lastWebCircCmdAt_ = 0U, lastWebHeaterCmdAt_ = 0U;   // spacing of repeated remote toggles (per kind)
+  bool otaCheckpointDone_ = false;                   // the batch was checkpointed for the update that is downloading now
   bool ventHeaterBlock_ = false;                     // the heater is held off well above SV (see updateAlarms); the fan has its own line
   uint8_t ventReason_ = 0U;
   bool lowTemperatureActive_ = false;
