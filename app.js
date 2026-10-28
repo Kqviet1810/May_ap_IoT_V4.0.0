@@ -1315,7 +1315,8 @@
       summaryEl.textContent = `Có bản mới: v${latest.version}`;
       bodyEl.innerHTML = `<p class="settingFootnote">Đang chạy v${escapeHtml(currentVersion)} · có bản v${escapeHtml(latest.version)} mới hơn.</p><button class="primary full" id="firmwareUpdateBtn" type="button">Cập nhật lên v${escapeHtml(latest.version)}</button>${rollbackButtonHtml}`;
       $('firmwareUpdateBtn')?.addEventListener('click', () => {
-        const isDev = Boolean(device?.tech?.devMode || state.telemetry?.tech?.devMode);
+        // The machine publishes the flag in runtime.tech (transaction_bridge.h); the Web keeps that runtime in device.snapshot.
+        const isDev = device?.snapshot?.runtime?.tech?.devMode === true;
         if (isDev) {
           sendCommand('apply_firmware_now');
           toast('Chế độ nhà phát triển: Đã ra lệnh tải và cập nhật firmware từ xa...', 6000);
