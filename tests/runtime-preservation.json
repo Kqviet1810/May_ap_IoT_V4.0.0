@@ -58,12 +58,12 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "14ad1ddb74ffc0d2b7fe0f095c65b998c2493fef8b21dab41cb0a5677d73fc56",
+      "sha256": "b537c847ce9b14dca4583bef6e6fdbc23673def0a69774868b32920d88ac3999",
       "filter": "config"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "bc0177a38a689bcc4c698fcebadbbb4f001f8d21d4b32564faccc29150fac815",
+      "sha256": "51e32cca2f92d4a764e669c7a861595e1590229eb63563732f9db1b6e39c702d",
       "signature": "class MachineController {"
     },
     {
@@ -145,13 +145,13 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/ota_web_update.h",
-      "sha256": "b0a287d18e33278325d3094831903e6d2943f376253a9bea524dfebfb3da0c55",
+      "sha256": "b1a9958e737c3cc5d8d53e1a3c117ea7758a8d283d4e8f6b643f277dc0e87670",
       "signature": "inline void mayapFirmwareWebApplyNow()",
       "filter": "webBeat"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/ota_web_update.h",
-      "sha256": "e09f8b485535eebb8478e9cdc6f33cae150c5aec62247f126abb700a9add7d83",
+      "sha256": "920def01bbd7761d5abbada3317a023327939b53404038f323934128fe2c0b1a",
       "signature": "inline void mayapFirmwareWebUpdate("
     },
     {

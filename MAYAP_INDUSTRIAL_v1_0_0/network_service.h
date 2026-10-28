@@ -216,8 +216,7 @@ inline bool startStation(uint32_t now) {
     stopRadio();
     return false;
   }
-  // Cho phep MAC layer tu dong reassociate khi gap Band Steering hoac GTK Rekeying
-  (void)WiFi.setAutoReconnect(true);
+  (void)WiFi.setAutoReconnect(false);
   if (!staEventRegistered) {
     WiFi.onEvent(onStaDisconnected, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
     WiFi.onEvent(onStaLostIp, ARDUINO_EVENT_WIFI_STA_LOST_IP);
@@ -1003,7 +1002,7 @@ inline bool mayapNetworkDeepRecoveryUpdate(uint32_t now, bool externalIoBusy) {
 
     // Ordinary loss/weak Wi-Fi must never WIFI_OFF/WIFI_STA-cycle the shared
     // driver. Drain owners first, then ask the existing STA to reconnect in place.
-    (void)WiFi.setAutoReconnect(true);
+    (void)WiFi.setAutoReconnect(false);
     const bool reconnectAccepted = WiFi.reconnect();
     if (!reconnectAccepted) {
       const char *password = activePassword[0] == '\0' ? nullptr : activePassword;
@@ -1154,7 +1153,7 @@ inline void mayapNetworkUpdate(uint32_t now) {
 
   // The station is up but not associated: a plain in-place reconnect. No owner drain (their sockets died with the link), no
   // WIFI_OFF/WIFI_STA cycle, no driver re-init.
-  (void)WiFi.setAutoReconnect(true);
+  (void)WiFi.setAutoReconnect(false);
   const bool accepted = WiFi.reconnect();
   if (!accepted) {
     const char *password = activePassword[0] == '\0' ? nullptr : activePassword;

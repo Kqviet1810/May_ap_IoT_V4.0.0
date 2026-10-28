@@ -19,7 +19,6 @@
 #include <algorithm>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
-#include <esp_wifi.h>
 
 void mayapOtaRollbackBegin();
 
@@ -281,7 +280,6 @@ inline void mayapFirmwareWebApplyNow() {
 
   __atomic_store_n(&applyPhase, 1U, __ATOMIC_RELEASE);
   __atomic_store_n(&downloadPercent, 0U, __ATOMIC_RELEASE);
-  (void)esp_wifi_set_ps(WIFI_PS_NONE); // Khoa cong suat radio cuc dai, khong ngu tiet kiem dien khi OTA
   mayapSerialPrintf(false, "[FWWEB] Bat dau tai firmware v%s (%lu bytes)...\n",
                     status.version, static_cast<unsigned long>(status.size));
 
