@@ -1179,7 +1179,7 @@ struct HmiEventSnapshot {
 // Technical access ("Nang cao") state, mirrored READ-ONLY for the HMI and the Web. Owner: MachineController (control task).
 enum class TechResult : uint8_t { None, Pending, Applied, Declined, Expired, Failed, Revoked };
 struct TechStatus {
-  bool pinSet = false, hmiUnlocked = false, webAllowed = false, webSession = false, storageError = false;
+  bool pinSet = false, hmiUnlocked = false, webAllowed = false, webSession = false, devMode = false, storageError = false;
   uint16_t lockRemainingS = 0;
   uint16_t webSessionRemainingS = 0;
   uint8_t pendingKind = 0;            // 0 none, 1 config change (2 was Smart AutoTune: retired)
@@ -1318,7 +1318,8 @@ enum class HmiCommandType : uint8_t {
   WebCtlSet,          // Local only: alarmMask = permission bits (WebCtl* below) the Web may use
   WebVentToggle, WebCircToggle, WebHeaterToggle, WebSirenToggle,
   WebTurnHold,        // Remote: alarmMask = direction (0 stop, 1 left, 2 right) | lease ms << 8 (the machine stops by itself when the lease ends)
-  FactoryReset        // Local only: khoi phuc cai dat goc (MachineConfig, NVS, EEPROM) va khoi dong lai
+  FactoryReset,       // Local only: khoi phuc cai dat goc (MachineConfig, NVS, EEPROM) va khoi dong lai
+  DeveloperModeSet    // Local only: alarmMask 1 = bat CD nha phat trien (full quyen tu xa), 0 = tat
 };
 // Permission bits of the Web output control (HMI Advanced). Heater, vent, circulation, light, siren, egg turning.
 enum : uint8_t { WebCtlHeater = 1, WebCtlVent = 2, WebCtlCirc = 4, WebCtlLight = 8, WebCtlSiren = 16, WebCtlTurn = 32, WebCtlAutoUpdate = 64, WebCtlAll = 127 };

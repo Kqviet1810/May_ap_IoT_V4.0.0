@@ -26,31 +26,37 @@
 // lai duoc nua.
 namespace MayapOtaRollbackInternal {
 static bool cachedTargetValid = false;
+static char cachedTargetVersion[32] = "";
 static volatile uint8_t requestFlag = 0U;
 }  // namespace MayapOtaRollbackInternal
 
 // Kiem tra vi tri OTA CON LAI (khong phai vi tri dang chay hien tai) co dang
-// giu 1 anh firmware HOP LE hay khong, bang cach doc byte "magic" dau tien
-// cua anh ESP32 (0xE9 - ESP_IMAGE_HEADER_MAGIC). Chi doc 1 byte (khong doc
-// toan bo anh ~3MB), du de phan biet "co firmware that" voi "con trong/da
-// xoa tu nha may hoac chua tung OTA lan nao" (flash trong mang gia tri
-// 0xFF). KHONG cho phep quay lai vao vung nho rac - se lam thiet bi khong
-// khoi dong duoc, phai chinh sua that.
-inline bool mayapRollbackTargetValidUncached() {
+// giu 1 anh firmware HOP LE hay khong bang cach doc cau truc esp_app_desc_t
+// chuan cua ESP-IDF. Doc magic word va lay so hieu phien ban (version) chinh xac,
+// ngan chan hoan toan truong hop file tai do mang magic 0xE9 bi nhan nham la hop le.
+inline bool mayapRollbackTargetValidUncached(char *outVersion = nullptr, size_t outSize = 0) {
+  if (outVersion && outSize > 0) outVersion[0] = '\0';
   const esp_partition_t *running = esp_ota_get_running_partition();
   if (!running) return false;
   const esp_partition_t *target = esp_ota_get_next_update_partition(running);
   if (!target) return false;
-  uint8_t magic = 0U;
-  if (esp_partition_read(target, 0, &magic, 1U) != ESP_OK) return false;
-  return magic == 0xE9U;
+  esp_app_desc_t desc;
+  if (esp_ota_get_partition_description(target, &desc) != ESP_OK) return false;
+  if (desc.magic_word != ESP_APP_DESC_MAGIC_WORD) return false;
+  if (desc.version[0] == '\0' || static_cast<uint8_t>(desc.version[0]) == 0xFF) return false;
+  if (outVersion && outSize > 0) {
+    snprintf(outVersion, outSize, "%s", desc.version);
+  }
+  return true;
 }
 
 // Goi 1 LAN trong setup() (xem .ino) - ket qua chi thay doi qua 1 lan
 // OTA/rollback that su (luon di kem khoi dong lai), nen cache lai thay vi
 // doc flash lai moi khi HMI can biet de an/hien muc menu.
 inline void mayapOtaRollbackBegin() {
-  MayapOtaRollbackInternal::cachedTargetValid = mayapRollbackTargetValidUncached();
+  MayapOtaRollbackInternal::cachedTargetValid = mayapRollbackTargetValidUncached(
+      MayapOtaRollbackInternal::cachedTargetVersion,
+      sizeof(MayapOtaRollbackInternal::cachedTargetVersion));
 }
 
 // HMI dung ham nay de quyet dinh an/hien muc "Quay lai ban cu", va
@@ -58,6 +64,10 @@ inline void mayapOtaRollbackBegin() {
 // doi otaTask xu ly xong moi biet co lam duoc hay khong).
 inline bool mayapRollbackAvailable() {
   return MayapOtaRollbackInternal::cachedTargetValid;
+}
+
+inline const char *mayapRollbackTargetVersion() {
+  return MayapOtaRollbackInternal::cachedTargetVersion;
 }
 
 // Chi dat co hieu - viec THAT SU doi vi tri khoi dong + restart nam trong

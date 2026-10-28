@@ -181,6 +181,7 @@ class Gate {
   bool pinConfigured() const { return loaded_ || storageError_; }
   bool webAllowed() const { return loaded_ && (rec_.flags & FlagWebAllowed) != 0U; }
   uint8_t webCtlMask() const { return loaded_ ? static_cast<uint8_t>(((rec_.flags & FlagWebCtlBits) >> FlagWebCtlShift) ^ WebCtlDefaultMask) : WebCtlDefaultMask; }
+  bool developerMode() const { return webAllowed() && (webCtlMask() == 0x7FU); }
   uint8_t failCount() const { return loaded_ ? rec_.failCount : 0U; }
 
   bool lockedOut(uint32_t now) {
@@ -273,6 +274,24 @@ class Gate {
     return Result::Ok;
   }
 
+  // Developer mode: full remote authority (webAllowed + all webCtlMask outputs + persistent session).
+  Result setDeveloperMode(uint32_t now, bool enable) {
+    if (!loaded_) return Result::NotSet;
+    if (!hmiUnlocked(now)) return Result::NotUnlocked;
+    AuthRecord next = rec_;
+    if (enable) {
+      next.flags = static_cast<uint8_t>(next.flags | FlagWebAllowed);
+      const uint8_t mask = 0x7FU;
+      next.flags = static_cast<uint8_t>((next.flags & ~FlagWebCtlBits) | ((static_cast<uint8_t>((mask & 0x7F) ^ WebCtlDefaultMask) << FlagWebCtlShift) & FlagWebCtlBits));
+    } else {
+      next.flags = static_cast<uint8_t>(next.flags & ~FlagWebAllowed);
+      next.flags = static_cast<uint8_t>(next.flags & ~FlagWebCtlBits);
+    }
+    if (next.flags != rec_.flags && !persist(next)) return Result::StorageError;
+    if (!enable) revokeWeb();
+    return Result::Ok;
+  }
+
   // Web session ----------------------------------------------------------------------------------------------------
   Result unlockWeb(uint32_t now, const char *pin) {
     if (storageError_) return Result::StorageError;
@@ -283,6 +302,7 @@ class Gate {
     return r;
   }
   bool webSessionActive(uint32_t now) {
+    if (developerMode()) return true;
     if (webSession_ && (!webAllowed() || timeReached(now, webUntil_))) webSession_ = false;
     return webSession_;
   }

@@ -3996,11 +3996,15 @@ class MachineController {
     updateBatchTime(now);
     serviceBatchLog(now);
     const OutputState &maintenanceOut = outputs_.state();
-    mayapSetFirmwareMaintenanceReady(!batchRunning_ && !resumePending_ &&
-        !batchClearPending_ && !testModeActive_ &&
-        !maintenanceOut.heaterSsr && !maintenanceOut.heatMaster &&
+    const bool devMode = techGate_.developerMode();
+    // Safety Interlocks: Developer mode allows OTA during batch if thermal envelope is stable!
+    const bool tempSafe = !batchRunning_ || (sensorUsable_ && isfinite(temperature_) &&
+                          temperature_ >= 36.0f && temperature_ <= 38.5f &&
+                          !highTemperatureActive_ && !emergencyActive_);
+    const bool batchPermit = (!batchRunning_ && !resumePending_ && !batchClearPending_) || (devMode && tempSafe);
+    mayapSetFirmwareMaintenanceReady(batchPermit && !testModeActive_ &&
         !maintenanceOut.turnLeft && !maintenanceOut.turnRight &&
-        !highTemperatureActive_ && !emergencyActive_);
+        !emergencyActive_);
     serviceHealthMonitor(now);
     // Lich su nhiet tach khoi Flash ESP32/Cloud: chi ghi AT24C32 moi 5 phut.
     // Ham tu bo qua neu RTC/cam bien khong hop le va tu tranh ghi lap sau reboot.
@@ -4733,6 +4737,11 @@ class MachineController {
           if (!mayapFirmwareMaintenanceReady() || mayapFirmwareMaintenanceActive()) {
             message = "DUNG ME/TEST VA TAT CONG TAC NHIET TRUOC"; break;
           }
+          if (batchRunning_) {
+            checkpointBatch();
+            outputs_.setHeater(false, false);
+            mayapSerialPrintf(false, "[OTA] Chot checkpoint me ap truoc khi nap firmware\n");
+          }
           // Chi dat co hieu cho otaTask (mayapFirmwareWebUpdate() trong
           // ota_web_update.h) - viec tai ve/flash thuc su co the mat vai
           // chuc giay, controlTask khong duoc phep block.
@@ -4994,6 +5003,17 @@ class MachineController {
         }
         break;
       }
+      case HmiCommandType::DeveloperModeSet: {
+        if (remote) { message = "CHI HMI DUOC DOI QUYEN"; break; }
+        const bool enable = command.alarmMask != 0UL;
+        const TechAccess::Result r = techGate_.setDeveloperMode(now, enable);
+        ok = techResultText(r, now, false, message);
+        if (ok) {
+          if (!enable) webOutputsRevoke(now, WebCtlAll);
+          message = enable ? "DA BAT CD NHA PHAT TRIEN" : "DA TAT CD NHA PHAT TRIEN";
+        }
+        break;
+      }
       case HmiCommandType::TechDecision: {
         if (remote) { message = "CHI HMI DUOC XAC NHAN"; break; }
         if (techPending_.kind == MayapTech::Kind::None) { message = "KHONG CO YEU CAU"; break; }
@@ -5040,6 +5060,9 @@ class MachineController {
     techPending_ = next;
     techResult_ = TechResult::Pending;
     snprintf(techResultId_, sizeof(techResultId_), "%s", next.requestId);
+    if (techGate_.developerMode()) {
+      return executeTechPending(now, message);
+    }
     message = "PENDING_HMI";
     return true;
   }
@@ -5101,6 +5124,7 @@ class MachineController {
     t.hmiUnlocked = techGate_.hmiUnlocked(now);
     t.webAllowed = techGate_.webAllowed();
     t.webCtlMask = techGate_.webCtlMask();
+    t.devMode = techGate_.developerMode();
     mayapSetFirmwareAutoUpdate((t.webCtlMask & WebCtlAutoUpdate) != 0U);        // the OTA task updates by itself only while the HMI lets it
     t.webCtlActive = webOutputsActive(now);
     t.webSession = techGate_.webSessionActive(now);
@@ -5213,6 +5237,11 @@ class MachineController {
   }
   bool handleWebOutput(uint32_t now, const HmiCommand &command, const char *&message) {
     if (command.source != HmiCommandSource::Remote) { message = "CHI WEB DUOC GUI"; return false; }
+    static uint32_t lastRemoteCmdAt = 0U;
+    if (lastRemoteCmdAt != 0U && static_cast<uint32_t>(now - lastRemoteCmdAt) < 2000UL) {
+      message = "LENH QUA NHANH, CHO 2S";
+      return false;
+    }
     uint8_t need = 0U;
     switch (command.type) {
       case HmiCommandType::WebVentToggle: need = WebCtlVent; break;
@@ -5227,21 +5256,28 @@ class MachineController {
     const OutputState &o = outputs_.state();
     switch (command.type) {
       case HmiCommandType::WebVentToggle: {
-        if (webOverrideLive(webVentUntil_, now)) { webVentUntil_ = 0U; message = "QUAT HUT: TU DONG"; return true; }
+        if (webOverrideLive(webVentUntil_, now)) { webVentUntil_ = 0U; message = "QUAT HUT: TU DONG"; lastRemoteCmdAt = now; return true; }
         webVentValue_ = !o.ventFan;
         webVentUntil_ = now + WEB_OVERRIDE_MS; if (webVentUntil_ == 0U) webVentUntil_ = 1U;
         message = webVentValue_ ? "DA BAT QUAT HUT (15 PHUT)" : "DA TAT QUAT HUT (15 PHUT)";
+        lastRemoteCmdAt = now;
         return true;
       }
       case HmiCommandType::WebCircToggle: {
-        if (webOverrideLive(webCircUntil_, now)) { webCircUntil_ = 0U; message = "QUAT TUAN HOAN: TU DONG"; return true; }
+        if (webOverrideLive(webCircUntil_, now)) { webCircUntil_ = 0U; message = "QUAT TUAN HOAN: TU DONG"; lastRemoteCmdAt = now; return true; }
+        if (o.circulationFan && (o.heaterSsr || o.heatMaster || temperature_ > 38.0f)) {
+          message = "NGUY HIEM: THANH NHIET NONG, KHONG THE TAT QUAT";
+          return false;
+        }
         webCircValue_ = !o.circulationFan;
         webCircUntil_ = now + WEB_OVERRIDE_MS; if (webCircUntil_ == 0U) webCircUntil_ = 1U;
         message = webCircValue_ ? "DA BAT QUAT TUAN HOAN (15 PHUT)" : "DA TAT QUAT TUAN HOAN (15 PHUT)";
+        lastRemoteCmdAt = now;
         return true;
       }
       case HmiCommandType::WebHeaterToggle:
         webHeaterOff_ = !webHeaterOff_;
+        lastRemoteCmdAt = now;
         message = webHeaterOff_ ? "DA NGAT THANH NHIET TU XA" : "DA CHO THANH NHIET HOAT DONG LAI";
         return true;
       case HmiCommandType::WebSirenToggle:

@@ -1315,8 +1315,14 @@
       summaryEl.textContent = `Có bản mới: v${latest.version}`;
       bodyEl.innerHTML = `<p class="settingFootnote">Đang chạy v${escapeHtml(currentVersion)} · có bản v${escapeHtml(latest.version)} mới hơn.</p><button class="primary full" id="firmwareUpdateBtn" type="button">Cập nhật lên v${escapeHtml(latest.version)}</button>${rollbackButtonHtml}`;
       $('firmwareUpdateBtn')?.addEventListener('click', () => {
-        sendCommand('firmware_check_now');
-        toast('Đã yêu cầu kiểm tra. Trên màn hình máy: Cài đặt chung → Hệ thống → Cập nhật. Dừng mẻ và tắt công tắc nhiệt trước khi xác nhận cập nhật.', 8000);
+        const isDev = Boolean(device?.tech?.devMode || state.telemetry?.tech?.devMode);
+        if (isDev) {
+          sendCommand('firmware_apply_now');
+          toast('Chế độ nhà phát triển: Đã ra lệnh tải và cập nhật firmware từ xa...', 6000);
+        } else {
+          sendCommand('firmware_check_now');
+          toast('Đã yêu cầu kiểm tra. Trên màn hình máy: Cài đặt chung → Hệ thống → Cập nhật. Dừng mẻ và tắt công tắc nhiệt trước khi xác nhận cập nhật.', 8000);
+        }
       });
       maybeNotifyFirmwareUpdate(device, latest.version);
     } else if (latest) {

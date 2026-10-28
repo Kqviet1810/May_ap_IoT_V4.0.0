@@ -65,6 +65,8 @@ static volatile uint8_t autoUpdateAllowed = 1U;
 static volatile uint8_t autoCountdownS = 255U;
 static uint32_t autoReadySince = 0U;
 static char autoTriedVersion[16] = "";
+static uint32_t autoTriedAt = 0U;
+static uint32_t applyFailedAt = 0U;
 constexpr uint32_t AUTO_UPDATE_DELAY_MS = 60000UL;
 
 static portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
@@ -143,7 +145,12 @@ inline FirmwareWebStatus mayapFirmwareWebStatus() {
 // Goi tu HMI (machine_control.h) khi nguoi van hanh da XAC NHAN dong y cap
 // nhat - chi dat co, viec tai ve/flash thuc su lam ben trong otaTask.
 inline void mayapRequestFirmwareWebApply() {
-  __atomic_store_n(&MayapFirmwareWebInternal::applyRequestFlag, 1U, __ATOMIC_RELEASE);
+  using namespace MayapFirmwareWebInternal;
+  setError("");
+  __atomic_store_n(&applyPhase, 0U, __ATOMIC_RELEASE);
+  __atomic_store_n(&downloadPercent, 0U, __ATOMIC_RELEASE);
+  applyFailedAt = 0U;
+  __atomic_store_n(&applyRequestFlag, 1U, __ATOMIC_RELEASE);
 }
 
 inline void mayapSetFirmwareAutoUpdate(bool allowed) {
@@ -270,6 +277,7 @@ inline void mayapFirmwareWebApplyNow() {
 
   __atomic_store_n(&applyPhase, 1U, __ATOMIC_RELEASE);
   __atomic_store_n(&downloadPercent, 0U, __ATOMIC_RELEASE);
+  (void)esp_wifi_set_ps(WIFI_PS_NONE); // Khoa cong suat radio cuc dai, khong ngu tiet kiem dien khi OTA
   mayapSerialPrintf(false, "[FWWEB] Bat dau tai firmware v%s (%lu bytes)...\n",
                     status.version, static_cast<unsigned long>(status.size));
 
@@ -280,6 +288,7 @@ inline void mayapFirmwareWebApplyNow() {
   if (!beginRequest(http, client, path)) {
     setError("KHONG MO DUOC KET NOI TAI VE");
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
+    applyFailedAt = millis() | 1U;
     return;
   }
   http.addHeader("X-Device-Id", mayapDeviceIdText());
@@ -290,6 +299,7 @@ inline void mayapFirmwareWebApplyNow() {
     setError("TAI FIRMWARE THAT BAI");
     http.end();
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
+    applyFailedAt = millis() | 1U;
     return;
   }
 
@@ -298,12 +308,14 @@ inline void mayapFirmwareWebApplyNow() {
     setError("KICH THUOC FILE KHONG KHOP");
     http.end();
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
+    applyFailedAt = millis() | 1U;
     return;
   }
   if (!Update.begin(static_cast<size_t>(len))) {
     setError("KHONG DU BO NHO OTA");
     http.end();
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
+    applyFailedAt = millis() | 1U;
     return;
   }
 
@@ -312,9 +324,14 @@ inline void mayapFirmwareWebApplyNow() {
   mbedtls_sha256_starts(&sha, 0);  // 0 = thuat toan SHA-256 (khong phai SHA-224)
 
   WiFiClient *stream = http.getStreamPtr();
-  uint8_t buf[1024];
+  uint8_t *heapBuf = static_cast<uint8_t *>(malloc(4096));
+  const size_t bufCap = heapBuf ? 4096U : 1024U;
+  uint8_t stackFallback[1024];
+  uint8_t *buf = heapBuf ? heapBuf : stackFallback;
   int remaining = len;
   bool ioError = false;
+  uint8_t disconnectRetries = 0;
+  constexpr uint8_t MAX_RETRIES = 5;
   const uint32_t startedAt = millis();
   // 2 phut du rong rai cho vai MB qua Wi-Fi noi bo/4G - tranh treo vinh vien
   // neu ket noi "treo" giua chung (khong dut hood nhung khong con du lieu den).
@@ -326,14 +343,31 @@ inline void mayapFirmwareWebApplyNow() {
     }
     const size_t avail = stream->available();
     if (avail == 0U) {
-      if (!http.connected()) { ioError = true; break; }
+      if (!http.connected()) {
+        if (++disconnectRetries <= MAX_RETRIES) {
+          mayapSerialPrintf(false, "[FWWEB] Socket ngat giua chung (con %d bytes), cho ket noi lai... (%u/%u)\n",
+                            remaining, disconnectRetries, MAX_RETRIES);
+          delay(1000);
+          continue;
+        }
+        ioError = true;
+        break;
+      }
       delay(2);
       continue;
     }
+    disconnectRetries = 0;
     const size_t toRead = std::min<size_t>(static_cast<size_t>(remaining),
-        std::min<size_t>(avail, sizeof(buf)));
+        std::min<size_t>(avail, bufCap));
     const int readBytes = stream->readBytes(buf, toRead);
-    if (readBytes <= 0) { ioError = true; break; }
+    if (readBytes <= 0) {
+      if (++disconnectRetries <= MAX_RETRIES) {
+        delay(500);
+        continue;
+      }
+      ioError = true;
+      break;
+    }
     const size_t written = Update.write(buf, static_cast<size_t>(readBytes));
     if (written != static_cast<size_t>(readBytes)) { ioError = true; break; }
     mayapServiceBeat(MayapRecovery::Service::Ota);
@@ -344,13 +378,21 @@ inline void mayapFirmwareWebApplyNow() {
         __ATOMIC_RELEASE);
   }
   http.end();
+  if (heapBuf) free(heapBuf);
 
   if (ioError || remaining != 0) {
     mbedtls_sha256_free(&sha);
     Update.abort();
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *target = esp_ota_get_next_update_partition(running);
+    if (target) {
+      (void)esp_partition_erase_range(target, 0, 4096);
+    }
+    mayapOtaRollbackBegin();
     setError("MAT KET NOI GIUA LUC TAI - DA HUY, GIU FIRMWARE CU");
     mayapSerialPrintf(false, "[FWWEB] Tai firmware bi ngat giua chung, HUY OTA, GIU NGUYEN firmware dang chay\n");
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
+    applyFailedAt = millis() | 1U;
     return;
   }
 
@@ -364,11 +406,18 @@ inline void mayapFirmwareWebApplyNow() {
 
   if (strcasecmp(digestHex, status.sha256) != 0) {
     Update.abort();
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *target = esp_ota_get_next_update_partition(running);
+    if (target) {
+      (void)esp_partition_erase_range(target, 0, 4096);
+    }
+    mayapOtaRollbackBegin();
     mayapSerialPrintf(false,
         "[FWWEB] SAI CHECKSUM (nhan=%s, mong doi=%s) - HUY, GIU NGUYEN firmware dang chay\n",
         digestHex, status.sha256);
     setError("SAI CHECKSUM - DA HUY, GIU FIRMWARE CU");
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
+    applyFailedAt = millis() | 1U;
     return;
   }
 
@@ -376,6 +425,7 @@ inline void mayapFirmwareWebApplyNow() {
     Update.abort();
     setError("THIEU KHOA CONG KHAI OTA");
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
+    applyFailedAt = millis() | 1U;
     return;
   }
   uint8_t signatureDer[96];
@@ -384,8 +434,15 @@ inline void mayapFirmwareWebApplyNow() {
         reinterpret_cast<const unsigned char *>(status.signature),
         strlen(status.signature)) != 0) {
     Update.abort();
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *target = esp_ota_get_next_update_partition(running);
+    if (target) {
+      (void)esp_partition_erase_range(target, 0, 4096);
+    }
+    mayapOtaRollbackBegin();
     setError("CHU KY OTA KHONG HOP LE");
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
+    applyFailedAt = millis() | 1U;
     return;
   }
   mbedtls_pk_context publicKey;
@@ -401,10 +458,17 @@ inline void mayapFirmwareWebApplyNow() {
   mbedtls_pk_free(&publicKey);
   if (verifyResult != 0) {
     Update.abort();
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *target = esp_ota_get_next_update_partition(running);
+    if (target) {
+      (void)esp_partition_erase_range(target, 0, 4096);
+    }
+    mayapOtaRollbackBegin();
     setError("SAI CHU KY SO - DA HUY");
     mayapSerialPrintf(false, "[FWWEB] Chu ky firmware KHONG HOP LE (%d) - HUY OTA\n",
                       verifyResult);
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
+    applyFailedAt = millis() | 1U;
     return;
   }
 
@@ -465,6 +529,7 @@ inline void mayapFirmwareWebUpdate(uint32_t now) {
       const uint32_t waited = now - autoReadySince;
       if (waited >= AUTO_UPDATE_DELAY_MS) {
         snprintf(autoTriedVersion, sizeof(autoTriedVersion), "%s", waiting.version);
+        autoTriedAt = now | 1U;
         autoReadySince = 0U;
         __atomic_store_n(&autoCountdownS, 255U, __ATOMIC_RELEASE);
         __atomic_store_n(&applyRequestFlag, 1U, __ATOMIC_RELEASE);
@@ -476,6 +541,18 @@ inline void mayapFirmwareWebUpdate(uint32_t now) {
       autoReadySince = 0U;
       __atomic_store_n(&autoCountdownS, 255U, __ATOMIC_RELEASE);
     }
+  }
+
+  // Tu dong giai phong khoa loi sau 3 phut (180s) de cho phep thu lai khong can reboot
+  if (__atomic_load_n(&applyPhase, __ATOMIC_ACQUIRE) == 2U &&
+      applyFailedAt != 0U && static_cast<uint32_t>(now - applyFailedAt) >= 180000UL) {
+    __atomic_store_n(&applyPhase, 0U, __ATOMIC_RELEASE);
+    setError("");
+    applyFailedAt = 0U;
+  }
+  if (autoTriedAt != 0U && static_cast<uint32_t>(now - autoTriedAt) >= 900000UL) {
+    autoTriedVersion[0] = '\0';
+    autoTriedAt = 0U;
   }
 
   const bool checkNow = __atomic_load_n(&checkNowRequestFlag, __ATOMIC_ACQUIRE) != 0U;

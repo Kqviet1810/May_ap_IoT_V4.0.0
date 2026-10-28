@@ -288,9 +288,9 @@ test('Thermal Control V2.0.0: Smart Thermal and Nhiet du doan switches are hidde
 
 test('Che do 2 tai khoan: only in HMI Nang cao, needs Online, the machine asks the Worker with its own key, back returns to the Advanced list', () => {
   const cloud = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'cloud_alert_link.h'), 'utf8');
-  // Advanced list: the item sits after "Quyen Web" and before "Doi ma ky thuat"; the screen belongs to the Advanced session (PIN keep-alive, lock on leave)
-  assert.match(hmi, /enum AdvItem : uint8_t \{[^}]*ADV_WEB, ADV_WEBCTL, ADV_GUEST, ADV_PINCHG, ADV_EXIT \}/);
-  assert.match(hmi, /constexpr uint8_t ADV_ITEM_COUNT = 13U;/);
+  // Advanced list: the item sits after "CD Nha phat trien" and before "Doi ma ky thuat"; the screen belongs to the Advanced session (PIN keep-alive, lock on leave)
+  assert.match(hmi, /enum AdvItem : uint8_t \{[^}]*ADV_DEV_MODE, ADV_GUEST, ADV_PINCHG, ADV_EXIT \}/);
+  assert.match(hmi, /constexpr uint8_t ADV_ITEM_COUNT = 12U;/);
   assert.match(bodyOf('bool viewInAdvanced('), /case View::GuestMode:/);
   assert.match(bodyOf('void advSelect()'), /case ADV_GUEST: openGuestMode\(\); break;/);
   assert.match(bodyOf('void goBack()'), /case View::GuestMode: view = View::AdvMenu; advIndex = ADV_GUEST;/);
@@ -309,17 +309,17 @@ test('Che do 2 tai khoan: only in HMI Nang cao, needs Online, the machine asks t
   assert.match(config, /void mayapRequestGuestMode\(uint8_t action\);/);
 });
 
-test('Dieu khien Web: six permission switches only in HMI Nang cao; the Web reads the mask and cannot write it', () => {
-  assert.match(bodyOf('bool viewInAdvanced('), /case View::WebCtl:/);
-  assert.match(bodyOf('void advSelect()'), /case ADV_WEBCTL: webCtlEdit = currentRuntime\.tech\.webCtlMask;/);
-  assert.match(bodyOf('void goBack()'), /case View::WebCtl: view = View::AdvMenu; advIndex = ADV_WEBCTL;/);
+test('CD Nha phat trien: developer mode switch in HMI Nang cao; the Web reads the mask and cannot write it', () => {
+  assert.match(bodyOf('bool viewInAdvanced('), /case View::DevMode:/);
+  assert.match(bodyOf('void advSelect()'), /case ADV_DEV_MODE: devModeChoice = currentRuntime\.tech\.devMode;/);
+  assert.match(bodyOf('void goBack()'), /case View::DevMode: view = View::AdvMenu; advIndex = ADV_DEV_MODE;/);
   const input = bodyOf('void handleInput()');
-  assert.match(input, /case View::WebCtl:[\s\S]*?queueCommand\(HmiCommandType::WebCtlSet, COMMAND_DEFAULT_VALID_MS, 0, static_cast<uint32_t>\(webCtlEdit\)\)/);
-  const draw = bodyOf('void drawWebCtl()');
-  for (const name of ['Thanh nhiet', 'Quat hut', 'Quat tuan hoan', 'Den', 'Coi', 'Dao trung']) assert.ok(draw.includes(name), name);
+  assert.match(input, /case View::DevMode:[\s\S]*?queueCommand\(HmiCommandType::DeveloperModeSet, COMMAND_DEFAULT_VALID_MS, 0, devModeChoice \? 1UL : 0UL\)/);
+  const draw = bodyOf('void drawDevMode()');
+  assert.ok(draw.includes('CD NHA PHAT TRIEN'), 'CD NHA PHAT TRIEN');
   // the machine side: Local only, needs the technician session (same gate as the Web permission), Remote commands are refused without their bit
   const machine = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'machine_control.h'), 'utf8');
-  assert.match(machine, /case HmiCommandType::WebCtlSet: \{\s*if \(remote\) \{ message = "CHI HMI DUOC DOI QUYEN"; break; \}/);
+  assert.match(machine, /case HmiCommandType::DeveloperModeSet: \{\s*if \(remote\) \{ message = "CHI HMI DUOC DOI QUYEN"; break; \}/);
   assert.match(machine, /\(techGate_\.webCtlMask\(\) & need\) == 0U\) \{ message = "WEB CHUA DUOC CHO PHEP"/);
   const bridge = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'transaction_bridge.h'), 'utf8');
   assert.match(bridge, /tech\["webCtl"\] = rt\.tech\.webCtlMask;/);

@@ -810,7 +810,7 @@ enum class View : uint8_t {
   EventLog, Alarm, TestMode, TestSummary, WifiChange, ConnectionInfo, QrCode,
   FirmwareProgress, TurnStatus, VentilationMenu, VentilationAdvanced, FirmwareMenu,
   // NANG CAO (can ma ky thuat): nhap ma, menu, PID Monitor, ban ghi cu, quyen Web, yeu cau tu Web.
-  AdvPin, AdvMenu, PidMonitor, AdvHistory, AdvHistoryView, WebAccess, WebCtl, TechRequest,
+  AdvPin, AdvMenu, PidMonitor, AdvHistory, AdvHistoryView, DevMode, TechRequest,
   // HE THONG: "Thong tin ket noi" gom Chi tiet / Doi wifi / Ma QR / Dat lai PIN / Thiet bi ket noi; Thoi gian ngu.
   ConnMenu, MemberList, SleepTime, GuestMode
 };
@@ -818,8 +818,8 @@ enum class View : uint8_t {
 enum class ConfirmAction : uint8_t { None, BatchToggle, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AdvRestore, MemberRemove, FactoryReset };
 
 // NANG CAO menu (declared here because goBack() returns to these rows).
-constexpr uint8_t ADV_ITEM_COUNT = 13U;
-enum AdvItem : uint8_t { ADV_PID, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_HISTORY, ADV_LOG, ADV_TEST, ADV_RESET, ADV_WEB, ADV_WEBCTL, ADV_GUEST, ADV_PINCHG, ADV_EXIT };
+constexpr uint8_t ADV_ITEM_COUNT = 12U;
+enum AdvItem : uint8_t { ADV_PID, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_HISTORY, ADV_LOG, ADV_TEST, ADV_RESET, ADV_DEV_MODE, ADV_GUEST, ADV_PINCHG, ADV_EXIT };
 
 // Prototype thu cong: Arduino IDE tu sinh prototype cho ham trong .ino.
 // Neu ham dung enum/struct tuy chinh, prototype tu dong co the bi chen
@@ -1088,8 +1088,7 @@ View pinReturnView = View::ChungMenu;
 uint8_t advIndex = 0, advTop = 0;
 uint8_t monPage = 0;
 uint8_t histIndex = 0, histPage = 0;
-bool webChoice = false;
-uint8_t webCtlEdit = 0U, webCtlRow = 0U;     // HMI Nang cao > Dieu khien Web: permission bits being edited, cursor (0..5 an output, 6 = save)
+bool devModeChoice = false;
 bool techReqShown = false, techDecisionSent = false;
 uint8_t techReqIndex = 0U;
 View techReturnView = View::Home;
@@ -1106,7 +1105,7 @@ const MachineConfig &editConfigView() { return (advActive && advGroup(selectedGr
 bool viewInAdvanced(View v) {
   switch (v) {
     case View::AdvPin: case View::AdvMenu: case View::PidMonitor:
-    case View::AdvHistory: case View::AdvHistoryView: case View::WebAccess: case View::WebCtl: case View::TechRequest: case View::GuestMode:
+    case View::AdvHistory: case View::AdvHistoryView: case View::DevMode: case View::TechRequest: case View::GuestMode:
       return true;
     case View::SettingList: case View::EditSetting: return advGroup(selectedGroup);
     case View::Alarm: return advActive && alarmReturnView != View::Alarm && viewInAdvanced(alarmReturnView);
@@ -1605,8 +1604,7 @@ void goBack() {
     case View::PidMonitor: view = View::AdvMenu; advIndex = ADV_MONITOR; alignAdvMenuWindow(); break;
     case View::AdvHistory: view = View::AdvMenu; advIndex = ADV_HISTORY; alignAdvMenuWindow(); break;
     case View::AdvHistoryView: view = View::AdvHistory; break;
-    case View::WebAccess: view = View::AdvMenu; advIndex = ADV_WEB; alignAdvMenuWindow(); break;
-    case View::WebCtl: view = View::AdvMenu; advIndex = ADV_WEBCTL; alignAdvMenuWindow(); break;
+    case View::DevMode: view = View::AdvMenu; advIndex = ADV_DEV_MODE; alignAdvMenuWindow(); break;
     case View::GuestMode: view = View::AdvMenu; advIndex = ADV_GUEST; alignAdvMenuWindow(); break;
     case View::TechRequest: view = techReturnView; break;
     case View::EventLog:
@@ -2878,8 +2876,7 @@ const char *advItemLabel(uint8_t i) {
     case ADV_LOG: return "Loi / Nhat ky";
     case ADV_TEST: return "Che do test";
     case ADV_RESET: return "Reset may";
-    case ADV_WEB: return currentRuntime.tech.webAllowed ? "Quyen Web: HIEN" : "Quyen Web: AN";
-    case ADV_WEBCTL: return "Dieu khien Web";
+    case ADV_DEV_MODE: return currentRuntime.tech.devMode ? "CD Nha phat trien: BAT" : "CD Nha phat trien: TAT";
     case ADV_GUEST: return "Che do 2 tai khoan";
     case ADV_PINCHG: return "Doi ma ky thuat";
     default: return "Thoat (luu)";
@@ -2902,8 +2899,7 @@ void advSelect() {
       break;
     case ADV_TEST: openTestMode(); break;
     case ADV_RESET: openFactoryResetConfirm(); break;
-    case ADV_WEB: webChoice = currentRuntime.tech.webAllowed; view = View::WebAccess; dirty = true; break;
-    case ADV_WEBCTL: webCtlEdit = currentRuntime.tech.webCtlMask; webCtlRow = 0U; view = View::WebCtl; dirty = true; break;
+    case ADV_DEV_MODE: devModeChoice = currentRuntime.tech.devMode; view = View::DevMode; dirty = true; break;
     case ADV_GUEST: openGuestMode(); break;
     case ADV_PINCHG: advOpenPin(PinPurpose::SetNew); break;
     default: advBeginExit(); break;
@@ -3354,23 +3350,11 @@ void handleInput() {
       break;
     }
 
-    case View::WebAccess:
-      if (rotary.step) { webChoice = !webChoice; dirty = true; }
+    case View::DevMode:
+      if (rotary.step) { devModeChoice = !devModeChoice; dirty = true; }
       if (rotary.button == ButtonEvent::ShortPress) {
-        if (webChoice == currentRuntime.tech.webAllowed) goBack();
-        else if (queueCommand(HmiCommandType::TechWebSet, COMMAND_DEFAULT_VALID_MS, 0, webChoice ? 1UL : 0UL)) goBack();
-      }
-      break;
-
-    case View::WebCtl:
-      if (rotary.step) {
-        webCtlRow = static_cast<uint8_t>(constrain(static_cast<int>(webCtlRow) + rotary.step, 0, 7));
-        dirty = true;
-      }
-      if (rotary.button == ButtonEvent::ShortPress) {
-        if (webCtlRow < 7U) { webCtlEdit = static_cast<uint8_t>(webCtlEdit ^ (1U << webCtlRow)); dirty = true; }
-        else if (webCtlEdit == currentRuntime.tech.webCtlMask) goBack();
-        else if (queueCommand(HmiCommandType::WebCtlSet, COMMAND_DEFAULT_VALID_MS, 0, static_cast<uint32_t>(webCtlEdit))) goBack();
+        if (devModeChoice == currentRuntime.tech.devMode) goBack();
+        else if (queueCommand(HmiCommandType::DeveloperModeSet, COMMAND_DEFAULT_VALID_MS, 0, devModeChoice ? 1UL : 0UL)) goBack();
       }
       break;
 
@@ -4395,9 +4379,11 @@ void drawFirmwareMenu() {
     char text[25];
     if (i == 0U) snprintf(text, sizeof(text), "Hien tai v%s", MAYAP_FIRMWARE_VERSION);
     else if (i == 1U) snprintf(text, sizeof(text), "Kiem tra cap nhat");
-    else if (mayapRollbackAvailable() && i == 2U)
-      snprintf(text, sizeof(text), "Quay lai ban cu");
-    else snprintf(text, sizeof(text), "Thoat");
+    else if (mayapRollbackAvailable() && i == 2U) {
+      const char *rbVer = mayapRollbackTargetVersion();
+      if (rbVer && rbVer[0] != '\0') snprintf(text, sizeof(text), "Quay lai v%s", rbVer);
+      else snprintf(text, sizeof(text), "Quay lai ban cu");
+    } else snprintf(text, sizeof(text), "Thoat");
     if (i == firmwareMenuIndex) {
       lcd.drawBox(0, y - 9, 128, 11);
       lcd.setDrawColor(0);
@@ -5222,32 +5208,15 @@ void drawAdvHistoryView() {
   lcd.drawStr(2, 62, "NHAN:KHOI PHUC  GIU:LUI");
 }
 
-void drawWebAccess() {
-  drawHeader("QUYEN WEB PID", false);
-  drawCenteredFit(24, currentRuntime.tech.webAllowed ? "HIEN TAI: HIEN" : "HIEN TAI: AN",
+void drawDevMode() {
+  drawHeader("CD NHA PHAT TRIEN", false);
+  drawCenteredFit(24, currentRuntime.tech.devMode ? "HIEN TAI: BAT" : "HIEN TAI: TAT",
                   u8g2_font_6x12_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
-  drawCenteredFit(44, webChoice ? "HIEN" : "AN", u8g2_font_helvB14_tf, u8g2_font_helvB12_tf, u8g2_font_6x12_tf);
+  drawCenteredFit(44, devModeChoice ? "BAT" : "TAT", u8g2_font_helvB14_tf, u8g2_font_helvB12_tf, u8g2_font_6x12_tf);
   lcd.setFont(u8g2_font_5x8_tf);
-  drawCenteredFit(54, webChoice ? "WEB CAN MA + HMI XAC NHAN" : "WEB KHONG VAO DUOC KY THUAT",
+  drawCenteredFit(54, devModeChoice ? "FULL QUYEN WEB + OTA TRONG ME" : "WEB BI GIOI HAN AN TOAN",
                   u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
   drawCenteredFit(63, "XOAY:DOI  NHAN:LUU  GIU:LUI", u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
-}
-
-void drawWebCtl() {
-  static const char *const names[7] = {"Thanh nhiet", "Quat hut", "Quat tuan hoan", "Den", "Coi", "Dao trung", "Cap nhat tu dong"};
-  drawHeader(webCtlEdit != currentRuntime.tech.webCtlMask ? "DK WEB *" : "DK WEB", false);
-  drawListPosition(webCtlRow, 8);
-  const uint8_t top = webCtlRow < 4U ? 0U : static_cast<uint8_t>(webCtlRow - 3U);
-  for (uint8_t row = 0; row < 4U && top + row < 8U; ++row) {
-    const uint8_t index = static_cast<uint8_t>(top + row);
-    drawSelectableRow(row, index == webCtlRow);
-    lcd.setFont(u8g2_font_6x12_tf);
-    char text[28];
-    if (index < 7U) snprintf(text, sizeof(text), "%s %s", (webCtlEdit & (1U << index)) ? "[X]" : "[ ]", names[index]);
-    else snprintf(text, sizeof(text), "LUU");
-    lcd.drawStr(2, 22 + row * 12, text);
-    lcd.setDrawColor(1);
-  }
 }
 
 void drawGuestMode() {
@@ -5340,7 +5309,14 @@ void drawConfirmScreen() {
     line1 = "DAT LAI MA PIN WEB";
     line2 = "TAO MA 6 SO MOI?";
   } else if (confirmAction == ConfirmAction::FirmwareRollback) {
-    line1 = "QUAY LAI FIRMWARE CU?";
+    static char rbVerLine[24];
+    const char *rbVer = mayapRollbackTargetVersion();
+    if (rbVer && rbVer[0] != '\0') {
+      snprintf(rbVerLine, sizeof(rbVerLine), "VE BAN v%s?", rbVer);
+      line1 = rbVerLine;
+    } else {
+      line1 = "QUAY LAI FIRMWARE CU?";
+    }
     line2 = "MAY SE KHOI DONG LAI";
   } else if (confirmAction == ConfirmAction::FirmwareWebApply) {
     static char fwVerLine[24];
@@ -5458,8 +5434,7 @@ void render(uint32_t now) {
       case View::PidMonitor: drawPidMonitor(); break;
       case View::AdvHistory: drawAdvHistory(); break;
       case View::AdvHistoryView: drawAdvHistoryView(); break;
-      case View::WebAccess: drawWebAccess(); break;
-      case View::WebCtl: drawWebCtl(); break;
+      case View::DevMode: drawDevMode(); break;
       case View::GuestMode: drawGuestMode(); break;
       case View::TechRequest: drawTechRequest(); break;
       case View::TestMode: drawTestMode(); break;
@@ -5807,14 +5782,11 @@ bool runtimeVisibleChanged(const MachineRuntime &before,
     case View::AdvHistoryView:
       return before.tech.historyCount != after.tech.historyCount;
 
-    case View::WebAccess:
-      return before.tech.webAllowed != after.tech.webAllowed;
-
-    case View::WebCtl:
-      return before.tech.webCtlMask != after.tech.webCtlMask;
+    case View::DevMode:
+      return before.tech.devMode != after.tech.devMode;
 
     case View::AdvMenu:
-      return before.tech.webAllowed != after.tech.webAllowed;
+      return before.tech.devMode != after.tech.devMode;
 
     case View::AdvPin:
       return before.tech.lockRemainingS != after.tech.lockRemainingS;

@@ -474,6 +474,8 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
   tech["lockS"] = rt.tech.lockRemainingS;
   tech["pinSet"] = rt.tech.pinSet;
   tech["webCtl"] = rt.tech.webCtlMask;            // which outputs the HMI lets the Web switch (the Web can read it, never write it)
+  tech["devMode"] = rt.tech.devMode;              // true = CD Nha phat trien (full quyen tu xa)
+  tech["rollbackVer"] = mayapRollbackTargetVersion();
   tech["fwAutoS"] = mayapFirmwareAutoUpdateCountdownS();   // automatic firmware update: seconds left before it starts (255 = not counting)
   tech["webAct"] = rt.tech.webCtlActive;          // which of them are overridden from the Web right now
   tech["pending"] = rt.tech.pendingKind;          // 0 none, 1 config: waiting for the HMI
@@ -751,6 +753,8 @@ inline HmiCommandType mapCommandAction(const char *action) {
   // KHONG tu tai ve/nap - van phai xac nhan vat ly tren HMI (xem ota_web_
   // update.h + hmi.h::openFirmwareWebConfirm()).
   if (!strcmp(action, "firmware_check_now")) return HmiCommandType::FirmwareWebCheckNow;
+  // CD nha phat trien (Developer Mode) cho phep tai va ap dung OTA ngay lap tuc tu xa:
+  if (!strcmp(action, "firmware_apply_now")) return HmiCommandType::FirmwareWebApply;
   // Quay lai firmware truoc do (xem ota_rollback.h) - KHAC voi cap nhat
   // (chi "kiem tra", phai xac nhan vat ly tren HMI), lenh nay ap dung
   // NGAY qua web vi ban chat la doi ve firmware DA TUNG chay on dinh
@@ -996,6 +1000,18 @@ inline void handleCommandMessage(const JsonDocument &doc) {
   if (type == HmiCommandType::FirmwareRollback) {
     publishAck(requestId, "rejected", "QUAY LAI CAN XAC NHAN TAI MAY");
     return;
+  }
+
+  // Lenh FirmwareWebApply tu xa chi duoc phep khi dang o CD Nha phat trien (Developer Mode)
+  if (type == HmiCommandType::FirmwareWebApply) {
+    bool devAllowed = false;
+    portENTER_CRITICAL(&realtimeMux);
+    devAllowed = knownRuntimeValid && knownRuntime.tech.devMode;
+    portEXIT_CRITICAL(&realtimeMux);
+    if (!devAllowed) {
+      publishAck(requestId, "rejected", "CAN_BAT_CD_NHA_PHAT_TRIEN");
+      return;
+    }
   }
 
   // "Coi bao" tren dashboard tat tam giong het nut ACK tren HMI (xem
