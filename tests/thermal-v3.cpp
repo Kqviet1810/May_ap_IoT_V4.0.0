@@ -354,6 +354,36 @@ void testStartAfterAPause() {
   printf("  -> Pass\n");
 }
 
+// The controller runs for weeks without a restart (the machine is on from power-up to the next power cut), and every slope it uses, the door
+// detection among them, is a difference of two readings of its own clock. A float clock that accumulates 0.1 s steps runs 25 % fast after about
+// 6 days and stands still after about 20: the slope read 0 and a plunge of the door was never seen. The clock must keep counting (here the clock
+// is aged in 1 s steps with the permit off, which is how a machine waits for its batch, and then the real 0.1 s steps follow).
+void testDoorPlungeAfterWeeksOfUptime() {
+  printf("[TEST] A door plunge is still measured after weeks of uptime...\n");
+  const double days[3] = {3.0, 8.0, 30.0};
+  for (int k = 0; k < 3; ++k) {
+    thermalv3::Controller ctl;
+    thermalv3::Input in;
+    in.sp = 37.5f; in.pv = 37.5f; in.capPct = 100.0f; in.permit = false; in.dtS = 1.0f;
+    for (long second = 0; second < static_cast<long>(days[k] * 86400.0); ++second) ctl.step(in);
+    in.permit = true; in.dtS = 0.1f;
+    for (int i = 0; i < 3000; ++i) ctl.step(in);                           // five minutes at SP, the real step
+    float steepest = 0.0f, pv = 37.5f;
+    bool door = false;
+    for (int i = 0; i < 1000; ++i) {                                        // 100 s of -0.02 degC/s
+      pv -= 0.002f;
+      in.pv = pv;
+      ctl.step(in);
+      steepest = std::min(steepest, ctl.slopeMks());
+      door = door || ctl.doorDetected();
+    }
+    printf("  -> after %2.0f days: steepest slope %.1f mK/s (true -20.0), door seen: %s\n", days[k], steepest, door ? "yes" : "NO");
+    assert(door);
+    assert(steepest < -19.0f && steepest > -21.0f);
+  }
+  printf("  -> Pass\n");
+}
+
 // Whatever the temperature does, the learned hold level, the integral and the command stay inside their limits and finite.
 void testBoundsUnderHostileInput() {
   printf("[TEST] Hold level, integral and command stay bounded under hostile input...\n");
@@ -393,6 +423,7 @@ int main() {
   testRestartNextToSetpointKeepsPriors();
   testStartIdentifiesTheOven();
   testStartAfterAPause();
+  testDoorPlungeAfterWeeksOfUptime();
   testBoundsUnderHostileInput();
   testShadowHold();
   testResumeAfterHold();

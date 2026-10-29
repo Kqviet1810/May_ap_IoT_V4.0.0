@@ -61,9 +61,10 @@ Xuất CSV PID Monitor sau lần thêm trứng/mở cửa đầu tiên và kiể
 
 Chạy lại các con số ở mục 3: `g++ -std=c++11 -O2 tests/thermal-closed-loop.cpp -o /tmp/cl && THERMAL_FULL_FAMILY=1 /tmp/cl`.
 
-## 6. Hai lỗi của chính bản này, tìm thấy khi soát lại và sửa trước khi hợp nhất
+## 6. Ba lỗi tìm thấy khi soát lại, sửa trước khi hợp nhất
 
-Cả hai chỉ xuất hiện ở lần lên nhiệt đầu sau một khoảng nghỉ (bộ điều khiển chạy liên tục từ lúc bật nguồn, chỉ không cấp nhiệt khi chưa bấm chạy) — kịch bản mà bộ test ban đầu chưa có. `tests/thermal-v3.cpp::testStartAfterAPause` và các dòng "sau nghỉ" của `tests/thermal-closed-loop.cpp` giữ chúng lại.
+Lỗi 1 và 2 là của chính bản này và chỉ xuất hiện ở lần lên nhiệt đầu sau một khoảng nghỉ (bộ điều khiển chạy liên tục từ lúc bật nguồn, chỉ không cấp nhiệt khi chưa bấm chạy) — kịch bản mà bộ test ban đầu chưa có. `tests/thermal-v3.cpp::testStartAfterAPause` và các dòng "sau nghỉ" của `tests/thermal-closed-loop.cpp` giữ chúng lại. Lỗi 3 có sẵn từ các bản trước, kể cả 2.3.4.
 
 1. **Vòng đệm công suất lệch tổng**: khi nhận dạng rút ngắn vòng đệm (độ trễ đo được < 150 s) mà vị trí ghi đang nằm ngoài vòng mới, tổng chạy của "năng lượng đang bay" lệch vĩnh viễn (PV dự đoán lệch tới 0,04 °C): 28–40 % số lần bật trong mô phỏng với lò trễ 60–100 s, 0 % với lò trễ ≥ 150 s (lò khớp log 29/10 đo được 170 s nên không dính). Nay vị trí ghi quay về 0 khi dựng lại vòng.
 2. **Bộ học mức giữ đọc nhầm bước nhảy công suất**: ngay sau khoảng nghỉ cửa sổ công suất chứa bước nhảy 0 → 100 %, cân bằng đọc ra mức giữ ≈ 0 (thấp nhất 0,1 % thay vì 8 %), độ lợi lò học thấp hơn 20 %, lần lên nhiệt đầu chậm thêm tới 250 s (lò khớp log 29/10: +200 s). Nay bộ học chỉ đọc khi cả cửa sổ (kể cả độ trễ truyền) thuộc lần chạy hiện tại.
+3. **Đồng hồ nội bộ là `float`** (có sẵn từ các bản trước): cộng bước 0,1 s vào một số `float` lớn thì mất dần — sau khoảng 6 ngày chạy liên tục đồng hồ chạy nhanh 25 %, sau khoảng 20 ngày thì đứng yên. Mọi độ dốc (phát hiện mở cửa, chống kẹt) là hiệu của hai lần đọc đồng hồ đó: sau 3 ngày độ dốc đo lệch +6 %, sau 8 ngày −20 %, sau 20 ngày về 0 và máy **không bao giờ thấy cửa mở nữa** cho đến lần khởi động lại. Máy ấp bật liên tục 3 tuần (một mẻ) là chuyện thường. Nay đồng hồ là `double` (`testDoorPlungeAfterWeeksOfUptime`: đo đúng −20,0 mK/s sau 3, 8 và 30 ngày).

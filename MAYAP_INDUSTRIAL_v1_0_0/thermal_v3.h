@@ -129,8 +129,8 @@ class Controller {
     lastCmd_ = 0.0f;
 
     secAcc_ = 0.0f;
-    clockS_ = 0.0f;
-    heaterOnTime_ = -1.0f;
+    clockS_ = 0.0;
+    heaterOnTime_ = -1.0;
     pvAtOn_ = NAN;
     identified_ = false;
 
@@ -140,7 +140,7 @@ class Controller {
     slopeHistHead_ = 0U;
     for (uint8_t i = 0U; i < SLOPE_HIST_CAP; ++i) {
       slopePvHist_[i] = 0.0f;
-      slopeTimeHist_[i] = 0.0f;
+      slopeTimeHist_[i] = 0.0;
     }
 
     doorDetected_ = false;
@@ -160,7 +160,7 @@ class Controller {
   Output step(const Input &in) {
     Output out;
     const float dt = !std::isfinite(in.dtS) ? 0.1f : (in.dtS < 0.001f ? 0.001f : (in.dtS > 1.0f ? 1.0f : in.dtS));
-    clockS_ += dt;
+    clockS_ += static_cast<double>(dt);
 
     const bool pvValid = std::isfinite(in.pv) && in.pv > 0.0f && in.pv < 60.0f;
     const bool spValid = std::isfinite(in.sp) && in.sp > 20.0f && in.sp < 50.0f;
@@ -176,7 +176,7 @@ class Controller {
       liveS_ = 0.0f;
       calmS_ = 0.0f;
       lastCmd_ = 0.0f;
-      if (!identified_) heaterOnTime_ = -1.0f;      // a pause breaks the stopwatch of the start
+      if (!identified_) heaterOnTime_ = -1.0;       // a pause breaks the stopwatch of the start
       secAcc_ += dt;
       while (secAcc_ >= 1.0f) {
         secAcc_ -= 1.0f;
@@ -204,16 +204,16 @@ class Controller {
     // update, a power blip) or in the middle of a fall has nothing to time: the first 0.15 degC it happens to see would be taken for the
     // delay of the oven and the energy balance below would be aligned on it.
     if (!identified_) {
-      if (heaterOnTime_ < 0.0f) {
+      if (heaterOnTime_ < 0.0) {
         if (in.permit && !in.shadow && slopeHistCount_ >= SLOPE_HIST_CAP && std::fabs(filteredSlope_) <= IDENT_MAX_SLOPE &&
             (sp_ - pv_) >= IDENT_MIN_ERR_C && lastCmd_ >= 0.8f * capPct_) {
           heaterOnTime_ = clockS_;
           pvAtOn_ = pv_;
         }
       } else if (lastCmd_ < 0.4f * capPct_) {
-        heaterOnTime_ = -1.0f;                      // the heater was backed off: the stopwatch no longer times a full-power start
+        heaterOnTime_ = -1.0;                       // the heater was backed off: the stopwatch no longer times a full-power start
       } else if ((pv_ - pvAtOn_) >= 0.15f) {
-        const float measuredDelay = clockS_ - heaterOnTime_;
+        const float measuredDelay = static_cast<float>(clockS_ - heaterOnTime_);
         tauTransit_ = std::max(TAU_MIN_S, std::min(TAU_MAX_S, measuredDelay * 1.05f));
         // Total effective prediction horizon includes heater lag ~ 1.35x
         pipeLen_ = std::max<uint16_t>(15U, std::min<uint16_t>(MAX_PIPE_LEN - 1U, static_cast<uint16_t>(tauTransit_ * 1.35f)));
@@ -517,7 +517,7 @@ class Controller {
     slopeShort_ = sxy / sxx;
   }
 
-  void updateSlope(float pv, float nowS) {
+  void updateSlope(float pv, double nowS) {
     if (slopeHistCount_ < SLOPE_HIST_CAP) {
       slopePvHist_[slopeHistHead_] = pv;
       slopeTimeHist_[slopeHistHead_] = nowS;
@@ -525,10 +525,10 @@ class Controller {
       ++slopeHistCount_;
     } else {
       const uint8_t oldest = slopeHistHead_;
-      const float dtSpan = nowS - slopeTimeHist_[oldest];
+      const float dtSpan = static_cast<float>(nowS - slopeTimeHist_[oldest]);
       if (dtSpan > 2.0f) {
         const float rawSlope = (pv - slopePvHist_[oldest]) / dtSpan;
-        const float alpha = std::min(1.0f, (nowS - slopeTimeHist_[(oldest + SLOPE_HIST_CAP - 1U) % SLOPE_HIST_CAP]) / 3.0f);
+        const float alpha = std::min(1.0f, static_cast<float>(nowS - slopeTimeHist_[(oldest + SLOPE_HIST_CAP - 1U) % SLOPE_HIST_CAP]) / 3.0f);
         filteredSlope_ += alpha * (rawSlope - filteredSlope_);
       }
       slopePvHist_[slopeHistHead_] = pv;
@@ -564,8 +564,10 @@ class Controller {
   float lastCmd_ = 0.0f;         // the command of the previous call [%] (what the oven was given)
 
   float secAcc_ = 0.0f;
-  float clockS_ = 0.0f;
-  float heaterOnTime_ = -1.0f;
+  // The time base is a double: a float that accumulates 0.1 s steps runs 25 % fast after 6 days and stops after about 20, and every slope
+  // (door detection included) is a difference of two of its readings.
+  double clockS_ = 0.0;
+  double heaterOnTime_ = -1.0;
   float pvAtOn_ = NAN;
   bool identified_ = false;
 
@@ -574,7 +576,7 @@ class Controller {
   uint8_t slopeHistCount_ = 0U;
   uint8_t slopeHistHead_ = 0U;
   float slopePvHist_[SLOPE_HIST_CAP] = {};
-  float slopeTimeHist_[SLOPE_HIST_CAP] = {};
+  double slopeTimeHist_[SLOPE_HIST_CAP] = {};
 
   bool doorDetected_ = false;
   bool doorArmed_ = true;
