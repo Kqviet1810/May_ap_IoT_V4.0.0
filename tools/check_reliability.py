@@ -261,7 +261,7 @@ require(index, 'id="highAlarm" max="42"', "web High bound matches firmware")
 require(index, 'id="emergencyTemp" max="45"', "web Emergency bound matches firmware")
 
 # Safety consistency: SensorFrozen requires actual heater-on evidence and remains fail-safe.
-require(machine, "heaterStuckAccumOnMs_ >= frozenEvidenceOnMs", "SensorFrozen heater evidence")
+require(machine, "heaterWatch_.accumOnMs() >= frozenEvidenceOnMs", "SensorFrozen heater evidence")
 require_re(
     machine,
     r'\{FaultCode::SensorFrozen,\s*FaultSeverity::Stop,.*?true,\s*true,\s*true,\s*false,\s*true,\s*true,\s*"SENSOR FROZEN"\}',

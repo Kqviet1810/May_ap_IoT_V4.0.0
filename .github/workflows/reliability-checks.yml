@@ -161,8 +161,20 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-v3.cpp -o /tmp/mayap-thermal-v3-test
           /tmp/mayap-thermal-v3-test
 
-      - name: "Thermal V3 simulation benchmark across industrial incubator plant set A"
-        run: python3 tools/thermal-v3/benchmark_v3.py
+      - name: "E115 evidence (heater_response_watch.h): unit tests of the rule MachineController runs"
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror tests/heater-response-watch.cpp -o /tmp/mayap-heater-response-watch
+          /tmp/mayap-heater-response-watch
+
+      - name: "Thermal V3 closed loop: the real controller and the real E115 rule on simulated ovens (door, cold tray, vent, set-point step, reboot, dead heater) and on the oven fitted to the 29/10 batch"
+        run: |
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-closed-loop.cpp -o /tmp/mayap-thermal-closed-loop
+          /tmp/mayap-thermal-closed-loop
+
+      - name: "Thermal replay of the machine's own log of 29/10 (E115 of 2.3.4 trips on it, the rule of 2.4.0 does not; the simulated oven follows the log)"
+        run: |
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-replay.cpp -o /tmp/mayap-thermal-replay
+          /tmp/mayap-thermal-replay
 
       - name: Technical PIN, Web permission, HMI-approved requests and old records (host tests of the real controller code)
         run: python3 tools/test_tech_access.py --sanitize

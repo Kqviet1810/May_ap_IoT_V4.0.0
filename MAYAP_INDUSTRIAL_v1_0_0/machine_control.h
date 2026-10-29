@@ -16,6 +16,7 @@
 #include "advanced_history.h"
 #include "tech_request.h"
 #include "thermal_v3_adapter.h"
+#include "heater_response_watch.h"
 #include "pid_log.h"
 #include <esp_system.h>
 #include <esp_timer.h>
@@ -5206,7 +5207,7 @@ class MachineController {
     const auto &st = outputs_.state();
     si.deliveredPct = (st.heaterSsr && st.heatMaster) ? 100.0f : 0.0f;
     const float stuckLimitMs = static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f;
-    si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterStuckAccumOnMs_) / stuckLimitMs : 0.0f;
+    si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterWatch_.accumOnMs()) / stuckLimitMs : 0.0f;
     si.dQ = thermalV3SensorStepC();
     si.ventFan = st.ventFan;                                                // the fan that really runs: it takes heat out of the box
     if (config_.ventAutoEnabled && batchRunning_ && !warmupVentHold_) {     // the automatic profile knows when it starts and ends: the controller pays for the loss in advance
@@ -5854,47 +5855,18 @@ class MachineController {
     // duong nang luong full-power). Neu dang can gia nhiet ma da cap du tong
     // on-time cau hinh nhung PV khong tang toi thieu -> nghi thanh nhiet/SSR/
     // sensor khong dap ung. Loi nay cat CA SSR + contactor tong va bat 2 quat.
+    // Moc so sanh la DAY nhiet do thap nhat da thay (khong phai gia tri luc bat dau cua so): sau khi mo cua / them
+    // khay trung lanh nhiet tut xuong, thanh nhiet khoe dang keo nhiet len lai khong con bi tinh la "khong tang".
+    // Quy tac nam trong heater_response_watch.h de test host chay dung ma nay.
     const bool responseDemand = batchRunning_ && inputs_.state().heaterEnable &&
         sensorUsable_ && isfinite(temperature_) &&
         temperature_ < config_.targetTemp - config_.tempHysteresis;
     const uint32_t responseRequiredOnMs =
         static_cast<uint32_t>(config_.heaterStuckDurationSec) * 1000UL;
-    if (!responseDemand) {
-      heaterStuckTracking_ = false;
-      heaterStuckSinceAt_ = now;
-      heaterStuckAccumOnMs_ = 0U;
-      heaterStuckStartTemp_ = NAN;
-      heaterNotHeatingActive_ = false;
-    } else {
-      if (!heaterStuckTracking_) {
-        heaterStuckTracking_ = true;
-        heaterStuckSinceAt_ = now;
-        heaterStuckAccumOnMs_ = 0U;
-        heaterStuckStartTemp_ = temperature_;
-        heaterNotHeatingActive_ = false;
-      } else {
-        // Gioi han dt 1 s de mot lan task tre bat thuong khong duoc tinh nhu
-        // da cap nhiet lien tuc trong ca khoang tre do.
-        const uint32_t dt = std::min<uint32_t>(elapsedMs(now, heaterStuckSinceAt_), 1000UL);
-        heaterStuckSinceAt_ = now;
-        // GPIO1 energizes both physical SSRs: ON is full 16 kW bank power.
-        const uint32_t energyMs = outputs_.state().heaterSsr ? dt : 0U;
-        if (heaterStuckAccumOnMs_ < UINT32_MAX - energyMs) {
-          heaterStuckAccumOnMs_ += energyMs;
-        }
-        const float rise = isfinite(heaterStuckStartTemp_)
-            ? temperature_ - heaterStuckStartTemp_ : 0.0f;
-        if (isfinite(heaterStuckStartTemp_) &&
-            rise >= config_.heaterStuckMinRiseC) {
-          // He thong co dap ung: bat dau cua so nang luong moi tu PV hien tai.
-          heaterStuckStartTemp_ = temperature_;
-          heaterStuckAccumOnMs_ = 0U;
-          heaterNotHeatingActive_ = false;
-        } else if (heaterStuckAccumOnMs_ >= responseRequiredOnMs) {
-          heaterNotHeatingActive_ = true;
-        }
-      }
-    }
+    // GPIO1 energizes both physical SSRs: ON is full 16 kW bank power.
+    heaterWatch_.update(responseDemand, temperature_, now, outputs_.state().heaterSsr,
+                        config_.heaterStuckMinRiseC, responseRequiredOnMs);
+    heaterNotHeatingActive_ = heaterWatch_.active();
 
     const bool sensorGrace = !timeReached(now, sensorStartupGraceUntil_) &&
                              !sensorUsable_;
@@ -5922,8 +5894,7 @@ class MachineController {
     faults_.set(FaultCode::TemperatureUnstable, temperatureUnstableActive_, now,
                 static_cast<int16_t>(tempOscillationLastWindowCrossCount_));
     faults_.set(FaultCode::HeaterNotHeating, heaterNotHeatingActive_, now,
-                (isfinite(heaterStuckStartTemp_) && isfinite(temperature_))
-                    ? static_cast<int16_t>(lroundf((temperature_ - heaterStuckStartTemp_) * 10.0f)) : 0);
+                static_cast<int16_t>(lroundf(heaterWatch_.riseC(temperature_) * 10.0f)));
     // F-08: cam bien "dung hinh" - chi canh bao trong luc dang co me (giong
     // cach LowTemperature/HumidityLow chi xet trong batch), vi ngoai me gia
     // tri on dinh dai han la binh thuong (khong dieu nhiet chu dong).
@@ -5937,7 +5908,7 @@ class MachineController {
     const bool sensorFrozenActive = batchRunning_ && sensorUsable_ &&
         isfinite(sensorFrozenRefTemp_) &&
         elapsedMs(now, sensorFrozenSince_) >= SENSOR_FROZEN_TIMEOUT_MS &&
-        heaterStuckAccumOnMs_ >= frozenEvidenceOnMs;
+        heaterWatch_.accumOnMs() >= frozenEvidenceOnMs;
     faults_.set(FaultCode::SensorFrozen, sensorFrozenActive, now,
                 isfinite(sensorFrozenRefTemp_)
                     ? static_cast<int16_t>(lroundf(sensorFrozenRefTemp_ * 10.0f)) : 0);
@@ -8191,10 +8162,7 @@ class MachineController {
   uint8_t tempOscillationLastWindowCrossCount_ = 0U;
   uint32_t tempOscillationWindowStart_ = 0U;
   bool temperatureUnstableActive_ = false;
-  bool heaterStuckTracking_ = false;
-  uint32_t heaterStuckSinceAt_ = 0U;
-  uint32_t heaterStuckAccumOnMs_ = 0U;
-  float heaterStuckStartTemp_ = NAN;
+  HeaterResponseWatch heaterWatch_;
   bool heaterNotHeatingActive_ = false;
 
   // --- Giam sat suc khoe he thong (v3.6.0) - xem serviceHealthMonitor() ---
@@ -8238,7 +8206,7 @@ class MachineController {
   bool networkStatusInitialized_ = false;
 
   HeaterBurstScheduler heaterBurst_{HEATER_GROUP_COUNT, HEATER_BURST_QUANTUM_MS};
-  ThermalV3Slot thermalV3_;                          // Thermal V3.0.0 controller (RAM ~350 bytes)
+  ThermalV3Slot thermalV3_;                          // Thermal V3 controller (RAM ~3.8 KB: 10 minutes of 1 Hz history for the energy balance)
   uint32_t pidLogAt_ = 0;                            // last PID log ring sample
   uint32_t slotLastUs_ = 0, slotMaxUs_ = 0;          // controller slot time [us], reported to the PID monitor
   bool previousFanCommand_ = false;
