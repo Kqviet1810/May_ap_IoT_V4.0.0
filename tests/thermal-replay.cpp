@@ -111,15 +111,22 @@ static void testE115OnTheRealLog(const std::vector<Row> &rows) {
   CHECK(tripOld > 0.0 && std::fabs(tripOld - rows[machineTrip].t) < 240.0, "the old rule must trip about when the machine did (%.0f vs %.0f)", tripOld, rows[machineTrip].t);
   CHECK(tripNew < 0.0, "the new rule must not trip while the temperature is coming back up");
   CHECK(peakNew < 0.65 * E115_ON_MS, "the new rule must stay far from its limit on this log (peak %.0f s of 900 s)", peakNew / 1000.0);
-  // And it still takes a heater that does nothing: the same log with the temperature held flat at its lowest point.
-  std::vector<Row> flat = rows;
+  // And it still takes a heater that does nothing: the same log with the temperature held flat at its lowest point. The log is continued at
+  // its last heater power for 20 more minutes: the rule of 2.4.0 reads the temperature smoothed over a minute (sensor noise must not hide a
+  // dead heater, see heater-response-watch.cpp), which delays its trip a little past the moment the machine cut the heater.
+  std::vector<Row> flat(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(machineTrip));
   size_t lowest = 0;
   for (size_t i = 0; i < flat.size(); ++i) if (flat[i].pv < flat[lowest].pv) lowest = i;
   for (size_t i = lowest; i < flat.size(); ++i) flat[i].pv = rows[lowest].pv;
-  double peakFlat = 0;
-  const double tripFlat = replayWatch<HeaterResponseWatch>(flat, machineTrip - 1, peakFlat);
-  std::printf("  rule of 2.4.0 on the same heater power with the temperature held flat from its lowest point (%.0f s): trips at %.0f s\n", rows[lowest].t, tripFlat);
+  const Row last = flat.back();
+  for (int k = 1; k <= 120; ++k) { Row r = last; r.t = last.t + 10.0 * k; flat.push_back(r); }
+  double peakFlat = 0, peakFlatOld = 0;
+  const double tripFlat = replayWatch<HeaterResponseWatch>(flat, flat.size() - 1, peakFlat);
+  const double tripFlatOld = replayWatch<LegacyHeaterWatch>(flat, flat.size() - 1, peakFlatOld);
+  std::printf("  the same heater power with the temperature held flat from its lowest point (%.0f s): the rule of 2.3.4 trips at %.0f s, the rule of 2.4.0 at %.0f s\n",
+              rows[lowest].t, tripFlatOld, tripFlat);
   CHECK(tripFlat > rows[lowest].t, "a flat temperature under full heater energy must still trip (got %.0f)", tripFlat);
+  CHECK(tripFlatOld > 0.0 && tripFlat <= tripFlatOld + 120.0, "the smoothing may delay the trip by two minutes at most (%.0f vs %.0f)", tripFlat, tripFlatOld);
 }
 
 static void testOvenFollowsTheLog(const std::vector<Row> &rows) {

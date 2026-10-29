@@ -13,14 +13,22 @@
 // that was lifting the temperature again (33.3 -> 35.0 degC over 20 minutes) never "rose" above the stale reference, the on-time piled
 // up and the machine cut the heater at the exact moment the oven needed it most. With the reference following the temperature
 // down, only a temperature that does NOT recover while the heater has delivered `requiredOnMs` of full-power energy counts as evidence.
+//
+// Both the reference and the rise are taken on the temperature SMOOTHED with a time constant of one minute. The lowest value of a raw,
+// noisy signal keeps falling with every wobble (the range of N samples grows with N) and the next wobble then looks like a rise: with a
+// sensor that wanders by a few tenths of a degree the window was reset again and again and a dead heater was never found. A minute of
+// smoothing costs a healthy heater nothing (its rise is detected a minute later at most) and finds a dead one as fast as before.
 class HeaterResponseWatch {
  public:
+  static constexpr double SMOOTH_S = 60.0;
+
   void reset() {
     tracking_ = false;
     active_ = false;
     sinceAt_ = 0U;
     accumOnMs_ = 0U;
     referenceC_ = NAN;
+    smoothC_ = NAN;
   }
 
   // `demand` = the machine is in a state where the heater is expected to raise the temperature (batch, heater enabled, sensor valid,
@@ -35,6 +43,7 @@ class HeaterResponseWatch {
       tracking_ = true;
       sinceAt_ = now;
       accumOnMs_ = 0U;
+      smoothC_ = temperatureC;
       referenceC_ = temperatureC;
       active_ = false;
       return;
@@ -44,10 +53,12 @@ class HeaterResponseWatch {
     const uint32_t dt = gap < 1000UL ? gap : 1000UL;
     sinceAt_ = now;
     if (ssrOn && accumOnMs_ < UINT32_MAX - dt) accumOnMs_ += dt;
-    if (temperatureC < referenceC_) referenceC_ = temperatureC;       // follow the temperature down (see above)
-    if (temperatureC - referenceC_ >= minRiseC) {
+    const double dtS = static_cast<double>(dt) * 0.001;
+    smoothC_ += (static_cast<double>(temperatureC) - smoothC_) * (dtS / (SMOOTH_S + dtS));
+    if (smoothC_ < referenceC_) referenceC_ = smoothC_;                   // follow the temperature down (see above)
+    if (smoothC_ - referenceC_ >= static_cast<double>(minRiseC)) {
       // The oven responds: a new energy window starts from here.
-      referenceC_ = temperatureC;
+      referenceC_ = smoothC_;
       accumOnMs_ = 0U;
       active_ = false;
     } else if (accumOnMs_ >= requiredOnMs) {
@@ -57,10 +68,10 @@ class HeaterResponseWatch {
 
   bool active() const { return active_; }
   uint32_t accumOnMs() const { return accumOnMs_; }
-  float referenceC() const { return referenceC_; }
+  float referenceC() const { return static_cast<float>(referenceC_); }
   // How far the temperature is above the reference (the number the fault carries, in 0.1 degC).
   float riseC(float temperatureC) const {
-    return (std::isfinite(referenceC_) && std::isfinite(temperatureC)) ? temperatureC - referenceC_ : 0.0f;
+    return (std::isfinite(referenceC_) && std::isfinite(temperatureC)) ? static_cast<float>(static_cast<double>(temperatureC) - referenceC_) : 0.0f;
   }
 
  private:
@@ -68,5 +79,6 @@ class HeaterResponseWatch {
   bool active_ = false;
   uint32_t sinceAt_ = 0U;
   uint32_t accumOnMs_ = 0U;
-  float referenceC_ = NAN;
+  double referenceC_ = NAN;
+  double smoothC_ = NAN;
 };
