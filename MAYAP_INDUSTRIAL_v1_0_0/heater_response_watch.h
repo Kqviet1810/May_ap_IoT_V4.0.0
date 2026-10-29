@@ -17,7 +17,7 @@
 // Both the reference and the rise are taken on the temperature SMOOTHED with a time constant of one minute. The lowest value of a raw,
 // noisy signal keeps falling with every wobble (the range of N samples grows with N) and the next wobble then looks like a rise: with a
 // sensor that wanders by a few tenths of a degree the window was reset again and again and a dead heater was never found. A minute of
-// smoothing costs a healthy heater nothing (its rise is detected a minute later at most) and finds a dead one as fast as before.
+// smoothing costs a healthy heater nothing (its rise is detected a minute later at most) and finds a dead one about as fast as before.
 class HeaterResponseWatch {
  public:
   static constexpr double SMOOTH_S = 60.0;
