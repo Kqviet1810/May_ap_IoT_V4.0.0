@@ -308,6 +308,52 @@ void testStartIdentifiesTheOven() {
   assert(ctl.kAir() > 0.5 * trueK && ctl.kAir() < 1.3 * trueK);
 }
 
+// On the machine the controller runs from power-up with the permit off (it pushes zeros into its ring and its history), and the batch starts
+// some time later. Two things must not depend on how long that pause was:
+//  - the energy the model counts as on its way is the sum of the last pipeLen_ commands, also after the identification of the oven at that
+//    start has changed the length of the ring (the write position used to be left beyond the shorter ring, and the running sum then drifted
+//    for good: the energy in flight was off by up to 100 percent-seconds in about one start in three);
+//  - the hold level learned from the energy balance: the power steps from nothing to full at the start, and a window of power that contains
+//    that step says nothing about the hold level (it used to fall to about nothing during the climb, and the first approach to SP was slower).
+void testStartAfterAPause() {
+  printf("[TEST] Start after a pause: energy in flight = the commands sent, hold level not thrown off by the step...\n");
+  int runs = 0, identified = 0;
+  double worst = 0.0, lowestHold = 1e9;
+  for (int pause = 0; pause < 420; pause += 31) {
+    TestPlant plant;
+    thermalv3::Controller ctl;
+    thermalv3::Input in;
+    in.sp = 37.5f; in.permit = false; in.capPct = 100.0f; in.dtS = 1.0f;   // one control step per second: one command per ring entry
+    std::vector<int> sent;
+    int identifiedAt = -1;
+    for (int s = 0; s < pause + 2400; ++s) {
+      in.permit = s >= pause;                                              // the batch starts after `pause` seconds
+      in.pv = static_cast<float>(std::round(plant.Ta * 10.0) / 10.0);
+      const float holdBefore = ctl.pHold();                                // the hold level the prediction of this step is computed with
+      const thermalv3::Output out = ctl.step(in);
+      for (int k = 0; k < 10; ++k) plant.step(out.powerPct, 0.1);
+      sent.push_back(static_cast<int>(std::round(out.powerPct)));
+      if (s > pause) lowestHold = std::min(lowestHold, static_cast<double>(ctl.pHold()));
+      if (identifiedAt < 0 && ctl.identified()) identifiedAt = s;
+      if (identifiedAt < 0) continue;
+      const int len = static_cast<int>(ctl.tauTransit() * 1.35f);          // the ring length the identification set
+      if (s < identifiedAt + len + 2) continue;                            // until the ring holds only commands that were really sent
+      int sum = 0;
+      for (int k = s - len; k < s; ++k) sum += sent[static_cast<size_t>(k)];
+      const float expected = std::max(in.pv - 0.20f, in.pv + ctl.kAir() * (static_cast<float>(sum) - static_cast<float>(len) * holdBefore));
+      worst = std::max(worst, static_cast<double>(std::fabs(ctl.predicted() - expected)));
+    }
+    ++runs;
+    if (identifiedAt >= 0) ++identified;
+  }
+  printf("  -> %d of %d starts identified the oven; largest gap between the prediction and the commands sent: %.5f degC; lowest hold level %.1f %%\n",
+         identified, runs, worst, lowestHold);
+  assert(identified == runs);
+  assert(worst < 5.0e-4);
+  assert(lowestHold > 8.0);                                                // the true hold of this oven is 12 %, the prior 18 %
+  printf("  -> Pass\n");
+}
+
 // Whatever the temperature does, the learned hold level, the integral and the command stay inside their limits and finite.
 void testBoundsUnderHostileInput() {
   printf("[TEST] Hold level, integral and command stay bounded under hostile input...\n");
@@ -330,7 +376,7 @@ void testBoundsUnderHostileInput() {
     assert(ctl.pHold() >= 0.0f && ctl.pHold() <= thermalv3::HOLD_MAX_PCT);
     assert(std::fabs(ctl.integral()) <= thermalv3::I_CLAMP + 0.001f);
     assert(std::isfinite(ctl.kAir()) && ctl.kAir() >= thermalv3::KAIR_MIN && ctl.kAir() <= thermalv3::KAIR_MAX);
-    assert(ctl.tauTransit() >= 45.0f && ctl.tauTransit() <= thermalv3::TAU_MAX_S);
+    assert(ctl.tauTransit() >= thermalv3::TAU_MIN_S && ctl.tauTransit() <= thermalv3::TAU_MAX_S);
   }
   printf("  -> Pass\n");
 }
@@ -346,6 +392,7 @@ int main() {
   testLearnsAnUnannouncedLoad();
   testRestartNextToSetpointKeepsPriors();
   testStartIdentifiesTheOven();
+  testStartAfterAPause();
   testBoundsUnderHostileInput();
   testShadowHold();
   testResumeAfterHold();

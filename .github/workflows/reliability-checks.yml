@@ -166,7 +166,7 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/heater-response-watch.cpp -o /tmp/mayap-heater-response-watch
           /tmp/mayap-heater-response-watch
 
-      - name: "Thermal V3 closed loop: the real controller and the real E115 rule on simulated ovens (door, cold tray, vent, set-point step, reboot, dead heater) and on the oven fitted to the 29/10 batch"
+      - name: "Thermal V3 closed loop: the real controller and the real E115 rule on simulated ovens (first climb also after an idle start, door, cold tray, vent, set-point step, reboot, a day of ordinary operation, dead heater), next to the 2.3.4 pair, and on the oven fitted to the 29/10 batch"
         run: |
           g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-closed-loop.cpp -o /tmp/mayap-thermal-closed-loop
           /tmp/mayap-thermal-closed-loop

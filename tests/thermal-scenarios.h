@@ -82,6 +82,9 @@ class RigT {
   void setSetpoint(double sp) { in.sp = static_cast<float>(sp); }
   // A reboot (an update, a power blip): everything the controller and the E115 rule had learned or counted is gone.
   void restartControllers() { ctl = Ctl(); watch = Watch(); }
+  // The controller runs from power-up but the batch starts later: until `seconds` the permit is off (the controller pushes zeros into its
+  // ring and the heater is not asked for anything), which is how every first start of a power cycle reaches the controller on the machine.
+  void startAt(double seconds) { startS_ = seconds; }
   // 1 Hz traces of the TRUE air temperature, the value the controller saw, and the command.
   const std::vector<float> &air() const { return ta_; }
   const std::vector<float> &seen() const { return pv_; }
@@ -98,7 +101,7 @@ class RigT {
   void one(bool door, bool vent) {
     if (tick_ % 20 == 0) chain.sample(plant.sensor());
     in.pv = chain.value();
-    in.permit = !tripped_;
+    in.permit = !tripped_ && t_ >= startS_;
     in.ventFan = vent;
     const auto o = ctl.step(in);
     const double u = tripped_ ? 0.0 : o.powerPct;
@@ -117,7 +120,7 @@ class RigT {
     if (tick_ % 10 == 0) { ta_.push_back(static_cast<float>(plant.air())); pv_.push_back(in.pv); u_.push_back(static_cast<float>(u)); }
   }
   long tick_ = 0;
-  double t_ = 0.0, t0_ = 0.0, duty_ = 0.0, lastU_ = 0.0, tripT_ = -1.0;
+  double t_ = 0.0, t0_ = 0.0, duty_ = 0.0, lastU_ = 0.0, tripT_ = -1.0, startS_ = 0.0;
   bool tripped_ = false;
   std::vector<float> ta_, pv_, u_;
 };
@@ -148,6 +151,7 @@ struct Outcome {
   double belowS = 0;        // seconds of the last hour spent more than BAND under SP
   double tripS = -1;        // E115 trip time (from the start of the measured part), -1 = none
   double meanU = 0;         // mean command over the measured part
+  double minFarPct = 101.0; // lowest command while the air was more than 2.5 degC under SP (101 = it never was); set by the scenarios that look
 };
 
 // Evaluate the 1 Hz trace from index `from`. `sp` may differ from SP_C (a set-point step).
@@ -187,13 +191,6 @@ inline Outcome evaluate(const R &r, size_t from, double sp = SP_C) {
     o.tripS = r.tripTime() - startT;
   }
   return o;
-}
-
-// A batch started cold: climb, then settle for `settleMin` minutes. Returns the rig positioned at the end.
-inline Rig settledRig(const PlantParams &p, double startC = 28.0, double settleMin = 120.0) {
-  Rig r(p, startC, startC);
-  r.advance((settleMin + 120.0) * 60.0);
-  return r;
 }
 
 }  // namespace thermalsim

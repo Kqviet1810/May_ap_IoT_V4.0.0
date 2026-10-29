@@ -427,11 +427,13 @@ class Controller {
     pipeSum_ = sum;
   }
   // A new horizon: the ring must hold the last pipeLen_ commands that really went out, oldest at the write position. Entries the history
-  // does not reach back to are the hold level (nothing was in flight before the controller started).
+  // does not reach back to are the hold level (nothing was in flight before the controller started). The write position goes back to 0
+  // with the oldest command: it may lie beyond a shorter ring, and a push there would corrupt the running sum.
   void rebuildPipe() {
+    pipeIdx_ = 0U;
     for (uint16_t i = 0U; i < pipeLen_; ++i) {
       const uint16_t age = static_cast<uint16_t>(pipeLen_ - 1U - i);
-      pipe_[(pipeIdx_ + i) % pipeLen_] = age < histCount_ ? uHist_[(histHead_ + HIST_LEN - 1U - age) % HIST_LEN] : static_cast<uint8_t>(pHold_);
+      pipe_[i] = age < histCount_ ? uHist_[(histHead_ + HIST_LEN - 1U - age) % HIST_LEN] : static_cast<uint8_t>(pHold_);
     }
     recomputePipeSum();
   }
@@ -472,6 +474,11 @@ class Controller {
     const uint16_t w = static_cast<uint16_t>(spanS);
     const uint16_t delay = static_cast<uint16_t>(tauTransit_ + 0.5f);
     if (histCount_ < static_cast<uint16_t>(w + delay + 1U)) return;     // the history does not reach that far back yet
+    // The power that reached the oven during the window was commanded one transit time earlier, and that stretch must belong to this run as
+    // well: across a pause (a controller that has been idle since power-up, a batch that starts later) the history holds the idle, the power
+    // steps from nothing to full inside the window, and the answer of the oven to a step is spread over its whole delay: the balance would read
+    // a hold level of about nothing right at a start.
+    if (liveS_ < static_cast<float>(w + delay + 1U)) return;
     // Least-squares slope of the last w seconds of PV (x = seconds, oldest first).
     const float xm = 0.5f * static_cast<float>(w - 1U);
     const float ref = pvAge(0U);                                        // differences to the newest value: a 37 degC offset would cost float precision
