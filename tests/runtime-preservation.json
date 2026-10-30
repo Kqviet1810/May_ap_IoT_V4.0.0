@@ -58,7 +58,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "35aa5ffdad6bcbd440db1f10966d9e4b737c5144989bf4e62399eec271784eed",
+      "sha256": "fd8a7ee97fc211d153d1f53e7e1d1950e95d9b9e0eff86fdeaf09990200657f0",
       "filter": "config"
     },
     {
@@ -145,7 +145,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/ota_web_update.h",
-      "sha256": "b1a9958e737c3cc5d8d53e1a3c117ea7758a8d283d4e8f6b643f277dc0e87670",
+      "sha256": "209432354403ce0b81ea934fa7513af2dfbe1b3909d234a179574ed4e1935eec",
       "signature": "inline void mayapFirmwareWebApplyNow()",
       "filter": "webBeat"
     },

@@ -768,12 +768,14 @@ async function handleFirmwareDownload(env, version, request) {
   if (!assetRes.ok || !assetRes.body) {
     return json(env, { success: false, error: 'khong tai duoc file tu GitHub' }, 502);
   }
-  return new Response(assetRes.body, {
+  const binaryData = await assetRes.arrayBuffer();
+  return new Response(binaryData, {
     status: 200,
     headers: {
       'Content-Type': 'application/octet-stream',
-      'Content-Length': String(cache.size),
+      'Content-Length': String(binaryData.byteLength),
       'X-Firmware-Sha256': cache.sha256,
+      'Cache-Control': 'public, max-age=86400',
     },
   });
 }

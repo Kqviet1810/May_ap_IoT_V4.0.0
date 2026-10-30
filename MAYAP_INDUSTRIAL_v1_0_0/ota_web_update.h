@@ -283,11 +283,17 @@ inline void mayapFirmwareWebApplyNow() {
     return;
   }
   MayapFirmwareMaintenance maintenance;
-  const FirmwareWebStatus status = mayapFirmwareWebStatus();
+  FirmwareWebStatus status = mayapFirmwareWebStatus();
   if (!status.available || status.size == 0U) {
-    setError("KHONG CO BAN CAP NHAT DANG CHO");
-    __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
-    return;
+    mayapSerialPrintf(false, "[FWWEB] Chua co thong tin ban moi, tu dong kiem tra may chu truoc khi tai...\n");
+    (void)mayapFirmwareWebCheck();
+    status = mayapFirmwareWebStatus();
+    if (!status.available || status.size == 0U) {
+      setError("KHONG CO BAN CAP NHAT DANG CHO");
+      __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
+      applyFailedAt = millis() | 1U;
+      return;
+    }
   }
 
   __atomic_store_n(&applyPhase, 1U, __ATOMIC_RELEASE);
@@ -310,22 +316,34 @@ inline void mayapFirmwareWebApplyNow() {
   const int code = http.GET();
   if (code != 200) {
     mayapSerialPrintf(false, "[FWWEB] Tai firmware THAT BAI, ma HTTP=%d\n", code);
-    setError("TAI FIRMWARE THAT BAI");
+    char httpErr[32];
+    snprintf(httpErr, sizeof(httpErr), "LOI TAI VE (HTTP %d)", code);
+    setError(httpErr);
     http.end();
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
     applyFailedAt = millis() | 1U;
     return;
   }
 
-  const int len = http.getSize();
-  if (len <= 0 || static_cast<uint32_t>(len) != status.size) {
+  const int httpLen = http.getSize();
+  const size_t expectedLen = (httpLen > 0) ? static_cast<size_t>(httpLen) : status.size;
+  if (httpLen > 0 && static_cast<uint32_t>(httpLen) != status.size) {
+    mayapSerialPrintf(false, "[FWWEB] Kich thuoc HTTP (%d) khac metadata (%lu)\n",
+                      httpLen, static_cast<unsigned long>(status.size));
     setError("KICH THUOC FILE KHONG KHOP");
     http.end();
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
     applyFailedAt = millis() | 1U;
     return;
   }
-  if (!Update.begin(static_cast<size_t>(len))) {
+  if (expectedLen == 0U) {
+    setError("FILE FIRMWARE TRONG");
+    http.end();
+    __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
+    applyFailedAt = millis() | 1U;
+    return;
+  }
+  if (!Update.begin(expectedLen)) {
     setError("KHONG DU BO NHO OTA");
     http.end();
     __atomic_store_n(&applyPhase, 2U, __ATOMIC_RELEASE);
@@ -342,7 +360,7 @@ inline void mayapFirmwareWebApplyNow() {
   const size_t bufCap = heapBuf ? 4096U : 1024U;
   uint8_t stackFallback[1024];
   uint8_t *buf = heapBuf ? heapBuf : stackFallback;
-  int remaining = len;
+  int remaining = static_cast<int>(expectedLen);
   bool ioError = false;
   uint8_t disconnectRetries = 0;
   constexpr uint8_t MAX_RETRIES = 5;
@@ -388,7 +406,7 @@ inline void mayapFirmwareWebApplyNow() {
     mbedtls_sha256_update(&sha, buf, static_cast<size_t>(readBytes));
     remaining -= readBytes;
     __atomic_store_n(&downloadPercent,
-        static_cast<uint8_t>((static_cast<uint32_t>(len - remaining) * 100U) / static_cast<uint32_t>(len)),
+        static_cast<uint8_t>((static_cast<uint32_t>(expectedLen - remaining) * 100U) / static_cast<uint32_t>(expectedLen)),
         __ATOMIC_RELEASE);
   }
   http.end();

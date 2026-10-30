@@ -1319,10 +1319,10 @@
         const isDev = device?.snapshot?.runtime?.tech?.devMode === true;
         if (isDev) {
           sendCommand('apply_firmware_now');
-          toast('Chế độ nhà phát triển: Đã ra lệnh tải và cập nhật firmware từ xa...', 6000);
+          toast('Đã gửi lệnh cập nhật firmware từ xa. Máy đang kiểm tra, tải bản mới và sẽ tự khởi động lại...', 10000);
         } else {
           sendCommand('firmware_check_now');
-          toast('Đã yêu cầu kiểm tra. Trên màn hình máy: Cài đặt chung → Hệ thống → Cập nhật. Dừng mẻ và tắt công tắc nhiệt trước khi xác nhận cập nhật.', 8000);
+          toast('Đã yêu cầu kiểm tra bản mới. Nếu chưa bật Chế độ nhà phát triển, vui lòng xác nhận cập nhật trên màn hình máy (Cài đặt chung → Hệ thống → Cập nhật).', 9000);
         }
       });
       maybeNotifyFirmwareUpdate(device, latest.version);
