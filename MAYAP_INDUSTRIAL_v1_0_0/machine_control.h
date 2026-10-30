@@ -5754,15 +5754,17 @@ class MachineController {
     }
     if (!validSafety) { ventTemperatureActive_ = false; ventOnTimer_.reset(); ventOffTimer_.reset(); }
 
-    // The heater is blocked by its OWN, higher line: the fan follows the user's vent threshold (it removes heat), but the controller keeps
-    // the heater below it by itself (measured error, KP_DOWN). Only when the reading runs well past SV does the heater switch off hard, and it
-    // comes back 0.1 degC lower. "Well past" scales with the sensor step so a coarse 0.1 sensor and a fine 0.01 one are treated alike.
+    // Whenever the overheat exhaust fan is active (ventTemperatureActive_) OR the reading runs past the hard block ceiling,
+    // the heater is strictly blocked (0 % SSR + shadow mode) so the heater never fights the exhaust fan.
     {
       const float dQ = thermalV3SensorStepC();
       const float blockAt = std::max(config_.ventOnTemp, config_.targetTemp + std::max(VENT_HEATER_BLOCK_MIN_C, VENT_HEATER_BLOCK_STEPS * dQ));
       if (!validSafety) ventHeaterBlock_ = false;
-      else if (!ventHeaterBlock_ && safetyTemp >= blockAt) ventHeaterBlock_ = true;
-      else if (ventHeaterBlock_ && safetyTemp <= blockAt - VENT_HEATER_BLOCK_RELEASE_C) ventHeaterBlock_ = false;
+      else if (ventTemperatureActive_ || (!ventHeaterBlock_ && safetyTemp >= blockAt)) ventHeaterBlock_ = true;
+      else if (ventHeaterBlock_ && !ventTemperatureActive_ &&
+               safetyTemp <= std::min(config_.ventOffTemp + VENT_LINE_EPS_C, blockAt - VENT_HEATER_BLOCK_RELEASE_C)) {
+        ventHeaterBlock_ = false;
+      }
     }
 
     if ((!wasHigh && highTemperatureActive_) ||

@@ -148,6 +148,8 @@ class Controller {
     doorArmed_ = true;
     doorCalmS_ = 0.0f;
     stuckTimer_ = 0.0f;
+    overheatStuckTimer_ = 0.0f;
+    overheatRefPv_ = NAN;
     shadowS_ = 0.0f;
     shadowRefPv_ = NAN;
     shadowRefS_ = 0.0f;
@@ -266,11 +268,13 @@ class Controller {
     dQ_ = dQ;
     auto deadZone = [dQ](float e) { return e > 0.5f * dQ ? e - 0.5f * dQ : (e < -0.5f * dQ ? e + 0.5f * dQ : 0.0f); };
 
+    const float errTrue = sp_ - pv_;
+    const float overheatCutC = std::max(0.08f, 0.95f * dQ);
     const float excessEnergy = static_cast<float>(pipeSum_) - static_cast<float>(pipeLen_) * pHold_;
-    pvPredicted_ = std::max(pv_ - 0.20f, pv_ + kAir_ * excessEnergy);
+    const float predFloor = ((in.shadow || in.ventFan) && errTrue <= -overheatCutC && filteredSlope_ >= -0.0005f) ? pv_ : (pv_ - 0.20f);
+    pvPredicted_ = std::max(predFloor, pv_ + kAir_ * excessEnergy);
 
     const float errPred = sp_ - pvPredicted_;
-    const float errTrue = sp_ - pv_;
 
     // -------------------------------------------------------------------------
     // 5. Control Law: P on a blend of predicted (far) and measured (near) error + Conditional Anti-Windup I
@@ -335,8 +339,31 @@ class Controller {
       stuckTimer_ = 0.0f;
     }
 
-    // Raw commanded power
+    // Overheat Anti-Stuck protection: when the exhaust fan or vent-heater interlock is active at/above SP + step
+    // and temperature does not cool by a sensor step within 30 s, the stored hold level exceeds the oven's real heat loss
+    // and is actively trimmed down.
+    if (!doorDetected_ && (in.shadow || in.ventFan) && errTrue <= -overheatCutC && filteredSlope_ >= -0.0005f) {
+      if (overheatStuckTimer_ <= 0.0f || !std::isfinite(overheatRefPv_)) {
+        overheatRefPv_ = pv_;
+      } else if (pv_ <= overheatRefPv_ - 1.01f * dQ) {
+        overheatRefPv_ = pv_;
+        overheatStuckTimer_ = 0.0f;
+      }
+      overheatStuckTimer_ += dt;
+      if (overheatStuckTimer_ > 30.0f) {
+        pHold_ = std::max(0.0f, pHold_ - 0.05f * dt);
+        if (integral_ > 0.0f) integral_ *= std::max(0.0f, 1.0f - 0.15f * dt);
+      }
+    } else {
+      overheatStuckTimer_ = 0.0f;
+      overheatRefPv_ = NAN;
+    }
+
+    // Raw commanded power; when the exhaust fan is running at/above the overheat threshold, cut heater to 0 %.
     float cmd = pHold_ + pTerm + integral_;
+    if (in.ventFan && errTrue <= -overheatCutC) {
+      cmd = 0.0f;
+    }
 
     // Door open guard clamp
     if (doorDetected_) {
@@ -583,6 +610,8 @@ class Controller {
   float doorTimer_ = 0.0f;
   float doorCalmS_ = 0.0f;
   float stuckTimer_ = 0.0f;
+  float overheatStuckTimer_ = 0.0f;
+  float overheatRefPv_ = NAN;
   float shadowS_ = 0.0f;         // seconds the vent line has been holding the heater at 0 %
   float shadowRefPv_ = NAN;      // PV at the last 3-minute checkpoint of that hold
   float shadowRefS_ = 0.0f;
