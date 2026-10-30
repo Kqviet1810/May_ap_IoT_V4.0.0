@@ -1,8 +1,9 @@
-// Execute the actual E115 full-bank energy accounting body from MachineController.
+// Execute the actual E115 full-bank energy accounting body from MachineController (the evidence rule itself is heater_response_watch.h).
 #include "thermal-fixture.h"
 #include <deque>
 #include <cstddef>
 #include "../MAYAP_INDUSTRIAL_v1_0_0/heater_burst_scheduler.h"
+#include "../MAYAP_INDUSTRIAL_v1_0_0/heater_response_watch.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/startup_output_policy.h"
 static uint32_t clockMs=0;
 uint32_t millis() { return clockMs; }
@@ -34,10 +35,11 @@ struct E115Harness {
            const Input &state() const { return input; } } inputs_;
   OutputArbiter outputs_;
 #include "actual-burst-member.inc"
-  bool batchRunning_=true,sensorUsable_=true,heaterStuckTracking_=false;
+  bool batchRunning_=true,sensorUsable_=true;
   bool heaterNotHeatingActive_=false;
-  float temperature_=30,heaterStuckStartTemp_=NAN;
-  uint32_t heaterStuckSinceAt_=0,heaterStuckAccumOnMs_=0;
+  float temperature_=30;
+  HeaterResponseWatch heaterWatch_;
+  uint32_t onMs() const { return heaterWatch_.accumOnMs(); }
   void update(uint32_t now) {
 #include "actual-heater-evidence.inc"
   }
@@ -61,27 +63,27 @@ int main() {
       if(levels[PIN_OUT_HEATER_SSR]==HIGH)actualOn+=5;
       // Production order: updateAlarms accounts prior GPIO state, then heating.
       h.update(now);
-      assert(h.heaterStuckAccumOnMs_==actualOn);
+      assert(h.onMs()==actualOn);
       assert(h.heaterNotHeatingActive_==(actualOn>=900000));
       actuate(h,now,power);last=now;
     }
     assert(h.heaterNotHeatingActive_ && actualOn==900000);
     std::printf("E115 cadence=5ms quantum=300ms request=%.0f%% actual_on=%u elapsed=%u PASS\n",power,actualOn,last-10000);
     h.sensorUsable_=false;h.update(last+5);
-    assert(!h.heaterNotHeatingActive_ && h.heaterStuckAccumOnMs_==0);
+    assert(!h.heaterNotHeatingActive_ && h.onMs()==0);
   }
   E115Harness cut;prepare(cut);uint32_t at=10000;
   actuate(cut,at,30);
   while(!cut.outputs_.state().heaterSsr){at+=5;cut.update(at);actuate(cut,at,30);}
-  const uint32_t before=cut.heaterStuckAccumOnMs_;
+  const uint32_t before=cut.onMs();
   // Inhibit arrives after 135 ms ON; next 5 ms control cycle cuts at 140 ms.
   for(uint32_t dt=5;dt<=140;dt+=5){cut.update(at+dt);actuate(cut,at+dt,30,dt<140);}
-  assert(!cut.outputs_.state().heaterSsr && cut.heaterStuckAccumOnMs_==before+140);
-  const uint32_t evidence=cut.heaterStuckAccumOnMs_;
+  assert(!cut.outputs_.state().heaterSsr && cut.onMs()==before+140);
+  const uint32_t evidence=cut.onMs();
   for(uint32_t dt=145;dt<=300;dt+=5){cut.update(at+dt);actuate(cut,at+dt,30,false);}
-  assert(cut.heaterStuckAccumOnMs_==evidence);
+  assert(cut.onMs()==evidence);
   // Fresh 30% earns no compensation burst at resume or before 600 ms.
   for(uint32_t dt=305;dt<905;dt+=5){cut.update(at+dt);actuate(cut,at+dt,30);assert(!cut.outputs_.state().heaterSsr);}
-  assert(cut.heaterStuckAccumOnMs_==evidence);
+  assert(cut.onMs()==evidence);
   std::puts("Actual E115: 5ms/300ms, 5/10/30/50/100% -> 900s actual GPIO ON; midburst cut140ms/no credit/resume PASS");
 }

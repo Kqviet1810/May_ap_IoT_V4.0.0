@@ -16,7 +16,7 @@ Quy tắc: **hằng số nào không suy ra được từ cảm biến, vật l�
 | `fanCirc`, `fanVent`, `ventHold` | `outputs_.state()`, `warmupVentHold_` | |
 | `cap` (%) | `maxHeaterPower` | một trong các giá trị người dùng |
 | `eggs` | số trứng (mặc định 10 000) | giá trị người dùng thứ tư |
-| `e115Frac` | `heaterStuckAccumOnMs_ / (heaterStuckDurationSec·1000)` | đọc một chiều, không sửa E115 |
+| `e115Frac` | `heaterWatch_.accumOnMs() / (heaterStuckDurationSec·1000)` | đọc một chiều, không sửa E115 |
 | `delivered` (%/s) | `burst.groupA && permit` × dt | **năng lượng đã giao thật**, không phải lệnh |
 
 **Ra:** `commandedPower` ∈ [0, cap] (%), `state` (mã), `powerLimited` (cờ, không phải lỗi), telemetry. Bộ chia xung/arbiter/bảo vệ không đọc ngược.
