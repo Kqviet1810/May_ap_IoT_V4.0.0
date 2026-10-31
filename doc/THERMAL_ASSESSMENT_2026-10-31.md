@@ -111,3 +111,22 @@ Bộ bảo vệ độc lập (Báo cao, Khẩn cấp, chặn heater, E115), lu�
 2. Cho phép mình hiệu chuẩn bench theo các log thật trong `tests`/uploads (cần anh giữ lại các tệp CSV, kèm phiên bản firmware mỗi tệp nếu nhớ).
 3. Cho phép chạy bóng một mẻ trên máy MAP-441BF6E051D0.
 4. Chọn: giữ Báo cao SV + 0,2 hay nới.
+
+## 9. Tiến độ P5.1 — hiệu chuẩn bench theo log thật (cập nhật cuối ngày 31/10)
+
+Đã làm: 8 log thật (`tests/fixtures/real-logs/`), công cụ `tools/thermal-research/fit-oven.cpp` (khớp **một** lò vật lý cho cả 8 log, đi qua đúng đường lọc cảm biến của máy) và phép thử vòng kín (cho bộ điều khiển của bản hiện tại chạy trên lò đã khớp rồi so với đúng điều máy thật đã làm).
+
+**Kết quả: chưa hiệu chuẩn xong; bench chưa được dùng làm bằng chứng tuyệt đối.**
+
+* Khớp tự do (nhiệt phòng thoải mái): sai số 0,07–0,17 °C, nhưng tham số **phi vật lý** (nhiệt phòng chạm cận 37 °C, công suất giữ âm). Không dùng được.
+* Khớp có ràng buộc vật lý (hold ≥ 0, nhiệt phòng chung ±3 °C): sai số 0,10–0,48 °C, **tệ hơn** mức 0,10 của lò 29/10. Vòng kín lệch nhiều: ví dụ log đêm 31/10 máy thật lên 37,4 trong 6 phút còn mô phỏng mất 25 phút; hai log mô phỏng vọt +0,5 trong khi máy thật +0,1.
+* **Một kết quả khớp tốt:** log chiều 31/10 (chạy 2.5.5): máy thật lên tới 37,4 sau 19,2 phút, đỉnh +0,20; mô phỏng 20,8 phút, đỉnh +0,20.
+* Các log 24, 27, 30/10 chạy bản firmware cũ hơn có luật điều khiển khác, nên **chỉ dùng được để khớp lò (hở), không dùng để so kết quả điều khiển**.
+
+**Nguyên nhân chưa khớp (suy ra từ dữ liệu):** log 3,3 giờ cho thấy ở nhiệt không đổi 37,5 °C công suất giữ nhiệt **giảm dần 26 % → 14 % → 10 % → 5 % → 3,5 % → 3,3 %**. Hold không phải hằng số: khối nhiệt chậm của lò đang ngấm nhiệt trong nhiều giờ (cộng nhiệt phòng thay đổi trong ngày). Mô hình hai khối với tham số cố định không biểu diễn được, cần thêm khối thứ ba (tường) và nhiệt phòng thay đổi theo giờ.
+
+**Hệ quả cho thiết kế (đã đo, không cần mô hình):**
+* Hold ở giờ thứ nhất khác hold ở giờ thứ ba nhiều lần; vì vậy **bản lưu phải gắn với thời gian từ lúc khởi động** (đường cong hold theo giờ chạy), không chỉ một con số.
+* Bộ học hold phải theo kịp mức giảm này (vài phần trăm một giờ), nếu không công suất dư sẽ làm nhiệt trôi lên.
+
+**Việc tiếp theo:** thêm khối tường chậm + nhiệt phòng theo giờ vào mô hình, khớp lại, và chỉ chấp nhận bench khi vòng kín của log chiều 31/10 và log 3,3 giờ khớp đồng thời. Nếu anh nhớ mỗi log có mở cửa, đổi khay, hay có trứng không thì ghi lại: các sự kiện đó đang làm sai lệch việc khớp.
