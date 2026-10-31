@@ -78,6 +78,15 @@ constexpr float MOMENTUM_NOISE_STEPS = 1.5f;  // a slope below this many sensor 
 #ifndef V3X_F2_DWELL
 #define V3X_F2_DWELL 60.0f   // ... for this long without a break
 #endif
+#ifndef V3X_F4
+#define V3X_F4 0     // the controller drove the reading 0.15 degC over SV and a protection cut the heater: the hold level was too big, it keeps a share of itself
+#endif
+#ifndef V3X_F4_KEEP
+#define V3X_F4_KEEP 0.6f
+#endif
+#ifndef V3X_F4_OVER
+#define V3X_F4_OVER 0.15f
+#endif
 #ifndef V3X_F3_GAIN
 #define V3X_F3_GAIN 0.5f
 #endif
@@ -158,6 +167,7 @@ class Controller {
     slopeShort_ = 0.0f;
     slopeLong_ = 0.0f;
     overS_ = 0.0f;
+    wasLive_ = false;
     dQ_ = 0.1f;
     liveS_ = 0.0f;
     calmS_ = 0.0f;
@@ -208,6 +218,12 @@ class Controller {
       out.state = state_;
       // The heater is not conducting: what was in flight drains out of the model and the history records the truth (zeros), so the
       // first command after the pause is not computed from the commands that came before it.
+#if V3X_F4
+      if (pvValid && spValid && capPct_ > 0.0f && !in.permit && !in.shadow) {
+        if (wasLive_ && in.pv >= in.sp + V3X_F4_OVER) pHold_ *= V3X_F4_KEEP;   // once, on the cycle the controller loses its permit
+      }
+      wasLive_ = false;
+#endif
 #if V3X_F1
       if (pvValid && spValid && capPct_ > 0.0f && !in.permit && !in.shadow) fadeWhileHeldOff(in.pv, in.sp, dt);   // the heater is held off by a protection (High, the Web ...)
 #endif
@@ -224,6 +240,7 @@ class Controller {
       return out;
     }
 
+    wasLive_ = true;
     pv_ = in.pv;
     sp_ = in.sp;
 
@@ -659,6 +676,7 @@ class Controller {
   uint8_t uHist_[HIST_LEN] = {}; // 1 Hz: the command that was physically sent [%]
   uint16_t histHead_ = 0U;
   uint16_t histCount_ = 0U;
+  bool wasLive_ = false;         // the last cycle ran the control law (a permit lost now, with the reading over SV, is the controller's own overshoot)
   float overS_ = 0.0f;           // seconds the reading has stood over SV and not fallen (the hold level fades after V3X_F2_DWELL)
   float slopeLong_ = 0.0f;       // [degC/s] least-squares slope of the last LONG_WINDOW_S seconds (the brake sees a slow rise through it)
   float slopeShort_ = 0.0f;      // [degC/s] least-squares slope of the last MOMENTUM_WINDOW_S seconds
