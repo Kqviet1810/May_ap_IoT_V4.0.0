@@ -14,6 +14,8 @@ static Input base(float pv) {
   in.sp = 37.5f; in.pv = pv; in.dQ = 0.1f; in.capPct = 100.0f; in.dtS = 0.1f; in.permit = true; in.newSample = true;
   return in;
 }
+// A controller that knows nothing starts by the distance to SV (2.5.8); these tests are about the hold level of 2.5.7, so they start from the prior of 18 %.
+static void prior(Controller &c) { c.importHold(18.0f, false); }
 static void run(Controller &c, Input in, float seconds) {
   for (int i = 0; i < static_cast<int>(seconds * 10.0f); ++i) c.step(in);
 }
@@ -21,7 +23,7 @@ static void run(Controller &c, Input in, float seconds) {
 int main() {
   // 1. A controller that drove the reading 0.2 degC over SV and then loses its permit keeps 60 % of its hold level (once), whatever else happens.
   {
-    Controller c;
+    Controller c; prior(c);
     run(c, base(37.45f), 300.0f);                                // running next to SV with the prior hold level
     const float before = c.pHold();
     assert(before > 5.0f);
@@ -35,7 +37,7 @@ int main() {
   }
   // 2. Held off, the reading standing at/over SV and not falling: the hold level fades (the oven loses almost nothing), 14 minutes take it to ~0.
   {
-    Controller c;
+    Controller c; prior(c);
     run(c, base(37.45f), 300.0f);
     const float before = c.pHold();
     Input held = base(37.6f); held.permit = false;
@@ -50,7 +52,7 @@ int main() {
   }
   // 3. Held off, the reading FALLING (the oven needs its heat): the hold level is not faded.
   {
-    Controller c;
+    Controller c; prior(c);
     run(c, base(37.45f), 300.0f);
     Input held = base(37.45f); held.permit = false;
     const float before = c.pHold();
@@ -60,7 +62,7 @@ int main() {
   }
   // 4. A cut that is not an overshoot (the reading is under SV + 0.15) does not touch the hold level at the moment of the cut.
   {
-    Controller c;
+    Controller c; prior(c);
     run(c, base(37.45f), 300.0f);
     const float before = c.pHold();
     Input held = base(37.55f); held.permit = false;
@@ -69,7 +71,7 @@ int main() {
   }
   // 5. The vent-line hold (shadow) keeps its own rule: no cut of the hold level at the moment it starts.
   {
-    Controller c;
+    Controller c; prior(c);
     run(c, base(37.45f), 300.0f);
     const float before = c.pHold();
     Input sh = base(37.7f); sh.permit = false; sh.shadow = true;
@@ -78,7 +80,7 @@ int main() {
   }
   // 6. A reading that is not valid changes nothing.
   {
-    Controller c;
+    Controller c; prior(c);
     run(c, base(37.45f), 300.0f);
     const float before = c.pHold();
     Input bad = base(NAN); bad.permit = false;

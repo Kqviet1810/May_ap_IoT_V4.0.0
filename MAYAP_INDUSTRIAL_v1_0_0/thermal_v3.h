@@ -75,25 +75,28 @@ constexpr float MOMENTUM_NOISE_STEPS = 1.5f;  // a slope below this many sensor 
 // 2.5.8: what the controller does with an oven nobody has measured depends on how far under SV it starts (e0): at SV a hold level of 0 (a falling reading is then
 // answered by a quick pump-up), next to SV a low one, a bit under SV a middle one; a cold start keeps the prior (the climb measures the oven).
 #ifndef V3X_START
-#define V3X_START 0
+#define V3X_START 1
 #endif
 #ifndef V3X_START_H_AT
-#define V3X_START_H_AT 0.0f     // e0 <= 0.1 degC
+#define V3X_START_H_AT 8.0f     // e0 <= 0.1 degC (0 and 5 were tried: a restart under a full tray then sags below the limit of tests/thermal-closed-loop.cpp)
 #endif
 #ifndef V3X_START_H_NEAR
-#define V3X_START_H_NEAR 5.0f   // 0.1 < e0 <= 1.0 degC
+#define V3X_START_H_NEAR 8.0f   // 0.1 < e0 <= 1.0 degC
 #endif
 #ifndef V3X_START_H_MID
 #define V3X_START_H_MID 8.0f    // 1.0 < e0 <= 3.0 degC
 #endif
 #ifndef V3X_PROBE
-#define V3X_PROBE 0             // next to SV the hold level is FOUND: power rises by V3X_PROBE_STEP_PCT every max(V3X_PROBE_STEP_S, transit time) while the reading keeps falling
+#define V3X_PROBE 1             // next to SV the hold level is FOUND: power rises by V3X_PROBE_STEP_PCT every max(V3X_PROBE_STEP_S, transit time) while the reading keeps falling
 #endif
 #ifndef V3X_PROBE_STEP_PCT
 #define V3X_PROBE_STEP_PCT 2.0f
 #endif
 #ifndef V3X_PROBE_STEP_S
 #define V3X_PROBE_STEP_S 120.0f
+#endif
+#ifndef V3X_PROBE_BAIL
+#define V3X_PROBE_BAIL 0.15f     // the reading fell this far under SV: this oven wants its heat (a loaded oven after a restart): back to the prior hold level, at once
 #endif
 #ifndef V3X_PROBE_QUIET
 #define V3X_PROBE_QUIET 2       // the probe ends when the reading did not fall over this many steps in a row
@@ -277,7 +280,11 @@ class Controller {
     if (probing_) {
       probeT_ += dt;
       const float stepS = std::max(V3X_PROBE_STEP_S, tauTransit_);
-      if (in.pv >= in.sp + 0.1f || probeT_ > 1800.0f || in.shadow || doorDetected_) probing_ = false;
+      if (in.pv < in.sp - V3X_PROBE_BAIL) {
+        if (pHold_ < V3X_HOLD0) { pHold_ = V3X_HOLD0; rebuildPipe(); }
+        probing_ = false;
+      }
+      else if (in.pv >= in.sp + 0.1f || probeT_ > 1800.0f || in.shadow || doorDetected_) probing_ = false;
       else if (probeT_ >= stepS) {
         probeT_ = 0.0f;
         if (in.pv < probePv_ - 0.04f || in.pv < in.sp - 0.15f) {        // still falling (or well under SV): the power asked for is not enough yet
