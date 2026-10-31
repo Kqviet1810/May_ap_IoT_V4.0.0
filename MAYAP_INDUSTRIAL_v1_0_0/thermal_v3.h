@@ -72,6 +72,29 @@ constexpr float MOMENTUM_NOISE_STEPS = 1.5f;  // a slope below this many sensor 
 #ifndef V3X_F4_OVER
 #define V3X_F4_OVER 0.15f
 #endif
+// 2.5.8: what the controller does with an oven nobody has measured depends on how far under SV it starts (e0): at SV a hold level of 0 (a falling reading is then
+// answered by a quick pump-up), next to SV a low one, a bit under SV a middle one; a cold start keeps the prior (the climb measures the oven).
+#ifndef V3X_START
+#define V3X_START 0
+#endif
+#ifndef V3X_START_H_AT
+#define V3X_START_H_AT 0.0f     // e0 <= 0.1 degC
+#endif
+#ifndef V3X_START_H_NEAR
+#define V3X_START_H_NEAR 5.0f   // 0.1 < e0 <= 1.0 degC
+#endif
+#ifndef V3X_START_H_MID
+#define V3X_START_H_MID 8.0f    // 1.0 < e0 <= 3.0 degC
+#endif
+#ifndef V3X_RAMP
+#define V3X_RAMP 0              // in the first half hour after such a start a reading that stands under SV is answered sooner and faster
+#endif
+#ifndef V3X_RAMP_WAIT
+#define V3X_RAMP_WAIT 45.0f
+#endif
+#ifndef V3X_RAMP_RATE
+#define V3X_RAMP_RATE 0.05f
+#endif
 #ifndef V3X_HOLD0
 #define V3X_HOLD0 18.0f   // the hold level of an oven nobody has measured (the bench compares other values)
 #endif
@@ -141,6 +164,8 @@ class Controller {
     histCount_ = 0U;
     slopeShort_ = 0.0f;
     wasLive_ = false;
+    startDone_ = holdImported_ = startPhase_ = false;
+    startS_ = 0.0f;
     dQ_ = 0.1f;
     liveS_ = 0.0f;
     calmS_ = 0.0f;
@@ -220,6 +245,19 @@ class Controller {
     wasLive_ = true;
     pv_ = in.pv;
     sp_ = in.sp;
+#if V3X_START
+    if (!startDone_) {
+      startDone_ = true;
+      if (!holdImported_) {
+        const float e0 = in.sp - in.pv;
+        const float h = e0 <= 0.1f ? V3X_START_H_AT : (e0 <= 1.0f ? V3X_START_H_NEAR : (e0 <= 3.0f ? V3X_START_H_MID : pHold_));
+        if (h != pHold_) { pHold_ = h; rebuildPipe(); }
+        startPhase_ = e0 <= 3.0f;
+        startS_ = 0.0f;
+      }
+    }
+    if (startPhase_) { startS_ += dt; if (startS_ > 1800.0f) startPhase_ = false; }
+#endif
 
     // -------------------------------------------------------------------------
     // 1. Sliding-Window Slope Estimation (10s to 25s window)
@@ -362,8 +400,13 @@ class Controller {
     // 37.3 degC for 20 minutes).
     if (!in.shadow && !doorDetected_ && errTrue >= std::max(0.08f, 0.95f * dQ) && std::fabs(filteredSlope_) < 0.0015f) {
       stuckTimer_ += dt;
-      if (stuckTimer_ > 120.0f) {
-        pHold_ = std::min(HOLD_MAX_PCT, pHold_ + 0.025f * dt);
+#if V3X_START && V3X_RAMP
+      const float stuckWait = startPhase_ ? V3X_RAMP_WAIT : 120.0f, stuckRate = startPhase_ ? V3X_RAMP_RATE : 0.025f;
+#else
+      const float stuckWait = 120.0f, stuckRate = 0.025f;
+#endif
+      if (stuckTimer_ > stuckWait) {
+        pHold_ = std::min(HOLD_MAX_PCT, pHold_ + stuckRate * dt);
       }
     } else if (!in.shadow) {
       stuckTimer_ = 0.0f;
@@ -470,6 +513,7 @@ class Controller {
   void importHold(float pHold, bool measured) {
     if (std::isfinite(pHold)) pHold_ = std::max(0.0f, std::min(HOLD_MAX_PCT, pHold));
     identified_ = measured;
+    holdImported_ = true;
     rebuildPipe();
   }
 
@@ -620,6 +664,8 @@ class Controller {
   uint8_t uHist_[HIST_LEN] = {}; // 1 Hz: the command that was physically sent [%]
   uint16_t histHead_ = 0U;
   uint16_t histCount_ = 0U;
+  bool startDone_ = false, holdImported_ = false, startPhase_ = false;   // 2.5.8: the start rules ran / hold level came from a stored record / first half hour
+  float startS_ = 0.0f;
   bool wasLive_ = false;         // the last cycle ran the control law (a permit lost now, with the reading over SV, is the controller's own overshoot)
   float slopeShort_ = 0.0f;      // [degC/s] least-squares slope of the last MOMENTUM_WINDOW_S seconds
   float dQ_ = 0.1f;              // sensor step of the last call [degC]
