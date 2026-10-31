@@ -72,6 +72,9 @@ constexpr float MOMENTUM_NOISE_STEPS = 1.5f;  // a slope below this many sensor 
 #ifndef V3X_F4_OVER
 #define V3X_F4_OVER 0.15f
 #endif
+#ifndef V3X_HOLD0
+#define V3X_HOLD0 18.0f   // the hold level of an oven nobody has measured (the bench compares other values)
+#endif
 constexpr uint16_t HIST_LEN = 640U;           // seconds of history: transit time (<=220 s) + learning window + margin
 
 enum State : uint8_t {
@@ -125,7 +128,7 @@ class Controller {
     // gains and brakes sized for them are only slow on a slower oven, and the first climb replaces them with measurements anyway.
     kAir_ = 0.0004f;           // [degC/s per 100 % power]
     tauTransit_ = 150.0f;      // transport delay [seconds]
-    pHold_ = 18.0f;            // nominal hold power [%]
+    pHold_ = V3X_HOLD0;        // nominal hold power [%]
     integral_ = 0.0f;
     pvPredicted_ = 30.0f;
 
