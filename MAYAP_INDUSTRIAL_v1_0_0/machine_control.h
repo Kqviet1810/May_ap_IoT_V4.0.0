@@ -5199,27 +5199,9 @@ class MachineController {
   }
   ThermalV3SlotIn buildThermalV3SlotIn(uint32_t now, bool permit, bool shadow = false) const {
     ThermalV3SlotIn si;
-    si.nowMs = now; si.pv = temperature_; si.sp = config_.targetTemp; si.newSample = newSensorSample_; si.permit = permit; si.shadow = shadow && !permit;
+    si.nowMs = now; si.pv = temperature_; si.sp = config_.targetTemp; si.permit = permit; si.shadow = shadow && !permit;
     si.capPct = static_cast<float>(config_.maxHeaterPower);
-    const float offsetDown = std::max(0.0f, -config_.tempOffset);
-    si.headroomC = std::min(config_.highTempAlarm, config_.ventOnTemp) - offsetDown - config_.targetTemp;
-    si.alarmHeadroomC = config_.emergencyTemp - offsetDown - config_.targetTemp;
-    const auto &st = outputs_.state();
-    si.deliveredPct = (st.heaterSsr && st.heatMaster) ? 100.0f : 0.0f;
-    const float stuckLimitMs = static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f;
-    si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterWatch_.accumOnMs()) / stuckLimitMs : 0.0f;
     si.dQ = thermalV3SensorStepC();
-    si.ventFan = st.ventFan;                                                // the fan that really runs: it takes heat out of the box
-    if (config_.ventAutoEnabled && batchRunning_ && !warmupVentHold_) {     // the automatic profile knows when it starts and ends: the controller pays for the loss in advance
-      const uint32_t cycleSec = static_cast<uint32_t>(config_.ventCycleMinutes) * 60UL;
-      if (cycleSec > 0UL) {
-        const uint32_t elapsedSec = elapsedBatchSec(now);
-        const uint8_t duty = ventProfileDutyPercent(config_, elapsedSec / 86400UL + 1UL, humidityLowActive_);
-        const uint32_t onSec = cycleSec * duty / 100UL, phase = elapsedSec % cycleSec;
-        if (phase < onSec) { si.ventOnInS = 0.0f; si.ventOffInS = static_cast<float>(onSec - phase); }
-        else if (onSec > 0UL) { si.ventOnInS = static_cast<float>(cycleSec - phase); si.ventOffInS = si.ventOnInS + static_cast<float>(onSec); }
-      }
-    }
     return si;
   }
   float thermalV3Command(uint32_t now, bool permit, bool shadow) {
@@ -5738,33 +5720,44 @@ class MachineController {
     }
     if (emergencyActive_) highTemperatureActive_ = true;
 
-    // The vent line (fan + heater hold) changes state only after the reading has stayed past the threshold for VENT_LINE_CONFIRM_MS and
-    // not within VENT_LINE_MIN_HOLD_MS of the last change: one quantum of the 0.1 degC sensor flickering over a threshold must not chatter
-    // the heater. The release compares with a small tolerance: the 3/8 filter ends one float step above the level it settles on
-    // (37.5 -> 37.5000038), which with off = SV never satisfied "<= off" until the raw reading dipped a whole quantum lower.
+    // The vent line (the exhaust fan of the overheat) is a last resort, not a regulator: the two small fans of this machine take only a little heat
+    // away and the contactor that switches them is rated for far fewer operations than the heater. The heater is NOT cut by this line (the
+    // controller lowers its own power from the measured error); the fan only helps.
+    //  ON : the reading is at/over the vent threshold and (a) has stayed there for VENT_LINE_TREND_MS without any sign of falling, or
+    //       (b) is a further VENT_LINE_FAST_C over it for VENT_LINE_CONFIRM_MS (decisive overshoot) - and the fan has rested for
+    //       VENT_LINE_MIN_OFF_MS and has not been started VENT_LINE_MAX_STARTS_PER_HOUR times in the last hour.
+    //  OFF: the reading is back at/below the release threshold for VENT_LINE_CONFIRM_MS and the fan has run for VENT_LINE_MIN_ON_MS.
+    // High / Emergency force the fan through their own path (ventFanForceOn) and are not limited by any of this. The release compares with a
+    // small tolerance: the 3/8 filter ends one float step above the level it settles on (37.5 -> 37.5000038).
     const bool ventOnPast = validSafety && safetyTemp >= config_.ventOnTemp;
     const bool ventOffPast = validSafety && safetyTemp <= config_.ventOffTemp + VENT_LINE_EPS_C;
-    const bool ventOnConfirmed = ventOnTimer_.update(now, !ventTemperatureActive_ && ventOnPast, VENT_LINE_CONFIRM_MS);
+    const bool ventFastPast = validSafety && safetyTemp >= config_.ventOnTemp + VENT_LINE_FAST_C;
+    if (!ventOnPast) { ventAboveSince_ = 0U; ventAbovePv_ = safetyTemp; }
+    else if (ventAboveSince_ == 0U) { ventAboveSince_ = now ? now : 1U; ventAbovePv_ = safetyTemp; }
+    else if (safetyTemp < ventAbovePv_ - VENT_LINE_FALL_C) { ventAboveSince_ = now ? now : 1U; ventAbovePv_ = safetyTemp; }   // it is falling: wait and see
+    const bool ventTrend = ventOnPast && ventAboveSince_ != 0U && elapsedMs(now, ventAboveSince_) >= VENT_LINE_TREND_MS;
+    const bool ventFastConfirmed = ventOnTimer_.update(now, !ventTemperatureActive_ && ventFastPast, VENT_LINE_CONFIRM_MS);
     const bool ventOffConfirmed = ventOffTimer_.update(now, ventTemperatureActive_ && ventOffPast, VENT_LINE_CONFIRM_MS);
-    const bool ventHoldOver = timeReached(now, ventLineNotBefore_);
-    if (!ventTemperatureActive_ && ventOnConfirmed && ventHoldOver) {
-      ventTemperatureActive_ = true; ventLineNotBefore_ = now + VENT_LINE_MIN_HOLD_MS; ventOnTimer_.reset();
-    } else if (ventTemperatureActive_ && ventOffConfirmed && ventHoldOver) {
-      ventTemperatureActive_ = false; ventLineNotBefore_ = now + VENT_LINE_MIN_HOLD_MS; ventOffTimer_.reset();
+    const bool ventRested = timeReached(now, ventLineNotBefore_);
+    uint8_t startsLastHour = 0U;
+    for (uint8_t i = 0U; i < VENT_LINE_MAX_STARTS_PER_HOUR; ++i)
+      if (ventStartAt_[i] != 0U && elapsedMs(now, ventStartAt_[i]) < 3600000UL) ++startsLastHour;
+    if (!ventTemperatureActive_ && (ventTrend || ventFastConfirmed) && ventRested && startsLastHour < VENT_LINE_MAX_STARTS_PER_HOUR) {
+      ventTemperatureActive_ = true; ventLineNotBefore_ = now + VENT_LINE_MIN_ON_MS; ventOnTimer_.reset();
+      ventStartAt_[ventStartIdx_] = now ? now : 1U; ventStartIdx_ = static_cast<uint8_t>((ventStartIdx_ + 1U) % VENT_LINE_MAX_STARTS_PER_HOUR);
+    } else if (ventTemperatureActive_ && ventOffConfirmed && ventRested) {
+      ventTemperatureActive_ = false; ventLineNotBefore_ = now + VENT_LINE_MIN_OFF_MS; ventOffTimer_.reset();
     }
-    if (!validSafety) { ventTemperatureActive_ = false; ventOnTimer_.reset(); ventOffTimer_.reset(); }
+    if (!validSafety) { ventTemperatureActive_ = false; ventOnTimer_.reset(); ventOffTimer_.reset(); ventAboveSince_ = 0U; }
 
-    // Whenever the overheat exhaust fan is active (ventTemperatureActive_) OR the reading runs past the hard block ceiling,
-    // the heater is strictly blocked (0 % SSR + shadow mode) so the heater never fights the exhaust fan.
+    // The heater is blocked only when the reading runs well past SV (a safety margin, not a fan rule): it comes back 0.1 degC lower. "Well past"
+    // scales with the sensor step so a coarse 0.1 sensor and a fine 0.01 one are treated alike.
     {
       const float dQ = thermalV3SensorStepC();
       const float blockAt = std::max(config_.ventOnTemp, config_.targetTemp + std::max(VENT_HEATER_BLOCK_MIN_C, VENT_HEATER_BLOCK_STEPS * dQ));
       if (!validSafety) ventHeaterBlock_ = false;
-      else if (ventTemperatureActive_ || (!ventHeaterBlock_ && safetyTemp >= blockAt)) ventHeaterBlock_ = true;
-      else if (ventHeaterBlock_ && !ventTemperatureActive_ &&
-               safetyTemp <= std::min(config_.ventOffTemp + VENT_LINE_EPS_C, blockAt - VENT_HEATER_BLOCK_RELEASE_C)) {
-        ventHeaterBlock_ = false;
-      }
+      else if (!ventHeaterBlock_ && safetyTemp >= blockAt) ventHeaterBlock_ = true;
+      else if (ventHeaterBlock_ && safetyTemp <= blockAt - VENT_HEATER_BLOCK_RELEASE_C) ventHeaterBlock_ = false;
     }
 
     if ((!wasHigh && highTemperatureActive_) ||
@@ -8143,6 +8136,10 @@ class MachineController {
   ConditionTimer ventOnTimer_{};
   ConditionTimer ventOffTimer_{};
   uint32_t ventLineNotBefore_ = 0U;
+  uint32_t ventAboveSince_ = 0U;                     // when the reading first stood at/over the vent threshold (0 = it does not)
+  float ventAbovePv_ = 0.0f;                         // the reading when the wait began (a fall of VENT_LINE_FALL_C below it restarts the wait)
+  uint32_t ventStartAt_[VENT_LINE_MAX_STARTS_PER_HOUR] = {};   // when the fan line started, newest overwrites oldest
+  uint8_t ventStartIdx_ = 0U;
   uint32_t lastWebVentCmdAt_ = 0U, lastWebCircCmdAt_ = 0U, lastWebHeaterCmdAt_ = 0U;   // spacing of repeated remote toggles (per kind)
   bool otaCheckpointDone_ = false;                   // the batch was checkpointed for the update that is downloading now
   bool ventHeaterBlock_ = false;                     // the heater is held off well above SV (see updateAlarms); the fan has its own line

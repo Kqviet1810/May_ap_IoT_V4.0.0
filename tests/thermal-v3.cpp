@@ -173,27 +173,29 @@ void testPlantSimulation() {
 
 // Vent-line hold (shadow): nothing is learned while the heater is held at 0 %; the hold level fades only when PV stays at SP, never when PV falls.
 void testShadowHold() {
-  printf("[TEST] Vent-line hold: learning frozen, hold fades only while PV stays at SP...\n");
+  printf("[TEST] Vent-line hold (heater held at 0 %% by the safety margin): nothing is learned while it lasts...\n");
   auto run = [](double pvAfter, double minutes, float &holdOut, float &intOut) {
     thermalv3::Controller c;
     thermalv3::Input in;
     in.sp = 37.5f; in.pv = 37.4f; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f;
-    for (int i = 0; i < 6000; ++i) c.step(in);                 // 10 min below SP: the controller learns a hold level
+    for (int i = 0; i < 6000; ++i) c.step(in);                 // 10 min below SP: the controller has a hold level
     const float holdBefore = c.pHold();
     in.permit = false; in.shadow = true; in.pv = static_cast<float>(pvAfter);
-    for (int i = 0; i < static_cast<int>(minutes * 600.0); ++i) c.step(in);
+    for (int i = 0; i < static_cast<int>(minutes * 600.0); ++i) {
+      const thermalv3::Output o = c.step(in);
+      assert(o.powerPct == 0.0f && o.state == thermalv3::StFrozen);
+    }
     holdOut = c.pHold(); intOut = c.integral();
     return holdBefore;
   };
   float h = 0, itg = 0;
-  float before = run(37.5, 1.0, h, itg);                         // 1 min: no checkpoint yet, nothing changes
-  assert(std::fabs(h - before) < 0.01f);
-  before = run(37.5, 12.0, h, itg);                              // PV held at SP for 12 min with the heater held off: hold fades
-  assert(h < before * 0.2f);
-  const float fadeFrom = before, fadeTo = h;
-  before = run(37.0, 12.0, h, itg);                              // PV below SP - 0.05: hold must not fade
-  assert(std::fabs(h - before) < 0.01f);
-  printf("  -> Pass: hold %.1f%% -> %.1f%% when PV stays at SP, unchanged (%.1f%%) when it falls\n", fadeFrom, fadeTo, h);
+  for (double pv : {37.5, 37.0, 37.9}) {
+    for (double minutes : {1.0, 12.0}) {
+      const float before = run(pv, minutes, h, itg);
+      assert(std::fabs(h - before) < 0.01f);                     // the hold level is exactly what it was: the held heater says nothing about the oven
+    }
+  }
+  printf("  -> Pass: the hold level is unchanged after 1 and 12 minutes of hold, at, under and over SP\n");
 }
 
 // After the heater was held by a line above SP, the first command must come back near the hold level: the "pipe" was neutral, so no phantom deficit.
@@ -397,7 +399,6 @@ void testBoundsUnderHostileInput() {
     if (step % 600 == 0) pv = 30.0f + static_cast<float>(x % 1000U) * 0.01f;      // jumps anywhere in 30 .. 40 degC
     else pv += (static_cast<int>(x % 5U) - 2) * 0.01f;
     in.pv = pv;
-    in.ventFan = (step / 3000) % 3 == 0;
     in.shadow = (step / 5000) % 7 == 3;
     in.permit = !in.shadow && (step / 7000) % 11 != 5;
     if (step % 9001 == 0) in.pv = NAN;                                                // a lost sample now and then
@@ -411,40 +412,33 @@ void testBoundsUnderHostileInput() {
   printf("  -> Pass\n");
 }
 
-void testOverheatZeroPowerAndHoldTrim() {
-  printf("[TEST] Overheat Zero-Power Cutoff, Predicted Floor & Hold Trim...\n");
+// The heater is NOT cut by the exhaust fan (the two small fans of this machine take little heat away): when PV stands one sensor step over
+// SP and does not fall, the controller trims its own hold level (after a judging window longer than the transit time) and keeps doing so until
+// PV comes down; a PV that is coming down (fast enough) stops the trim. The harder cut above SP+0.3 is the machine's own safety margin.
+void testOverheatTrimsTheHoldLevel() {
+  printf("[TEST] Overheat that does not fall: the hold level is trimmed, never cut by the controller; a falling PV stops the trim...\n");
   for (float dQ : {0.1f, 0.01f}) {
     thermalv3::Controller c;
     thermalv3::Input in;
-    in.sp = 37.5f;
+    in.sp = 37.5f; in.dQ = dQ; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f;
     in.pv = 37.1f;
-    in.dQ = dQ;
-    in.permit = true;
-    in.capPct = 100.0f;
-    in.dtS = 0.1f;
-
-    // Build up hold power below SP
-    for (int i = 0; i < 6000; ++i) c.step(in);
+    for (int i = 0; i < 6000; ++i) c.step(in);                             // builds a hold level below SP
     const float highHold = c.pHold();
     assert(highHold > 20.0f);
-
-    // Step to overheat (37.60 C on 0.1 sensor, 37.58 C on 0.01 sensor) with exhaust fan active
-    const float overheatPv = (dQ >= 0.09f) ? 37.60f : 37.58f;
-    in.pv = overheatPv;
-    in.ventFan = true;
-    thermalv3::Output out = c.step(in);
-    assert(out.powerPct == 0.0f);
-    assert(c.predicted() >= overheatPv - 1e-4f);
-
-    // Stay stuck at overheatPv for 90 seconds: hold must actively trim down and predicted PV must never dip below overheatPv
-    for (int i = 0; i < 900; ++i) {
-      out = c.step(in);
-      assert(out.powerPct == 0.0f);
-      assert(c.predicted() >= overheatPv - 1e-4f);
-    }
-    assert(c.pHold() < highHold - 2.5f);
-    printf("  -> Pass (dQ %.2f): cmd = %.1f%% at %.2f C, predicted = %.2f C, pHold trimmed %.1f%% -> %.1f%%\n",
-           dQ, out.powerPct, overheatPv, c.predicted(), highHold, c.pHold());
+    const float overPv = (dQ >= 0.09f) ? 37.60f : 37.58f;                   // one sensor step over SP
+    in.pv = overPv;
+    for (int i = 0; i < 1100; ++i) c.step(in);                              // 110 s: inside the judging window, nothing is trimmed yet
+    assert(std::fabs(c.pHold() - highHold) < 0.5f);
+    float cmd = 0.0f;
+    for (int i = 0; i < 6000; ++i) cmd = c.step(in).powerPct;               // ten more minutes stuck over SP
+    assert(c.pHold() < highHold - 8.0f);                                    // 0.025 %/s over ~9 minutes
+    assert(cmd <= c.pHold() + 0.5f);                                        // the command is below the hold level: P and I only subtract
+    // PV now falls 0.1 degC in 3 minutes: faster than the "not falling" limit, the trim stops
+    const float holdAtFall = c.pHold();
+    float pv = overPv;
+    for (int i = 0; i < 1800; ++i) { pv -= 0.1f / 1800.0f; in.pv = pv; c.step(in); }
+    assert(c.pHold() > holdAtFall - 1.0f);
+    printf("  -> Pass (dQ %.2f): hold %.1f%% -> %.1f%% in ten minutes over SP; %.1f%% after a 3-minute fall\n", dQ, highHold, holdAtFall, c.pHold());
   }
 }
 
@@ -465,7 +459,7 @@ int main() {
   testShadowHold();
   testResumeAfterHold();
   testSensorFallback();
-  testOverheatZeroPowerAndHoldTrim();
+  testOverheatTrimsTheHoldLevel();
   printf("=========================================\n");
   printf("ALL THERMAL V3 TESTS PASSED SUCCESSFULLY!\n");
   printf("=========================================\n");

@@ -599,7 +599,12 @@ constexpr float WARMUP_VENT_RELEASE_ERR_C = 0.5f;
 constexpr uint32_t WARMUP_VENT_HOLD_MAX_MS = 1800000UL;   // 30 phut
 // Vent line (fan + heater hold at the vent temperature): confirmation, minimum time between changes, release tolerance (see updateAlarms).
 constexpr uint32_t VENT_LINE_CONFIRM_MS = 20000UL;
-constexpr uint32_t VENT_LINE_MIN_HOLD_MS = 60000UL;
+constexpr uint32_t VENT_LINE_TREND_MS = 60000UL;          // at/over the vent threshold this long without falling: start the fan
+constexpr float VENT_LINE_FALL_C = 0.05f;                 // a fall this far below where the wait began counts as "falling"
+constexpr float VENT_LINE_FAST_C = 0.1f;                  // this much over the threshold for VENT_LINE_CONFIRM_MS: start at once
+constexpr uint32_t VENT_LINE_MIN_ON_MS = 180000UL;        // the contactor of the fans is rated for few operations: run at least 3 min ...
+constexpr uint32_t VENT_LINE_MIN_OFF_MS = 300000UL;       // ... rest at least 5 min ...
+constexpr uint8_t VENT_LINE_MAX_STARTS_PER_HOUR = 6U;     // ... and start at most 6 times an hour (High / Emergency are not limited)
 constexpr float VENT_LINE_EPS_C = 0.005f;
 // Heater block line: max(vent ON, SV + max(MIN, STEPS * sensor step)); released RELEASE degC lower.
 constexpr float VENT_HEATER_BLOCK_MIN_C = 0.3f;
