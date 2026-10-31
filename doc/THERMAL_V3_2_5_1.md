@@ -38,7 +38,32 @@ Máy gửi phần chẩn đoán trong **gói riêng xen kẽ** với gói số l
 
 ## 3. Kiểm chứng
 
-{{BENCH}}
+**Test đơn vị** `tests/vent-line.cpp` (chạy đúng mã `vent_line.h`, 13 nhóm): số đọc đứng trên ngưỡng một bậc và không giảm → bật sau cửa sổ (≈ 190 s với τ = 150 s); số đọc đang giảm → không bật; số đọc nhấp nháy 37,5/37,6 (nhiệt thật 37,57) → bật, còn nhiệt thật 37,53 → không bao giờ; vượt thêm 0,1 → bật sau ≈ 27 s; heater ở sàn → bật sau ≈ 165 s (thay vì 275 s khi heater còn làm việc); dự báo cao → bật sau ≈ 20 s, dự báo thấp → hoãn tới hết cửa sổ thứ hai, nhưng vượt nhanh không bị hoãn; chạy tối thiểu 180 s, tối đa 600 s, nghỉ 300 s; sáu giờ liên tục quá nhiệt → 14 lần bật (3 + 1 mỗi 30 phút); quạt hồ sơ đang chạy → tiếp quản không tốn token, khối hồ sơ sắp tới → chờ; mất cảm biến; tràn đồng hồ 32 bit; cảm biến 0,01 °C. Các bộ test khác giữ nguyên, **không nới**: `thermal-v3`, `thermal-closed-loop` (kể cả lò khớp log 29/10), `thermal-replay`, `heater-response-watch`, `runtime-*`, `test_heater_path`, `test_tech_access`, `check_reliability`, `node --test tests/*.test.cjs` (301 đạt, 0 lỗi). Dấu vân tay `config.h` và `MachineController` trong `tests/runtime-preservation.json` được ghim lại có ghi chú xem xét (`release251ReviewNote`).
+
+**Bench 210 lò ngẫu nhiên × 8 tình huống** (`tools/thermal-research/fleet-bench.cpp`, so sánh bằng `fleet-summary.py`; A = luật 2.5.0, B = luật mới; hai tình huống mới: phòng nóng thêm 7 °C trong 2 giờ làm hold rơi còn vài %, và hồ sơ thông gió 70 %). Ngưỡng quạt 37,6 / 37,5 như máy thật.
+
+| Quạt 100 W (giống máy) | Đạt A | Đạt B | Số lần bật A: trung vị / p90 / max | B |
+|---|---|---|---|---|
+| lên nhiệt + giữ | 97 % | 97 % | 1 / 1 / 3 | 1 / 2 / 3 |
+| quạt lịch | 96 % | 95 % | 1 / 1 / 3 | 1 / 2 / 3 |
+| vượt 1 bậc | 84 % | 86 % | 2 / 2 / 4 | 2 / 3 / 4 |
+| mở cửa 3 phút | 94 % | 96 % | 1 / 1 / 3 | 1 / 2 / 3 |
+| cửa + khay lạnh | 92 % | 92 % | 2 / 3 / 5 | 3 / 4 / 5 |
+| khởi động lại | 84 % | 85 % | 2 / 2 / 5 | 2 / 3 / 5 |
+| phòng nóng lên | 100 % | 100 % | 1 / 1 / 3 | 1 / 3 / 5 |
+| hồ sơ 70 % | 100 % | 100 % | 1 / 1 / 3 | 1 / 2 / 3 |
+| **trung bình** | **93,4 %** | **93,9 %** | | |
+
+Lên nhiệt lần đầu 31 / 40 phút (trung vị / p90) và vọt lần đầu +0,2 / +0,4 °C: giống hệt A. Tổng sai lệch tích lũy theo từng lò (B so với A): trung vị +0,1 %, p10 −3,7 %, p90 +3,6 %; 11 lò kém hơn trên 5 %, 13 lò tốt hơn trên 5 %. Nói cách khác, với quạt yếu **luật mới trung tính về nhiệt** và số lần bật gần bằng 2.5.0 (p90 cao hơn một lần ở vài tình huống).
+
+Với quạt mạnh 2,5 kW (trường hợp thử độ nhạy, không phải máy thật): trung bình đạt A 68,7 %, B 66,8 %; kém nhất ở "cửa + khay lạnh" (88 % → 79 %); tổng sai lệch theo lò trung vị +0,0 %.
+
+*Phiên bản trung gian bị loại:* bản đầu của luật mới (chưa có điều kiện hoãn theo dự báo) làm số lần bật tăng gấp đôi (trung vị 2, p90 4 mỗi 250 phút ở "lên nhiệt + giữ") và tụt xuống 56 % với quạt mạnh, vì nó bật quạt khi PV đang tự hạ nhờ hold học giảm dần. Điều kiện hoãn theo dự báo của bộ điều khiển đưa số lần bật về mức 2.5.0.
+
+**Replay luật trên PV thật của 12 log đã ghi (13 file, một file trùng)** (mở vòng, chỉ cấp PV; PV đã chịu ảnh hưởng của luật chạy lúc ghi). Log 31/10: luật mới bật lúc 10:40, 11:14, 12:03 và **13:22:54** (heater chạm sàn, đúng chỗ máy thật không bật quạt dù PV bám 37,6 trong 8 phút); luật 2.5.0 trên cùng PV bật 4 lần với tổng 26,8 phút, luật mới 4 lần, 22,8 phút. Trên các log còn lại luật mới bật ít hơn hoặc bằng luật 2.5.0, trừ hai log 23/10 (thời 2.3.x, PV dao động mạnh): 8 so với 6–7 lần bật.
+
+**Mục 8 (luật chống kẹt dùng sai lệch trung bình) thử trên bench, không đưa vào bản này.** Kịch bản "phòng lạnh đi 5 °C trong 2 giờ" (hold tăng): IAE trung vị 7,95 → 8,00 °C·phút; 122 lò kém hơn, 24 lò tốt hơn (ngưỡng 2 %). Không có lợi ích đo được nên giữ nguyên `thermal_v3.h`.
+
 
 ## 4. Giới hạn (nói thẳng)
 
