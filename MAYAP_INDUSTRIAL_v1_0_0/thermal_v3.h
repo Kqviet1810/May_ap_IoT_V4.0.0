@@ -180,7 +180,7 @@ class Controller {
     slopeShort_ = 0.0f;
     wasLive_ = false;
     startDone_ = holdImported_ = startPhase_ = probing_ = false;
-    probeT_ = probePv_ = 0.0f; probeQuiet_ = 0;
+    probeT_ = probePv_ = probeStart_ = 0.0f; probeQuiet_ = 0;
     startS_ = 0.0f;
     dQ_ = 0.1f;
     liveS_ = 0.0f;
@@ -271,7 +271,7 @@ class Controller {
         startPhase_ = e0 <= 3.0f;
         startS_ = 0.0f;
 #if V3X_PROBE
-        if (e0 <= 1.0f) { probing_ = true; probeT_ = 0.0f; probePv_ = in.pv; probeQuiet_ = 0; }
+        if (e0 <= 1.0f) { probing_ = true; probeT_ = 0.0f; probePv_ = probeStart_ = in.pv; probeQuiet_ = 0; }
 #endif
       }
     }
@@ -280,7 +280,7 @@ class Controller {
     if (probing_) {
       probeT_ += dt;
       const float stepS = std::max(V3X_PROBE_STEP_S, tauTransit_);
-      if (in.pv < in.sp - V3X_PROBE_BAIL) {
+      if (in.pv < in.sp - V3X_PROBE_BAIL && in.pv < probeStart_ - V3X_PROBE_BAIL) {   // under SV AND fallen since the start
         if (pHold_ < V3X_HOLD0) { pHold_ = V3X_HOLD0; rebuildPipe(); }
         probing_ = false;
       }
@@ -704,7 +704,7 @@ class Controller {
   uint16_t histHead_ = 0U;
   uint16_t histCount_ = 0U;
   bool probing_ = false;
-  float probeT_ = 0.0f, probePv_ = 0.0f;
+  float probeT_ = 0.0f, probePv_ = 0.0f, probeStart_ = 0.0f;
   int probeQuiet_ = 0;
   bool startDone_ = false, holdImported_ = false, startPhase_ = false;   // 2.5.8: the start rules ran / hold level came from a stored record / first half hour
   float startS_ = 0.0f;
