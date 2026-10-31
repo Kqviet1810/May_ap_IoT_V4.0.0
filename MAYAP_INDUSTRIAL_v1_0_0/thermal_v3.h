@@ -58,6 +58,28 @@ constexpr float IDENT_MIN_ERR_C = 2.0f;       // the transit time is timed only 
 constexpr float IDENT_MAX_SLOPE = 0.002f;     // ... from a PV that is not moving [degC/s]
 constexpr uint16_t MOMENTUM_WINDOW_S = 40U;   // PV slope window of the momentum brake [s]
 constexpr float MOMENTUM_NOISE_STEPS = 1.5f;  // a slope below this many sensor steps over that window is quantisation, not momentum
+#ifndef V3X_F1
+#define V3X_F1 0   // experiment switch of 2.5.7 (off: the controller is exactly the one of 2.5.6)
+#endif
+#ifndef V3X_F2
+#define V3X_F2 0   // experiment switch of 2.5.7 (off: the controller is exactly the one of 2.5.6)
+#endif
+#ifndef V3X_F3
+#define V3X_F3 0   // experiment switch of 2.5.7 (off: the controller is exactly the one of 2.5.6)
+#endif
+#ifndef V3X_F2_STEPS
+#define V3X_F2_STEPS 1.0f
+#endif
+#ifndef V3X_F2_TAU
+#define V3X_F2_TAU 90.0f
+#endif
+#ifndef V3X_F3_WIN
+#define V3X_F3_WIN 120U
+#endif
+#ifndef V3X_F3_FLOOR
+#define V3X_F3_FLOOR 0.7f
+#endif
+constexpr uint16_t LONG_WINDOW_S = V3X_F3_WIN;
 constexpr uint16_t HIST_LEN = 640U;           // seconds of history: transit time (<=220 s) + learning window + margin
 
 enum State : uint8_t {
@@ -123,6 +145,7 @@ class Controller {
     histHead_ = 0U;
     histCount_ = 0U;
     slopeShort_ = 0.0f;
+    slopeLong_ = 0.0f;
     dQ_ = 0.1f;
     liveS_ = 0.0f;
     calmS_ = 0.0f;
@@ -173,6 +196,9 @@ class Controller {
       out.state = state_;
       // The heater is not conducting: what was in flight drains out of the model and the history records the truth (zeros), so the
       // first command after the pause is not computed from the commands that came before it.
+#if V3X_F1
+      if (pvValid && spValid && capPct_ > 0.0f && !in.permit && !in.shadow) fadeWhileHeldOff(in.pv, in.sp, dt);   // the heater is held off by a protection (High, the Web ...)
+#endif
       liveS_ = 0.0f;
       calmS_ = 0.0f;
       lastCmd_ = 0.0f;
@@ -289,7 +315,12 @@ class Controller {
     // cut. It is measured, so it is right when the model is not (the load that held the hold level up has just gone: a door shut, a tray
     // taken out) and it is the same size as the model's lift when the model is right.
     const float errMomentum = deadZone(errTrue - std::max(0.0f, slopeShort_ - MOMENTUM_NOISE_STEPS * dQ_ / static_cast<float>(MOMENTUM_WINDOW_S)) * tauTransit_);
+#if V3X_F3
+    const float errMomentumLong = deadZone(errTrue - std::max(0.0f, slopeLong_ - V3X_F3_FLOOR * dQ_ / static_cast<float>(LONG_WINDOW_S)) * tauTransit_);
+    const float errModel = std::min(deadZone(errPred), std::min(errMomentum, errMomentumLong));
+#else
     const float errModel = std::min(deadZone(errPred), errMomentum);
+#endif
     const float errCtl = wModel * errModel + (1.0f - wModel) * std::min(errMeas, errModel);
     const float pTerm = errCtl >= 0.0f ? kp * errCtl : KP_DOWN * errCtl;   // strong damping above SP against overshoot
 
@@ -336,6 +367,13 @@ class Controller {
     } else if (!in.shadow) {
       stuckTimer_ = 0.0f;
     }
+
+#if V3X_F2
+    // The reading stands over SV by V3X_F2_STEPS sensor steps and is not falling: the hold level is too big for this oven (a hot room, a warm load). It fades
+    // with a time constant, by the measured PV alone (no heater gain involved); a PV that then falls raises it again (Anti-Stuck, the balance).
+    if (!in.shadow && !doorDetected_ && errTrue <= -V3X_F2_STEPS * dQ && slopeShort_ > -0.0005f)
+      pHold_ = std::max(0.0f, pHold_ - pHold_ * (dt / V3X_F2_TAU));
+#endif
 
     // Raw commanded power
     float cmd = pHold_ + pTerm + integral_;
@@ -528,7 +566,27 @@ class Controller {
   }
 
   // Slope of the last MOMENTUM_WINDOW_S seconds of PV, once per second (least squares on the 1 Hz history): the momentum brake reads it.
+  void fadeWhileHeldOff(float pv, float sp, float dt) {
+    if (shadowS_ <= 0.0f) { shadowRefPv_ = pv; shadowRefS_ = 0.0f; shadowFade_ = false; }
+    shadowS_ += dt;
+    if (shadowS_ - shadowRefS_ >= 180.0f) {
+      shadowFade_ = pv >= sp - 0.5f * dQ_ && pv >= shadowRefPv_ - 1.01f * dQ_;
+      shadowRefPv_ = pv;
+      shadowRefS_ = shadowS_;
+    }
+    if (shadowFade_) pHold_ = std::max(0.0f, pHold_ - pHold_ * (dt / 180.0f));
+  }
   void updateMomentum() {
+    if (histCount_ >= LONG_WINDOW_S && liveS_ >= static_cast<float>(LONG_WINDOW_S)) {
+      const float xl = 0.5f * static_cast<float>(LONG_WINDOW_S - 1U);
+      const float refL = pvAge(0U);
+      float sxyL = 0.0f;
+      for (uint16_t i = 0U; i < LONG_WINDOW_S; ++i) sxyL += (static_cast<float>(i) - xl) * (pvAge(static_cast<uint16_t>(LONG_WINDOW_S - 1U - i)) - refL);
+      const float sxxL = static_cast<float>(LONG_WINDOW_S) * (static_cast<float>(LONG_WINDOW_S) * static_cast<float>(LONG_WINDOW_S) - 1.0f) / 12.0f;
+      slopeLong_ = sxyL / sxxL;
+    } else {
+      slopeLong_ = 0.0f;
+    }
     if (histCount_ < MOMENTUM_WINDOW_S || liveS_ < static_cast<float>(MOMENTUM_WINDOW_S)) { slopeShort_ = 0.0f; return; }
     const float xm = 0.5f * static_cast<float>(MOMENTUM_WINDOW_S - 1U);
     const float ref = pvAge(0U);
@@ -578,6 +636,7 @@ class Controller {
   uint8_t uHist_[HIST_LEN] = {}; // 1 Hz: the command that was physically sent [%]
   uint16_t histHead_ = 0U;
   uint16_t histCount_ = 0U;
+  float slopeLong_ = 0.0f;       // [degC/s] least-squares slope of the last LONG_WINDOW_S seconds (the brake sees a slow rise through it)
   float slopeShort_ = 0.0f;      // [degC/s] least-squares slope of the last MOMENTUM_WINDOW_S seconds
   float dQ_ = 0.1f;              // sensor step of the last call [degC]
   float liveS_ = 0.0f;           // seconds the controller has been running without a pause
