@@ -166,7 +166,7 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/vent-line.cpp -o /tmp/mayap-vent-line
           /tmp/mayap-vent-line
 
-      - name: "Alarm sound policy (alarm_sound.h): the Emergency siren stands on danger, persistence or a rise (not on a tight threshold alone), pulses, goes quiet at once when cooled, ACK mutes while it falls; the High line speaks again only when it gets worse; the Chime class reminds thinly"
+      - name: "Alarm sound policy (alarm_sound.h): both over-temperature lines (High, Emergency) sound the siren at once when crossed and go quiet when the reading is 0.2 degC under the line, continuous 5 min then pulsed, ACK mutes while it falls; the Chime class reminds thinly"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/alarm-sound.cpp -o /tmp/mayap-alarm-sound
           /tmp/mayap-alarm-sound

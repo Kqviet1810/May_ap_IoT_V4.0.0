@@ -602,8 +602,8 @@ inline const FaultDescriptor &faultDescriptor(FaultCode code) {
 
 // What a fault may make: see alarm_sound.h. Siren (external siren + buzzer): the danger of the heat itself, and an output that does not obey.
 // Alert (HMI buzzer until ACK, or until the condition is gone): the faults that stop the heater. Chime (three short beeps, a thin reminder): warnings
-// that need someone but not now. Silent: shown on the HMI / Web / push, nothing more. High (E111) and Emergency (E112) have their own voices
-// (HighVoice, EmergencyVoice); E304 is the Siren class on its live condition.
+// that need someone but not now. Silent: shown on the HMI / Web / push, nothing more. High (E111) and Emergency (E112) share one loud voice
+// (LoudVoice: siren at once when the line is crossed, silent 0.2 degC under it); E304 is the Siren class on its live condition.
 enum class FaultSound : uint8_t { Silent = 0, Chime = 1, Alert = 2, Siren = 3, Special = 4 };
 inline FaultSound faultSoundClass(FaultCode code) {
   switch (code) {
@@ -4709,11 +4709,11 @@ class MachineController {
           const bool emergencyAckBlocked = remoteAck && emergencyActive_;
           const bool hadTurnFault = turnFaultLatched_;
           const bool turnAckBlocked = remoteAck && hadTurnFault;
-          // The noise follows alarm_sound.h: ACK mutes the Emergency siren while the reading falls (it speaks again when it stands or rises), the
-          // output-conflict siren for a minute, and keeps the High line silent until it is gone. Not remote for the first two (they need a person at the machine).
-          if (!emergencyAckBlocked && emergencyActive_) emergencyVoice_.ack(now, safetyTempLast_);
+          // The noise follows alarm_sound.h: ACK mutes the High / Emergency siren while the reading falls (it speaks again when it stands or rises) and the
+          // output-conflict siren for a minute. Not remote for these (they need a person at the machine).
+          if (!emergencyAckBlocked && emergencyActive_) emergencyLoud_.ack(now, safetyTempLast_);
           if (!remoteAck && faults_.live(FaultCode::OutputConflict)) outputConflictMutedUntil_ = now + SIREN_TEMPORARY_MUTE_MS;
-          if (highTemperatureActive_) highVoice_.ack();
+          if (!emergencyAckBlocked && highTemperatureActive_) highLoud_.ack(now, safetyTempLast_);
           const bool turnCleared = (hadTurnFault && !turnAckBlocked) ? clearTurnFault() : false;
           const bool systemAck = (command.alarmMask & AlarmSystem) != 0U;
           const bool resetCleared = systemAck && abnormalResetLatched_;
@@ -5265,19 +5265,18 @@ class MachineController {
 
   // ---- What may make a noise and when it stops (alarm_sound.h): the live condition decides, never the stored record ----
   void updateSoundPolicy(uint32_t now) {
-    const alarmsound::EmergencyVoice::Params ep;
-    const alarmsound::HighVoice::Params hp;
+    const alarmsound::LoudVoice::Params lp;
     const bool valid = std::isfinite(safetyTempLast_);
-    emergencyVoice_.update(now, valid, safetyTempLast_, config_.targetTemp, config_.emergencyTemp, emergencyActive_, ep);
-    highVoice_.update(now, valid, safetyTempLast_, highTemperatureActive_, hp);
+    // Both over-temperature lines are LOUD at once and stop when the reading is 0.2 degC under the line (the protective actions keep their own hysteresis).
+    highLoud_.update(now, valid, safetyTempLast_, config_.highTempAlarm, highTemperatureActive_, lp);
+    emergencyLoud_.update(now, valid, safetyTempLast_, config_.emergencyTemp, emergencyActive_, lp);
     const bool conflict = faults_.live(FaultCode::OutputConflict);
     if (!conflict) outputConflictMutedUntil_ = 0U;
     const bool conflictSiren = conflict && timeReached(now, outputConflictMutedUntil_);
-    sirenWanted_ = emergencyVoice_.siren(now, ep) || conflictSiren;
+    sirenWanted_ = highLoud_.siren(now, lp) || emergencyLoud_.siren(now, lp) || conflictSiren;
     audibleMask_ = faults_.liveAlarmBits(FaultSound::Alert) | (conflictSiren ? AlarmSystem : AlarmNone) |
-                   (emergencyVoice_.audible() ? AlarmEmergency : AlarmNone);
-    bool chime = emergencyVoice_.consumeChime();
-    if (highVoice_.consumeAlert()) chime = true;
+                   (highLoud_.audible() ? AlarmTempHigh : AlarmNone) | (emergencyLoud_.audible() ? AlarmEmergency : AlarmNone);
+    bool chime = false;
     if (chimeReminder_.update(now, faults_.liveCodeBits(FaultSound::Chime), CHIME_REMIND_MS)) chime = true;
     if (chime) ++chimeSeq_;
   }
@@ -7884,7 +7883,8 @@ class MachineController {
                        ok ? "OK" : "FAIL", message ? message : "SAI LENH");
     } else if (cmd && !strcmp(cmd, "ACK")) {
       if (emergencyActive_) {
-        emergencyVoice_.ack(now, safetyTempLast_);
+        emergencyLoud_.ack(now, safetyTempLast_);
+        highLoud_.ack(now, safetyTempLast_);
         mayapSerialPrintf(false, "[SER] SIREN MUTE (until the reading stands or rises)\n");
       }
       if (abnormalResetLatched_) {
@@ -8333,8 +8333,7 @@ class MachineController {
   bool otaCheckpointDone_ = false;                   // the batch was checkpointed for the update that is downloading now
   bool ventHeaterBlock_ = false;                     // the heater is held off well above SV (see updateAlarms); the fan has its own line
   uint8_t ventReason_ = 0U;
-  alarmsound::EmergencyVoice emergencyVoice_{};
-  alarmsound::HighVoice highVoice_{};
+  alarmsound::LoudVoice highLoud_{}, emergencyLoud_{};
   alarmsound::Reminder chimeReminder_{};
   bool sirenWanted_ = false;                        // the siren (external + ATtiny mirror) is wanted now
   uint32_t audibleMask_ = AlarmNone, outputConflictMutedUntil_ = 0U;

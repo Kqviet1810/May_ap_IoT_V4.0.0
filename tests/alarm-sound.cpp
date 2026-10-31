@@ -1,5 +1,5 @@
 // Unit tests of what makes a noise and when it stops (MAYAP_INDUSTRIAL_v1_0_0/alarm_sound.h), the code MachineController runs every cycle.
-// The owner may set the High / Emergency lines a tenth of a degree over the vent line; the loud siren must still be reserved for a real danger.
+// The over-temperature lines are loud at once (the siren sounds the moment the line is crossed) and stop when the reading is 0.2 degC under it.
 #include "../MAYAP_INDUSTRIAL_v1_0_0/alarm_sound.h"
 #include <cassert>
 #include <cmath>
@@ -8,157 +8,113 @@
 
 using namespace alarmsound;
 
-static const float SP = 37.5f;
-
 struct Rig {
-  EmergencyVoice v;
-  EmergencyVoice::Params p;
+  LoudVoice v;
+  LoudVoice::Params p;
   uint32_t t0;
   explicit Rig(uint32_t start = 1000U) : t0(start) {}
   uint32_t ms(int s) const { return t0 + static_cast<uint32_t>(s) * 1000UL; }
-  void at(int s, float pv, float line, bool active = true) { v.update(ms(s), true, pv, SP, line, active, p); }
+  void at(int s, float pv, float line, bool active = true) { v.update(ms(s), true, pv, line, active, p); }
 };
 
 int main() {
-  // 1. A tight line (37.8 on SV 37.5): crossing it gives a quiet note, not the siren.
+  // 1. The owner's lines (SV 37.5, High 37.7): the siren sounds the moment the line is crossed, with no soft note first.
   {
     Rig r;
-    r.at(0, 37.7f, 37.8f, false);                                              // under the line: the line is not active yet
-    assert(!r.v.stage() && !r.v.consumeChime());
-    r.at(1, 37.8f, 37.8f);
-    assert(!r.v.stage() && r.v.consumeChime() && !r.v.consumeChime());       // one note
-    for (int s = 2; s < 150; ++s) { r.at(s, 37.82f, 37.8f); assert(!r.v.stage()); }
-    r.at(181, 37.82f, 37.8f);                                                // 180 s over the line and not coming down: now the siren
-    assert(r.v.stage() && r.v.audible() && r.v.siren(r.ms(181), r.p));
-    std::printf("tight line: note at once, siren after 180 s\n");
+    r.at(0, 37.6f, 37.7f, false);                                              // under the line: the line is not active yet
+    assert(!r.v.sounding());
+    r.at(1, 37.7f, 37.7f);
+    assert(r.v.sounding() && r.v.audible() && r.v.siren(r.ms(1), r.p));
+    assert(r.v.siren(r.ms(120), r.p) && r.v.siren(r.ms(299), r.p));            // continuous for the first minutes
+    std::printf("line crossed: siren at once\n");
   }
-  // 2. ... or at once when it climbs on (0.3 over where it crossed), or when it is a real danger (SV + 0.8) whatever the line.
+  // 2. ... and it stops when the reading has fallen 0.2 degC (2 s to confirm), not before.
   {
     Rig r;
-    r.at(0, 37.8f, 37.8f);
-    assert(!r.v.stage());
-    r.at(20, 38.05f, 37.8f);
-    assert(!r.v.stage());
-    r.at(21, 38.11f, 37.8f);
-    assert(r.v.stage());
-    Rig q;
-    q.at(0, 38.31f, 37.8f);
-    assert(q.v.stage() && !q.v.consumeChime());                              // already a danger: no soft note first
-  }
-  // 3. The default line (39.0): the siren at once, as before.
-  {
-    Rig r;
-    r.at(0, 38.9f, 39.0f, false);
-    assert(!r.v.stage());
-    r.at(1, 39.0f, 39.0f);
-    assert(r.v.stage() && r.v.siren(r.ms(1), r.p) && !r.v.consumeChime());
-  }
-  // 4. The siren is continuous for a minute, then pulsed 5 s on / 25 s off.
-  {
-    Rig r;
-    r.at(0, 39.2f, 39.0f);
-    assert(r.v.stage());
-    assert(r.v.siren(r.ms(30), r.p) && r.v.siren(r.ms(59), r.p));
-    assert(r.v.siren(r.ms(61), r.p) && r.v.siren(r.ms(64), r.p));
-    assert(!r.v.siren(r.ms(66), r.p) && !r.v.siren(r.ms(89), r.p));
-    assert(r.v.siren(r.ms(90), r.p) && r.v.siren(r.ms(94), r.p) && !r.v.siren(r.ms(95), r.p));
-  }
-  // 5. Cooled by 0.1 under the line for 2 s: silence at once, though the lock of the heater (the Emergency line itself) is still there. It does not
-  //    speak again for a reading that merely hovers at the line; it does for one that climbs 0.1 over it.
-  {
-    Rig r;
-    r.at(0, 39.3f, 39.0f);
+    r.at(0, 37.75f, 37.7f);
     assert(r.v.audible());
-    r.at(5, 38.85f, 39.0f);
-    assert(r.v.audible());                                                   // 2 s have not passed
-    r.at(7, 38.85f, 39.0f);
-    assert(!r.v.audible() && !r.v.stage());
-    r.at(8, 39.02f, 39.0f);
-    assert(!r.v.audible());                                                  // hovering: quiet
-    r.at(9, 39.12f, 39.0f);
-    assert(r.v.audible());                                                   // climbing again: the siren
-    // the line itself clearing resets everything at once
-    r.at(10, 39.12f, 39.0f, false);
-    assert(!r.v.audible() && !r.v.stage());
+    r.at(5, 37.55f, 37.7f);                                                    // 0.15 under: still loud
+    assert(r.v.audible());
+    r.at(6, 37.5f, 37.7f);                                                     // 0.2 under
+    assert(r.v.audible());                                                     // the confirm time has not passed
+    r.at(7, 37.5f, 37.7f);
+    assert(r.v.audible());
+    r.at(8, 37.49f, 37.7f);
+    assert(!r.v.audible() && !r.v.sounding() && !r.v.siren(r.ms(8), r.p));
+    std::printf("fell 0.2: silent\n");
   }
-  // 6. ACK at the machine mutes; a falling reading keeps it quiet, a reading that stands comes back after 2 minutes, one that rises comes back at once.
+  // 3. A reading that wanders between the line and 0.2 under it does not make the siren chatter: once silent it stays silent until the line is crossed again.
   {
     Rig r;
-    r.at(0, 39.3f, 39.0f);
-    r.v.ack(r.ms(10), 39.3f);
+    r.at(0, 37.8f, 37.7f);
+    r.at(1, 37.4f, 37.7f); r.at(4, 37.4f, 37.7f);
+    assert(!r.v.audible());
+    r.at(5, 37.6f, 37.7f);                                                     // up again, but still under the line
+    assert(!r.v.audible());
+    r.at(6, 37.7f, 37.7f);                                                     // back at the line: loud again
+    assert(r.v.audible());
+    // the line itself clearing resets everything at once
+    r.at(7, 37.7f, 37.7f, false);
+    assert(!r.v.audible() && !r.v.sounding());
+  }
+  // 4. Continuous for 5 minutes, then pulsed 5 s on / 25 s off (a reading stuck over the line must not be a wall of noise for hours).
+  {
+    Rig r;
+    r.at(0, 37.8f, 37.7f);
+    assert(r.v.siren(r.ms(299), r.p));
+    assert(r.v.siren(r.ms(301), r.p) && r.v.siren(r.ms(304), r.p));
+    assert(!r.v.siren(r.ms(306), r.p) && !r.v.siren(r.ms(329), r.p));
+    assert(r.v.siren(r.ms(330), r.p) && r.v.siren(r.ms(334), r.p) && !r.v.siren(r.ms(335), r.p));
+  }
+  // 5. ACK at the machine mutes; a falling reading keeps it quiet, a reading that stands comes back after 2 minutes, one that rises comes back at once,
+  //    and 10 minutes is the longest silence.
+  {
+    Rig r;
+    r.at(0, 37.9f, 37.7f);
+    r.v.ack(r.ms(10), 37.9f);
     assert(r.v.muted() && !r.v.audible() && !r.v.siren(r.ms(10), r.p));
-    r.at(60, 39.28f, 39.0f);
+    r.at(60, 37.88f, 37.7f);
     assert(r.v.muted());
-    r.at(131, 39.19f, 39.0f);                                                // fell 0.11 over the check: quiet, look again later
+    r.at(131, 37.79f, 37.7f);                                                  // fell 0.11 over the check: quiet, look again later
     assert(r.v.muted());
-    r.at(252, 39.18f, 39.0f);                                                // did not fall another 0.1 over the next 2 minutes: back
+    r.at(252, 37.78f, 37.7f);                                                  // did not fall another 0.1 over the next 2 minutes: back
     assert(!r.v.muted() && r.v.audible());
     Rig s;
-    s.at(0, 39.3f, 39.0f);
-    s.v.ack(s.ms(10), 39.3f);
-    s.at(30, 39.51f, 39.0f);
-    assert(!s.v.muted() && s.v.audible());                                   // rose 0.2
+    s.at(0, 37.9f, 37.7f);
+    s.v.ack(s.ms(10), 37.9f);
+    s.at(30, 38.11f, 37.7f);
+    assert(!s.v.muted() && s.v.audible());                                     // rose 0.2
     Rig u;
-    u.at(0, 39.3f, 39.0f);
-    u.v.ack(u.ms(10), 39.3f);
-    for (int sec = 11; sec < 700; sec += 10) u.at(sec, 39.3f - 0.0005f * static_cast<float>(sec), 39.0f);   // falls slowly, 0.1 in 200 s: never unmuted by the check
-    assert(!u.v.muted());                                                    // ... but the 10-minute limit always ends it
+    u.at(0, 37.95f, 37.7f);
+    u.v.ack(u.ms(10), 37.95f);
+    for (int sec = 11; sec < 700; sec += 10) u.at(sec, 37.95f - 0.0004f * static_cast<float>(sec), 37.7f);   // falls slowly, never unmuted by the check
+    assert(!u.v.muted());                                                      // ... but the 10-minute limit always ends it
   }
-  // 7. The sensor lost: silence now (the sensor faults have their own voice).
+  // 6. The sensor lost: silence now (the sensor faults have their own voice).
   {
     Rig r;
-    r.at(0, 39.3f, 39.0f);
-    r.v.update(r.ms(1), false, NAN, SP, 39.0f, true, r.p);
+    r.at(0, 37.9f, 37.7f);
+    r.v.update(r.ms(1), false, NAN, 37.7f, true, r.p);
+    assert(!r.v.audible());
+  }
+  // 7. The Emergency line is the same voice: loud at once, quiet 0.2 under (the default lines 38.2 / 39.0 behave alike).
+  {
+    Rig r;
+    r.at(0, 39.0f, 39.0f);
+    assert(r.v.siren(r.ms(0), r.p));
+    r.at(10, 38.79f, 39.0f); r.at(13, 38.79f, 39.0f);
     assert(!r.v.audible());
   }
   // 8. The 32-bit clock wraps.
   {
     Rig r(0xFFFFFFFFUL - 100000UL);
-    r.at(0, 37.8f, 37.8f);
-    assert(r.v.consumeChime());
-    r.at(179, 37.82f, 37.8f);
-    assert(!r.v.stage());
-    r.at(181, 37.82f, 37.8f);
-    assert(r.v.stage());
+    r.at(0, 37.8f, 37.7f);
+    assert(r.v.siren(r.ms(100), r.p) && r.v.siren(r.ms(299), r.p) && !r.v.siren(r.ms(310), r.p));
+    r.at(310, 37.45f, 37.7f); r.at(313, 37.45f, 37.7f);
+    assert(!r.v.audible());
   }
 
-  // 9. The High line: three beeps, then silence; it speaks again only when it gets worse, never more often than every 5 minutes.
-  {
-    HighVoice h; HighVoice::Params p;
-    uint32_t t = 0U;
-    auto tick = [&](int s, float pv, bool active = true) { t = 1000U + static_cast<uint32_t>(s) * 1000UL; h.update(t, true, pv, active, p); };
-    tick(0, 37.7f);
-    assert(h.consumeAlert() && !h.consumeAlert());
-    for (int s = 1; s < 300; ++s) { tick(s, 37.72f); assert(!h.consumeAlert()); }          // standing there: silent for the first minutes
-    tick(301, 37.95f);
-    assert(h.consumeAlert());                                                              // 0.25 worse and 5 minutes have passed
-    tick(310, 38.3f);
-    assert(!h.consumeAlert());                                                             // worse again, but not within 5 minutes of the last note
-    tick(602, 38.3f);
-    assert(h.consumeAlert());                                                              // (rise) the gap is over
-    for (int s = 603; s < 1300; s += 5) { tick(s, 38.3f - 0.0002f * static_cast<float>(s - 602)); }   // 0.14 in 700 s: coming down
-    assert(!h.consumeAlert());
-    // a standing reading: 10 minutes without a fall of 0.1 is a note
-    HighVoice g;
-    auto tg = [&](int s, float pv, bool active = true) { g.update(1000U + static_cast<uint32_t>(s) * 1000UL, true, pv, active, p); };
-    tg(0, 37.7f); assert(g.consumeAlert());
-    for (int s = 1; s < 598; ++s) tg(s, 37.7f);
-    assert(!g.consumeAlert());
-    tg(601, 37.7f);
-    assert(g.consumeAlert());
-    // ACK keeps it silent until the condition is gone; a new episode speaks again
-    HighVoice k;
-    auto tk = [&](int s, float pv, bool active = true) { k.update(1000U + static_cast<uint32_t>(s) * 1000UL, true, pv, active, p); };
-    tk(0, 37.7f); assert(k.consumeAlert());
-    k.ack();
-    tk(400, 38.5f);
-    assert(!k.consumeAlert());
-    tk(401, 38.5f, false);
-    tk(500, 37.7f);
-    assert(k.consumeAlert());
-    std::printf("High: one note, then only when it gets worse\n");
-  }
-  // 10. The Chime class: a chime for every code that appears, a thin reminder (here 30 minutes) while one lasts, silent when none is left.
+  // 9. The Chime class: a chime for every code that appears, a thin reminder (here 30 minutes) while one lasts, silent when none is left.
   {
     Reminder r;
     const uint32_t remind = 1800000UL;

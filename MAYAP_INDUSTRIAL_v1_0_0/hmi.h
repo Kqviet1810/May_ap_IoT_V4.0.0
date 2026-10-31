@@ -2159,12 +2159,13 @@ void buzzerUpdate(uint32_t now) {
     buzzer.turnPhase = 0U;
     buzzerStopTransient();
 
-    if (alarmBit == AlarmEmergency) {
+    if (alarmBit == AlarmEmergency || alarmBit == AlarmTempHigh) {
       // Nhip "Temporal-3" (ISO 8201) - chuan quoc te cho coi bao chay/khan
       // cap: 3 tieng bip ngan + 1 khoang lang dai hon, lap lai. Nghe RO la
       // canh bao that su ngay lap tuc, thay vi 1 tieng bip don deu deu nhu
       // cac muc canh bao khac (van giu nguyen alarmPattern() cho cac muc do
-      // thap hon - chi rieng Khan cap moi dang nhip nay).
+      // thap hon). Tu 2.5.6 Nhiet cao (E111) cung dang nhip nay: vuot muc Cao
+      // la coi lon ngay, giam 0.2 do thi may ngung (xem alarm_sound.h).
       constexpr uint8_t T3_STEPS = 6U;
       constexpr bool T3_ON[T3_STEPS]      = {true, false, true, false, true, false};
       constexpr uint16_t T3_MS[T3_STEPS]  = {450, 450, 450, 450, 450, 1300};
