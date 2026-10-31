@@ -18,6 +18,7 @@
 #include "thermal_v3_adapter.h"
 #include "heater_response_watch.h"
 #include "vent_line.h"
+#include "thermal_learn.h"
 #include "pid_log.h"
 #include <esp_system.h>
 #include <esp_timer.h>
@@ -3908,6 +3909,7 @@ class MachineController {
       }
     }
     faults_.set(FaultCode::BatchStateClearPending, batchClearPending_, bootAt_);
+    loadThermalLearning();
     // Nhat ky chi ghi trong pham vi mot me: dang chay hoac dang cho phuc hoi
     // (ke ca dang cho xac nhan HMI) deu tinh la "trong me".
     eventLog_.setLoggingEnabled(batchRunning_ || resumePending_);
@@ -4800,6 +4802,7 @@ class MachineController {
           if (p.begin("mayap_ui", false)) { p.clear(); p.end(); }
           if (p.begin("mayap_tech", false)) { p.clear(); p.end(); }
           if (p.begin("mayap_flash", false)) { p.clear(); p.end(); }
+          if (p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) { p.clear(); p.end(); }
           ok = true;
           message = "DANG KHOI PHUC CAI DAT GOC...";
           delay(200);
@@ -5014,6 +5017,13 @@ class MachineController {
         }
         break;
       }
+      case HmiCommandType::ClearThermalLearn: {
+        if (remote) { message = "CHI HMI DUOC XOA"; break; }
+        if (batchRunning_) { message = "DUNG ME TRUOC KHI XOA"; break; }
+        ok = clearThermalLearning();
+        message = ok ? "DA XOA DU LIEU HOC NHIET" : "LOI XOA DU LIEU HOC";
+        break;
+      }
       case HmiCommandType::DeveloperModeSet: {
         if (remote) { message = "CHI HMI DUOC DOI QUYEN"; break; }
         const bool enable = command.alarmMask != 0UL;
@@ -5200,7 +5210,97 @@ class MachineController {
         s.ctl = static_cast<uint8_t>((v3.doorDetected() ? MayapPidLog::CtlDoor : 0U) | (v3.identified() ? MayapPidLog::CtlIdentified : 0U) |
             static_cast<uint8_t>(tokens << 2) | static_cast<uint8_t>((ventReason_ & 0x0FU) << 4));
       }
+      s.learn = static_cast<uint8_t>((learnSource_ & 3U) | (learnSavedValid_ ? 4U : 0U) |
+          (static_cast<uint8_t>(std::min<uint32_t>(31U, learnTracker_.stableMs() / 240000UL)) << 3));
       MayapPidLog::ring().push(s);
+    }
+  }
+
+  // ---- What the thermal controller learned about this oven, kept across a restart (thermal_learn.h) ----
+  uint8_t learnHeaterCap() const { return static_cast<uint8_t>(std::min<int>(100, static_cast<int>(config_.maxHeaterPower))); }
+  bool readLearnedBlob(thermallearn::Snapshot &s) {
+    Preferences p;
+    if (!p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) return false;
+    uint8_t blob[thermallearn::BLOB_SIZE];
+    bool ok = false;
+    if (p.getBytesLength(THERMAL_LEARN_NVS_KEY) == sizeof(blob) && p.getBytes(THERMAL_LEARN_NVS_KEY, blob, sizeof(blob)) == sizeof(blob))
+      ok = thermallearn::decode(blob, sizeof(blob), s);
+    p.end();
+    return ok;
+  }
+  bool writeLearnedBlob(const thermallearn::Snapshot &s) {
+    uint8_t blob[thermallearn::BLOB_SIZE];
+    if (!thermallearn::encode(s, blob)) return false;
+    Preferences p;
+    if (!p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) return false;
+    const bool ok = p.putBytes(THERMAL_LEARN_NVS_KEY, blob, sizeof(blob)) == sizeof(blob);
+    p.end();
+    return ok;
+  }
+  bool eraseLearnedBlob() {
+    Preferences p;
+    if (!p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) return false;
+    const bool ok = p.clear();
+    p.end();
+    return ok;
+  }
+  // At boot: the oven constants of the last stable run start the next first climb (which measures them again). A record that fails any check is ignored.
+  void loadThermalLearning() {
+    learnSavedValid_ = false;
+    learnSource_ = 0U;
+    thermallearn::Snapshot s;
+    if (!readLearnedBlob(s) || !thermallearn::ovenUsable(s, learnHeaterCap())) return;
+    learnSaved_ = s;
+    learnSavedValid_ = true;
+    thermalV3_.controller().importOven(s.kAir, s.tau, s.pipeLen);
+    learnTracker_.saved(s.pHold);
+    learnSource_ = 1U;
+    mayapSerialPrintf(false, "[THERMAL] restored oven: kAir=%.2e tau=%.0fs pipe=%us (hold %.1f%% kept for batch %lu)\n", static_cast<double>(s.kAir),
+                      static_cast<double>(s.tau), static_cast<unsigned>(s.pipeLen), static_cast<double>(s.pHold), static_cast<unsigned long>(s.batchEpoch));
+  }
+  // The batch that was running is resumed after a restart: its hold level comes back too, and the numbers count as measured.
+  void applyLearnedHoldOnResume() {
+    if (!learnSavedValid_ || !thermallearn::holdUsable(learnSaved_, learnHeaterCap(), batchStartEpoch_, config_.targetTemp)) return;
+    thermalV3_.controller().importHold(learnSaved_.pHold, true);
+    learnSource_ = 2U;
+    mayapSerialPrintf(false, "[THERMAL] resumed batch: hold level %.1f%% restored\n", static_cast<double>(learnSaved_.pHold));
+  }
+  bool clearThermalLearning() {
+    const bool ok = eraseLearnedBlob();
+    learnSavedValid_ = false;
+    learnSource_ = 0U;
+    learnTracker_.invalidate();
+    thermalV3_.reset();
+    return ok;
+  }
+  // Every cycle: when has the oven proved itself (two stable hours), and did the heater ever stop answering (then nothing learned is trusted).
+  void serviceThermalLearning(uint32_t now) {
+    if (heaterNotHeatingActive_) {
+      if (!learnHeaterFaultSeen_) {
+        learnHeaterFaultSeen_ = true;
+        if (learnSavedValid_) { (void)eraseLearnedBlob(); learnSavedValid_ = false; }
+        learnTracker_.invalidate();
+      }
+    } else {
+      learnHeaterFaultSeen_ = false;
+    }
+    const thermalv3::Controller &v3 = thermalV3_.controller();
+    const bool stable = batchRunning_ && sensorUsable_ && !testModeActive_ && !emergencyActive_ && !highTemperatureActive_ && !ventHeaterBlock_ &&
+        !heaterNotHeatingActive_ && !v3.responseSuspect() && !v3.doorDetected() && v3.identified() &&
+        thermalV3_.last().state == thermalv3::StTrack;
+    if (!learnTracker_.update(now, stable, temperature_, config_.targetTemp, v3.pHold(), thermallearn::StableTracker::Params())) return;
+    thermallearn::Snapshot s;
+    s.pHold = v3.pHold(); s.kAir = v3.kAir(); s.tau = v3.tauTransit(); s.pipeLen = v3.pipeLen();
+    s.sp = config_.targetTemp; s.capPct = learnHeaterCap();
+    s.batchEpoch = batchStartEpoch_; s.savedEpoch = rtc_.valid() ? rtc_.epoch() : 0U;
+    if (writeLearnedBlob(s)) {
+      learnSaved_ = s;
+      learnSavedValid_ = true;
+      learnTracker_.saved(s.pHold);
+      mayapSerialPrintf(false, "[THERMAL] stable for 2 h: saved hold=%.1f%% kAir=%.2e tau=%.0fs\n", static_cast<double>(s.pHold),
+                        static_cast<double>(s.kAir), static_cast<double>(s.tau));
+    } else {
+      mayapSerialPrintf(false, "[THERMAL] could not save what was learned (tries again in 10 min)\n");
     }
   }
 
@@ -5693,6 +5793,7 @@ class MachineController {
     else trayPosition_ = TrayPosition::Unknown;
     needHome_ = trayPosition_ == TrayPosition::Unknown;
     heatRestartNotBefore_ = now + FAN_PRESTART_MS;
+    applyLearnedHoldOnResume();
     eventLog_.push(now, EventType::BatchStart,
                    static_cast<uint16_t>(EventCode::BatchResume),
                    static_cast<int16_t>(std::min<uint32_t>(elapsedBeforeStartSec_ / 60UL,
@@ -7543,6 +7644,7 @@ class MachineController {
     snprintf(runtime_.machineState, sizeof(runtime_.machineState), "%s", state);
     serviceTech(now);
     publishPidMonitor(now);
+    serviceThermalLearning(now);
     hmiSetRuntime(runtime_);
     mayapRealtimeSetRuntime(runtime_);
     mayapCloudSetRuntime(runtime_);
@@ -8163,6 +8265,10 @@ class MachineController {
   bool otaCheckpointDone_ = false;                   // the batch was checkpointed for the update that is downloading now
   bool ventHeaterBlock_ = false;                     // the heater is held off well above SV (see updateAlarms); the fan has its own line
   uint8_t ventReason_ = 0U;
+  thermallearn::StableTracker learnTracker_{};
+  thermallearn::Snapshot learnSaved_{};
+  bool learnSavedValid_ = false, learnHeaterFaultSeen_ = false;
+  uint8_t learnSource_ = 0U;                        // 0 priors, 1 oven constants restored, 2 oven constants + hold level of the resumed batch restored
   float safetyTempLast_ = NAN;
   bool lowTemperatureActive_ = false;
   bool warmupDone_ = false;                          // the first climb of the batch reached SV (or timed out): E110 is judged from here on

@@ -3,16 +3,16 @@
 
     python3 tools/thermal-research/fleet-summary.py old.csv new.csv
 
-A situation passes when the oven is back within +-0.1 degC in time (situations 0-5: 40/40/40/60/90/40 min from the event; the fans, the one-step
-overshoot and the reboot must also keep the reading above 36.5 degC). The two long situations (6: the room warms up, 7: the day profile of the last week)
+A situation passes when the oven is back within +-0.1 degC in time (situations 0-5 and 8-9: 40/40/40/60/90/40 and 40/40 min from the event; the fans, the one-step
+overshoot and the reboots must also keep the reading above 36.5 degC). The two long situations (6: the room warms up, 7: the day profile of the last week)
 pass when the reading never falls under 37.2 degC, never goes over 37.8 degC and stands at/over SP+0.1 for less than 30 minutes in all.
 """
 import csv
 import statistics as st
 import sys
 
-NAMES = ["climb + hold", "scheduled fan", "one step over", "door 3 min", "door + cold tray", "reboot", "room warms up", "day profile 70 %"]
-RECLIM = [40, 40, 40, 60, 90, 40]
+NAMES = ["climb + hold", "scheduled fan", "one step over", "door 3 min", "door + cold tray", "reboot", "room warms up", "day profile 70 %", "reboot + stored state", "cancel + restart at once"]
+RECLIM = [40, 40, 40, 60, 90, 40, None, None, 40, 40]
 
 
 def load(path):
@@ -27,9 +27,9 @@ def load(path):
 
 
 def passed(r, sc):
-    if sc < 6:
+    if RECLIM[sc] is not None:
         ok = r["rec"] <= RECLIM[sc]
-        if sc in (1, 2, 5):
+        if sc in (1, 2, 5, 8, 9):
             ok = ok and r["mn"] >= 36.5
         return ok
     return r["mn"] >= 37.2 and r["mx"] <= 37.8 and r["tover"] < 30

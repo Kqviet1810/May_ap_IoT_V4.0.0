@@ -815,11 +815,11 @@ enum class View : uint8_t {
   ConnMenu, MemberList, SleepTime, GuestMode
 };
 
-enum class ConfirmAction : uint8_t { None, BatchToggle, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AdvRestore, MemberRemove, FactoryReset };
+enum class ConfirmAction : uint8_t { None, BatchToggle, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AdvRestore, MemberRemove, FactoryReset, ClearThermalLearn };
 
 // NANG CAO menu (declared here because goBack() returns to these rows).
-constexpr uint8_t ADV_ITEM_COUNT = 12U;
-enum AdvItem : uint8_t { ADV_PID, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_HISTORY, ADV_LOG, ADV_TEST, ADV_RESET, ADV_DEV_MODE, ADV_GUEST, ADV_PINCHG, ADV_EXIT };
+constexpr uint8_t ADV_ITEM_COUNT = 13U;
+enum AdvItem : uint8_t { ADV_PID, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_HISTORY, ADV_LOG, ADV_TEST, ADV_RESET, ADV_LEARN, ADV_DEV_MODE, ADV_GUEST, ADV_PINCHG, ADV_EXIT };
 
 // Prototype thu cong: Arduino IDE tu sinh prototype cho ham trong .ino.
 // Neu ham dung enum/struct tuy chinh, prototype tu dong co the bi chen
@@ -830,6 +830,7 @@ void openBatchOverdueContinueConfirm();
 void openAlarmView(View returnView);
 void openTestMode();
 void openFactoryResetConfirm();
+void openClearLearnConfirm();
 
 MachineConfig currentConfig;
 MachineRuntime currentRuntime;
@@ -2578,6 +2579,11 @@ void executeConfirmation(bool accepted) {
         showToast("DANG KHOI PHUC GOC...");
       }
       view = returnView;
+    } else if (action == ConfirmAction::ClearThermalLearn) {
+      if (queueCommand(HmiCommandType::ClearThermalLearn)) {
+        showToast("DANG XOA DU LIEU HOC...");
+      }
+      view = returnView;
     } else if (action == ConfirmAction::FirmwareRollback) {
       // Khong dung man rieng nhu FirmwareProgress (rollback la doi con tro
       // + khoi dong lai gan nhu tuc thi, khong co qua trinh tai % nao de
@@ -2876,6 +2882,7 @@ const char *advItemLabel(uint8_t i) {
     case ADV_LOG: return "Loi / Nhat ky";
     case ADV_TEST: return "Che do test";
     case ADV_RESET: return "Reset may";
+    case ADV_LEARN: return "Xoa du lieu hoc nhiet";
     case ADV_DEV_MODE: return currentRuntime.tech.devMode ? "CD Nha phat trien: BAT" : "CD Nha phat trien: TAT";
     case ADV_GUEST: return "Che do 2 tai khoan";
     case ADV_PINCHG: return "Doi ma ky thuat";
@@ -2899,6 +2906,7 @@ void advSelect() {
       break;
     case ADV_TEST: openTestMode(); break;
     case ADV_RESET: openFactoryResetConfirm(); break;
+    case ADV_LEARN: openClearLearnConfirm(); break;
     case ADV_DEV_MODE: devModeChoice = currentRuntime.tech.devMode; view = View::DevMode; dirty = true; break;
     case ADV_GUEST: openGuestMode(); break;
     case ADV_PINCHG: advOpenPin(PinPurpose::SetNew); break;
@@ -2974,6 +2982,15 @@ void openAdvRestoreConfirm() {
 
 void openFactoryResetConfirm() {
   confirmAction = ConfirmAction::FactoryReset;
+  confirmReturnView = View::AdvMenu;
+  confirmYes = false;
+  clearToast();
+  armInputGuard();
+  dirty = true;
+}
+
+void openClearLearnConfirm() {
+  confirmAction = ConfirmAction::ClearThermalLearn;
   confirmReturnView = View::AdvMenu;
   confirmYes = false;
   clearToast();
@@ -5300,6 +5317,9 @@ void drawConfirmScreen() {
   } else if (confirmAction == ConfirmAction::FactoryReset) {
     line1 = "KHOI PHUC CAI DAT GOC?";
     line2 = "XOA DU LIEU & KHOI DONG";
+  } else if (confirmAction == ConfirmAction::ClearThermalLearn) {
+    line1 = "XOA DU LIEU HOC NHIET?";
+    line2 = "MAY HOC LAI TU DAU";
   } else if (confirmAction == ConfirmAction::MemberRemove) {
     static char memberLine[24];
     snprintf(memberLine, sizeof(memberLine), "%.16s", memberView.entry[memberRemovePending < MEMBER_LIST_MAX ? memberRemovePending : 0].name);

@@ -1,11 +1,13 @@
 // Fleet bench of the thermal controller: 210 random ovens x 8 situations, with the machine's REAL fan line (vent_line.h, the class MachineController
 // runs; FAN=v250 runs the rule of 2.5.0, written out here, for the comparison), a small or a strong exhaust fan.
 // Build: g++ -O2 -std=c++17 tools/thermal-research/fleet-bench.cpp -o /tmp/fleet-bench
-// Run:   /tmp/fleet-bench 100   (fan of 100 W; 2500 for a strong one; a second argument is a bit mask of the situations, 255 = all)
+// Run:   /tmp/fleet-bench 100   (fan of 100 W; 2500 for a strong one; a second argument is a bit mask of the situations, 1023 = all)
 // One line per run: oven, situation, seconds to 37.4, peak, lowest, highest, minutes back within +-0.1, integral |error| [degC min], rms before the
 // event, hold %, delay s, minutes over SP+0.1 (total, longest run), minutes to settle within +-0.2, fan minutes, fan starts, lowest hold level.
 // Situations: 0 climb and hold, 1 scheduled fan, 2 one step over SP, 3 door 3 min, 4 door 4.5 min + cold tray, 5 reboot (45 s without power),
-//   6 the room warms up 7 degC in 2 h (the hold the oven needs falls to a few percent), 7 the day profile of the last week (28 of every 40 min the fans run).
+//   6 the room warms up 7 degC in 2 h (the hold the oven needs falls to a few percent), 7 the day profile of the last week (28 of every 40 min the fans run),
+//   8 reboot (45 s) that takes back what a stable run had stored an hour earlier (oven constants + hold level, thermal_learn.h),
+//   9 the batch is cancelled for 2 min and started again at once (the controller keeps what it learned, nothing is stored).
 #ifndef HDR
 #define HDR "../../MAYAP_INDUSTRIAL_v1_0_0/thermal_v3.h"
 #endif
@@ -20,13 +22,14 @@
 using namespace thermalsim;
 struct Res { double reach = -1, peak = 0, minAfter = 99, maxAfter = 0, rec = 0, iae = 0, rmsPre = 0, tOver = 0, tOver10 = 0, settle2 = 0, fanStarts = 0, fanOnMin = 0, lowestHold = 100; };
 static Res run(const PlantParams &p, int scen) {
-  const double tEv = 9000, tEnd = scen >= 6 ? 9000 + 9000 : 15000;
+  const double tEv = 9000, tEnd = (scen == 6 || scen == 7) ? 9000 + 9000 : 15000;
   const bool oldFan = getenv("FAN") && !strcmp(getenv("FAN"), "v250");
   VentLine vl; VentLine::Params vp; vp.stepC = 0.1f; double heaterAvg = 0.0; bool vlOn = false;
   const double tamb0 = p.Tamb; float lastU = 0.0f; bool fanPrev = false;
   Plant pl(p, 31.4, 31.2); SensorChain ch(0.1); for (int i = 0; i < 8; ++i) ch.sample(pl.sensor());
   thermalv3::Controller c; thermalv3::Input in; in.sp = 37.5f; in.dQ = 0.1f; in.capPct = 100; in.dtS = 0.1f; in.permit = true;
   bool vline = false, block = false; double aboveSince = -1, abovePv = 0, offT = 0, fastT = 0, notBefore = 0; std::vector<double> starts;
+  struct Snap { float kAir = 0, tau = 0, hold = 0; uint16_t pipe = 0; bool have = false; } snap;
   bool inserted = false, rebooted = false; Res r; double sqPre = 0; long nPre = 0, lastOut = -1, lastOut2 = -1; double overRun = 0;
   for (long i = 0; i < (long)(tEnd * 10); ++i) {
     double t = i * 0.1;
@@ -63,9 +66,15 @@ static Res run(const PlantParams &p, int scen) {
     bool fan = vline || sched;
     bool door = (scen == 3 && t >= tEv && t < tEv + 180) || (scen == 4 && t >= tEv && t < tEv + 270);
     if (scen == 4 && !inserted && t >= tEv + 270) { pl.insertColdMass(1.1, 22.0); inserted = true; }
-    bool down = (scen == 5 && t >= tEv && t < tEv + 45);
-    if (scen == 5 && !rebooted && t >= tEv + 45) { c.reset(); rebooted = true; }
-    in.shadow = block; in.permit = !block;
+    if (scen == 8 && !snap.have && t >= tEv - 3600) { snap.kAir = c.kAir(); snap.tau = c.tauTransit(); snap.hold = c.pHold(); snap.pipe = c.pipeLen(); snap.have = true; }
+    bool down = ((scen == 5 || scen == 8) && t >= tEv && t < tEv + 45);
+    if ((scen == 5 || scen == 8) && !rebooted && t >= tEv + 45) {
+      c.reset();
+      if (scen == 8 && snap.have) { c.importOven(snap.kAir, snap.tau, snap.pipe); c.importHold(snap.hold, true); }   // what the last stable run stored
+      rebooted = true;
+    }
+    const bool paused = scen == 9 && t >= tEv && t < tEv + 120;                  // batch cancelled, started again at once: the controller is frozen, not reset
+    in.shadow = block; in.permit = !block && !paused;
     if (scen == 6 && t >= tEv) pl.setAmbient(tamb0 + (getenv("AMB") ? atof(getenv("AMB")) : 7.0) * std::min(1.0, (t - tEv) / 7200.0));   // AMB=-5: the room cools instead
     float u = 0; if (!down) { auto o = c.step(in); u = block ? 0.0f : o.powerPct; }
     lastU = u;
@@ -92,9 +101,9 @@ int main(int argc, char **argv) {
   std::vector<PlantParams> ov;
   for (auto p : family(11, 150, false)) { p.ventW = ventW; ov.push_back(p); }
   for (auto p : family(23, 60, true)) { p.ventW = ventW; ov.push_back(p); }
-  int scenMask = argc > 2 ? atoi(argv[2]) : 255;
+  int scenMask = argc > 2 ? atoi(argv[2]) : 1023;
   const char *dk = getenv("DUMP"); size_t only = dk ? (size_t)atoi(dk) : 0;
-  for (size_t k = 0; k < ov.size(); ++k) for (int sc = 0; sc < 8; ++sc) {
+  for (size_t k = 0; k < ov.size(); ++k) for (int sc = 0; sc < 10; ++sc) {
     if (dk && k != only) continue;
     if (!(scenMask & (1 << sc))) continue;
     Res r = run(ov[k], sc);

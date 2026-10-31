@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.5.1";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.6.0";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -679,6 +679,10 @@ constexpr uint32_t BATCH_CLEAR_RETRY_MS = 3000UL;
 constexpr char SAFETY_NVS_NAMESPACE[] = "mayap_safe";
 constexpr char SAFETY_NVS_STOP_KEY[] = "stop_intent";
 constexpr char SAFETY_NVS_RESET_KEY[] = "reset_count";
+// What the thermal controller learned about this oven (thermal_learn.h: 32 bytes with a checksum), written after two stable hours of a batch.
+// Nothing here is a setting: a damaged or foreign record is ignored and the controller starts from its priors.
+constexpr char THERMAL_LEARN_NVS_NAMESPACE[] = "mayap_thm";
+constexpr char THERMAL_LEARN_NVS_KEY[] = "snap";
 // F-07 (audit truoc phat hanh v3.7.1): truoc day turnMechanicalCheckRequired_/
 // turnFaultStreak_ (khoa dao vi nghi ngo hong co khi, xem latchTurnFault()
 // trong machine_control.h) chi la bien RAM - mat dien/watchdog/OTA restart
@@ -940,6 +944,8 @@ static_assert(sizeof(SAFETY_NVS_NAMESPACE) <= 16U,
               "NVS namespace toi da 15 ky tu");
 static_assert(sizeof(SAFETY_NVS_STOP_KEY) <= 16U,
               "NVS key toi da 15 ky tu");
+static_assert(sizeof(THERMAL_LEARN_NVS_NAMESPACE) <= 16U && sizeof(THERMAL_LEARN_NVS_KEY) <= 16U,
+              "NVS namespace / key toi da 15 ky tu");
 static_assert(sizeof(SAFETY_NVS_RESET_KEY) <= 16U,
               "NVS key toi da 15 ky tu");
 static_assert(sizeof(SAFETY_NVS_TURN_CHECK_KEY) <= 16U,
@@ -1334,7 +1340,8 @@ enum class HmiCommandType : uint8_t {
   WebVentToggle, WebCircToggle, WebHeaterToggle, WebSirenToggle,
   WebTurnHold,        // Remote: alarmMask = direction (0 stop, 1 left, 2 right) | lease ms << 8 (the machine stops by itself when the lease ends)
   FactoryReset,       // Local only: khoi phuc cai dat goc (MachineConfig, NVS, EEPROM) va khoi dong lai
-  DeveloperModeSet    // Local only: alarmMask 1 = bat CD nha phat trien (full quyen tu xa), 0 = tat
+  DeveloperModeSet,   // Local only: alarmMask 1 = bat CD nha phat trien (full quyen tu xa), 0 = tat
+  ClearThermalLearn   // Local only: erase what the thermal controller learned (NVS) and start it from its priors; refused while a batch runs
 };
 // Permission bits of the Web output control (HMI Advanced). Heater, vent, circulation, light, siren, egg turning.
 enum : uint8_t { WebCtlHeater = 1, WebCtlVent = 2, WebCtlCirc = 4, WebCtlLight = 8, WebCtlSiren = 16, WebCtlTurn = 32, WebCtlAutoUpdate = 64, WebCtlAll = 127 };

@@ -290,7 +290,9 @@ test('Che do 2 tai khoan: only in HMI Nang cao, needs Online, the machine asks t
   const cloud = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'cloud_alert_link.h'), 'utf8');
   // Advanced list: the item sits after "CD Nha phat trien" and before "Doi ma ky thuat"; the screen belongs to the Advanced session (PIN keep-alive, lock on leave)
   assert.match(hmi, /enum AdvItem : uint8_t \{[^}]*ADV_DEV_MODE, ADV_GUEST, ADV_PINCHG, ADV_EXIT \}/);
-  assert.match(hmi, /constexpr uint8_t ADV_ITEM_COUNT = 12U;/);
+  assert.match(hmi, /constexpr uint8_t ADV_ITEM_COUNT = 13U;/);                                    // 12 + "Xoa du lieu hoc nhiet" (ADV_LEARN, after ADV_RESET)
+  assert.match(hmi, /ADV_TEST, ADV_RESET, ADV_LEARN, ADV_DEV_MODE/);
+  assert.match(bodyOf("void advSelect()"), /case ADV_LEARN: openClearLearnConfirm\(\); break;/);
   assert.match(bodyOf('bool viewInAdvanced('), /case View::GuestMode:/);
   assert.match(bodyOf('void advSelect()'), /case ADV_GUEST: openGuestMode\(\); break;/);
   assert.match(bodyOf('void goBack()'), /case View::GuestMode: view = View::AdvMenu; advIndex = ADV_GUEST;/);

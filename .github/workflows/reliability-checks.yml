@@ -166,7 +166,12 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/vent-line.cpp -o /tmp/mayap-vent-line
           /tmp/mayap-vent-line
 
-      - name: "Fleet bench builds (210 random ovens x 8 situations with the real vent line)"
+      - name: "Thermal learning kept across a restart (thermal_learn.h): checksum and ranges refuse a damaged record, two stable hours before a write, the hold level only for the batch it belongs to, the controller takes it back"
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-learn.cpp -o /tmp/mayap-thermal-learn
+          /tmp/mayap-thermal-learn
+
+      - name: "Fleet bench builds (210 random ovens x 10 situations with the real vent line and the restored state)"
         run: g++ -O2 -std=c++17 -Wall -Wextra -Werror tools/thermal-research/fleet-bench.cpp -o /tmp/mayap-fleet-bench
 
       - name: "E115 evidence (heater_response_watch.h): unit tests of the rule MachineController runs"

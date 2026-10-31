@@ -505,7 +505,7 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
     // (the newest has index h-1, 10 s apart), "s" = index of the first sample here, "d" = 7 numbers per sample. Only while the frame has room.
     if (measureJson(doc) < 1300U) {
       // Two chunk kinds share the room one chunk used to have: the plain samples ("d") and, on every other snapshot, the diagnostics of the same
-      // ring ("x", 7 numbers per sample, with their own start index "xs"). The frame never grows beyond what it was; an older Web ignores "x".
+      // ring ("x", 8 numbers per sample, with their own start index "xs"). The frame never grows beyond what it was; an older Web ignores "x".
       static uint32_t pidLogCursor = 0U, pidLogCursorX = 0U;
       static bool sendDiagnostics = false;
       sendDiagnostics = !sendDiagnostics;
@@ -520,7 +520,7 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
           JsonArray x = lg["x"].to<JsonArray>();
           for (uint8_t i = 0U; i < n; ++i) {
             x.add(chunk[i].safe100); x.add(chunk[i].hold2); x.add(chunk[i].kair); x.add(chunk[i].tau);
-            x.add(chunk[i].integ4); x.add(chunk[i].vent); x.add(chunk[i].ctl);
+            x.add(chunk[i].integ4); x.add(chunk[i].vent); x.add(chunk[i].ctl); x.add(chunk[i].learn);
           }
         } else {
           lg["s"] = first;
