@@ -86,6 +86,18 @@ constexpr float MOMENTUM_NOISE_STEPS = 1.5f;  // a slope below this many sensor 
 #ifndef V3X_START_H_MID
 #define V3X_START_H_MID 8.0f    // 1.0 < e0 <= 3.0 degC
 #endif
+#ifndef V3X_PROBE
+#define V3X_PROBE 0             // next to SV the hold level is FOUND: power rises by V3X_PROBE_STEP_PCT every max(V3X_PROBE_STEP_S, transit time) while the reading keeps falling
+#endif
+#ifndef V3X_PROBE_STEP_PCT
+#define V3X_PROBE_STEP_PCT 2.0f
+#endif
+#ifndef V3X_PROBE_STEP_S
+#define V3X_PROBE_STEP_S 120.0f
+#endif
+#ifndef V3X_PROBE_QUIET
+#define V3X_PROBE_QUIET 2       // the probe ends when the reading did not fall over this many steps in a row
+#endif
 #ifndef V3X_RAMP
 #define V3X_RAMP 0              // in the first half hour after such a start a reading that stands under SV is answered sooner and faster
 #endif
@@ -164,7 +176,8 @@ class Controller {
     histCount_ = 0U;
     slopeShort_ = 0.0f;
     wasLive_ = false;
-    startDone_ = holdImported_ = startPhase_ = false;
+    startDone_ = holdImported_ = startPhase_ = probing_ = false;
+    probeT_ = probePv_ = 0.0f; probeQuiet_ = 0;
     startS_ = 0.0f;
     dQ_ = 0.1f;
     liveS_ = 0.0f;
@@ -254,9 +267,28 @@ class Controller {
         if (h != pHold_) { pHold_ = h; rebuildPipe(); }
         startPhase_ = e0 <= 3.0f;
         startS_ = 0.0f;
+#if V3X_PROBE
+        if (e0 <= 1.0f) { probing_ = true; probeT_ = 0.0f; probePv_ = in.pv; probeQuiet_ = 0; }
+#endif
       }
     }
     if (startPhase_) { startS_ += dt; if (startS_ > 1800.0f) startPhase_ = false; }
+#if V3X_PROBE
+    if (probing_) {
+      probeT_ += dt;
+      const float stepS = std::max(V3X_PROBE_STEP_S, tauTransit_);
+      if (in.pv >= in.sp + 0.1f || probeT_ > 1800.0f || in.shadow || doorDetected_) probing_ = false;
+      else if (probeT_ >= stepS) {
+        probeT_ = 0.0f;
+        if (in.pv < probePv_ - 0.04f || in.pv < in.sp - 0.15f) {        // still falling (or well under SV): the power asked for is not enough yet
+          if (in.pv < probePv_ - 0.04f || slopeShort_ <= 0.0f) { pHold_ = std::min(HOLD_MAX_PCT, pHold_ + V3X_PROBE_STEP_PCT); probeQuiet_ = 0; }
+          else ++probeQuiet_;
+        } else ++probeQuiet_;
+        probePv_ = in.pv;
+        if (probeQuiet_ >= V3X_PROBE_QUIET) probing_ = false;
+      }
+    }
+#endif
 #endif
 
     // -------------------------------------------------------------------------
@@ -664,6 +696,9 @@ class Controller {
   uint8_t uHist_[HIST_LEN] = {}; // 1 Hz: the command that was physically sent [%]
   uint16_t histHead_ = 0U;
   uint16_t histCount_ = 0U;
+  bool probing_ = false;
+  float probeT_ = 0.0f, probePv_ = 0.0f;
+  int probeQuiet_ = 0;
   bool startDone_ = false, holdImported_ = false, startPhase_ = false;   // 2.5.8: the start rules ran / hold level came from a stored record / first half hour
   float startS_ = 0.0f;
   bool wasLive_ = false;         // the last cycle ran the control law (a permit lost now, with the reading over SV, is the controller's own overshoot)
