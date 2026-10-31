@@ -3424,14 +3424,29 @@
   // The machine keeps the last two hours (one sample per 10 s) and sends a few of them with every snapshot while this card is open.
   // Keyed by the machine's own sample index, so a repeat is harmless; the newest sample (index h-1) was taken within 10 s of the snapshot.
   function pmIngestLog(lg) {
-    if (!lg || !Array.isArray(lg.d)) return;
-    const head = Number(lg.h), first = Number(lg.s);
-    if (!Number.isFinite(head) || !Number.isFinite(first) || head < 1) return;
+    if (!lg) return;
+    const head = Number(lg.h);
+    if (!Number.isFinite(head) || head < 1) return;
+    const hasPlain = Array.isArray(lg.d), hasDiag = Array.isArray(lg.x);
+    if (!hasPlain && !hasDiag) return;
+    if (hasPlain && !Number.isFinite(Number(lg.s))) return;
+    if (hasDiag && !Number.isFinite(Number(lg.xs))) return;
     if (head < pidMon.logHead - 3) { pidMon.log = new Map(); }                // the machine restarted its counter (same boot id is not guaranteed)
     pidMon.logHead = head; pidMon.logHeadAt = Date.now();
-    for (let i = 0; i + 6 < lg.d.length; i += 7) {
-      const idx = first + i / 7;
-      pidMon.log.set(idx, { pv: lg.d[i] / 100, sp: lg.d[i + 1] / 100, pred: lg.d[i + 2] / 100, req: lg.d[i + 3] / 2, act: lg.d[i + 4] / 2, fl: lg.d[i + 5], st: lg.d[i + 6] });
+    if (hasPlain) {
+      const first = Number(lg.s);
+      for (let i = 0; i + 6 < lg.d.length; i += 7) {
+        const idx = first + i / 7;
+        pidMon.log.set(idx, { ...pidMon.log.get(idx), pv: lg.d[i] / 100, sp: lg.d[i + 1] / 100, pred: lg.d[i + 2] / 100, req: lg.d[i + 3] / 2, act: lg.d[i + 4] / 2, fl: lg.d[i + 5], st: lg.d[i + 6] });
+      }
+    }
+    // The diagnostics of the same samples (firmware 2.5.5 and later; an older machine never sends them): 8 numbers per sample, own start index.
+    if (hasDiag) {
+      const first = Number(lg.xs);
+      for (let i = 0; i + 7 < lg.x.length; i += 8) {
+        const idx = first + i / 8;
+        pidMon.log.set(idx, { ...pidMon.log.get(idx), safe: lg.x[i] / 100, hold: lg.x[i + 1] / 2, kair: lg.x[i + 2], tau: lg.x[i + 3], integ: lg.x[i + 4] / 4, vent: lg.x[i + 5], ctl: lg.x[i + 6], learn: lg.x[i + 7] });
+      }
     }
     while (pidMon.log.size > PM_LOG_MAX) pidMon.log.delete(pidMon.log.keys().next().value);
     const info = $('pmLogInfo');
@@ -3439,16 +3454,32 @@
     if ($('pmDownload')) $('pmDownload').disabled = pidMon.log.size === 0 && pidMon.series.length === 0;
   }
 
+  // Why the exhaust fan of the overheat started (VentLine::Why) and the state bits of that line (VentLine::Bit*), as the machine logs them.
+  const PM_VENT_WHY = ['', 'stuck', 'fast', 'floor', 'predicted'];
+  function pmVentState(v) {
+    const b = (v >> 3) & 31;
+    return [b & 1 ? 'watch' : '', b & 2 ? 'on' : '', b & 4 ? 'budget' : '', b & 8 ? 'wait_profile' : '', b & 16 ? 'maxrun' : ''].filter(Boolean).join('+');
+  }
   function pmCsv(device) {
     const iso = (t) => new Date(t).toISOString();
     const rows = [];
     for (const [idx, r] of pidMon.log) {
+      if (!Number.isFinite(r.pv)) continue;                                     // a diagnostics chunk that arrived before its plain samples
       const t = pidMon.logHeadAt - (pidMon.logHead - 1 - idx) * 10000;
-      rows.push([t, idx, r.pv, r.sp, r.pred, r.req, r.act, r.fl & 3, (r.fl & 4) ? 1 : 0, (r.fl & 8) ? 1 : 0, (r.fl & 16) ? 1 : 0, (r.fl & 32) ? 1 : 0, (r.fl & 64) ? 1 : 0, (r.fl & 128) ? 1 : 0, PM_STATES[r.st & 15] || '', Math.round(((r.st >> 4) & 15) * 100 / 15), 'machine']);
+      const diag = Number.isFinite(r.safe);
+      rows.push([t, idx, r.pv, r.sp, r.pred, r.req, r.act, r.fl & 3, (r.fl & 4) ? 1 : 0, (r.fl & 8) ? 1 : 0, (r.fl & 16) ? 1 : 0, (r.fl & 32) ? 1 : 0, (r.fl & 64) ? 1 : 0, (r.fl & 128) ? 1 : 0, PM_STATES[r.st & 15] || '', Math.round(((r.st >> 4) & 15) * 100 / 15), 'machine',
+        diag ? r.safe : '', diag ? r.hold : '', diag ? r.kair : '', diag ? r.tau : '', diag ? r.integ : '',
+        diag ? ((r.vent & 7) < PM_VENT_WHY.length ? PM_VENT_WHY[r.vent & 7] : String(r.vent & 7)) : '', diag ? pmVentState(r.vent) : '',
+        diag ? (r.ctl & 1) : '', diag ? ((r.ctl >> 1) & 1) : '', diag ? ((r.ctl >> 2) & 3) : '', diag ? ((r.ctl >> 4) & 15) : '',
+        diag ? (r.learn & 3) : '', diag ? ((r.learn >> 2) & 1) : '', diag ? (r.learn >> 3) * 4 : '']);
     }
-    for (const r of pidMon.series) rows.push([r.t, '', r.pv, r.sp, '', r.req, r.act, '', '', r.vent, '', '', '', '', '', '', 'page']);
+    for (const r of pidMon.series) rows.push([r.t, '', r.pv, r.sp, '', r.req, r.act, '', '', r.vent, '', '', '', '', '', '', 'page', '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
     rows.sort((a, b) => a[0] - b[0]);
-    const head = 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,trust_pct,source';
+    // The first 17 columns keep their place; the diagnostics are appended (safety reading, learned hold, heater gain x1e5, transit time, integral,
+    // why the overheat fan started, the state of that line, door guard, transit time measured, fan-budget tokens, ventReason, where the controller's
+    // numbers came from [0 priors, 1 oven restored, 2 oven + hold restored], whether a snapshot is stored, stable minutes so far in steps of 4).
+    const head = 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,trust_pct,source,' +
+      'safety_c,hold_pct,kair_e5,tau_s,integral_pct,vent_why,vent_line,door,identified,fan_tokens,vent_reason,learn_src,learn_saved,stable_min';
     const cell = (v) => (typeof v === 'number' ? (Number.isFinite(v) ? String(v) : '') : String(v));
     return [`# mayap pid log device=${device?.id || ''} boot=${device?.bootId || ''} exported=${iso(Date.now())}`, head,
       ...rows.map((r) => [iso(r[0]), ...r.slice(1)].map(cell).join(','))].join('\n') + '\n';

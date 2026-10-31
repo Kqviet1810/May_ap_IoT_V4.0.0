@@ -411,6 +411,7 @@ class Controller {
   uint8_t batchesDone() const { return identified_ ? 2U : 0U; }
   float kAir() const { return kAir_; }
   float tauTransit() const { return tauTransit_; }
+  uint16_t pipeLen() const { return pipeLen_; }
   float tdHat() const { return tauTransit_; }
   float tauHat() const { return pHold_; }
   float pHold() const { return pHold_; }
@@ -421,6 +422,24 @@ class Controller {
   float integral() const { return integral_; }
   float slopeMks() const { return filteredSlope_ * 1000.0f; }
   bool doorDetected() const { return doorDetected_; }
+
+  // What an earlier run of THIS oven learned (see thermal_learn.h, which keeps it across a restart).
+  // Heater gain and transit time are properties of the oven: they come back as the starting numbers of the next first climb, which measures
+  // them again (identified_ stays false). Nothing here is trusted more than the measurement that follows it.
+  void importOven(float kAir, float tauTransit, uint16_t pipeLen) {
+    if (std::isfinite(kAir)) kAir_ = std::max(KAIR_MIN, std::min(KAIR_MAX, kAir));
+    if (std::isfinite(tauTransit)) tauTransit_ = std::max(TAU_MIN_S, std::min(TAU_MAX_S, tauTransit));
+    pipeLen_ = std::max<uint16_t>(15U, std::min<uint16_t>(MAX_PIPE_LEN - 1U, pipeLen));
+    pipeIdx_ = 0U;
+    rebuildPipe();
+  }
+  // The hold level of the batch that is being resumed after a restart (the load did not change: same eggs, same room) and the fact that the
+  // numbers above were measured on this oven. The learner keeps working: it follows the load from here, fast down and slow up as always.
+  void importHold(float pHold, bool measured) {
+    if (std::isfinite(pHold)) pHold_ = std::max(0.0f, std::min(HOLD_MAX_PCT, pHold));
+    identified_ = measured;
+    rebuildPipe();
+  }
 
  private:
   void recomputePipeSum() {

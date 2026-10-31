@@ -161,10 +161,23 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-v3.cpp -o /tmp/mayap-thermal-v3-test
           /tmp/mayap-thermal-v3-test
 
-      - name: "Vent line (vent_line.h): the exhaust fans start on a trend, rest and run for a minimum time, at most six starts an hour, never cut the heater"
+      - name: "Vent line (vent_line.h): the exhaust fans are a last resort - decided on the mean of the reading (not blinded by a flicker between sensor steps), watched for 1.2 transit times while the heater brings it down, started by a stuck / fast / predicted / heater-at-floor reason, run 3-10 min, rest 5 min, paid from a token bucket, never cut the heater"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/vent-line.cpp -o /tmp/mayap-vent-line
           /tmp/mayap-vent-line
+
+      - name: "Alarm sound policy (alarm_sound.h): the Emergency siren stands on danger, persistence or a rise (not on a tight threshold alone), pulses, goes quiet at once when cooled, ACK mutes while it falls; the High line speaks again only when it gets worse; the Chime class reminds thinly"
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror tests/alarm-sound.cpp -o /tmp/mayap-alarm-sound
+          /tmp/mayap-alarm-sound
+
+      - name: "Thermal learning kept across a restart (thermal_learn.h): checksum and ranges refuse a damaged record, two stable hours before a write, the hold level only for the batch it belongs to, the controller takes it back"
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-learn.cpp -o /tmp/mayap-thermal-learn
+          /tmp/mayap-thermal-learn
+
+      - name: "Fleet bench builds (210 random ovens x 10 situations with the real vent line and the restored state)"
+        run: g++ -O2 -std=c++17 -Wall -Wextra -Werror tools/thermal-research/fleet-bench.cpp -o /tmp/mayap-fleet-bench
 
       - name: "E115 evidence (heater_response_watch.h): unit tests of the rule MachineController runs"
         run: |

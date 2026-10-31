@@ -58,7 +58,7 @@ struct Runtime {
 };
 struct Controller {
   bool batchRunning_=false, resumePending_=false, emergencyActive_=false;
-  uint32_t bootAt_=1000U, sirenMutedUntil_=0U;
+  uint32_t bootAt_=1000U; bool sirenWanted_=false;
   Outputs outputs_; Faults faults_; Runtime runtime_;
   AttinyStateSync attinyBatchSync_, attinyActivitySync_;
   uint8_t attinySyncFaultDetail_ = 0U;

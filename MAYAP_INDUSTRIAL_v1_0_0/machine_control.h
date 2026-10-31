@@ -18,6 +18,8 @@
 #include "thermal_v3_adapter.h"
 #include "heater_response_watch.h"
 #include "vent_line.h"
+#include "thermal_learn.h"
+#include "alarm_sound.h"
 #include "pid_log.h"
 #include <esp_system.h>
 #include <esp_timer.h>
@@ -598,6 +600,30 @@ inline const FaultDescriptor &faultDescriptor(FaultCode code) {
   return unknown;
 }
 
+// What a fault may make: see alarm_sound.h. Siren (external siren + buzzer): the danger of the heat itself, and an output that does not obey.
+// Alert (HMI buzzer until ACK, or until the condition is gone): the faults that stop the heater. Chime (three short beeps, a thin reminder): warnings
+// that need someone but not now. Silent: shown on the HMI / Web / push, nothing more. High (E111) and Emergency (E112) have their own voices
+// (HighVoice, EmergencyVoice); E304 is the Siren class on its live condition.
+enum class FaultSound : uint8_t { Silent = 0, Chime = 1, Alert = 2, Siren = 3, Special = 4 };
+inline FaultSound faultSoundClass(FaultCode code) {
+  switch (code) {
+    case FaultCode::HighTemperature: case FaultCode::EmergencyTemperature: return FaultSound::Special;
+    case FaultCode::OutputConflict: return FaultSound::Siren;
+    case FaultCode::SensorLost: case FaultCode::SensorInvalid: case FaultCode::SensorSuspect: case FaultCode::SensorFrozen:
+    case FaultCode::HeaterNotHeating: case FaultCode::HeaterSwitchOffDuringBatch:
+    case FaultCode::StorageUnavailable: case FaultCode::AbnormalReset: case FaultCode::BatchStateClearPending: case FaultCode::SafetyJournalUnavailable:
+      return FaultSound::Alert;
+    case FaultCode::LowTemperature: case FaultCode::HumidityLow: case FaultCode::HumidityHigh:
+    case FaultCode::ResumeRequiresAuto: case FaultCode::AutoModeOffDuringBatch: case FaultCode::AutoTurningDisabledDuringBatch:
+    case FaultCode::ResumeConfirmationPending: case FaultCode::BatchOverdue: case FaultCode::ResumeRtcWaitTooLong: case FaultCode::BatchOverdueConfirmationPending:
+    case FaultCode::TurnLimitConflict: case FaultCode::TurnTimeout: case FaultCode::TurnLimitStuck: case FaultCode::TurnCommandConflict:
+    case FaultCode::TurnMechanicalCheckRequired: case FaultCode::SirenBatteryLow:
+      return FaultSound::Chime;
+    default:
+      return FaultSound::Silent;                  // diagnostics: TemperatureRateExceeded, TemperatureUnstable, StorageDegraded, RelayRateExceeded, RtcFailure,
+  }                                               // BatchLogUnavailable, Heap*, TemperatureTrendWarning, StorageRetryTrend, AttinyBusUnresponsive, AttinyStateUnsynced
+}
+
 struct FaultState {
   FaultCode code = FaultCode::None;
   bool condition = false;
@@ -690,6 +716,25 @@ class FaultManager {
     uint32_t mask = AlarmNone;
     for (uint8_t i = 0; i < count_; ++i) {
       if (states_[i].active) mask |= faultDescriptor(states_[i].code).alarmBit;
+    }
+    return mask;
+  }
+  // Noise follows the LIVE condition, not the stored record: a latched fault that is gone is silent at once (its record stays for ACK).
+  bool live(FaultCode code) const {
+    const FaultState *state = findConst(code);
+    return state && state->condition;
+  }
+  uint32_t liveAlarmBits(FaultSound cls) const {
+    uint32_t mask = AlarmNone;
+    for (uint8_t i = 0; i < count_; ++i) {
+      if (states_[i].condition && faultSoundClass(states_[i].code) == cls) mask |= faultDescriptor(states_[i].code).alarmBit;
+    }
+    return mask;
+  }
+  uint64_t liveCodeBits(FaultSound cls) const {            // one bit per fault slot (stable while the machine runs)
+    uint64_t mask = 0U;
+    for (uint8_t i = 0; i < count_ && i < 64U; ++i) {
+      if (states_[i].condition && faultSoundClass(states_[i].code) == cls) mask |= (1ULL << i);
     }
     return mask;
   }
@@ -3908,6 +3953,7 @@ class MachineController {
       }
     }
     faults_.set(FaultCode::BatchStateClearPending, batchClearPending_, bootAt_);
+    loadThermalLearning();
     // Nhat ky chi ghi trong pham vi mot me: dang chay hoac dang cho phuc hoi
     // (ke ca dang cho xac nhan HMI) deu tinh la "trong me".
     eventLog_.setLoggingEnabled(batchRunning_ || resumePending_);
@@ -3916,6 +3962,8 @@ class MachineController {
         static_cast<uint32_t>(config_.powerRestoreDelaySec) * 1000U;
     previousAutoMode_ = inputs_.state().autoMode;
     runtime_.alarmMask = faults_.alarmMask();
+    runtime_.audibleAlarmMask = audibleMask_;
+    runtime_.chimeSeq = chimeSeq_;
     runtime_.sensorStartupGrace = true;
     runtime_.resumeConfirmationRequired = resumeConfirmationRequired_;
     runtime_.powerLossRecovery = powerLossRecovery_;
@@ -3990,11 +4038,12 @@ class MachineController {
       OutputRequest startup{};
       mayapApplyStartupOutputPolicy(startup, false,
           emergencyActive_ || highTemperatureActive_,
-          emergencyActive_ && timeReached(now, sirenMutedUntil_));
+          sirenWanted_);
       outputs_.update(now, startup);
     }
     processOutputEvents(now);
     syncOutputFaults(now);
+    updateSoundPolicy(now);
     // ATtiny activity phai doc OUTPUT THUC TE cua chinh chu ky nay.
     updateAttinyLink(now);
     updateBatchTime(now);
@@ -4368,6 +4417,8 @@ class MachineController {
                 static_cast<int16_t>(std::min<uint16_t>(
                     outputs_.transitionsThisHour(), INT16_MAX)));
     runtime_.alarmMask = faults_.alarmMask();
+    runtime_.audibleAlarmMask = audibleMask_;
+    runtime_.chimeSeq = chimeSeq_;
   }
 
   void processNetworkState(uint32_t now) {
@@ -4658,12 +4709,11 @@ class MachineController {
           const bool emergencyAckBlocked = remoteAck && emergencyActive_;
           const bool hadTurnFault = turnFaultLatched_;
           const bool turnAckBlocked = remoteAck && hadTurnFault;
-          // F-06: ACK cung tam tat coi cho me qua han (khong bi han che
-          // remote/local nhu 2 truong hop tren - day khong phai su co can
-          // kiem tra vat ly, chi la mot quyet dinh van hanh).
-          if ((!emergencyAckBlocked && emergencyActive_) || batchOverdueSirenActive_) {
-            sirenMutedUntil_ = now + SIREN_TEMPORARY_MUTE_MS;
-          }
+          // The noise follows alarm_sound.h: ACK mutes the Emergency siren while the reading falls (it speaks again when it stands or rises), the
+          // output-conflict siren for a minute, and keeps the High line silent until it is gone. Not remote for the first two (they need a person at the machine).
+          if (!emergencyAckBlocked && emergencyActive_) emergencyVoice_.ack(now, safetyTempLast_);
+          if (!remoteAck && faults_.live(FaultCode::OutputConflict)) outputConflictMutedUntil_ = now + SIREN_TEMPORARY_MUTE_MS;
+          if (highTemperatureActive_) highVoice_.ack();
           const bool turnCleared = (hadTurnFault && !turnAckBlocked) ? clearTurnFault() : false;
           const bool systemAck = (command.alarmMask & AlarmSystem) != 0U;
           const bool resetCleared = systemAck && abnormalResetLatched_;
@@ -4686,7 +4736,6 @@ class MachineController {
                   : emergencyAckBlocked ? "COI KHAN CAP CAN ACK TAI MAY"
                   : turnAckBlocked ? "LOI DAO CAN ACK TAI MAY"
                   : emergencyActive_ ? sirenMuteMsg
-                  : batchOverdueSirenActive_ ? sirenMuteMsg
                   : resetCleared ? "DA XAC NHAN RESET LOI"
                   : turnCleared ? "DA XOA LOI DAO"
                   : hadTurnFault ? "THA NUT/KT HANH TRINH"
@@ -4800,6 +4849,7 @@ class MachineController {
           if (p.begin("mayap_ui", false)) { p.clear(); p.end(); }
           if (p.begin("mayap_tech", false)) { p.clear(); p.end(); }
           if (p.begin("mayap_flash", false)) { p.clear(); p.end(); }
+          if (p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) { p.clear(); p.end(); }
           ok = true;
           message = "DANG KHOI PHUC CAI DAT GOC...";
           delay(200);
@@ -5014,6 +5064,13 @@ class MachineController {
         }
         break;
       }
+      case HmiCommandType::ClearThermalLearn: {
+        if (remote) { message = "CHI HMI DUOC XOA"; break; }
+        if (batchRunning_) { message = "DUNG ME TRUOC KHI XOA"; break; }
+        ok = clearThermalLearning();
+        message = ok ? "DA XOA DU LIEU HOC NHIET" : "LOI XOA DU LIEU HOC";
+        break;
+      }
       case HmiCommandType::DeveloperModeSet: {
         if (remote) { message = "CHI HMI DUOC DOI QUYEN"; break; }
         const bool enable = command.alarmMask != 0UL;
@@ -5189,7 +5246,127 @@ class MachineController {
           (o.heaterSsr ? MayapPidLog::FlSsr : 0U) | (o.heatMaster ? MayapPidLog::FlMaster : 0U) | (batchRunning_ ? MayapPidLog::FlBatch : 0U) |
           (sensorUsable_ ? MayapPidLog::FlSensorOk : 0U));
       s.spare = static_cast<uint8_t>((m.v2State & 0x0FU) | (static_cast<uint8_t>(thermalV3_.last().trustQ & 0x0FU) << 4));
+      s.safe100 = MayapPidLog::toC100(safetyTempLast_);
+      s.hold2 = MayapPidLog::toPct2(v3.pHold());
+      s.kair = MayapPidLog::toU8(v3.kAir() * 1.0e5f);
+      s.tau = MayapPidLog::toU8(v3.tauTransit());
+      s.integ4 = MayapPidLog::toI8x4(v3.integral());
+      s.vent = static_cast<uint8_t>((ventLine_.why() & 0x07U) | static_cast<uint8_t>(ventLine_.bits() << 3));
+      {
+        const uint8_t tokens = static_cast<uint8_t>(std::min(3.0f, ventLine_.tokens()));
+        s.ctl = static_cast<uint8_t>((v3.doorDetected() ? MayapPidLog::CtlDoor : 0U) | (v3.identified() ? MayapPidLog::CtlIdentified : 0U) |
+            static_cast<uint8_t>(tokens << 2) | static_cast<uint8_t>((ventReason_ & 0x0FU) << 4));
+      }
+      s.learn = static_cast<uint8_t>((learnSource_ & 3U) | (learnSavedValid_ ? 4U : 0U) |
+          (static_cast<uint8_t>(std::min<uint32_t>(31U, learnTracker_.stableMs() / 240000UL)) << 3));
       MayapPidLog::ring().push(s);
+    }
+  }
+
+  // ---- What may make a noise and when it stops (alarm_sound.h): the live condition decides, never the stored record ----
+  void updateSoundPolicy(uint32_t now) {
+    const alarmsound::EmergencyVoice::Params ep;
+    const alarmsound::HighVoice::Params hp;
+    const bool valid = std::isfinite(safetyTempLast_);
+    emergencyVoice_.update(now, valid, safetyTempLast_, config_.targetTemp, config_.emergencyTemp, emergencyActive_, ep);
+    highVoice_.update(now, valid, safetyTempLast_, highTemperatureActive_, hp);
+    const bool conflict = faults_.live(FaultCode::OutputConflict);
+    if (!conflict) outputConflictMutedUntil_ = 0U;
+    const bool conflictSiren = conflict && timeReached(now, outputConflictMutedUntil_);
+    sirenWanted_ = emergencyVoice_.siren(now, ep) || conflictSiren;
+    audibleMask_ = faults_.liveAlarmBits(FaultSound::Alert) | (conflictSiren ? AlarmSystem : AlarmNone) |
+                   (emergencyVoice_.audible() ? AlarmEmergency : AlarmNone);
+    bool chime = emergencyVoice_.consumeChime();
+    if (highVoice_.consumeAlert()) chime = true;
+    if (chimeReminder_.update(now, faults_.liveCodeBits(FaultSound::Chime), CHIME_REMIND_MS)) chime = true;
+    if (chime) ++chimeSeq_;
+  }
+
+  // ---- What the thermal controller learned about this oven, kept across a restart (thermal_learn.h) ----
+  uint8_t learnHeaterCap() const { return static_cast<uint8_t>(std::min<int>(100, static_cast<int>(config_.maxHeaterPower))); }
+  bool readLearnedBlob(thermallearn::Snapshot &s) {
+    Preferences p;
+    if (!p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) return false;
+    uint8_t blob[thermallearn::BLOB_SIZE];
+    bool ok = false;
+    if (p.getBytesLength(THERMAL_LEARN_NVS_KEY) == sizeof(blob) && p.getBytes(THERMAL_LEARN_NVS_KEY, blob, sizeof(blob)) == sizeof(blob))
+      ok = thermallearn::decode(blob, sizeof(blob), s);
+    p.end();
+    return ok;
+  }
+  bool writeLearnedBlob(const thermallearn::Snapshot &s) {
+    uint8_t blob[thermallearn::BLOB_SIZE];
+    if (!thermallearn::encode(s, blob)) return false;
+    Preferences p;
+    if (!p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) return false;
+    const bool ok = p.putBytes(THERMAL_LEARN_NVS_KEY, blob, sizeof(blob)) == sizeof(blob);
+    p.end();
+    return ok;
+  }
+  bool eraseLearnedBlob() {
+    Preferences p;
+    if (!p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) return false;
+    const bool ok = p.clear();
+    p.end();
+    return ok;
+  }
+  // At boot: the oven constants of the last stable run start the next first climb (which measures them again). A record that fails any check is ignored.
+  void loadThermalLearning() {
+    learnSavedValid_ = false;
+    learnSource_ = 0U;
+    thermallearn::Snapshot s;
+    if (!readLearnedBlob(s) || !thermallearn::ovenUsable(s, learnHeaterCap())) return;
+    learnSaved_ = s;
+    learnSavedValid_ = true;
+    thermalV3_.controller().importOven(s.kAir, s.tau, s.pipeLen);
+    learnTracker_.saved(s.pHold);
+    learnSource_ = 1U;
+    mayapSerialPrintf(false, "[THERMAL] restored oven: kAir=%.2e tau=%.0fs pipe=%us (hold %.1f%% kept for batch %lu)\n", static_cast<double>(s.kAir),
+                      static_cast<double>(s.tau), static_cast<unsigned>(s.pipeLen), static_cast<double>(s.pHold), static_cast<unsigned long>(s.batchEpoch));
+  }
+  // The batch that was running is resumed after a restart: its hold level comes back too, and the numbers count as measured.
+  void applyLearnedHoldOnResume() {
+    if (!learnSavedValid_ || !thermallearn::holdUsable(learnSaved_, learnHeaterCap(), batchStartEpoch_, config_.targetTemp)) return;
+    thermalV3_.controller().importHold(learnSaved_.pHold, true);
+    learnSource_ = 2U;
+    mayapSerialPrintf(false, "[THERMAL] resumed batch: hold level %.1f%% restored\n", static_cast<double>(learnSaved_.pHold));
+  }
+  bool clearThermalLearning() {
+    const bool ok = eraseLearnedBlob();
+    learnSavedValid_ = false;
+    learnSource_ = 0U;
+    learnTracker_.invalidate();
+    thermalV3_.reset();
+    return ok;
+  }
+  // Every cycle: when has the oven proved itself (two stable hours), and did the heater ever stop answering (then nothing learned is trusted).
+  void serviceThermalLearning(uint32_t now) {
+    if (heaterNotHeatingActive_) {
+      if (!learnHeaterFaultSeen_) {
+        learnHeaterFaultSeen_ = true;
+        if (learnSavedValid_) { (void)eraseLearnedBlob(); learnSavedValid_ = false; }
+        learnTracker_.invalidate();
+      }
+    } else {
+      learnHeaterFaultSeen_ = false;
+    }
+    const thermalv3::Controller &v3 = thermalV3_.controller();
+    const bool stable = batchRunning_ && sensorUsable_ && !testModeActive_ && !emergencyActive_ && !highTemperatureActive_ && !ventHeaterBlock_ &&
+        !heaterNotHeatingActive_ && !v3.responseSuspect() && !v3.doorDetected() && v3.identified() &&
+        thermalV3_.last().state == thermalv3::StTrack;
+    if (!learnTracker_.update(now, stable, temperature_, config_.targetTemp, v3.pHold(), thermallearn::StableTracker::Params())) return;
+    thermallearn::Snapshot s;
+    s.pHold = v3.pHold(); s.kAir = v3.kAir(); s.tau = v3.tauTransit(); s.pipeLen = v3.pipeLen();
+    s.sp = config_.targetTemp; s.capPct = learnHeaterCap();
+    s.batchEpoch = batchStartEpoch_; s.savedEpoch = rtc_.valid() ? rtc_.epoch() : 0U;
+    if (writeLearnedBlob(s)) {
+      learnSaved_ = s;
+      learnSavedValid_ = true;
+      learnTracker_.saved(s.pHold);
+      mayapSerialPrintf(false, "[THERMAL] stable for 2 h: saved hold=%.1f%% kAir=%.2e tau=%.0fs\n", static_cast<double>(s.pHold),
+                        static_cast<double>(s.kAir), static_cast<double>(s.tau));
+    } else {
+      mayapSerialPrintf(false, "[THERMAL] could not save what was learned (tries again in 10 min)\n");
     }
   }
 
@@ -5197,6 +5374,19 @@ class MachineController {
   float thermalV3SensorStepC() const {                          // the step of the value the controller sees: the locked sensor format decides, an unlocked one is treated as the coarse 0.1
     const SensorProfile p = sensor_.sensorProfile();
     return (p == SensorProfile::X100RhX10 || p == SensorProfile::Sht30Native) ? 0.01f : 0.1f;
+  }
+  // The day profile of the exhaust fans: seconds until the next block starts (onInS; 0 while a block runs) and until the running block ends (offInS).
+  // false (the outputs untouched) when no profile runs now.
+  bool ventProfileTiming(uint32_t now, float &onInS, float &offInS) const {
+    if (!(config_.ventAutoEnabled && batchRunning_ && !warmupVentHold_)) return false;
+    const uint32_t cycleSec = static_cast<uint32_t>(config_.ventCycleMinutes) * 60UL;
+    if (cycleSec == 0UL) return false;
+    const uint32_t elapsedSec = elapsedBatchSec(now);
+    const uint8_t duty = ventProfileDutyPercent(config_, elapsedSec / 86400UL + 1UL, humidityLowActive_);
+    const uint32_t onSec = cycleSec * duty / 100UL, phase = elapsedSec % cycleSec;
+    if (phase < onSec) { onInS = 0.0f; offInS = static_cast<float>(onSec - phase); return true; }
+    if (onSec > 0UL) { onInS = static_cast<float>(cycleSec - phase); offInS = onInS + static_cast<float>(onSec); return true; }
+    return false;
   }
   ThermalV3SlotIn buildThermalV3SlotIn(uint32_t now, bool permit, bool shadow = false) const {
     ThermalV3SlotIn si;
@@ -5211,16 +5401,7 @@ class MachineController {
     si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterWatch_.accumOnMs()) / stuckLimitMs : 0.0f;
     si.dQ = thermalV3SensorStepC();
     si.ventFan = st.ventFan;                                                // the fan that really runs: it takes heat out of the box
-    if (config_.ventAutoEnabled && batchRunning_ && !warmupVentHold_) {     // the automatic profile knows when it starts and ends: the controller pays for the loss in advance
-      const uint32_t cycleSec = static_cast<uint32_t>(config_.ventCycleMinutes) * 60UL;
-      if (cycleSec > 0UL) {
-        const uint32_t elapsedSec = elapsedBatchSec(now);
-        const uint8_t duty = ventProfileDutyPercent(config_, elapsedSec / 86400UL + 1UL, humidityLowActive_);
-        const uint32_t onSec = cycleSec * duty / 100UL, phase = elapsedSec % cycleSec;
-        if (phase < onSec) { si.ventOnInS = 0.0f; si.ventOffInS = static_cast<float>(onSec - phase); }
-        else if (onSec > 0UL) { si.ventOnInS = static_cast<float>(cycleSec - phase); si.ventOffInS = si.ventOnInS + static_cast<float>(onSec); }
-      }
-    }
+    ventProfileTiming(now, si.ventOnInS, si.ventOffInS);                     // the automatic profile knows when it starts and ends: the controller can pay for the loss in advance
     return si;
   }
   float thermalV3Command(uint32_t now, bool permit, bool shadow) {
@@ -5678,6 +5859,7 @@ class MachineController {
     else trayPosition_ = TrayPosition::Unknown;
     needHome_ = trayPosition_ == TrayPosition::Unknown;
     heatRestartNotBefore_ = now + FAN_PRESTART_MS;
+    applyLearnedHoldOnResume();
     eventLog_.push(now, EventType::BatchStart,
                    static_cast<uint16_t>(EventCode::BatchResume),
                    static_cast<int16_t>(std::min<uint32_t>(elapsedBeforeStartSec_ / 60UL,
@@ -5693,6 +5875,7 @@ class MachineController {
         ? (isfinite(temperature_) ? std::max(rawTemperature_, temperature_) : rawTemperature_)
         : temperature_;
     const bool validSafety = safetySampleValid_ && isfinite(safetyTemp);
+    safetyTempLast_ = validSafety ? safetyTemp : NAN;                        // for the PID log
     const bool wasHigh = highTemperatureActive_;
     const bool wasEmergency = emergencyActive_;
     // Che do "Bao nhiet ngoai me" (cai dat nhiet - mac dinh BAT, giu nguyen
@@ -5742,9 +5925,21 @@ class MachineController {
     // The vent line (the exhaust fan of the overheat): see vent_line.h. It never cuts the heater.
     {
       VentLine::Params vp;
-      vp.confirmMs = VENT_LINE_CONFIRM_MS; vp.trendMs = VENT_LINE_TREND_MS; vp.minOnMs = VENT_LINE_MIN_ON_MS; vp.minOffMs = VENT_LINE_MIN_OFF_MS;
-      vp.maxStartsPerHour = VENT_LINE_MAX_STARTS_PER_HOUR; vp.epsC = VENT_LINE_EPS_C; vp.fallC = VENT_LINE_FALL_C; vp.fastC = VENT_LINE_FAST_C;
-      ventTemperatureActive_ = ventLine_.update(now, validSafety, safetyTemp, config_.ventOnTemp, config_.ventOffTemp, vp);
+      vp.confirmMs = VENT_LINE_CONFIRM_MS; vp.minOnMs = VENT_LINE_MIN_ON_MS; vp.maxOnMs = VENT_LINE_MAX_ON_MS; vp.minOffMs = VENT_LINE_MIN_OFF_MS;
+      vp.windowMinMs = VENT_LINE_WINDOW_MIN_MS; vp.windowMaxMs = VENT_LINE_WINDOW_MAX_MS; vp.windowTauK = VENT_LINE_WINDOW_TAU_K;
+      vp.defaultTauS = VENT_LINE_DEFAULT_TAU_S; vp.floorHoldMs = VENT_LINE_FLOOR_HOLD_MS; vp.floorOverMs = VENT_LINE_FLOOR_OVER_MS;
+      vp.floorPct = VENT_LINE_FLOOR_PCT; vp.bucketCap = VENT_LINE_BUCKET_CAP; vp.refillMs = VENT_LINE_BUCKET_REFILL_MS;
+      vp.coalesceMs = VENT_LINE_COALESCE_MS; vp.epsC = VENT_LINE_EPS_C; vp.fallC = VENT_LINE_FALL_C; vp.fastC = VENT_LINE_FAST_C;
+      vp.predMarginC = VENT_LINE_PRED_MARGIN_C; vp.stepC = thermalV3SensorStepC();
+      VentLine::Ctx vc;
+      const thermalv3::Controller &v3 = thermalV3_.controller();
+      vc.tauS = v3.identified() ? v3.tauTransit() : NAN;                          // a transit time that was not measured is a guess: the default window
+      vc.heaterAvgPct = pidMonActual_;                                            // the 60 s mean of the real SSR state
+      vc.predictedC = v3.predicted();
+      vc.fanRunning = outputs_.state().ventFan;                                   // the fans run now, for any reason (the day profile, the Web ...)
+      float onIn = NAN, offIn = NAN;
+      if (ventProfileTiming(now, onIn, offIn) && onIn > 0.0f) vc.profileOnInS = onIn;
+      ventTemperatureActive_ = ventLine_.update(now, validSafety, safetyTemp, config_.ventOnTemp, config_.ventOffTemp, vp, vc);
     }
 
     // The heater is blocked only when the reading runs well past SV (a safety margin, not a fan rule): it comes back 0.1 degC lower. "Well past"
@@ -5766,7 +5961,6 @@ class MachineController {
     // Sau cap khan cap contactor tong nhiet da bi nha, can khoa khoi dong lai co thoi han.
     if (wasEmergency && !emergencyActive_) {
       heatRestartNotBefore_ = now + HEAT_RESTART_LOCKOUT_MS;
-      sirenMutedUntil_ = 0;
     }
 
     // First climb of the batch: the oven is cold on purpose, so "temperature low" is the way, not a fault.
@@ -5970,6 +6164,8 @@ class MachineController {
     faults_.set(FaultCode::SafetyJournalUnavailable,
                 safetyJournalFaultLatched_, now);
     runtime_.alarmMask = faults_.alarmMask();
+    runtime_.audibleAlarmMask = audibleMask_;
+    runtime_.chimeSeq = chimeSeq_;
   }
 
   // ----------------------------- AUTO/MANUAL ---------------------------------
@@ -6589,8 +6785,7 @@ class MachineController {
     // F-06: coi cung reo cho me qua han chua xac nhan, dung chung co che
     // tam tat (sirenMutedUntil_) voi Nhiet do khan cap - AlarmAck se tu lam
     // moi lai dinh ky dung nhu duoc yeu cau ("keu dinh ky neu bi tat tam").
-    req.siren = ((emergencyActive_ || batchOverdueSirenActive_) &&
-                 timeReached(now, sirenMutedUntil_)) || webOverrideLive(webSirenUntil_, now);
+    req.siren = sirenWanted_ || webOverrideLive(webSirenUntil_, now);
 
     // Tao am chi hoat dong trong me, khi cam bien hop le. Hysteresis 2%%RH:
     // dang OFF thi chi bat khi <= SV-2; dang ON thi giu den khi dat SV.
@@ -6952,7 +7147,7 @@ class MachineController {
       attinyActivityOffSince_ = 0U;
     }
     const bool expectedActivity = attinyActivityDesired_;
-    const bool desiredSiren = emergencyActive_ && timeReached(now, sirenMutedUntil_);
+    const bool desiredSiren = sirenWanted_;
     attinyBatchSync_.expect(expectedBatch, now);
     attinyActivitySync_.expect(expectedActivity, now);
     const uint8_t batchCommand = expectedBatch ? ATTINY_MSG_BATCH_START : ATTINY_MSG_BATCH_END;
@@ -7429,6 +7624,8 @@ class MachineController {
     runtime_.eventSequence = eventLog_.sequence();
     runtime_.relayTransitionsHour = outputs_.transitionsThisHour();
     runtime_.alarmMask = faults_.alarmMask();
+    runtime_.audibleAlarmMask = audibleMask_;
+    runtime_.chimeSeq = chimeSeq_;
 
     if (turnFaultLatched_) runtime_.turnState = TurnState::Fault;
     else if (turnPhase_ == TurnPhase::MovingLeft) runtime_.turnState = TurnState::Left;
@@ -7515,6 +7712,7 @@ class MachineController {
     snprintf(runtime_.machineState, sizeof(runtime_.machineState), "%s", state);
     serviceTech(now);
     publishPidMonitor(now);
+    serviceThermalLearning(now);
     hmiSetRuntime(runtime_);
     mayapRealtimeSetRuntime(runtime_);
     mayapCloudSetRuntime(runtime_);
@@ -7686,8 +7884,8 @@ class MachineController {
                        ok ? "OK" : "FAIL", message ? message : "SAI LENH");
     } else if (cmd && !strcmp(cmd, "ACK")) {
       if (emergencyActive_) {
-        sirenMutedUntil_ = now + SIREN_TEMPORARY_MUTE_MS;
-        mayapSerialPrintf(false, "[SER] SIREN MUTE 5 MIN\n");
+        emergencyVoice_.ack(now, safetyTempLast_);
+        mayapSerialPrintf(false, "[SER] SIREN MUTE (until the reading stands or rises)\n");
       }
       if (abnormalResetLatched_) {
         abnormalResetLatched_ = false;
@@ -8135,6 +8333,17 @@ class MachineController {
   bool otaCheckpointDone_ = false;                   // the batch was checkpointed for the update that is downloading now
   bool ventHeaterBlock_ = false;                     // the heater is held off well above SV (see updateAlarms); the fan has its own line
   uint8_t ventReason_ = 0U;
+  alarmsound::EmergencyVoice emergencyVoice_{};
+  alarmsound::HighVoice highVoice_{};
+  alarmsound::Reminder chimeReminder_{};
+  bool sirenWanted_ = false;                        // the siren (external + ATtiny mirror) is wanted now
+  uint32_t audibleMask_ = AlarmNone, outputConflictMutedUntil_ = 0U;
+  uint8_t chimeSeq_ = 0U;
+  thermallearn::StableTracker learnTracker_{};
+  thermallearn::Snapshot learnSaved_{};
+  bool learnSavedValid_ = false, learnHeaterFaultSeen_ = false;
+  uint8_t learnSource_ = 0U;                        // 0 priors, 1 oven constants restored, 2 oven constants + hold level of the resumed batch restored
+  float safetyTempLast_ = NAN;
   bool lowTemperatureActive_ = false;
   bool warmupDone_ = false;                          // the first climb of the batch reached SV (or timed out): E110 is judged from here on
   bool highTemperatureActive_ = false;
@@ -8172,7 +8381,6 @@ class MachineController {
   uint8_t healthHeapSeriousStreak_ = 0U;
   float healthTempBaseline_ = NAN;
   uint32_t healthTempBaselineAt_ = 0U;
-  uint32_t sirenMutedUntil_ = 0;
   // Cong tac den (PIN_IN_LIGHT) van la nguon dieu khien mac dinh (xem
   // updateHeatingAndOutputs()); nut bat/tat den tren web CHI de lai 1 lenh
   // "ghi de" tam thoi - het hieu luc ngay khi cong tac vat ly thuc su doi

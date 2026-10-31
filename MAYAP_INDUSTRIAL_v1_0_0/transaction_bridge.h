@@ -502,20 +502,33 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
     m["fb"] = rt.pidMon.sensorFellBack;
     m["valid"] = rt.pidMon.valid;
     // The log ring, a few samples per snapshot, cycling from the oldest to the newest and around again: "h" = how many samples the machine ever took
-    // (the newest has index h-1, 10 s apart), "s" = index of the first sample here, "d" = 6 numbers per sample. Only while the frame has room.
+    // (the newest has index h-1, 10 s apart), "s" = index of the first sample here, "d" = 7 numbers per sample. Only while the frame has room.
     if (measureJson(doc) < 1300U) {
-      static uint32_t pidLogCursor = 0U;
+      // Two chunk kinds share the room one chunk used to have: the plain samples ("d") and, on every other snapshot, the diagnostics of the same
+      // ring ("x", 8 numbers per sample, with their own start index "xs"). The frame never grows beyond what it was; an older Web ignores "x".
+      static uint32_t pidLogCursor = 0U, pidLogCursorX = 0U;
+      static bool sendDiagnostics = false;
+      sendDiagnostics = !sendDiagnostics;
       MayapPidLog::Sample chunk[MayapPidLog::CHUNK];
       uint32_t first = 0U;
-      const uint8_t n = MayapPidLog::ring().fetch(pidLogCursor, chunk, first);
+      const uint8_t n = MayapPidLog::ring().fetch(sendDiagnostics ? pidLogCursorX : pidLogCursor, chunk, first);
       if (n > 0U) {
         JsonObject lg = m["lg"].to<JsonObject>();
         lg["h"] = MayapPidLog::ring().head();
-        lg["s"] = first;
-        JsonArray d = lg["d"].to<JsonArray>();
-        for (uint8_t i = 0U; i < n; ++i) {
-          d.add(chunk[i].pv100); d.add(chunk[i].sp100); d.add(chunk[i].pred100);
-          d.add(chunk[i].req2); d.add(chunk[i].act2); d.add(chunk[i].flags); d.add(chunk[i].spare);
+        if (sendDiagnostics) {
+          lg["xs"] = first;
+          JsonArray x = lg["x"].to<JsonArray>();
+          for (uint8_t i = 0U; i < n; ++i) {
+            x.add(chunk[i].safe100); x.add(chunk[i].hold2); x.add(chunk[i].kair); x.add(chunk[i].tau);
+            x.add(chunk[i].integ4); x.add(chunk[i].vent); x.add(chunk[i].ctl); x.add(chunk[i].learn);
+          }
+        } else {
+          lg["s"] = first;
+          JsonArray d = lg["d"].to<JsonArray>();
+          for (uint8_t i = 0U; i < n; ++i) {
+            d.add(chunk[i].pv100); d.add(chunk[i].sp100); d.add(chunk[i].pred100);
+            d.add(chunk[i].req2); d.add(chunk[i].act2); d.add(chunk[i].flags); d.add(chunk[i].spare);
+          }
         }
       }
     }

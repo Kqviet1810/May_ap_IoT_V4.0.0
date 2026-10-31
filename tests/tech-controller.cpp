@@ -92,6 +92,7 @@ struct Ctl {
   // Web output control lives outside the sliced tech region: these two stand in for the machine's overrides
   uint8_t webRevoked = 0;
   void webOutputsRevoke(uint32_t, uint8_t bits) { webRevoked = static_cast<uint8_t>(webRevoked | bits); }
+  bool clearThermalLearning() { return true; }                                  // the thermal-learning erase is outside what this harness tests
   uint8_t webOutputsActive(uint32_t) const { return 0; }
 #include "actual-tech-members.inc"
 #include "actual-tech-funcs.inc"

@@ -815,11 +815,11 @@ enum class View : uint8_t {
   ConnMenu, MemberList, SleepTime, GuestMode
 };
 
-enum class ConfirmAction : uint8_t { None, BatchToggle, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AdvRestore, MemberRemove, FactoryReset };
+enum class ConfirmAction : uint8_t { None, BatchToggle, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AdvRestore, MemberRemove, FactoryReset, ClearThermalLearn };
 
 // NANG CAO menu (declared here because goBack() returns to these rows).
-constexpr uint8_t ADV_ITEM_COUNT = 12U;
-enum AdvItem : uint8_t { ADV_PID, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_HISTORY, ADV_LOG, ADV_TEST, ADV_RESET, ADV_DEV_MODE, ADV_GUEST, ADV_PINCHG, ADV_EXIT };
+constexpr uint8_t ADV_ITEM_COUNT = 13U;
+enum AdvItem : uint8_t { ADV_PID, ADV_MONITOR, ADV_PROTECT, ADV_CALIB, ADV_HISTORY, ADV_LOG, ADV_TEST, ADV_RESET, ADV_LEARN, ADV_DEV_MODE, ADV_GUEST, ADV_PINCHG, ADV_EXIT };
 
 // Prototype thu cong: Arduino IDE tu sinh prototype cho ham trong .ino.
 // Neu ham dung enum/struct tuy chinh, prototype tu dong co the bi chen
@@ -830,6 +830,7 @@ void openBatchOverdueContinueConfirm();
 void openAlarmView(View returnView);
 void openTestMode();
 void openFactoryResetConfirm();
+void openClearLearnConfirm();
 
 MachineConfig currentConfig;
 MachineRuntime currentRuntime;
@@ -1968,6 +1969,7 @@ BuzzerPattern buzzerCuePattern(BuzzerCue cue) {
     case BuzzerCue::Save:  return {10, 0, 1};      // Bip cuc ngan, khong gay on
     case BuzzerCue::Ok:    return {35, 50, 2};     // Hai bip nhe
     case BuzzerCue::Error: return {90, 90, 3};     // Van giu 3 bip ro rang de phan biet loi (an toan)
+    case BuzzerCue::Chime: return {110, 110, 3};   // Canh bao mem: ba bip ngan, khong keu lien tuc
     default:               return {0, 0, 0};
   }
 }
@@ -1991,7 +1993,7 @@ BuzzerPattern alarmPattern(uint32_t bit) {
 }
 
 uint32_t highestUnacknowledgedAlarm() {
-  const uint32_t pending = currentRuntime.alarmMask & ~buzzer.acknowledgedAlarmMask;
+  const uint32_t pending = currentRuntime.audibleAlarmMask & ~buzzer.acknowledgedAlarmMask;     // only what may make a noise NOW (alarm_sound.h)
   for (uint8_t i = 0; i < ALARM_PRIORITY_COUNT; ++i) {
     if (pending & ALARM_PRIORITY[i]) return ALARM_PRIORITY[i];
   }
@@ -2013,7 +2015,7 @@ void buzzerPlayCue(BuzzerCue cue) {
       currentRuntime.turnState == TurnState::Right) return;
   const BuzzerPattern pattern = buzzerCuePattern(cue);
   if (!pattern.pulses) return;
-  const bool mandatory = cue == BuzzerCue::Error;
+  const bool mandatory = cue == BuzzerCue::Error || cue == BuzzerCue::Chime;
   if (!currentConfig.alarmEnabled && !mandatory) return;
   buzzer.transientPattern = pattern;
   buzzer.transientPulsesLeft = pattern.pulses;
@@ -2090,7 +2092,13 @@ void buzzerUpdate(uint32_t now) {
     return;
   }
   // Bit da het loi tu dong mat ACK. Loi tai xuat hien se keu lai.
-  buzzer.acknowledgedAlarmMask &= currentRuntime.alarmMask;
+  buzzer.acknowledgedAlarmMask &= currentRuntime.audibleAlarmMask;
+  {   // the machine asks for three short beeps (a warning that appears, a thin reminder, the High line getting worse)
+    static bool chimeKnown = false;
+    static uint8_t lastChimeSeq = 0U;
+    if (!chimeKnown) { chimeKnown = true; lastChimeSeq = currentRuntime.chimeSeq; }
+    else if (currentRuntime.chimeSeq != lastChimeSeq) { lastChimeSeq = currentRuntime.chimeSeq; buzzerPlayCue(BuzzerCue::Chime); }
+  }
   if (!(buzzer.acknowledgedAlarmMask & AlarmTempHigh)) {
     buzzer.tempHighAckBestTemp = NAN;
     buzzer.tempHighAckLastSampleAt = 0;
@@ -2578,6 +2586,11 @@ void executeConfirmation(bool accepted) {
         showToast("DANG KHOI PHUC GOC...");
       }
       view = returnView;
+    } else if (action == ConfirmAction::ClearThermalLearn) {
+      if (queueCommand(HmiCommandType::ClearThermalLearn)) {
+        showToast("DANG XOA DU LIEU HOC...");
+      }
+      view = returnView;
     } else if (action == ConfirmAction::FirmwareRollback) {
       // Khong dung man rieng nhu FirmwareProgress (rollback la doi con tro
       // + khoi dong lai gan nhu tuc thi, khong co qua trinh tai % nao de
@@ -2876,6 +2889,7 @@ const char *advItemLabel(uint8_t i) {
     case ADV_LOG: return "Loi / Nhat ky";
     case ADV_TEST: return "Che do test";
     case ADV_RESET: return "Reset may";
+    case ADV_LEARN: return "Xoa du lieu hoc nhiet";
     case ADV_DEV_MODE: return currentRuntime.tech.devMode ? "CD Nha phat trien: BAT" : "CD Nha phat trien: TAT";
     case ADV_GUEST: return "Che do 2 tai khoan";
     case ADV_PINCHG: return "Doi ma ky thuat";
@@ -2899,6 +2913,7 @@ void advSelect() {
       break;
     case ADV_TEST: openTestMode(); break;
     case ADV_RESET: openFactoryResetConfirm(); break;
+    case ADV_LEARN: openClearLearnConfirm(); break;
     case ADV_DEV_MODE: devModeChoice = currentRuntime.tech.devMode; view = View::DevMode; dirty = true; break;
     case ADV_GUEST: openGuestMode(); break;
     case ADV_PINCHG: advOpenPin(PinPurpose::SetNew); break;
@@ -2974,6 +2989,15 @@ void openAdvRestoreConfirm() {
 
 void openFactoryResetConfirm() {
   confirmAction = ConfirmAction::FactoryReset;
+  confirmReturnView = View::AdvMenu;
+  confirmYes = false;
+  clearToast();
+  armInputGuard();
+  dirty = true;
+}
+
+void openClearLearnConfirm() {
+  confirmAction = ConfirmAction::ClearThermalLearn;
   confirmReturnView = View::AdvMenu;
   confirmYes = false;
   clearToast();
@@ -5300,6 +5324,9 @@ void drawConfirmScreen() {
   } else if (confirmAction == ConfirmAction::FactoryReset) {
     line1 = "KHOI PHUC CAI DAT GOC?";
     line2 = "XOA DU LIEU & KHOI DONG";
+  } else if (confirmAction == ConfirmAction::ClearThermalLearn) {
+    line1 = "XOA DU LIEU HOC NHIET?";
+    line2 = "MAY HOC LAI TU DAU";
   } else if (confirmAction == ConfirmAction::MemberRemove) {
     static char memberLine[24];
     snprintf(memberLine, sizeof(memberLine), "%.16s", memberView.entry[memberRemovePending < MEMBER_LIST_MAX ? memberRemovePending : 0].name);
@@ -5843,7 +5870,7 @@ void applyRuntime(MachineRuntime runtime) {
     wifiOfflineSinceAt = 0U;
     showToast("WIFI DA KET NOI LAI");
   }
-  buzzer.acknowledgedAlarmMask &= currentRuntime.alarmMask;
+  buzzer.acknowledgedAlarmMask &= currentRuntime.audibleAlarmMask;
   // Moi ma loi moi deu duoc keu lai, ke ca no dung chung AlarmBit voi mot loi
   // cu da duoc nguoi dung ACK truoc do.
   if (newFaultAlarmBit != AlarmNone) buzzerUnacknowledge(newFaultAlarmBit);

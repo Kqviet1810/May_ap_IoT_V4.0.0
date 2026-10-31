@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.5.0";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.5.5";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -481,7 +481,8 @@ constexpr uint32_t TURN_BUZZER_PAUSE_MS = 1700UL;
 constexpr uint8_t COMMAND_QUEUE_SIZE = 4;
 constexpr uint8_t COMMAND_ACK_QUEUE_SIZE = 4;
 constexpr uint32_t EMERGENCY_RESOUND_MS = 60000UL;
-constexpr uint32_t CRITICAL_RESOUND_MS = 300000UL;
+constexpr uint32_t CRITICAL_RESOUND_MS = 900000UL;        // an Alert-class fault that is still there is repeated every 15 min after an ACK (it was 5)
+constexpr uint32_t CHIME_REMIND_MS = 1800000UL;           // a Chime-class fault that lasts: three short beeps every 30 min, no ACK needed
 // "Coi thong minh" rieng cho AlarmTempHigh (xem buzzerUpdate() trong hmi.h):
 // sau khi ACK, kiem tra xu huong nhiet moi khoang nay - neu nhiet giam it
 // nhat TEMP_HIGH_SMART_MUTE_EPSILON_C so voi lan kiem truoc thi coi la "dang
@@ -490,6 +491,8 @@ constexpr uint32_t CRITICAL_RESOUND_MS = 300000UL;
 // thuong (~0.02-0.03C) nhung du nho de nhan ra xu huong that trong 20s.
 constexpr uint32_t TEMP_HIGH_SMART_MUTE_SAMPLE_MS = 20000UL;
 constexpr float TEMP_HIGH_SMART_MUTE_EPSILON_C = 0.05f;
+// The noise of the over-temperature lines is decoupled from their thresholds (alarm_sound.h): the siren for the Emergency line stands at
+// max(line, SV + 0.8) or after 3 min over the line or a rise of 0.3; the High line gives three beeps and speaks again only when it gets worse.
 // AUTO bi tat giua me: chi bao sau 2 phut, sau ACK neu van OFF thi keu lai 10 phut/lan.
 constexpr uint32_t AUTO_LOST_ALARM_DELAY_MS = 120000UL;
 constexpr uint32_t AUTO_LOST_RESOUND_MS = 600000UL;
@@ -597,14 +600,24 @@ constexpr uint32_t SENSOR_FROZEN_TIMEOUT_MS = 1200000UL; // 20 phut
 constexpr float WARMUP_VENT_HOLD_ERR_C = 1.0f;
 constexpr float WARMUP_VENT_RELEASE_ERR_C = 0.5f;
 constexpr uint32_t WARMUP_VENT_HOLD_MAX_MS = 1800000UL;   // 30 phut
-// Vent line (fan + heater hold at the vent temperature): confirmation, minimum time between changes, release tolerance (see updateAlarms).
-constexpr uint32_t VENT_LINE_CONFIRM_MS = 20000UL;
-constexpr uint32_t VENT_LINE_TREND_MS = 60000UL;          // at/over the vent threshold this long without falling: start the fan
-constexpr float VENT_LINE_FALL_C = 0.05f;                 // a fall this far below where the wait began counts as "falling"
-constexpr float VENT_LINE_FAST_C = 0.1f;                  // this much over the threshold for VENT_LINE_CONFIRM_MS: start at once
+// Vent line (the exhaust fans of the overheat, a last resort; see vent_line.h and updateAlarms). The fans never cut the heater.
+constexpr uint32_t VENT_LINE_CONFIRM_MS = 20000UL;        // a decisive overshoot (FAST / PRED) must stand this long
+constexpr float VENT_LINE_FALL_C = 0.05f;                 // a fall of the mean this far restarts the watch ("the controller is bringing it down")
+constexpr float VENT_LINE_FAST_C = 0.1f;                  // this much over the threshold: do not wait for the watch
+constexpr float VENT_LINE_PRED_MARGIN_C = 0.2f;           // the controller predicts this much over the threshold while the reading is over: heat is in flight
+constexpr float VENT_LINE_WINDOW_TAU_K = 1.2f;            // the watch lasts this many transit times ...
+constexpr uint32_t VENT_LINE_WINDOW_MIN_MS = 150000UL;    // ... but not less than 2.5 min ...
+constexpr uint32_t VENT_LINE_WINDOW_MAX_MS = 260000UL;    // ... and not more than 4 min 20 s
+constexpr float VENT_LINE_DEFAULT_TAU_S = 180.0f;         // when the transit time has not been measured
+constexpr float VENT_LINE_FLOOR_PCT = 3.0f;               // heater mean at/below this for ... : nothing left to cut
+constexpr uint32_t VENT_LINE_FLOOR_HOLD_MS = 60000UL;
+constexpr uint32_t VENT_LINE_FLOOR_OVER_MS = 150000UL;    // ... and the reading over for this long: start the fans
 constexpr uint32_t VENT_LINE_MIN_ON_MS = 180000UL;        // the contactor of the fans is rated for few operations: run at least 3 min ...
+constexpr uint32_t VENT_LINE_MAX_ON_MS = 600000UL;        // ... at most 10 min (a reading still high after that is for the High / Emergency lines) ...
 constexpr uint32_t VENT_LINE_MIN_OFF_MS = 300000UL;       // ... rest at least 5 min ...
-constexpr uint8_t VENT_LINE_MAX_STARTS_PER_HOUR = 6U;     // ... and start at most 6 times an hour (High / Emergency are not limited)
+constexpr uint8_t VENT_LINE_BUCKET_CAP = 3U;              // ... and start at most 3 times at once, then one more every 30 min (High / Emergency are not limited)
+constexpr uint32_t VENT_LINE_BUCKET_REFILL_MS = 1800000UL;
+constexpr uint32_t VENT_LINE_COALESCE_MS = 300000UL;      // a day-profile block due within this time is waited for (unless the overshoot is decisive)
 constexpr float VENT_LINE_EPS_C = 0.005f;
 // Heater block line: max(vent ON, SV + max(MIN, STEPS * sensor step)); released RELEASE degC lower.
 constexpr float VENT_HEATER_BLOCK_MIN_C = 0.3f;
@@ -669,6 +682,10 @@ constexpr uint32_t BATCH_CLEAR_RETRY_MS = 3000UL;
 constexpr char SAFETY_NVS_NAMESPACE[] = "mayap_safe";
 constexpr char SAFETY_NVS_STOP_KEY[] = "stop_intent";
 constexpr char SAFETY_NVS_RESET_KEY[] = "reset_count";
+// What the thermal controller learned about this oven (thermal_learn.h: 32 bytes with a checksum), written after two stable hours of a batch.
+// Nothing here is a setting: a damaged or foreign record is ignored and the controller starts from its priors.
+constexpr char THERMAL_LEARN_NVS_NAMESPACE[] = "mayap_thm";
+constexpr char THERMAL_LEARN_NVS_KEY[] = "snap";
 // F-07 (audit truoc phat hanh v3.7.1): truoc day turnMechanicalCheckRequired_/
 // turnFaultStreak_ (khoa dao vi nghi ngo hong co khi, xem latchTurnFault()
 // trong machine_control.h) chi la bien RAM - mat dien/watchdog/OTA restart
@@ -930,6 +947,8 @@ static_assert(sizeof(SAFETY_NVS_NAMESPACE) <= 16U,
               "NVS namespace toi da 15 ky tu");
 static_assert(sizeof(SAFETY_NVS_STOP_KEY) <= 16U,
               "NVS key toi da 15 ky tu");
+static_assert(sizeof(THERMAL_LEARN_NVS_NAMESPACE) <= 16U && sizeof(THERMAL_LEARN_NVS_KEY) <= 16U,
+              "NVS namespace / key toi da 15 ky tu");
 static_assert(sizeof(SAFETY_NVS_RESET_KEY) <= 16U,
               "NVS key toi da 15 ky tu");
 static_assert(sizeof(SAFETY_NVS_TURN_CHECK_KEY) <= 16U,
@@ -1245,6 +1264,8 @@ struct MachineRuntime {
   uint16_t turnCountToday = 0;
   uint32_t turnCountBatch = 0;
   uint32_t alarmMask = AlarmNone;
+  uint32_t audibleAlarmMask = AlarmNone;   // the bits of alarmMask that may make a noise NOW (live condition of an Alert / Siren class fault); alarmMask is what is shown
+  uint8_t chimeSeq = 0U;                   // +1 for every chime the machine asks the HMI buzzer for (three short beeps)
   MachineStateCode stateCode = MachineStateCode::Boot;
   uint16_t primaryFaultCode = 0;
   uint8_t activeFaultCount = 0;
@@ -1324,7 +1345,8 @@ enum class HmiCommandType : uint8_t {
   WebVentToggle, WebCircToggle, WebHeaterToggle, WebSirenToggle,
   WebTurnHold,        // Remote: alarmMask = direction (0 stop, 1 left, 2 right) | lease ms << 8 (the machine stops by itself when the lease ends)
   FactoryReset,       // Local only: khoi phuc cai dat goc (MachineConfig, NVS, EEPROM) va khoi dong lai
-  DeveloperModeSet    // Local only: alarmMask 1 = bat CD nha phat trien (full quyen tu xa), 0 = tat
+  DeveloperModeSet,   // Local only: alarmMask 1 = bat CD nha phat trien (full quyen tu xa), 0 = tat
+  ClearThermalLearn   // Local only: erase what the thermal controller learned (NVS) and start it from its priors; refused while a batch runs
 };
 // Permission bits of the Web output control (HMI Advanced). Heater, vent, circulation, light, siren, egg turning.
 enum : uint8_t { WebCtlHeater = 1, WebCtlVent = 2, WebCtlCirc = 4, WebCtlLight = 8, WebCtlSiren = 16, WebCtlTurn = 32, WebCtlAutoUpdate = 64, WebCtlAll = 127 };
@@ -1347,7 +1369,7 @@ struct HmiCommand {
   uint32_t alarmMask = AlarmNone;
   HmiCommandSource source = HmiCommandSource::Local;
 };
-enum class BuzzerCue : uint8_t { None, Key, Save, Ok, Error };
+enum class BuzzerCue : uint8_t { None, Key, Save, Ok, Error, Chime };
 
 // HMI "Thiet bi ket noi": the accounts linked to this machine (Cloud). Display names and roles only - never e-mail or account ids.
 // The ref is an opaque handle the Worker understands; the owner cannot be removed.
