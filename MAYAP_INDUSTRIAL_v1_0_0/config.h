@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.5.0";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.5.1";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -597,14 +597,24 @@ constexpr uint32_t SENSOR_FROZEN_TIMEOUT_MS = 1200000UL; // 20 phut
 constexpr float WARMUP_VENT_HOLD_ERR_C = 1.0f;
 constexpr float WARMUP_VENT_RELEASE_ERR_C = 0.5f;
 constexpr uint32_t WARMUP_VENT_HOLD_MAX_MS = 1800000UL;   // 30 phut
-// Vent line (fan + heater hold at the vent temperature): confirmation, minimum time between changes, release tolerance (see updateAlarms).
-constexpr uint32_t VENT_LINE_CONFIRM_MS = 20000UL;
-constexpr uint32_t VENT_LINE_TREND_MS = 60000UL;          // at/over the vent threshold this long without falling: start the fan
-constexpr float VENT_LINE_FALL_C = 0.05f;                 // a fall this far below where the wait began counts as "falling"
-constexpr float VENT_LINE_FAST_C = 0.1f;                  // this much over the threshold for VENT_LINE_CONFIRM_MS: start at once
+// Vent line (the exhaust fans of the overheat, a last resort; see vent_line.h and updateAlarms). The fans never cut the heater.
+constexpr uint32_t VENT_LINE_CONFIRM_MS = 20000UL;        // a decisive overshoot (FAST / PRED) must stand this long
+constexpr float VENT_LINE_FALL_C = 0.05f;                 // a fall of the mean this far restarts the watch ("the controller is bringing it down")
+constexpr float VENT_LINE_FAST_C = 0.1f;                  // this much over the threshold: do not wait for the watch
+constexpr float VENT_LINE_PRED_MARGIN_C = 0.2f;           // the controller predicts this much over the threshold while the reading is over: heat is in flight
+constexpr float VENT_LINE_WINDOW_TAU_K = 1.2f;            // the watch lasts this many transit times ...
+constexpr uint32_t VENT_LINE_WINDOW_MIN_MS = 150000UL;    // ... but not less than 2.5 min ...
+constexpr uint32_t VENT_LINE_WINDOW_MAX_MS = 260000UL;    // ... and not more than 4 min 20 s
+constexpr float VENT_LINE_DEFAULT_TAU_S = 180.0f;         // when the transit time has not been measured
+constexpr float VENT_LINE_FLOOR_PCT = 3.0f;               // heater mean at/below this for ... : nothing left to cut
+constexpr uint32_t VENT_LINE_FLOOR_HOLD_MS = 60000UL;
+constexpr uint32_t VENT_LINE_FLOOR_OVER_MS = 150000UL;    // ... and the reading over for this long: start the fans
 constexpr uint32_t VENT_LINE_MIN_ON_MS = 180000UL;        // the contactor of the fans is rated for few operations: run at least 3 min ...
+constexpr uint32_t VENT_LINE_MAX_ON_MS = 600000UL;        // ... at most 10 min (a reading still high after that is for the High / Emergency lines) ...
 constexpr uint32_t VENT_LINE_MIN_OFF_MS = 300000UL;       // ... rest at least 5 min ...
-constexpr uint8_t VENT_LINE_MAX_STARTS_PER_HOUR = 6U;     // ... and start at most 6 times an hour (High / Emergency are not limited)
+constexpr uint8_t VENT_LINE_BUCKET_CAP = 3U;              // ... and start at most 3 times at once, then one more every 30 min (High / Emergency are not limited)
+constexpr uint32_t VENT_LINE_BUCKET_REFILL_MS = 1800000UL;
+constexpr uint32_t VENT_LINE_COALESCE_MS = 300000UL;      // a day-profile block due within this time is waited for (unless the overshoot is decisive)
 constexpr float VENT_LINE_EPS_C = 0.005f;
 // Heater block line: max(vent ON, SV + max(MIN, STEPS * sensor step)); released RELEASE degC lower.
 constexpr float VENT_HEATER_BLOCK_MIN_C = 0.3f;

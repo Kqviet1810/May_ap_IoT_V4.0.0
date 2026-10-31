@@ -5189,6 +5189,17 @@ class MachineController {
           (o.heaterSsr ? MayapPidLog::FlSsr : 0U) | (o.heatMaster ? MayapPidLog::FlMaster : 0U) | (batchRunning_ ? MayapPidLog::FlBatch : 0U) |
           (sensorUsable_ ? MayapPidLog::FlSensorOk : 0U));
       s.spare = static_cast<uint8_t>((m.v2State & 0x0FU) | (static_cast<uint8_t>(thermalV3_.last().trustQ & 0x0FU) << 4));
+      s.safe100 = MayapPidLog::toC100(safetyTempLast_);
+      s.hold2 = MayapPidLog::toPct2(v3.pHold());
+      s.kair = MayapPidLog::toU8(v3.kAir() * 1.0e5f);
+      s.tau = MayapPidLog::toU8(v3.tauTransit());
+      s.integ4 = MayapPidLog::toI8x4(v3.integral());
+      s.vent = static_cast<uint8_t>((ventLine_.why() & 0x07U) | static_cast<uint8_t>(ventLine_.bits() << 3));
+      {
+        const uint8_t tokens = static_cast<uint8_t>(std::min(3.0f, ventLine_.tokens()));
+        s.ctl = static_cast<uint8_t>((v3.doorDetected() ? MayapPidLog::CtlDoor : 0U) | (v3.identified() ? MayapPidLog::CtlIdentified : 0U) |
+            static_cast<uint8_t>(tokens << 2) | static_cast<uint8_t>((ventReason_ & 0x0FU) << 4));
+      }
       MayapPidLog::ring().push(s);
     }
   }
@@ -5197,6 +5208,19 @@ class MachineController {
   float thermalV3SensorStepC() const {                          // the step of the value the controller sees: the locked sensor format decides, an unlocked one is treated as the coarse 0.1
     const SensorProfile p = sensor_.sensorProfile();
     return (p == SensorProfile::X100RhX10 || p == SensorProfile::Sht30Native) ? 0.01f : 0.1f;
+  }
+  // The day profile of the exhaust fans: seconds until the next block starts (onInS; 0 while a block runs) and until the running block ends (offInS).
+  // false (the outputs untouched) when no profile runs now.
+  bool ventProfileTiming(uint32_t now, float &onInS, float &offInS) const {
+    if (!(config_.ventAutoEnabled && batchRunning_ && !warmupVentHold_)) return false;
+    const uint32_t cycleSec = static_cast<uint32_t>(config_.ventCycleMinutes) * 60UL;
+    if (cycleSec == 0UL) return false;
+    const uint32_t elapsedSec = elapsedBatchSec(now);
+    const uint8_t duty = ventProfileDutyPercent(config_, elapsedSec / 86400UL + 1UL, humidityLowActive_);
+    const uint32_t onSec = cycleSec * duty / 100UL, phase = elapsedSec % cycleSec;
+    if (phase < onSec) { onInS = 0.0f; offInS = static_cast<float>(onSec - phase); return true; }
+    if (onSec > 0UL) { onInS = static_cast<float>(cycleSec - phase); offInS = onInS + static_cast<float>(onSec); return true; }
+    return false;
   }
   ThermalV3SlotIn buildThermalV3SlotIn(uint32_t now, bool permit, bool shadow = false) const {
     ThermalV3SlotIn si;
@@ -5211,16 +5235,7 @@ class MachineController {
     si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterWatch_.accumOnMs()) / stuckLimitMs : 0.0f;
     si.dQ = thermalV3SensorStepC();
     si.ventFan = st.ventFan;                                                // the fan that really runs: it takes heat out of the box
-    if (config_.ventAutoEnabled && batchRunning_ && !warmupVentHold_) {     // the automatic profile knows when it starts and ends: the controller pays for the loss in advance
-      const uint32_t cycleSec = static_cast<uint32_t>(config_.ventCycleMinutes) * 60UL;
-      if (cycleSec > 0UL) {
-        const uint32_t elapsedSec = elapsedBatchSec(now);
-        const uint8_t duty = ventProfileDutyPercent(config_, elapsedSec / 86400UL + 1UL, humidityLowActive_);
-        const uint32_t onSec = cycleSec * duty / 100UL, phase = elapsedSec % cycleSec;
-        if (phase < onSec) { si.ventOnInS = 0.0f; si.ventOffInS = static_cast<float>(onSec - phase); }
-        else if (onSec > 0UL) { si.ventOnInS = static_cast<float>(cycleSec - phase); si.ventOffInS = si.ventOnInS + static_cast<float>(onSec); }
-      }
-    }
+    ventProfileTiming(now, si.ventOnInS, si.ventOffInS);                     // the automatic profile knows when it starts and ends: the controller can pay for the loss in advance
     return si;
   }
   float thermalV3Command(uint32_t now, bool permit, bool shadow) {
@@ -5693,6 +5708,7 @@ class MachineController {
         ? (isfinite(temperature_) ? std::max(rawTemperature_, temperature_) : rawTemperature_)
         : temperature_;
     const bool validSafety = safetySampleValid_ && isfinite(safetyTemp);
+    safetyTempLast_ = validSafety ? safetyTemp : NAN;                        // for the PID log
     const bool wasHigh = highTemperatureActive_;
     const bool wasEmergency = emergencyActive_;
     // Che do "Bao nhiet ngoai me" (cai dat nhiet - mac dinh BAT, giu nguyen
@@ -5742,9 +5758,21 @@ class MachineController {
     // The vent line (the exhaust fan of the overheat): see vent_line.h. It never cuts the heater.
     {
       VentLine::Params vp;
-      vp.confirmMs = VENT_LINE_CONFIRM_MS; vp.trendMs = VENT_LINE_TREND_MS; vp.minOnMs = VENT_LINE_MIN_ON_MS; vp.minOffMs = VENT_LINE_MIN_OFF_MS;
-      vp.maxStartsPerHour = VENT_LINE_MAX_STARTS_PER_HOUR; vp.epsC = VENT_LINE_EPS_C; vp.fallC = VENT_LINE_FALL_C; vp.fastC = VENT_LINE_FAST_C;
-      ventTemperatureActive_ = ventLine_.update(now, validSafety, safetyTemp, config_.ventOnTemp, config_.ventOffTemp, vp);
+      vp.confirmMs = VENT_LINE_CONFIRM_MS; vp.minOnMs = VENT_LINE_MIN_ON_MS; vp.maxOnMs = VENT_LINE_MAX_ON_MS; vp.minOffMs = VENT_LINE_MIN_OFF_MS;
+      vp.windowMinMs = VENT_LINE_WINDOW_MIN_MS; vp.windowMaxMs = VENT_LINE_WINDOW_MAX_MS; vp.windowTauK = VENT_LINE_WINDOW_TAU_K;
+      vp.defaultTauS = VENT_LINE_DEFAULT_TAU_S; vp.floorHoldMs = VENT_LINE_FLOOR_HOLD_MS; vp.floorOverMs = VENT_LINE_FLOOR_OVER_MS;
+      vp.floorPct = VENT_LINE_FLOOR_PCT; vp.bucketCap = VENT_LINE_BUCKET_CAP; vp.refillMs = VENT_LINE_BUCKET_REFILL_MS;
+      vp.coalesceMs = VENT_LINE_COALESCE_MS; vp.epsC = VENT_LINE_EPS_C; vp.fallC = VENT_LINE_FALL_C; vp.fastC = VENT_LINE_FAST_C;
+      vp.predMarginC = VENT_LINE_PRED_MARGIN_C; vp.stepC = thermalV3SensorStepC();
+      VentLine::Ctx vc;
+      const thermalv3::Controller &v3 = thermalV3_.controller();
+      vc.tauS = v3.identified() ? v3.tauTransit() : NAN;                          // a transit time that was not measured is a guess: the default window
+      vc.heaterAvgPct = pidMonActual_;                                            // the 60 s mean of the real SSR state
+      vc.predictedC = v3.predicted();
+      vc.fanRunning = outputs_.state().ventFan;                                   // the fans run now, for any reason (the day profile, the Web ...)
+      float onIn = NAN, offIn = NAN;
+      if (ventProfileTiming(now, onIn, offIn) && onIn > 0.0f) vc.profileOnInS = onIn;
+      ventTemperatureActive_ = ventLine_.update(now, validSafety, safetyTemp, config_.ventOnTemp, config_.ventOffTemp, vp, vc);
     }
 
     // The heater is blocked only when the reading runs well past SV (a safety margin, not a fan rule): it comes back 0.1 degC lower. "Well past"
@@ -8135,6 +8163,7 @@ class MachineController {
   bool otaCheckpointDone_ = false;                   // the batch was checkpointed for the update that is downloading now
   bool ventHeaterBlock_ = false;                     // the heater is held off well above SV (see updateAlarms); the fan has its own line
   uint8_t ventReason_ = 0U;
+  float safetyTempLast_ = NAN;
   bool lowTemperatureActive_ = false;
   bool warmupDone_ = false;                          // the first climb of the batch reached SV (or timed out): E110 is judged from here on
   bool highTemperatureActive_ = false;

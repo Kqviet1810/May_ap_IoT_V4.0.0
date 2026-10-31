@@ -75,6 +75,7 @@ class Plant {
   double egg() const { return Te_; }
   double sensor() const { return sens_; }
   const PlantParams &params() const { return p_; }
+  void setAmbient(double c) { p_.Tamb = c; }                 // the room around the oven warms up (a hot afternoon) or cools down
 
  private:
   PlantParams p_;

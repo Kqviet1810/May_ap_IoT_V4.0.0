@@ -13,17 +13,39 @@ constexpr uint32_t SAMPLE_PERIOD_MS = 10000U;
 
 enum : uint8_t { FlPhaseMask = 0x03, FlSuspect = 0x04, FlVentFan = 0x08, FlSsr = 0x10, FlMaster = 0x20, FlBatch = 0x40, FlSensorOk = 0x80 };
 
+// ctl byte: bit0 door guard, bit1 transit time measured, bits2-3 whole fan-budget tokens (0..3), bits4-7 the reason the exhaust fan runs (ventReason).
+enum : uint8_t { CtlDoor = 0x01, CtlIdentified = 0x02 };
+
 struct Sample {
   uint16_t pv100 = 0, sp100 = 0, pred100 = 0;   // degC * 100
   uint8_t req2 = 0, act2 = 0;                   // percent * 2 (0.5 % steps)
   uint8_t flags = 0;
   uint8_t spare = 0;
+  // Diagnostics that explain a decision (sent in a second, separate chunk: an older Web ignores it).
+  uint16_t safe100 = 0;                         // the reading the safety lines use, degC * 100
+  uint8_t hold2 = 0;                            // learned hold level, percent * 2
+  uint8_t kair = 0;                             // heater gain, 1e-5 degC/s per %
+  uint8_t tau = 0;                              // transit time [s]
+  int8_t integ4 = 0;                            // integral term, percent * 4
+  uint8_t vent = 0;                             // vent line: bits0-2 why (VentLine::Why), bits3-7 its state bits (VentLine::Bit*)
+  uint8_t ctl = 0;
 };
 
 inline uint16_t toC100(float v) {
   if (!isfinite(v) || v <= 0.0f) return 0U;
   const float x = v * 100.0f + 0.5f;
   return x >= 65535.0f ? 65535U : static_cast<uint16_t>(x);
+}
+inline uint8_t toU8(float v) {
+  if (!isfinite(v) || v <= 0.0f) return 0U;
+  const float x = v + 0.5f;
+  return x >= 255.0f ? 255U : static_cast<uint8_t>(x);
+}
+inline int8_t toI8x4(float v) {
+  if (!isfinite(v)) return 0;
+  float x = v * 4.0f;
+  x += x >= 0.0f ? 0.5f : -0.5f;
+  return x >= 127.0f ? static_cast<int8_t>(127) : (x <= -127.0f ? static_cast<int8_t>(-127) : static_cast<int8_t>(x));
 }
 inline uint8_t toPct2(float v) {
   if (!isfinite(v) || v <= 0.0f) return 0U;

@@ -161,10 +161,13 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-v3.cpp -o /tmp/mayap-thermal-v3-test
           /tmp/mayap-thermal-v3-test
 
-      - name: "Vent line (vent_line.h): the exhaust fans start on a trend, rest and run for a minimum time, at most six starts an hour, never cut the heater"
+      - name: "Vent line (vent_line.h): the exhaust fans are a last resort - decided on the mean of the reading (not blinded by a flicker between sensor steps), watched for 1.2 transit times while the heater brings it down, started by a stuck / fast / predicted / heater-at-floor reason, run 3-10 min, rest 5 min, paid from a token bucket, never cut the heater"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/vent-line.cpp -o /tmp/mayap-vent-line
           /tmp/mayap-vent-line
+
+      - name: "Fleet bench builds (210 random ovens x 8 situations with the real vent line)"
+        run: g++ -O2 -std=c++17 -Wall -Wextra -Werror tools/thermal-research/fleet-bench.cpp -o /tmp/mayap-fleet-bench
 
       - name: "E115 evidence (heater_response_watch.h): unit tests of the rule MachineController runs"
         run: |

@@ -1,8 +1,8 @@
 {
-  "release": "2.5.0",
-  "firmware": "2.5.0",
+  "release": "2.5.1",
+  "firmware": "2.5.1",
   "hmi": "1.0.0",
-  "web": "1.1.26",
+  "web": "1.1.27",
   "web_storage_schema": 10,
   "attiny_protocol": 4,
   "esp32_core": "3.3.11",
