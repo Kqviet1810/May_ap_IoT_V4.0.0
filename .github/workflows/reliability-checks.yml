@@ -18,7 +18,7 @@ env:
 jobs:
   web:
     name: web
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -108,7 +108,7 @@ jobs:
 
   uplink:
     name: uplink
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -143,7 +143,7 @@ jobs:
 
   heater-path:
     name: heater-path
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -186,7 +186,7 @@ jobs:
 
   host:
     name: host
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -243,7 +243,7 @@ jobs:
     name: reliability
     if: always()
     needs: [web, uplink, heater-path, host]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: All reliability jobs must be green
         shell: bash
