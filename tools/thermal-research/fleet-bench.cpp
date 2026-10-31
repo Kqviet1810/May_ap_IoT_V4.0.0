@@ -20,16 +20,36 @@
 #include <string>
 #include <vector>
 using namespace thermalsim;
-struct Res { double reach = -1, peak = 0, minAfter = 99, maxAfter = 0, rec = 0, iae = 0, rmsPre = 0, tOver = 0, tOver10 = 0, settle2 = 0, fanStarts = 0, fanOnMin = 0, lowestHold = 100; };
-static Res run(const PlantParams &p, int scen) {
+struct Res { double highs = 0, reach = -1, peak = 0, minAfter = 99, maxAfter = 0, rec = 0, iae = 0, rmsPre = 0, tOver = 0, tOver10 = 0, settle2 = 0, fanStarts = 0, fanOnMin = 0, lowestHold = 100; };
+// A first run on a cold oven (31.4 degC): climb and 2.5 h of holding. What the controller then knows of the oven is what a stable run stores (thermal_learn.h).
+struct Learned { float kAir = 0, tau = 0, hold = 0; uint16_t pipe = 0; bool identified = false; };
+static Learned learnPass(const PlantParams &p) {
+  Plant pl(p, 31.4, 31.2); SensorChain ch(0.1); for (int i = 0; i < 8; ++i) ch.sample(pl.sensor());
+  thermalv3::Controller c; thermalv3::Input in; in.sp = 37.5f; in.dQ = 0.1f; in.capPct = 100; in.dtS = 0.1f; in.permit = true;
+  for (long i = 0; i < 9000L * 10; ++i) {
+    if (i % 20 == 0) ch.sample(pl.sensor());
+    in.pv = ch.value();
+    pl.step(std::min(100.0, (double)c.step(in).powerPct), false, false);
+  }
+  Learned l; l.kAir = c.kAir(); l.tau = c.tauTransit(); l.hold = c.pHold(); l.pipe = c.pipeLen(); l.identified = c.identified();
+  return l;
+}
+static Res run(const PlantParams &p0, int scen) {
+  PlantParams p = p0;
+  Learned stored; const bool newBatchStored = scen == 10;                  // 10: a NEW batch at START, with what an earlier stable run learned (AMBD = how much warmer the room is now)
+  if (newBatchStored) { stored = learnPass(p0); p.Tamb += getenv("AMBD") ? atof(getenv("AMBD")) : 0.0; }
   const double tEv = 9000, tEnd = (scen == 6 || scen == 7) ? 9000 + 9000 : 15000;
   const bool oldFan = getenv("FAN") && !strcmp(getenv("FAN"), "v250");
   VentLine vl; VentLine::Params vp; vp.stepC = 0.1f; double heaterAvg = 0.0; bool vlOn = false;
   const double tamb0 = p.Tamb; float lastU = 0.0f; bool fanPrev = false;
-  Plant pl(p, 31.4, 31.2); SensorChain ch(0.1); for (int i = 0; i < 8; ++i) ch.sample(pl.sensor());
+  const double startAir = getenv("START") ? atof(getenv("START")) : 31.4;   // START=35.5: the oven starts 2 degC under SP (a restart, a late start in a warm room)
+  Plant pl(p, startAir, startAir - 0.2); SensorChain ch(0.1); for (int i = 0; i < 8; ++i) ch.sample(pl.sensor());
   thermalv3::Controller c; thermalv3::Input in; in.sp = 37.5f; in.dQ = 0.1f; in.capPct = 100; in.dtS = 0.1f; in.permit = true;
+  if (newBatchStored && stored.identified && !getenv("NOSTORE")) { c.importOven(stored.kAir, stored.tau, stored.pipe); c.importHold(stored.hold, true); }
   bool vline = false, block = false; double aboveSince = -1, abovePv = 0, offT = 0, fastT = 0, notBefore = 0; std::vector<double> starts;
   struct Snap { float kAir = 0, tau = 0, hold = 0; uint16_t pipe = 0; bool have = false; } snap;
+  const float highAt = getenv("HIGHCUT") ? (float)atof(getenv("HIGHCUT")) : 0.0f;   // HIGHCUT=37.7: the High line of the field machine cuts the heater (permit lost, fans forced) until the reading is 0.15 lower and 4 min passed
+  bool hc = false; double hcT = 0;
   bool inserted = false, rebooted = false; Res r; double sqPre = 0; long nPre = 0, lastOut = -1, lastOut2 = -1; double overRun = 0;
   for (long i = 0; i < (long)(tEnd * 10); ++i) {
     double t = i * 0.1;
@@ -63,7 +83,8 @@ static Res run(const PlantParams &p, int scen) {
     fanPrev = vline;
     if (vline) r.fanOnMin += 0.1 / 60.0;
     if (getenv("NOBLOCK")) block = false; else if (!block && pv >= 37.8f) block = true; else if (block && pv <= 37.7f) block = false;
-    bool fan = vline || sched;
+    if (highAt > 0.0f) { if (!hc && pv >= highAt) { hc = true; hcT = t; r.highs += 1; } else if (hc && pv <= highAt - 0.15f && t - hcT >= 240.0) hc = false; }
+    bool fan = vline || sched || hc;
     bool door = (scen == 3 && t >= tEv && t < tEv + 180) || (scen == 4 && t >= tEv && t < tEv + 270);
     if (scen == 4 && !inserted && t >= tEv + 270) { pl.insertColdMass(1.1, 22.0); inserted = true; }
     if (scen == 8 && !snap.have && t >= tEv - 3600) { snap.kAir = c.kAir(); snap.tau = c.tauTransit(); snap.hold = c.pHold(); snap.pipe = c.pipeLen(); snap.have = true; }
@@ -74,9 +95,9 @@ static Res run(const PlantParams &p, int scen) {
       rebooted = true;
     }
     const bool paused = scen == 9 && t >= tEv && t < tEv + 120;                  // batch cancelled, started again at once: the controller is frozen, not reset
-    in.shadow = block; in.permit = !block && !paused;
+    in.shadow = block && !hc; in.permit = !block && !paused && !hc;
     if (scen == 6 && t >= tEv) pl.setAmbient(tamb0 + (getenv("AMB") ? atof(getenv("AMB")) : 7.0) * std::min(1.0, (t - tEv) / 7200.0));   // AMB=-5: the room cools instead
-    float u = 0; if (!down) { auto o = c.step(in); u = block ? 0.0f : o.powerPct; }
+    float u = 0; if (!down) { auto o = c.step(in); u = (block || hc) ? 0.0f : o.powerPct; }
     lastU = u;
     double extra = (scen == 2 && t >= tEv && t < tEv + 150) ? 12.0 : 0.0;
     pl.step(std::min(100.0, (double)u + extra), fan, door);
@@ -101,12 +122,14 @@ int main(int argc, char **argv) {
   std::vector<PlantParams> ov;
   for (auto p : family(11, 150, false)) { p.ventW = ventW; ov.push_back(p); }
   for (auto p : family(23, 60, true)) { p.ventW = ventW; ov.push_back(p); }
-  int scenMask = argc > 2 ? atoi(argv[2]) : 1023;
+  int scenMask = argc > 2 ? atoi(argv[2]) : 2047;
   const char *dk = getenv("DUMP"); size_t only = dk ? (size_t)atoi(dk) : 0;
-  for (size_t k = 0; k < ov.size(); ++k) for (int sc = 0; sc < 10; ++sc) {
+  const size_t stride = getenv("FLEET_STRIDE") ? (size_t)atoi(getenv("FLEET_STRIDE")) : 1;   // FLEET_STRIDE=4: every fourth oven (a quick look at both families)
+  for (size_t k = 0; k < ov.size(); ++k) for (int sc = 0; sc < 11; ++sc) {
     if (dk && k != only) continue;
+    if (k % stride != 0) continue;
     if (!(scenMask & (1 << sc))) continue;
     Res r = run(ov[k], sc);
-    std::printf("%zu,%d,%.0f,%.2f,%.2f,%.2f,%.1f,%.1f,%.3f,%.1f,%.0f,%.1f,%.1f,%.1f,%.1f,%.0f,%.1f\n", k, sc, r.reach, r.peak, r.minAfter, r.maxAfter, r.rec, r.iae, r.rmsPre, ov[k].UA * 9.5 / ov[k].Pmax * 100.0, ov[k].td, r.tOver, r.tOver10, r.settle2, r.fanOnMin, r.fanStarts, r.lowestHold);
+    std::printf("%zu,%d,%.0f,%.2f,%.2f,%.2f,%.1f,%.1f,%.3f,%.1f,%.0f,%.1f,%.1f,%.1f,%.1f,%.0f,%.1f,%.0f\n", k, sc, r.reach, r.peak, r.minAfter, r.maxAfter, r.rec, r.iae, r.rmsPre, ov[k].UA * 9.5 / ov[k].Pmax * 100.0, ov[k].td, r.tOver, r.tOver10, r.settle2, r.fanOnMin, r.fanStarts, r.lowestHold, r.highs);
   }
 }

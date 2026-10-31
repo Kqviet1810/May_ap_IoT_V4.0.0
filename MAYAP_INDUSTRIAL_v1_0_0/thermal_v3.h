@@ -58,6 +58,61 @@ constexpr float IDENT_MIN_ERR_C = 2.0f;       // the transit time is timed only 
 constexpr float IDENT_MAX_SLOPE = 0.002f;     // ... from a PV that is not moving [degC/s]
 constexpr uint16_t MOMENTUM_WINDOW_S = 40U;   // PV slope window of the momentum brake [s]
 constexpr float MOMENTUM_NOISE_STEPS = 1.5f;  // a slope below this many sensor steps over that window is quantisation, not momentum
+// 2.5.7: two rules against the overshoot of the restart after a protection cut the heater (the field log of 31/10: the High line at SV+0.2 over and over).
+// The switches exist only so that tools/thermal-research/fleet-bench.cpp can compare with and without (-DV3X_F1=0 -DV3X_F4=0); the machine runs both.
+#ifndef V3X_F1
+#define V3X_F1 1     // the heater is held off by a protection and the reading does not fall: the hold level fades (as it does under the vent-line hold)
+#endif
+#ifndef V3X_F4
+#define V3X_F4 1     // the controller drove the reading over SV by V3X_F4_OVER and a protection cut the heater: the hold level was too big, it keeps a share of itself
+#endif
+#ifndef V3X_F4_KEEP
+#define V3X_F4_KEEP 0.6f
+#endif
+#ifndef V3X_F4_OVER
+#define V3X_F4_OVER 0.15f
+#endif
+// 2.5.8: what the controller does with an oven nobody has measured depends on how far under SV it starts (e0): at SV a hold level of 0 (a falling reading is then
+// answered by a quick pump-up), next to SV a low one, a bit under SV a middle one; a cold start keeps the prior (the climb measures the oven).
+#ifndef V3X_START
+#define V3X_START 1
+#endif
+#ifndef V3X_START_H_AT
+#define V3X_START_H_AT 8.0f     // e0 <= 0.1 degC (0 and 5 were tried: a restart under a full tray then sags below the limit of tests/thermal-closed-loop.cpp)
+#endif
+#ifndef V3X_START_H_NEAR
+#define V3X_START_H_NEAR 8.0f   // 0.1 < e0 <= 1.0 degC
+#endif
+#ifndef V3X_START_H_MID
+#define V3X_START_H_MID 8.0f    // 1.0 < e0 <= 3.0 degC
+#endif
+#ifndef V3X_PROBE
+#define V3X_PROBE 1             // next to SV the hold level is FOUND: power rises by V3X_PROBE_STEP_PCT every max(V3X_PROBE_STEP_S, transit time) while the reading keeps falling
+#endif
+#ifndef V3X_PROBE_STEP_PCT
+#define V3X_PROBE_STEP_PCT 2.0f
+#endif
+#ifndef V3X_PROBE_STEP_S
+#define V3X_PROBE_STEP_S 120.0f
+#endif
+#ifndef V3X_PROBE_BAIL
+#define V3X_PROBE_BAIL 0.15f     // the reading fell this far under SV: this oven wants its heat (a loaded oven after a restart): back to the prior hold level, at once
+#endif
+#ifndef V3X_PROBE_QUIET
+#define V3X_PROBE_QUIET 2       // the probe ends when the reading did not fall over this many steps in a row
+#endif
+#ifndef V3X_RAMP
+#define V3X_RAMP 0              // in the first half hour after such a start a reading that stands under SV is answered sooner and faster
+#endif
+#ifndef V3X_RAMP_WAIT
+#define V3X_RAMP_WAIT 45.0f
+#endif
+#ifndef V3X_RAMP_RATE
+#define V3X_RAMP_RATE 0.05f
+#endif
+#ifndef V3X_HOLD0
+#define V3X_HOLD0 18.0f   // the hold level of an oven nobody has measured (the bench compares other values)
+#endif
 constexpr uint16_t HIST_LEN = 640U;           // seconds of history: transit time (<=220 s) + learning window + margin
 
 enum State : uint8_t {
@@ -111,7 +166,7 @@ class Controller {
     // gains and brakes sized for them are only slow on a slower oven, and the first climb replaces them with measurements anyway.
     kAir_ = 0.0004f;           // [degC/s per 100 % power]
     tauTransit_ = 150.0f;      // transport delay [seconds]
-    pHold_ = 18.0f;            // nominal hold power [%]
+    pHold_ = V3X_HOLD0;        // nominal hold power [%]
     integral_ = 0.0f;
     pvPredicted_ = 30.0f;
 
@@ -123,6 +178,10 @@ class Controller {
     histHead_ = 0U;
     histCount_ = 0U;
     slopeShort_ = 0.0f;
+    wasLive_ = false;
+    startDone_ = holdImported_ = startPhase_ = probing_ = false;
+    probeT_ = probePv_ = probeStart_ = 0.0f; probeQuiet_ = 0;
+    startS_ = 0.0f;
     dQ_ = 0.1f;
     liveS_ = 0.0f;
     calmS_ = 0.0f;
@@ -173,6 +232,19 @@ class Controller {
       out.state = state_;
       // The heater is not conducting: what was in flight drains out of the model and the history records the truth (zeros), so the
       // first command after the pause is not computed from the commands that came before it.
+      // The heater is held off by a protection (High, the Web, a lost permit) while the reading is valid: it is a measurement. The controller was in charge
+      // one cycle ago and the reading is over SV by 0.15 degC or more: its own hold level made that overshoot, and it keeps 60 % of itself (once per cut).
+      // Then, as under the vent-line hold, every 3 minutes of a reading that stays at/above SV - 0.05 and does not fall more than one sensor step says the
+      // oven loses little heat: the hold level fades (time constant 180 s). If the reading falls later the usual rules raise it again.
+      if (pvValid && spValid && capPct_ > 0.0f && !in.permit && !in.shadow) {
+#if V3X_F4
+        if (wasLive_ && in.pv >= in.sp + V3X_F4_OVER) pHold_ *= V3X_F4_KEEP;
+#endif
+#if V3X_F1
+        fadeWhileHeldOff(in.pv, in.sp, dt);
+#endif
+      }
+      wasLive_ = false;
       liveS_ = 0.0f;
       calmS_ = 0.0f;
       lastCmd_ = 0.0f;
@@ -186,8 +258,45 @@ class Controller {
       return out;
     }
 
+    wasLive_ = true;
     pv_ = in.pv;
     sp_ = in.sp;
+#if V3X_START
+    if (!startDone_) {
+      startDone_ = true;
+      if (!holdImported_) {
+        const float e0 = in.sp - in.pv;
+        const float h = e0 <= 0.1f ? V3X_START_H_AT : (e0 <= 1.0f ? V3X_START_H_NEAR : (e0 <= 3.0f ? V3X_START_H_MID : pHold_));
+        if (h != pHold_) { pHold_ = h; rebuildPipe(); }
+        startPhase_ = e0 <= 3.0f;
+        startS_ = 0.0f;
+#if V3X_PROBE
+        if (e0 <= 1.0f) { probing_ = true; probeT_ = 0.0f; probePv_ = probeStart_ = in.pv; probeQuiet_ = 0; }
+#endif
+      }
+    }
+    if (startPhase_) { startS_ += dt; if (startS_ > 1800.0f) startPhase_ = false; }
+#if V3X_PROBE
+    if (probing_) {
+      probeT_ += dt;
+      const float stepS = std::max(V3X_PROBE_STEP_S, tauTransit_);
+      if (in.pv < in.sp - V3X_PROBE_BAIL && in.pv < probeStart_ - V3X_PROBE_BAIL) {   // under SV AND fallen since the start
+        if (pHold_ < V3X_HOLD0) { pHold_ = V3X_HOLD0; rebuildPipe(); }
+        probing_ = false;
+      }
+      else if (in.pv >= in.sp + 0.1f || probeT_ > 1800.0f || in.shadow || doorDetected_) probing_ = false;
+      else if (probeT_ >= stepS) {
+        probeT_ = 0.0f;
+        if (in.pv < probePv_ - 0.04f || in.pv < in.sp - 0.15f) {        // still falling (or well under SV): the power asked for is not enough yet
+          if (in.pv < probePv_ - 0.04f || slopeShort_ <= 0.0f) { pHold_ = std::min(HOLD_MAX_PCT, pHold_ + V3X_PROBE_STEP_PCT); probeQuiet_ = 0; }
+          else ++probeQuiet_;
+        } else ++probeQuiet_;
+        probePv_ = in.pv;
+        if (probeQuiet_ >= V3X_PROBE_QUIET) probing_ = false;
+      }
+    }
+#endif
+#endif
 
     // -------------------------------------------------------------------------
     // 1. Sliding-Window Slope Estimation (10s to 25s window)
@@ -330,8 +439,13 @@ class Controller {
     // 37.3 degC for 20 minutes).
     if (!in.shadow && !doorDetected_ && errTrue >= std::max(0.08f, 0.95f * dQ) && std::fabs(filteredSlope_) < 0.0015f) {
       stuckTimer_ += dt;
-      if (stuckTimer_ > 120.0f) {
-        pHold_ = std::min(HOLD_MAX_PCT, pHold_ + 0.025f * dt);
+#if V3X_START && V3X_RAMP
+      const float stuckWait = startPhase_ ? V3X_RAMP_WAIT : 120.0f, stuckRate = startPhase_ ? V3X_RAMP_RATE : 0.025f;
+#else
+      const float stuckWait = 120.0f, stuckRate = 0.025f;
+#endif
+      if (stuckTimer_ > stuckWait) {
+        pHold_ = std::min(HOLD_MAX_PCT, pHold_ + stuckRate * dt);
       }
     } else if (!in.shadow) {
       stuckTimer_ = 0.0f;
@@ -438,6 +552,7 @@ class Controller {
   void importHold(float pHold, bool measured) {
     if (std::isfinite(pHold)) pHold_ = std::max(0.0f, std::min(HOLD_MAX_PCT, pHold));
     identified_ = measured;
+    holdImported_ = true;
     rebuildPipe();
   }
 
@@ -528,6 +643,16 @@ class Controller {
   }
 
   // Slope of the last MOMENTUM_WINDOW_S seconds of PV, once per second (least squares on the 1 Hz history): the momentum brake reads it.
+  void fadeWhileHeldOff(float pv, float sp, float dt) {
+    if (shadowS_ <= 0.0f) { shadowRefPv_ = pv; shadowRefS_ = 0.0f; shadowFade_ = false; }
+    shadowS_ += dt;
+    if (shadowS_ - shadowRefS_ >= 180.0f) {
+      shadowFade_ = pv >= sp - 0.5f * dQ_ && pv >= shadowRefPv_ - 1.01f * dQ_;
+      shadowRefPv_ = pv;
+      shadowRefS_ = shadowS_;
+    }
+    if (shadowFade_) pHold_ = std::max(0.0f, pHold_ - pHold_ * (dt / 180.0f));
+  }
   void updateMomentum() {
     if (histCount_ < MOMENTUM_WINDOW_S || liveS_ < static_cast<float>(MOMENTUM_WINDOW_S)) { slopeShort_ = 0.0f; return; }
     const float xm = 0.5f * static_cast<float>(MOMENTUM_WINDOW_S - 1U);
@@ -578,6 +703,12 @@ class Controller {
   uint8_t uHist_[HIST_LEN] = {}; // 1 Hz: the command that was physically sent [%]
   uint16_t histHead_ = 0U;
   uint16_t histCount_ = 0U;
+  bool probing_ = false;
+  float probeT_ = 0.0f, probePv_ = 0.0f, probeStart_ = 0.0f;
+  int probeQuiet_ = 0;
+  bool startDone_ = false, holdImported_ = false, startPhase_ = false;   // 2.5.8: the start rules ran / hold level came from a stored record / first half hour
+  float startS_ = 0.0f;
+  bool wasLive_ = false;         // the last cycle ran the control law (a permit lost now, with the reading over SV, is the controller's own overshoot)
   float slopeShort_ = 0.0f;      // [degC/s] least-squares slope of the last MOMENTUM_WINDOW_S seconds
   float dQ_ = 0.1f;              // sensor step of the last call [degC]
   float liveS_ = 0.0f;           // seconds the controller has been running without a pause

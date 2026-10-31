@@ -20,6 +20,7 @@ namespace thermalsim {
 struct PlantParams {
   double Pmax = 16000, Cf = 500000, Ce = 1900000, hA = 1300, UA = 250, td = 100, tl = 40;
   double Tamb = 28, ventW = 2500, tailFrac = 0, tailTau = 120, sensorLag = 0, doorW = 1500;
+  double Q0 = 0;   // heat that is always there (circulation fans, the room's radiation) [W]; 0 in every oven of the families
 };
 
 class Plant {
@@ -60,7 +61,7 @@ class Plant {
     const double doorLoss = door ? p_.doorW * (Ta_ - p_.Tamb) : 0.0;
     const double qEgg = p_.hA * (Ta_ - Te_);
     const double wall = p_.UA * (Ta_ - p_.Tamb);
-    Ta_ += (eff - wall - qEgg - ventLoss - doorLoss) / p_.Cf * DT;
+    Ta_ += (eff + p_.Q0 - wall - qEgg - ventLoss - doorLoss) / p_.Cf * DT;
     Te_ += qEgg / Ce_ * DT;
     sens_ += p_.sensorLag > 0.0 ? (Ta_ - sens_) * DT / p_.sensorLag : (Ta_ - sens_);
   }

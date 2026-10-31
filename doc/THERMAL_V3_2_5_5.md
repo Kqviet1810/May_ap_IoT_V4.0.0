@@ -1,6 +1,6 @@
 # Điều khiển nhiệt V3 — bản 2.5.5: máy nhớ những gì đã học, quạt hút là phương án cuối
 
-Bản 2.5.5 gồm ba phần: quạt hút và log chẩn đoán (`THERMAL_V3_2_5_1.md`), còi theo loại mã lỗi (`ALARM_SOUND_2_5_5.md`), và phần dưới đây. Tài liệu này mô tả phần còn lại: **lưu những gì bộ điều khiển nhiệt đã học qua lần khởi động lại** (mất điện, cập nhật OTA, treo máy).
+Bản 2.5.5 gồm ba phần: quạt hút và log chẩn đoán (`THERMAL_V3_2_5_1.md`), còi theo loại mã lỗi (`ALARM_SOUND_2_5_6.md`), và phần dưới đây. Tài liệu này mô tả phần còn lại: **lưu những gì bộ điều khiển nhiệt đã học qua lần khởi động lại** (mất điện, cập nhật OTA, treo máy).
 
 Luật điều khiển (`thermal_v3.h`) không đổi. Chỉ thêm ba hàm để nạp lại số đã học (`importOven`, `importHold`, `pipeLen`).
 
