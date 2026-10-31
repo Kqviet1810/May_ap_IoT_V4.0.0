@@ -5,6 +5,10 @@
 // One per log: the room temperature Tamb and the start offset of the mass.   Pmax is fixed (16 kW): only the ratios Pmax/Cf and UA/Cf can be known.
 // Build: g++ -O2 -std=c++17 tools/thermal-research/fit-oven.cpp -o /tmp/fit-oven
 // Run:   /tmp/fit-oven tests/fixtures/real-logs/mayap-20261031-afternoon.csv ...  (prints the fit; FIT_RESTARTS=n, FIT_ITERS=n)
+#ifndef HDR
+#define HDR "../../MAYAP_INDUSTRIAL_v1_0_0/thermal_v3.h"
+#endif
+#include HDR
 #include "../../tests/thermal-sim.h"
 #include <cstdio>
 #include <cstdlib>
@@ -94,18 +98,23 @@ static double toVal(size_t i, double u) { u = std::max(0.0, std::min(1.0, u)); r
 static void decode(const std::vector<double> &x, size_t nLogs, Fit::Shared &s, std::vector<Fit::PerLog> &pl) {
   s.Cf = toVal(0, x[0]); s.UA = toVal(1, x[1]); s.Ce = toVal(2, x[2]); s.hA = toVal(3, x[3]); s.td = toVal(4, x[4]); s.tl = toVal(5, x[5]); s.ventW = toVal(6, x[6]);
   s.tailFrac = toVal(7, x[7]); s.tailTau = toVal(8, x[8]); s.sensorLag = toVal(9, x[9]); s.Q0 = toVal(10, x[10]);
+  const double tref = toVal(11, x[11]);
   pl.resize(nLogs);
-  for (size_t k = 0; k < nLogs; ++k) { pl[k].Tamb = toVal(11, x[11 + 2 * k]); pl[k].d = toVal(12, x[12 + 2 * k]); }
+  for (size_t k = 0; k < nLogs; ++k) { pl[k].Tamb = std::min(37.0, tref + toVal(12, x[12 + 2 * k])); pl[k].d = toVal(13, x[13 + 2 * k]); }
 }
 static double total(const std::vector<double> &x, const std::vector<Log> &logs, double huber, std::vector<double> *per = nullptr) {
   Fit::Shared s; std::vector<Fit::PerLog> pl; decode(x, logs.size(), s, pl);
-  double c = 0, w = 0;
+  double c = 0, w = 0, pen = 0;
+  for (size_t k = 0; k < logs.size(); ++k) {
+    const double holdW = s.UA * (37.5 - pl[k].Tamb) - s.Q0;                // the heater power that holds 37.5 degC when everything has settled
+    if (holdW < 0.0) pen += (-holdW / 160.0) * 0.0004;                     // a room and a fan that would heat the oven past SV by themselves: not this oven
+  }
   for (size_t k = 0; k < logs.size(); ++k) {
     double n = 0; const double ck = simulate(s, pl[k], logs[k], nullptr, huber, &n);
     if (per) per->push_back(ck);
     c += ck * n; w += n;
   }
-  return w > 0 ? c / w : 1e9;
+  return w > 0 ? c / w + pen : 1e9;
 }
 
 int main(int argc, char **argv) {
@@ -115,13 +124,14 @@ int main(int argc, char **argv) {
   const int restarts = getenv("FIT_RESTARTS") ? atoi(getenv("FIT_RESTARTS")) : 10;
   const int iters = getenv("FIT_ITERS") ? atoi(getenv("FIT_ITERS")) : 3000;
   const double huber = 0.12;
-  B = {{2e5, 5e6, true}, {10, 600, true}, {3e5, 8e6, true}, {100, 4000, true}, {30, 250, false}, {5, 90, false}, {0, 4000, false}, {0, 0.6, false}, {60, 900, true}, {0, 120, false}, {0, 3000, false}, {20, 37.0, false}, {-6, 2, false}};
-  const size_t D = 11 + 2 * logs.size();
+  B = {{2e5, 5e6, true}, {10, 600, true}, {3e5, 8e6, true}, {100, 4000, true}, {30, 250, false}, {5, 90, false}, {0, 4000, false}, {0, 0.6, false}, {60, 900, true}, {0, 120, false}, {0, 1500, false}, {24, 36.0, false}, {-3, 3, false}, {-6, 2, false}};
+  const size_t D = 12 + 2 * logs.size();
   std::mt19937_64 rng(12345);
   std::normal_distribution<double> N(0, 1);
   std::uniform_real_distribution<double> U(0, 1);
   std::vector<double> best; double bestC = 1e9;
-  for (int r = 0; r < restarts; ++r) {
+  if (getenv("FIT_LOAD")) { std::ifstream lf(getenv("FIT_LOAD")); double v; while (lf >> v) best.push_back(v); if (best.size() == D) bestC = total(best, logs, huber); else { best.clear(); std::fprintf(stderr, "FIT_LOAD does not match the logs\n"); } }
+  for (int r = 0; r < (best.empty() ? restarts : 0); ++r) {
     std::vector<double> x(D); for (auto &v : x) v = U(rng);
     double c = total(x, logs, huber), sig = 0.25;
     for (int it = 0; it < iters; ++it) {
@@ -134,10 +144,11 @@ int main(int argc, char **argv) {
     if (c < bestC) { bestC = c; best = x; }
   }
   // polish
-  { std::vector<double> x = best; double c = bestC, sig = 0.02;
+  if (!getenv("FIT_LOAD")) { std::vector<double> x = best; double c = bestC, sig = 0.02;
     for (int it = 0; it < iters * 2; ++it) { std::vector<double> y = x; size_t j = (size_t)(U(rng) * D); y[j] = std::max(0.0, std::min(1.0, y[j] + sig * N(rng)));
       const double cy = total(y, logs, huber); if (cy < c) { c = cy; x = y; } else sig = std::max(0.001, sig * 0.998); }
     best = x; bestC = c; }
+  if (getenv("FIT_SAVE")) { std::ofstream sf(getenv("FIT_SAVE")); for (double v : best) sf << v << "\n"; }
   Fit::Shared s; std::vector<Fit::PerLog> pl; decode(best, logs.size(), s, pl);
   std::printf("shared: Cf=%.0f UA=%.1f Ce=%.0f hA=%.0f td=%.1f tl=%.1f ventW=%.0f tailFrac=%.2f tailTau=%.0f sensorLag=%.0f Q0=%.0f W (Pmax fixed 16000)   cost(huber)=%.5f\n", s.Cf, s.UA, s.Ce, s.hA, s.td, s.tl, s.ventW, s.tailFrac, s.tailTau, s.sensorLag, s.Q0, bestC);
   std::printf("K = %.2e degC/s per %% heater (air only)   tau_air = Cf/UA = %.0f s\n", 160.0 / s.Cf, s.Cf / s.UA);
@@ -147,6 +158,42 @@ int main(int argc, char **argv) {
     double ss = 0, mx = 0; for (double e : err) { ss += e * e; mx = std::max(mx, std::fabs(e)); }
     const double hold = (s.UA * (37.5 - pl[k].Tamb) - s.Q0) / 16000.0 * 100.0;
     std::printf("%-34s rows=%4zu  RMS %.3f degC  worst %.2f  Tamb %.1f  mass offset %+.1f  => hold at 37.5 = %.1f %%\n", logs[k].name.c_str(), err.size(), std::sqrt(ss / std::max<size_t>(1, err.size())), mx, pl[k].Tamb, pl[k].d, hold);
+  }
+    if (getenv("FIT_CLOSED")) {
+    // The check that counts: the controller of this build drives the fitted oven in closed loop from the start of each log, and its climb is compared
+    // with what the machine really did in that log (the logs of 31/10 afternoon were made by 2.5.5, the others by older builds: indicative).
+    std::printf("\nclosed loop (this build on the fitted oven) against the real log:\n");
+    std::printf("%-34s | real: reach  peak<=40min  in+-0.1 after 30min | sim: reach  peak<=40min  in+-0.1\n", "log");
+    for (size_t k = 0; k < logs.size(); ++k) {
+      const Log &L = logs[k];
+      auto metrics = [](const std::vector<double> &t, const std::vector<double> &pv, double &reach, double &peak, double &inband) {
+        reach = -1; peak = -9; inband = -1;
+        size_t ir = pv.size();
+        for (size_t i = 0; i < pv.size(); ++i) if (pv[i] >= 37.4) { ir = i; reach = t[i] / 60.0; break; }
+        if (ir == pv.size()) return;
+        double n = 0, ok = 0;
+        for (size_t i = ir; i < pv.size(); ++i) {
+          const double dtm = (t[i] - t[ir]) / 60.0;
+          if (dtm <= 40.0) peak = std::max(peak, pv[i] - 37.5);
+          if (dtm > 30.0) { ++n; if (std::fabs(pv[i] - 37.5) <= 0.1) ++ok; }
+        }
+        if (n > 0) inband = 100.0 * ok / n;
+      };
+      double r0, p0, b0; metrics(L.t, L.pv, r0, p0, b0);
+      PlantParams pp; pp.Pmax = 16000; pp.Cf = s.Cf; pp.Ce = s.Ce; pp.hA = s.hA; pp.UA = s.UA; pp.td = s.td; pp.tl = s.tl; pp.Tamb = pl[k].Tamb;
+      pp.ventW = s.ventW; pp.tailFrac = s.tailFrac; pp.tailTau = s.tailTau; pp.sensorLag = s.sensorLag; pp.Q0 = s.Q0;
+      Plant plant(pp, L.pv[0], L.pv[0] + pl[k].d); SensorChain ch(0.1); for (int i = 0; i < 8; ++i) ch.sample(plant.sensor());
+      thermalv3::Controller c; thermalv3::Input in; in.sp = 37.5f; in.dQ = 0.1f; in.capPct = 100; in.dtS = 0.1f; in.permit = true;
+      std::vector<double> ts, pvs; const double tEnd = L.t.back();
+      for (long i = 0; i < (long)(tEnd * 10); ++i) {
+        if (i % 20 == 0) ch.sample(plant.sensor());
+        in.pv = ch.value();
+        plant.step(std::min(100.0, (double)c.step(in).powerPct), false, false);
+        if (i % 100 == 0) { ts.push_back(i * 0.1); pvs.push_back(ch.value()); }
+      }
+      double r1, p1, b1; metrics(ts, pvs, r1, p1, b1);
+      std::printf("%-34s |       %5.1f  %+6.2f       %5.0f %%          |      %5.1f  %+6.2f   %5.0f %%\n", L.name.c_str(), r0, p0, b0, r1, p1, b1);
+    }
   }
   return 0;
 }
