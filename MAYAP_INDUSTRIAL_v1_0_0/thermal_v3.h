@@ -58,28 +58,13 @@ constexpr float IDENT_MIN_ERR_C = 2.0f;       // the transit time is timed only 
 constexpr float IDENT_MAX_SLOPE = 0.002f;     // ... from a PV that is not moving [degC/s]
 constexpr uint16_t MOMENTUM_WINDOW_S = 40U;   // PV slope window of the momentum brake [s]
 constexpr float MOMENTUM_NOISE_STEPS = 1.5f;  // a slope below this many sensor steps over that window is quantisation, not momentum
-// 2.5.7: the three rules against the overshoot of a first climb and of every restart after the heater was cut. They exist as switches only so that
-// tools/thermal-research/fleet-bench.cpp can compare them (-DV3X_F1=0 ...); the machine runs all three.
+// 2.5.7: two rules against the overshoot of the restart after a protection cut the heater (the field log of 31/10: the High line at SV+0.2 over and over).
+// The switches exist only so that tools/thermal-research/fleet-bench.cpp can compare with and without (-DV3X_F1=0 -DV3X_F4=0); the machine runs both.
 #ifndef V3X_F1
-#define V3X_F1 1     // the heater is held off by a protection and the reading does not fall: the hold level fades
-#endif
-#ifndef V3X_F2
-#define V3X_F2 0     // the reading stands over SV and is not falling: the hold level fades (OFF: it slowed the recovery after a door, tests/thermal-closed-loop.cpp test 1)
-#endif
-#ifndef V3X_F3
-#define V3X_F3 1     // a second momentum brake on a 2 min slope, which sees a slow rise that the 40 s slope cannot tell from sensor steps
-#endif
-#ifndef V3X_F2_STEPS
-#define V3X_F2_STEPS 1.0f
-#endif
-#ifndef V3X_F2_TAU
-#define V3X_F2_TAU 90.0f
-#endif
-#ifndef V3X_F2_DWELL
-#define V3X_F2_DWELL 60.0f   // ... for this long without a break
+#define V3X_F1 1     // the heater is held off by a protection and the reading does not fall: the hold level fades (as it does under the vent-line hold)
 #endif
 #ifndef V3X_F4
-#define V3X_F4 0     // the controller drove the reading 0.15 degC over SV and a protection cut the heater: the hold level was too big, it keeps a share of itself
+#define V3X_F4 1     // the controller drove the reading over SV by V3X_F4_OVER and a protection cut the heater: the hold level was too big, it keeps a share of itself
 #endif
 #ifndef V3X_F4_KEEP
 #define V3X_F4_KEEP 0.6f
@@ -87,19 +72,6 @@ constexpr float MOMENTUM_NOISE_STEPS = 1.5f;  // a slope below this many sensor 
 #ifndef V3X_F4_OVER
 #define V3X_F4_OVER 0.15f
 #endif
-#ifndef V3X_F3_GAIN
-#define V3X_F3_GAIN 0.5f
-#endif
-#ifndef V3X_F3_NEEDSHORT
-#define V3X_F3_NEEDSHORT 1
-#endif
-#ifndef V3X_F3_WIN
-#define V3X_F3_WIN 120U
-#endif
-#ifndef V3X_F3_FLOOR
-#define V3X_F3_FLOOR 1.3f
-#endif
-constexpr uint16_t LONG_WINDOW_S = V3X_F3_WIN;
 constexpr uint16_t HIST_LEN = 640U;           // seconds of history: transit time (<=220 s) + learning window + margin
 
 enum State : uint8_t {
@@ -165,8 +137,6 @@ class Controller {
     histHead_ = 0U;
     histCount_ = 0U;
     slopeShort_ = 0.0f;
-    slopeLong_ = 0.0f;
-    overS_ = 0.0f;
     wasLive_ = false;
     dQ_ = 0.1f;
     liveS_ = 0.0f;
@@ -218,15 +188,19 @@ class Controller {
       out.state = state_;
       // The heater is not conducting: what was in flight drains out of the model and the history records the truth (zeros), so the
       // first command after the pause is not computed from the commands that came before it.
-#if V3X_F4
+      // The heater is held off by a protection (High, the Web, a lost permit) while the reading is valid: it is a measurement. The controller was in charge
+      // one cycle ago and the reading is over SV by 0.15 degC or more: its own hold level made that overshoot, and it keeps 60 % of itself (once per cut).
+      // Then, as under the vent-line hold, every 3 minutes of a reading that stays at/above SV - 0.05 and does not fall more than one sensor step says the
+      // oven loses little heat: the hold level fades (time constant 180 s). If the reading falls later the usual rules raise it again.
       if (pvValid && spValid && capPct_ > 0.0f && !in.permit && !in.shadow) {
-        if (wasLive_ && in.pv >= in.sp + V3X_F4_OVER) pHold_ *= V3X_F4_KEEP;   // once, on the cycle the controller loses its permit
-      }
-      wasLive_ = false;
+#if V3X_F4
+        if (wasLive_ && in.pv >= in.sp + V3X_F4_OVER) pHold_ *= V3X_F4_KEEP;
 #endif
 #if V3X_F1
-      if (pvValid && spValid && capPct_ > 0.0f && !in.permit && !in.shadow) fadeWhileHeldOff(in.pv, in.sp, dt);   // the heater is held off by a protection (High, the Web ...)
+        fadeWhileHeldOff(in.pv, in.sp, dt);
 #endif
+      }
+      wasLive_ = false;
       liveS_ = 0.0f;
       calmS_ = 0.0f;
       lastCmd_ = 0.0f;
@@ -344,19 +318,7 @@ class Controller {
     // cut. It is measured, so it is right when the model is not (the load that held the hold level up has just gone: a door shut, a tray
     // taken out) and it is the same size as the model's lift when the model is right.
     const float errMomentum = deadZone(errTrue - std::max(0.0f, slopeShort_ - MOMENTUM_NOISE_STEPS * dQ_ / static_cast<float>(MOMENTUM_WINDOW_S)) * tauTransit_);
-#if V3X_F3
-#if V3X_F3_NEEDSHORT
-    const float slopeBrakeL = std::min(slopeLong_, std::max(0.0f, slopeShort_ + 0.001f));
-#else
-    const float slopeBrakeL = slopeLong_;
-#endif
-    const float errMomentumLong = deadZone(errTrue - V3X_F3_GAIN * std::max(0.0f, slopeBrakeL - V3X_F3_FLOOR * dQ_ / static_cast<float>(LONG_WINDOW_S)) * tauTransit_);
-    // Only over a stretch with no door, no vent-line hold and no fan: a rise after a fan stopped is the oven coming back, not heat on its way.
-    const bool calmWindow = calmS_ >= static_cast<float>(LONG_WINDOW_S);
-    const float errModel = std::min(deadZone(errPred), std::min(errMomentum, calmWindow ? errMomentumLong : errTrue));
-#else
     const float errModel = std::min(deadZone(errPred), errMomentum);
-#endif
     const float errCtl = wModel * errModel + (1.0f - wModel) * std::min(errMeas, errModel);
     const float pTerm = errCtl >= 0.0f ? kp * errCtl : KP_DOWN * errCtl;   // strong damping above SP against overshoot
 
@@ -403,17 +365,6 @@ class Controller {
     } else if (!in.shadow) {
       stuckTimer_ = 0.0f;
     }
-
-#if V3X_F2
-    // The reading stands over SV by V3X_F2_STEPS sensor steps and is not falling: the hold level is too big for this oven (a hot room, a warm load). It fades
-    // with a time constant, by the measured PV alone (no heater gain involved); a PV that then falls raises it again (Anti-Stuck, the balance).
-    if (!in.shadow && !doorDetected_ && errTrue <= -V3X_F2_STEPS * dQ && slopeShort_ > -0.0005f) {
-      overS_ += dt;
-      if (overS_ >= V3X_F2_DWELL) pHold_ = std::max(0.0f, pHold_ - pHold_ * (dt / V3X_F2_TAU));
-    } else {
-      overS_ = 0.0f;
-    }
-#endif
 
     // Raw commanded power
     float cmd = pHold_ + pTerm + integral_;
@@ -617,16 +568,6 @@ class Controller {
     if (shadowFade_) pHold_ = std::max(0.0f, pHold_ - pHold_ * (dt / 180.0f));
   }
   void updateMomentum() {
-    if (histCount_ >= LONG_WINDOW_S && liveS_ >= static_cast<float>(LONG_WINDOW_S)) {
-      const float xl = 0.5f * static_cast<float>(LONG_WINDOW_S - 1U);
-      const float refL = pvAge(0U);
-      float sxyL = 0.0f;
-      for (uint16_t i = 0U; i < LONG_WINDOW_S; ++i) sxyL += (static_cast<float>(i) - xl) * (pvAge(static_cast<uint16_t>(LONG_WINDOW_S - 1U - i)) - refL);
-      const float sxxL = static_cast<float>(LONG_WINDOW_S) * (static_cast<float>(LONG_WINDOW_S) * static_cast<float>(LONG_WINDOW_S) - 1.0f) / 12.0f;
-      slopeLong_ = sxyL / sxxL;
-    } else {
-      slopeLong_ = 0.0f;
-    }
     if (histCount_ < MOMENTUM_WINDOW_S || liveS_ < static_cast<float>(MOMENTUM_WINDOW_S)) { slopeShort_ = 0.0f; return; }
     const float xm = 0.5f * static_cast<float>(MOMENTUM_WINDOW_S - 1U);
     const float ref = pvAge(0U);
@@ -677,8 +618,6 @@ class Controller {
   uint16_t histHead_ = 0U;
   uint16_t histCount_ = 0U;
   bool wasLive_ = false;         // the last cycle ran the control law (a permit lost now, with the reading over SV, is the controller's own overshoot)
-  float overS_ = 0.0f;           // seconds the reading has stood over SV and not fallen (the hold level fades after V3X_F2_DWELL)
-  float slopeLong_ = 0.0f;       // [degC/s] least-squares slope of the last LONG_WINDOW_S seconds (the brake sees a slow rise through it)
   float slopeShort_ = 0.0f;      // [degC/s] least-squares slope of the last MOMENTUM_WINDOW_S seconds
   float dQ_ = 0.1f;              // sensor step of the last call [degC]
   float liveS_ = 0.0f;           // seconds the controller has been running without a pause

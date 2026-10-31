@@ -171,6 +171,11 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/alarm-sound.cpp -o /tmp/mayap-alarm-sound
           /tmp/mayap-alarm-sound
 
+      - name: "Overshoot after a protection cut the heater (thermal_v3.h): the hold level keeps 60 % of itself when the controller's own overshoot was cut, fades while the held-off reading does not fall, and is left alone when it falls"
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-overshoot.cpp -o /tmp/mayap-thermal-overshoot
+          /tmp/mayap-thermal-overshoot
+
       - name: "Thermal learning kept across a restart (thermal_learn.h): checksum and ranges refuse a damaged record, two stable hours before a write, the hold level only for the batch it belongs to, the controller takes it back"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-learn.cpp -o /tmp/mayap-thermal-learn
