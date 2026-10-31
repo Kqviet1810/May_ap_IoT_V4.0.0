@@ -17,6 +17,7 @@
 #include "tech_request.h"
 #include "thermal_v3_adapter.h"
 #include "heater_response_watch.h"
+#include "vent_line.h"
 #include "pid_log.h"
 #include <esp_system.h>
 #include <esp_timer.h>
@@ -5738,33 +5739,22 @@ class MachineController {
     }
     if (emergencyActive_) highTemperatureActive_ = true;
 
-    // The vent line (fan + heater hold) changes state only after the reading has stayed past the threshold for VENT_LINE_CONFIRM_MS and
-    // not within VENT_LINE_MIN_HOLD_MS of the last change: one quantum of the 0.1 degC sensor flickering over a threshold must not chatter
-    // the heater. The release compares with a small tolerance: the 3/8 filter ends one float step above the level it settles on
-    // (37.5 -> 37.5000038), which with off = SV never satisfied "<= off" until the raw reading dipped a whole quantum lower.
-    const bool ventOnPast = validSafety && safetyTemp >= config_.ventOnTemp;
-    const bool ventOffPast = validSafety && safetyTemp <= config_.ventOffTemp + VENT_LINE_EPS_C;
-    const bool ventOnConfirmed = ventOnTimer_.update(now, !ventTemperatureActive_ && ventOnPast, VENT_LINE_CONFIRM_MS);
-    const bool ventOffConfirmed = ventOffTimer_.update(now, ventTemperatureActive_ && ventOffPast, VENT_LINE_CONFIRM_MS);
-    const bool ventHoldOver = timeReached(now, ventLineNotBefore_);
-    if (!ventTemperatureActive_ && ventOnConfirmed && ventHoldOver) {
-      ventTemperatureActive_ = true; ventLineNotBefore_ = now + VENT_LINE_MIN_HOLD_MS; ventOnTimer_.reset();
-    } else if (ventTemperatureActive_ && ventOffConfirmed && ventHoldOver) {
-      ventTemperatureActive_ = false; ventLineNotBefore_ = now + VENT_LINE_MIN_HOLD_MS; ventOffTimer_.reset();
+    // The vent line (the exhaust fan of the overheat): see vent_line.h. It never cuts the heater.
+    {
+      VentLine::Params vp;
+      vp.confirmMs = VENT_LINE_CONFIRM_MS; vp.trendMs = VENT_LINE_TREND_MS; vp.minOnMs = VENT_LINE_MIN_ON_MS; vp.minOffMs = VENT_LINE_MIN_OFF_MS;
+      vp.maxStartsPerHour = VENT_LINE_MAX_STARTS_PER_HOUR; vp.epsC = VENT_LINE_EPS_C; vp.fallC = VENT_LINE_FALL_C; vp.fastC = VENT_LINE_FAST_C;
+      ventTemperatureActive_ = ventLine_.update(now, validSafety, safetyTemp, config_.ventOnTemp, config_.ventOffTemp, vp);
     }
-    if (!validSafety) { ventTemperatureActive_ = false; ventOnTimer_.reset(); ventOffTimer_.reset(); }
 
-    // Whenever the overheat exhaust fan is active (ventTemperatureActive_) OR the reading runs past the hard block ceiling,
-    // the heater is strictly blocked (0 % SSR + shadow mode) so the heater never fights the exhaust fan.
+    // The heater is blocked only when the reading runs well past SV (a safety margin, not a fan rule): it comes back 0.1 degC lower. "Well past"
+    // scales with the sensor step so a coarse 0.1 sensor and a fine 0.01 one are treated alike.
     {
       const float dQ = thermalV3SensorStepC();
       const float blockAt = std::max(config_.ventOnTemp, config_.targetTemp + std::max(VENT_HEATER_BLOCK_MIN_C, VENT_HEATER_BLOCK_STEPS * dQ));
       if (!validSafety) ventHeaterBlock_ = false;
-      else if (ventTemperatureActive_ || (!ventHeaterBlock_ && safetyTemp >= blockAt)) ventHeaterBlock_ = true;
-      else if (ventHeaterBlock_ && !ventTemperatureActive_ &&
-               safetyTemp <= std::min(config_.ventOffTemp + VENT_LINE_EPS_C, blockAt - VENT_HEATER_BLOCK_RELEASE_C)) {
-        ventHeaterBlock_ = false;
-      }
+      else if (!ventHeaterBlock_ && safetyTemp >= blockAt) ventHeaterBlock_ = true;
+      else if (ventHeaterBlock_ && safetyTemp <= blockAt - VENT_HEATER_BLOCK_RELEASE_C) ventHeaterBlock_ = false;
     }
 
     if ((!wasHigh && highTemperatureActive_) ||
@@ -8140,9 +8130,7 @@ class MachineController {
   ConditionTimer emergencyClearTimer_{};
   ConditionTimer humidityTimer_{};
   bool ventTemperatureActive_ = false;
-  ConditionTimer ventOnTimer_{};
-  ConditionTimer ventOffTimer_{};
-  uint32_t ventLineNotBefore_ = 0U;
+  VentLine ventLine_{};
   uint32_t lastWebVentCmdAt_ = 0U, lastWebCircCmdAt_ = 0U, lastWebHeaterCmdAt_ = 0U;   // spacing of repeated remote toggles (per kind)
   bool otaCheckpointDone_ = false;                   // the batch was checkpointed for the update that is downloading now
   bool ventHeaterBlock_ = false;                     // the heater is held off well above SV (see updateAlarms); the fan has its own line

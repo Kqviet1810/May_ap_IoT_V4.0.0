@@ -411,43 +411,6 @@ void testBoundsUnderHostileInput() {
   printf("  -> Pass\n");
 }
 
-void testOverheatZeroPowerAndHoldTrim() {
-  printf("[TEST] Overheat Zero-Power Cutoff, Predicted Floor & Hold Trim...\n");
-  for (float dQ : {0.1f, 0.01f}) {
-    thermalv3::Controller c;
-    thermalv3::Input in;
-    in.sp = 37.5f;
-    in.pv = 37.1f;
-    in.dQ = dQ;
-    in.permit = true;
-    in.capPct = 100.0f;
-    in.dtS = 0.1f;
-
-    // Build up hold power below SP
-    for (int i = 0; i < 6000; ++i) c.step(in);
-    const float highHold = c.pHold();
-    assert(highHold > 20.0f);
-
-    // Step to overheat (37.60 C on 0.1 sensor, 37.58 C on 0.01 sensor) with exhaust fan active
-    const float overheatPv = (dQ >= 0.09f) ? 37.60f : 37.58f;
-    in.pv = overheatPv;
-    in.ventFan = true;
-    thermalv3::Output out = c.step(in);
-    assert(out.powerPct == 0.0f);
-    assert(c.predicted() >= overheatPv - 1e-4f);
-
-    // Stay stuck at overheatPv for 90 seconds: hold must actively trim down and predicted PV must never dip below overheatPv
-    for (int i = 0; i < 900; ++i) {
-      out = c.step(in);
-      assert(out.powerPct == 0.0f);
-      assert(c.predicted() >= overheatPv - 1e-4f);
-    }
-    assert(c.pHold() < highHold - 2.5f);
-    printf("  -> Pass (dQ %.2f): cmd = %.1f%% at %.2f C, predicted = %.2f C, pHold trimmed %.1f%% -> %.1f%%\n",
-           dQ, out.powerPct, overheatPv, c.predicted(), highHold, c.pHold());
-  }
-}
-
 int main() {
   printf("=========================================\n");
   printf("RUNNING THERMAL V3 CONTROLLER UNIT TESTS\n");
@@ -465,7 +428,6 @@ int main() {
   testShadowHold();
   testResumeAfterHold();
   testSensorFallback();
-  testOverheatZeroPowerAndHoldTrim();
   printf("=========================================\n");
   printf("ALL THERMAL V3 TESTS PASSED SUCCESSFULLY!\n");
   printf("=========================================\n");

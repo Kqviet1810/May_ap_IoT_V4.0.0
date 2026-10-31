@@ -18,7 +18,7 @@ env:
 jobs:
   web:
     name: web
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -108,7 +108,7 @@ jobs:
 
   uplink:
     name: uplink
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -143,7 +143,7 @@ jobs:
 
   heater-path:
     name: heater-path
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -160,6 +160,11 @@ jobs:
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-v3.cpp -o /tmp/mayap-thermal-v3-test
           /tmp/mayap-thermal-v3-test
+
+      - name: "Vent line (vent_line.h): the exhaust fans start on a trend, rest and run for a minimum time, at most six starts an hour, never cut the heater"
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror tests/vent-line.cpp -o /tmp/mayap-vent-line
+          /tmp/mayap-vent-line
 
       - name: "E115 evidence (heater_response_watch.h): unit tests of the rule MachineController runs"
         run: |
@@ -181,7 +186,7 @@ jobs:
 
   host:
     name: host
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -238,7 +243,7 @@ jobs:
     name: reliability
     if: always()
     needs: [web, uplink, heater-path, host]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: All reliability jobs must be green
         shell: bash

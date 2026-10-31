@@ -21,7 +21,7 @@ jobs:
   release:
     name: Tao tag va phat hanh
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout main
         uses: actions/checkout@v7
