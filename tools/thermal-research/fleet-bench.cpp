@@ -106,8 +106,10 @@ int main(int argc, char **argv) {
   for (auto p : family(23, 60, true)) { p.ventW = ventW; ov.push_back(p); }
   int scenMask = argc > 2 ? atoi(argv[2]) : 1023;
   const char *dk = getenv("DUMP"); size_t only = dk ? (size_t)atoi(dk) : 0;
+  const size_t stride = getenv("FLEET_STRIDE") ? (size_t)atoi(getenv("FLEET_STRIDE")) : 1;   // FLEET_STRIDE=4: every fourth oven (a quick look at both families)
   for (size_t k = 0; k < ov.size(); ++k) for (int sc = 0; sc < 10; ++sc) {
     if (dk && k != only) continue;
+    if (k % stride != 0) continue;
     if (!(scenMask & (1 << sc))) continue;
     Res r = run(ov[k], sc);
     std::printf("%zu,%d,%.0f,%.2f,%.2f,%.2f,%.1f,%.1f,%.3f,%.1f,%.0f,%.1f,%.1f,%.1f,%.1f,%.0f,%.1f,%.0f\n", k, sc, r.reach, r.peak, r.minAfter, r.maxAfter, r.rec, r.iae, r.rmsPre, ov[k].UA * 9.5 / ov[k].Pmax * 100.0, ov[k].td, r.tOver, r.tOver10, r.settle2, r.fanOnMin, r.fanStarts, r.lowestHold, r.highs);
