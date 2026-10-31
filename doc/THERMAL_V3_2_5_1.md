@@ -1,5 +1,7 @@
 # Điều khiển nhiệt V3 — bản 2.5.1: quạt hút là phương án cuối, log có cột chẩn đoán
 
+> Các thay đổi trong tài liệu này được phát hành cùng bản **2.5.5** (số phiên bản cuối cùng; "2.5.1" là tên gọi trung gian trong lúc làm).
+
 Bản này không đổi luật điều khiển nhiệt (`thermal_v3.h` giữ nguyên như 2.5.0). Nó đổi **luật bật quạt hút khi quá nhiệt** và **thêm cột chẩn đoán vào log PID**, theo log chạy thật ngày 31/10 (lò không tải, chỉ khay trứng rỗng, 10:16–13:36 giờ Việt Nam, trưa nóng).
 
 ## 1. Điều đọc được từ log 31/10 (có thể kiểm lại bằng file CSV)

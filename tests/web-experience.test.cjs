@@ -157,7 +157,7 @@ test('PID log: chunks of the machine ring are assembled by index and saved as CS
   assert.equal(second.slice(17).join(''), '');
 });
 
-test('PID log: the diagnostics chunk (firmware 2.6.0) merges into the samples it belongs to, in either order', () => {
+test('PID log: the diagnostics chunk (firmware 2.5.5) merges into the samples it belongs to, in either order', () => {
   const h = browser();
   h.pidMon.log = new Map(); h.pidMon.series = []; h.pidMon.logHead = 0;
   // the diagnostics of samples 40 and 41 arrive first: no row yet (no temperature), nothing invented

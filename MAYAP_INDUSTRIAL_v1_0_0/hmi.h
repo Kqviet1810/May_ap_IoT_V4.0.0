@@ -1969,6 +1969,7 @@ BuzzerPattern buzzerCuePattern(BuzzerCue cue) {
     case BuzzerCue::Save:  return {10, 0, 1};      // Bip cuc ngan, khong gay on
     case BuzzerCue::Ok:    return {35, 50, 2};     // Hai bip nhe
     case BuzzerCue::Error: return {90, 90, 3};     // Van giu 3 bip ro rang de phan biet loi (an toan)
+    case BuzzerCue::Chime: return {110, 110, 3};   // Canh bao mem: ba bip ngan, khong keu lien tuc
     default:               return {0, 0, 0};
   }
 }
@@ -1992,7 +1993,7 @@ BuzzerPattern alarmPattern(uint32_t bit) {
 }
 
 uint32_t highestUnacknowledgedAlarm() {
-  const uint32_t pending = currentRuntime.alarmMask & ~buzzer.acknowledgedAlarmMask;
+  const uint32_t pending = currentRuntime.audibleAlarmMask & ~buzzer.acknowledgedAlarmMask;     // only what may make a noise NOW (alarm_sound.h)
   for (uint8_t i = 0; i < ALARM_PRIORITY_COUNT; ++i) {
     if (pending & ALARM_PRIORITY[i]) return ALARM_PRIORITY[i];
   }
@@ -2014,7 +2015,7 @@ void buzzerPlayCue(BuzzerCue cue) {
       currentRuntime.turnState == TurnState::Right) return;
   const BuzzerPattern pattern = buzzerCuePattern(cue);
   if (!pattern.pulses) return;
-  const bool mandatory = cue == BuzzerCue::Error;
+  const bool mandatory = cue == BuzzerCue::Error || cue == BuzzerCue::Chime;
   if (!currentConfig.alarmEnabled && !mandatory) return;
   buzzer.transientPattern = pattern;
   buzzer.transientPulsesLeft = pattern.pulses;
@@ -2091,7 +2092,13 @@ void buzzerUpdate(uint32_t now) {
     return;
   }
   // Bit da het loi tu dong mat ACK. Loi tai xuat hien se keu lai.
-  buzzer.acknowledgedAlarmMask &= currentRuntime.alarmMask;
+  buzzer.acknowledgedAlarmMask &= currentRuntime.audibleAlarmMask;
+  {   // the machine asks for three short beeps (a warning that appears, a thin reminder, the High line getting worse)
+    static bool chimeKnown = false;
+    static uint8_t lastChimeSeq = 0U;
+    if (!chimeKnown) { chimeKnown = true; lastChimeSeq = currentRuntime.chimeSeq; }
+    else if (currentRuntime.chimeSeq != lastChimeSeq) { lastChimeSeq = currentRuntime.chimeSeq; buzzerPlayCue(BuzzerCue::Chime); }
+  }
   if (!(buzzer.acknowledgedAlarmMask & AlarmTempHigh)) {
     buzzer.tempHighAckBestTemp = NAN;
     buzzer.tempHighAckLastSampleAt = 0;
@@ -5863,7 +5870,7 @@ void applyRuntime(MachineRuntime runtime) {
     wifiOfflineSinceAt = 0U;
     showToast("WIFI DA KET NOI LAI");
   }
-  buzzer.acknowledgedAlarmMask &= currentRuntime.alarmMask;
+  buzzer.acknowledgedAlarmMask &= currentRuntime.audibleAlarmMask;
   // Moi ma loi moi deu duoc keu lai, ke ca no dung chung AlarmBit voi mot loi
   // cu da duoc nguoi dung ACK truoc do.
   if (newFaultAlarmBit != AlarmNone) buzzerUnacknowledge(newFaultAlarmBit);

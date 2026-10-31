@@ -19,6 +19,7 @@
 #include "heater_response_watch.h"
 #include "vent_line.h"
 #include "thermal_learn.h"
+#include "alarm_sound.h"
 #include "pid_log.h"
 #include <esp_system.h>
 #include <esp_timer.h>
@@ -599,6 +600,30 @@ inline const FaultDescriptor &faultDescriptor(FaultCode code) {
   return unknown;
 }
 
+// What a fault may make: see alarm_sound.h. Siren (external siren + buzzer): the danger of the heat itself, and an output that does not obey.
+// Alert (HMI buzzer until ACK, or until the condition is gone): the faults that stop the heater. Chime (three short beeps, a thin reminder): warnings
+// that need someone but not now. Silent: shown on the HMI / Web / push, nothing more. High (E111) and Emergency (E112) have their own voices
+// (HighVoice, EmergencyVoice); E304 is the Siren class on its live condition.
+enum class FaultSound : uint8_t { Silent = 0, Chime = 1, Alert = 2, Siren = 3, Special = 4 };
+inline FaultSound faultSoundClass(FaultCode code) {
+  switch (code) {
+    case FaultCode::HighTemperature: case FaultCode::EmergencyTemperature: return FaultSound::Special;
+    case FaultCode::OutputConflict: return FaultSound::Siren;
+    case FaultCode::SensorLost: case FaultCode::SensorInvalid: case FaultCode::SensorSuspect: case FaultCode::SensorFrozen:
+    case FaultCode::HeaterNotHeating: case FaultCode::HeaterSwitchOffDuringBatch:
+    case FaultCode::StorageUnavailable: case FaultCode::AbnormalReset: case FaultCode::BatchStateClearPending: case FaultCode::SafetyJournalUnavailable:
+      return FaultSound::Alert;
+    case FaultCode::LowTemperature: case FaultCode::HumidityLow: case FaultCode::HumidityHigh:
+    case FaultCode::ResumeRequiresAuto: case FaultCode::AutoModeOffDuringBatch: case FaultCode::AutoTurningDisabledDuringBatch:
+    case FaultCode::ResumeConfirmationPending: case FaultCode::BatchOverdue: case FaultCode::ResumeRtcWaitTooLong: case FaultCode::BatchOverdueConfirmationPending:
+    case FaultCode::TurnLimitConflict: case FaultCode::TurnTimeout: case FaultCode::TurnLimitStuck: case FaultCode::TurnCommandConflict:
+    case FaultCode::TurnMechanicalCheckRequired: case FaultCode::SirenBatteryLow:
+      return FaultSound::Chime;
+    default:
+      return FaultSound::Silent;                  // diagnostics: TemperatureRateExceeded, TemperatureUnstable, StorageDegraded, RelayRateExceeded, RtcFailure,
+  }                                               // BatchLogUnavailable, Heap*, TemperatureTrendWarning, StorageRetryTrend, AttinyBusUnresponsive, AttinyStateUnsynced
+}
+
 struct FaultState {
   FaultCode code = FaultCode::None;
   bool condition = false;
@@ -691,6 +716,25 @@ class FaultManager {
     uint32_t mask = AlarmNone;
     for (uint8_t i = 0; i < count_; ++i) {
       if (states_[i].active) mask |= faultDescriptor(states_[i].code).alarmBit;
+    }
+    return mask;
+  }
+  // Noise follows the LIVE condition, not the stored record: a latched fault that is gone is silent at once (its record stays for ACK).
+  bool live(FaultCode code) const {
+    const FaultState *state = findConst(code);
+    return state && state->condition;
+  }
+  uint32_t liveAlarmBits(FaultSound cls) const {
+    uint32_t mask = AlarmNone;
+    for (uint8_t i = 0; i < count_; ++i) {
+      if (states_[i].condition && faultSoundClass(states_[i].code) == cls) mask |= faultDescriptor(states_[i].code).alarmBit;
+    }
+    return mask;
+  }
+  uint64_t liveCodeBits(FaultSound cls) const {            // one bit per fault slot (stable while the machine runs)
+    uint64_t mask = 0U;
+    for (uint8_t i = 0; i < count_ && i < 64U; ++i) {
+      if (states_[i].condition && faultSoundClass(states_[i].code) == cls) mask |= (1ULL << i);
     }
     return mask;
   }
@@ -3918,6 +3962,8 @@ class MachineController {
         static_cast<uint32_t>(config_.powerRestoreDelaySec) * 1000U;
     previousAutoMode_ = inputs_.state().autoMode;
     runtime_.alarmMask = faults_.alarmMask();
+    runtime_.audibleAlarmMask = audibleMask_;
+    runtime_.chimeSeq = chimeSeq_;
     runtime_.sensorStartupGrace = true;
     runtime_.resumeConfirmationRequired = resumeConfirmationRequired_;
     runtime_.powerLossRecovery = powerLossRecovery_;
@@ -3992,11 +4038,12 @@ class MachineController {
       OutputRequest startup{};
       mayapApplyStartupOutputPolicy(startup, false,
           emergencyActive_ || highTemperatureActive_,
-          emergencyActive_ && timeReached(now, sirenMutedUntil_));
+          sirenWanted_);
       outputs_.update(now, startup);
     }
     processOutputEvents(now);
     syncOutputFaults(now);
+    updateSoundPolicy(now);
     // ATtiny activity phai doc OUTPUT THUC TE cua chinh chu ky nay.
     updateAttinyLink(now);
     updateBatchTime(now);
@@ -4370,6 +4417,8 @@ class MachineController {
                 static_cast<int16_t>(std::min<uint16_t>(
                     outputs_.transitionsThisHour(), INT16_MAX)));
     runtime_.alarmMask = faults_.alarmMask();
+    runtime_.audibleAlarmMask = audibleMask_;
+    runtime_.chimeSeq = chimeSeq_;
   }
 
   void processNetworkState(uint32_t now) {
@@ -4660,12 +4709,11 @@ class MachineController {
           const bool emergencyAckBlocked = remoteAck && emergencyActive_;
           const bool hadTurnFault = turnFaultLatched_;
           const bool turnAckBlocked = remoteAck && hadTurnFault;
-          // F-06: ACK cung tam tat coi cho me qua han (khong bi han che
-          // remote/local nhu 2 truong hop tren - day khong phai su co can
-          // kiem tra vat ly, chi la mot quyet dinh van hanh).
-          if ((!emergencyAckBlocked && emergencyActive_) || batchOverdueSirenActive_) {
-            sirenMutedUntil_ = now + SIREN_TEMPORARY_MUTE_MS;
-          }
+          // The noise follows alarm_sound.h: ACK mutes the Emergency siren while the reading falls (it speaks again when it stands or rises), the
+          // output-conflict siren for a minute, and keeps the High line silent until it is gone. Not remote for the first two (they need a person at the machine).
+          if (!emergencyAckBlocked && emergencyActive_) emergencyVoice_.ack(now, safetyTempLast_);
+          if (!remoteAck && faults_.live(FaultCode::OutputConflict)) outputConflictMutedUntil_ = now + SIREN_TEMPORARY_MUTE_MS;
+          if (highTemperatureActive_) highVoice_.ack();
           const bool turnCleared = (hadTurnFault && !turnAckBlocked) ? clearTurnFault() : false;
           const bool systemAck = (command.alarmMask & AlarmSystem) != 0U;
           const bool resetCleared = systemAck && abnormalResetLatched_;
@@ -4688,7 +4736,6 @@ class MachineController {
                   : emergencyAckBlocked ? "COI KHAN CAP CAN ACK TAI MAY"
                   : turnAckBlocked ? "LOI DAO CAN ACK TAI MAY"
                   : emergencyActive_ ? sirenMuteMsg
-                  : batchOverdueSirenActive_ ? sirenMuteMsg
                   : resetCleared ? "DA XAC NHAN RESET LOI"
                   : turnCleared ? "DA XOA LOI DAO"
                   : hadTurnFault ? "THA NUT/KT HANH TRINH"
@@ -5214,6 +5261,25 @@ class MachineController {
           (static_cast<uint8_t>(std::min<uint32_t>(31U, learnTracker_.stableMs() / 240000UL)) << 3));
       MayapPidLog::ring().push(s);
     }
+  }
+
+  // ---- What may make a noise and when it stops (alarm_sound.h): the live condition decides, never the stored record ----
+  void updateSoundPolicy(uint32_t now) {
+    const alarmsound::EmergencyVoice::Params ep;
+    const alarmsound::HighVoice::Params hp;
+    const bool valid = std::isfinite(safetyTempLast_);
+    emergencyVoice_.update(now, valid, safetyTempLast_, config_.targetTemp, config_.emergencyTemp, emergencyActive_, ep);
+    highVoice_.update(now, valid, safetyTempLast_, highTemperatureActive_, hp);
+    const bool conflict = faults_.live(FaultCode::OutputConflict);
+    if (!conflict) outputConflictMutedUntil_ = 0U;
+    const bool conflictSiren = conflict && timeReached(now, outputConflictMutedUntil_);
+    sirenWanted_ = emergencyVoice_.siren(now, ep) || conflictSiren;
+    audibleMask_ = faults_.liveAlarmBits(FaultSound::Alert) | (conflictSiren ? AlarmSystem : AlarmNone) |
+                   (emergencyVoice_.audible() ? AlarmEmergency : AlarmNone);
+    bool chime = emergencyVoice_.consumeChime();
+    if (highVoice_.consumeAlert()) chime = true;
+    if (chimeReminder_.update(now, faults_.liveCodeBits(FaultSound::Chime), CHIME_REMIND_MS)) chime = true;
+    if (chime) ++chimeSeq_;
   }
 
   // ---- What the thermal controller learned about this oven, kept across a restart (thermal_learn.h) ----
@@ -5895,7 +5961,6 @@ class MachineController {
     // Sau cap khan cap contactor tong nhiet da bi nha, can khoa khoi dong lai co thoi han.
     if (wasEmergency && !emergencyActive_) {
       heatRestartNotBefore_ = now + HEAT_RESTART_LOCKOUT_MS;
-      sirenMutedUntil_ = 0;
     }
 
     // First climb of the batch: the oven is cold on purpose, so "temperature low" is the way, not a fault.
@@ -6099,6 +6164,8 @@ class MachineController {
     faults_.set(FaultCode::SafetyJournalUnavailable,
                 safetyJournalFaultLatched_, now);
     runtime_.alarmMask = faults_.alarmMask();
+    runtime_.audibleAlarmMask = audibleMask_;
+    runtime_.chimeSeq = chimeSeq_;
   }
 
   // ----------------------------- AUTO/MANUAL ---------------------------------
@@ -6718,8 +6785,7 @@ class MachineController {
     // F-06: coi cung reo cho me qua han chua xac nhan, dung chung co che
     // tam tat (sirenMutedUntil_) voi Nhiet do khan cap - AlarmAck se tu lam
     // moi lai dinh ky dung nhu duoc yeu cau ("keu dinh ky neu bi tat tam").
-    req.siren = ((emergencyActive_ || batchOverdueSirenActive_) &&
-                 timeReached(now, sirenMutedUntil_)) || webOverrideLive(webSirenUntil_, now);
+    req.siren = sirenWanted_ || webOverrideLive(webSirenUntil_, now);
 
     // Tao am chi hoat dong trong me, khi cam bien hop le. Hysteresis 2%%RH:
     // dang OFF thi chi bat khi <= SV-2; dang ON thi giu den khi dat SV.
@@ -7081,7 +7147,7 @@ class MachineController {
       attinyActivityOffSince_ = 0U;
     }
     const bool expectedActivity = attinyActivityDesired_;
-    const bool desiredSiren = emergencyActive_ && timeReached(now, sirenMutedUntil_);
+    const bool desiredSiren = sirenWanted_;
     attinyBatchSync_.expect(expectedBatch, now);
     attinyActivitySync_.expect(expectedActivity, now);
     const uint8_t batchCommand = expectedBatch ? ATTINY_MSG_BATCH_START : ATTINY_MSG_BATCH_END;
@@ -7558,6 +7624,8 @@ class MachineController {
     runtime_.eventSequence = eventLog_.sequence();
     runtime_.relayTransitionsHour = outputs_.transitionsThisHour();
     runtime_.alarmMask = faults_.alarmMask();
+    runtime_.audibleAlarmMask = audibleMask_;
+    runtime_.chimeSeq = chimeSeq_;
 
     if (turnFaultLatched_) runtime_.turnState = TurnState::Fault;
     else if (turnPhase_ == TurnPhase::MovingLeft) runtime_.turnState = TurnState::Left;
@@ -7816,8 +7884,8 @@ class MachineController {
                        ok ? "OK" : "FAIL", message ? message : "SAI LENH");
     } else if (cmd && !strcmp(cmd, "ACK")) {
       if (emergencyActive_) {
-        sirenMutedUntil_ = now + SIREN_TEMPORARY_MUTE_MS;
-        mayapSerialPrintf(false, "[SER] SIREN MUTE 5 MIN\n");
+        emergencyVoice_.ack(now, safetyTempLast_);
+        mayapSerialPrintf(false, "[SER] SIREN MUTE (until the reading stands or rises)\n");
       }
       if (abnormalResetLatched_) {
         abnormalResetLatched_ = false;
@@ -8265,6 +8333,12 @@ class MachineController {
   bool otaCheckpointDone_ = false;                   // the batch was checkpointed for the update that is downloading now
   bool ventHeaterBlock_ = false;                     // the heater is held off well above SV (see updateAlarms); the fan has its own line
   uint8_t ventReason_ = 0U;
+  alarmsound::EmergencyVoice emergencyVoice_{};
+  alarmsound::HighVoice highVoice_{};
+  alarmsound::Reminder chimeReminder_{};
+  bool sirenWanted_ = false;                        // the siren (external + ATtiny mirror) is wanted now
+  uint32_t audibleMask_ = AlarmNone, outputConflictMutedUntil_ = 0U;
+  uint8_t chimeSeq_ = 0U;
   thermallearn::StableTracker learnTracker_{};
   thermallearn::Snapshot learnSaved_{};
   bool learnSavedValid_ = false, learnHeaterFaultSeen_ = false;
@@ -8307,7 +8381,6 @@ class MachineController {
   uint8_t healthHeapSeriousStreak_ = 0U;
   float healthTempBaseline_ = NAN;
   uint32_t healthTempBaselineAt_ = 0U;
-  uint32_t sirenMutedUntil_ = 0;
   // Cong tac den (PIN_IN_LIGHT) van la nguon dieu khien mac dinh (xem
   // updateHeatingAndOutputs()); nut bat/tat den tren web CHI de lai 1 lenh
   // "ghi de" tam thoi - het hieu luc ngay khi cong tac vat ly thuc su doi

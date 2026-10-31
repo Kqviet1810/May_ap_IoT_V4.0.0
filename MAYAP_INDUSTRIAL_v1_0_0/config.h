@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.6.0";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.5.5";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -481,7 +481,8 @@ constexpr uint32_t TURN_BUZZER_PAUSE_MS = 1700UL;
 constexpr uint8_t COMMAND_QUEUE_SIZE = 4;
 constexpr uint8_t COMMAND_ACK_QUEUE_SIZE = 4;
 constexpr uint32_t EMERGENCY_RESOUND_MS = 60000UL;
-constexpr uint32_t CRITICAL_RESOUND_MS = 300000UL;
+constexpr uint32_t CRITICAL_RESOUND_MS = 900000UL;        // an Alert-class fault that is still there is repeated every 15 min after an ACK (it was 5)
+constexpr uint32_t CHIME_REMIND_MS = 1800000UL;           // a Chime-class fault that lasts: three short beeps every 30 min, no ACK needed
 // "Coi thong minh" rieng cho AlarmTempHigh (xem buzzerUpdate() trong hmi.h):
 // sau khi ACK, kiem tra xu huong nhiet moi khoang nay - neu nhiet giam it
 // nhat TEMP_HIGH_SMART_MUTE_EPSILON_C so voi lan kiem truoc thi coi la "dang
@@ -490,6 +491,8 @@ constexpr uint32_t CRITICAL_RESOUND_MS = 300000UL;
 // thuong (~0.02-0.03C) nhung du nho de nhan ra xu huong that trong 20s.
 constexpr uint32_t TEMP_HIGH_SMART_MUTE_SAMPLE_MS = 20000UL;
 constexpr float TEMP_HIGH_SMART_MUTE_EPSILON_C = 0.05f;
+// The noise of the over-temperature lines is decoupled from their thresholds (alarm_sound.h): the siren for the Emergency line stands at
+// max(line, SV + 0.8) or after 3 min over the line or a rise of 0.3; the High line gives three beeps and speaks again only when it gets worse.
 // AUTO bi tat giua me: chi bao sau 2 phut, sau ACK neu van OFF thi keu lai 10 phut/lan.
 constexpr uint32_t AUTO_LOST_ALARM_DELAY_MS = 120000UL;
 constexpr uint32_t AUTO_LOST_RESOUND_MS = 600000UL;
@@ -1261,6 +1264,8 @@ struct MachineRuntime {
   uint16_t turnCountToday = 0;
   uint32_t turnCountBatch = 0;
   uint32_t alarmMask = AlarmNone;
+  uint32_t audibleAlarmMask = AlarmNone;   // the bits of alarmMask that may make a noise NOW (live condition of an Alert / Siren class fault); alarmMask is what is shown
+  uint8_t chimeSeq = 0U;                   // +1 for every chime the machine asks the HMI buzzer for (three short beeps)
   MachineStateCode stateCode = MachineStateCode::Boot;
   uint16_t primaryFaultCode = 0;
   uint8_t activeFaultCount = 0;
@@ -1364,7 +1369,7 @@ struct HmiCommand {
   uint32_t alarmMask = AlarmNone;
   HmiCommandSource source = HmiCommandSource::Local;
 };
-enum class BuzzerCue : uint8_t { None, Key, Save, Ok, Error };
+enum class BuzzerCue : uint8_t { None, Key, Save, Ok, Error, Chime };
 
 // HMI "Thiet bi ket noi": the accounts linked to this machine (Cloud). Display names and roles only - never e-mail or account ids.
 // The ref is an opaque handle the Worker understands; the owner cannot be removed.

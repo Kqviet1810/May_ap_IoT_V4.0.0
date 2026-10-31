@@ -3440,7 +3440,7 @@
         pidMon.log.set(idx, { ...pidMon.log.get(idx), pv: lg.d[i] / 100, sp: lg.d[i + 1] / 100, pred: lg.d[i + 2] / 100, req: lg.d[i + 3] / 2, act: lg.d[i + 4] / 2, fl: lg.d[i + 5], st: lg.d[i + 6] });
       }
     }
-    // The diagnostics of the same samples (firmware 2.6.0 and later; an older machine never sends them): 8 numbers per sample, own start index.
+    // The diagnostics of the same samples (firmware 2.5.5 and later; an older machine never sends them): 8 numbers per sample, own start index.
     if (hasDiag) {
       const first = Number(lg.xs);
       for (let i = 0; i + 7 < lg.x.length; i += 8) {
