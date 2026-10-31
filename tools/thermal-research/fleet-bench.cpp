@@ -26,7 +26,8 @@ static Res run(const PlantParams &p, int scen) {
   const bool oldFan = getenv("FAN") && !strcmp(getenv("FAN"), "v250");
   VentLine vl; VentLine::Params vp; vp.stepC = 0.1f; double heaterAvg = 0.0; bool vlOn = false;
   const double tamb0 = p.Tamb; float lastU = 0.0f; bool fanPrev = false;
-  Plant pl(p, 31.4, 31.2); SensorChain ch(0.1); for (int i = 0; i < 8; ++i) ch.sample(pl.sensor());
+  const double startAir = getenv("START") ? atof(getenv("START")) : 31.4;   // START=35.5: the oven starts 2 degC under SP (a restart, a late start in a warm room)
+  Plant pl(p, startAir, startAir - 0.2); SensorChain ch(0.1); for (int i = 0; i < 8; ++i) ch.sample(pl.sensor());
   thermalv3::Controller c; thermalv3::Input in; in.sp = 37.5f; in.dQ = 0.1f; in.capPct = 100; in.dtS = 0.1f; in.permit = true;
   bool vline = false, block = false; double aboveSince = -1, abovePv = 0, offT = 0, fastT = 0, notBefore = 0; std::vector<double> starts;
   struct Snap { float kAir = 0, tau = 0, hold = 0; uint16_t pipe = 0; bool have = false; } snap;
