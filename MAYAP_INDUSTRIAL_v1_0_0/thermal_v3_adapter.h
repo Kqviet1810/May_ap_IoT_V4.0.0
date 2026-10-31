@@ -11,10 +11,17 @@
 struct ThermalV3SlotIn {
   uint32_t nowMs = 0;                 // Control-task clock
   float pv = NAN, sp = NAN;           // Control temperature (offset applied) and target [degC]
+  bool newSample = false;             // A new accepted sensor sample arrived since last call
   bool permit = false;                // Production decided SSR may conduct (all protections green)
   bool shadow = false;                // Permit is false only because vent line blocks heater
   float capPct = 0.0f;                // Configured heater power ceiling [%]
+  float headroomC = 0.0f;             // Headroom from target to High line
+  float alarmHeadroomC = 0.0f;        // Headroom from target to Emergency line
+  float deliveredPct = 0.0f;          // Actual energy delivered in previous cycle [%]
+  float e115Frac = 0.0f;              // E115 heater stuck evidence fraction
   float dQ = 0.1f;                    // Sensor resolution step [degC]
+  bool ventFan = false;               // Exhaust fan is running
+  float ventOnInS = 1.0e6f, ventOffInS = 1.0e6f;
   float dtOverrideS = NAN;            // Host rigs only
 };
 
@@ -46,10 +53,18 @@ class ThermalV3Slot {
     i.pv = in.pv;
     i.sp = in.sp;
     i.dQ = in.dQ;
+    i.headroomC = in.headroomC;
+    i.alarmHeadroomC = in.alarmHeadroomC;
     i.capPct = in.capPct;
+    i.deliveredPct = in.deliveredPct;
+    i.e115Frac = in.e115Frac;
     i.dtS = dt;
+    i.newSample = in.newSample;
     i.permit = in.permit;
     i.shadow = in.shadow;
+    i.ventFan = in.ventFan;
+    i.ventOnInS = in.ventOnInS;
+    i.ventOffInS = in.ventOffInS;
 
     last_ = ctl_.step(i);
     held_ = clampOut(last_.powerPct, in.capPct);

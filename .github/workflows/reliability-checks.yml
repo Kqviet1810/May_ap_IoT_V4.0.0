@@ -161,6 +161,11 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-v3.cpp -o /tmp/mayap-thermal-v3-test
           /tmp/mayap-thermal-v3-test
 
+      - name: "Vent line (vent_line.h): the exhaust fans start on a trend, rest and run for a minimum time, at most six starts an hour, never cut the heater"
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror tests/vent-line.cpp -o /tmp/mayap-vent-line
+          /tmp/mayap-vent-line
+
       - name: "E115 evidence (heater_response_watch.h): unit tests of the rule MachineController runs"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/heater-response-watch.cpp -o /tmp/mayap-heater-response-watch

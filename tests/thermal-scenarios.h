@@ -50,10 +50,6 @@ class LegacyHeaterWatch {
   float start_ = NAN;
 };
 
-// The controller of 2.3.4 takes the exhaust fan as an input, the one of 2.5.0 does not (the fans of this machine are too small to be counted on).
-template <class I> auto setVentFan(I &i, bool v, int) -> decltype(i.ventFan = v, void()) { i.ventFan = v; }
-template <class I> void setVentFan(I &, bool, long) {}
-
 // One oven, one controller, one E115 watch, advancing in 0.1 s steps like the control task.
 template <class Ctl, class In, class Watch>
 class RigT {
@@ -106,7 +102,7 @@ class RigT {
     if (tick_ % 20 == 0) chain.sample(plant.sensor());
     in.pv = chain.value();
     in.permit = !tripped_ && t_ >= startS_;
-    setVentFan(in, vent, 0);
+    in.ventFan = vent;
     const auto o = ctl.step(in);
     const double u = tripped_ ? 0.0 : o.powerPct;
     lastU_ = u;
