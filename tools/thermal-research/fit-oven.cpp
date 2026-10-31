@@ -35,7 +35,7 @@ static bool loadLog(const std::string &path, Log &L) {
 // The plant of thermal-sim.h at a coarser step (0.5 s) for the search; verified afterwards with the real class at 0.1 s.
 struct Fit {
   double Pmax = 16000;
-  struct Shared { double Cf, UA, Ce, hA, td, tl, ventW, tailFrac, tailTau, sensorLag; } s;
+  struct Shared { double Cf, UA, Ce, hA, td, tl, ventW, tailFrac, tailTau, sensorLag, Q0; } s;
   struct PerLog { double Tamb, d; };
 };
 static const double DTF = 0.5;
@@ -60,7 +60,7 @@ static double simulate(const Fit::Shared &s, const Fit::PerLog &pl, const Log &L
     vent += ((fan ? 1.0 : 0.0) - vent) * DTF / 8.0;
     const double ventLoss = (s.ventW / 12.5) * vent * (Ta - pl.Tamb);
     const double qEgg = s.hA * (Ta - Te);
-    Ta += (eff - s.UA * (Ta - pl.Tamb) - qEgg - ventLoss) / s.Cf * DTF;
+    Ta += (eff + s.Q0 - s.UA * (Ta - pl.Tamb) - qEgg - ventLoss) / s.Cf * DTF;
     Te += qEgg / s.Ce * DTF;
     sensT += DTF;
     sens += s.sensorLag > 0.5 ? (Ta - sens) * DTF / s.sensorLag : (Ta - sens);
@@ -93,9 +93,9 @@ static std::vector<Bounds> B;
 static double toVal(size_t i, double u) { u = std::max(0.0, std::min(1.0, u)); return B[i].logScale ? std::exp(std::log(B[i].lo) + u * (std::log(B[i].hi) - std::log(B[i].lo))) : B[i].lo + u * (B[i].hi - B[i].lo); }
 static void decode(const std::vector<double> &x, size_t nLogs, Fit::Shared &s, std::vector<Fit::PerLog> &pl) {
   s.Cf = toVal(0, x[0]); s.UA = toVal(1, x[1]); s.Ce = toVal(2, x[2]); s.hA = toVal(3, x[3]); s.td = toVal(4, x[4]); s.tl = toVal(5, x[5]); s.ventW = toVal(6, x[6]);
-  s.tailFrac = toVal(7, x[7]); s.tailTau = toVal(8, x[8]); s.sensorLag = toVal(9, x[9]);
+  s.tailFrac = toVal(7, x[7]); s.tailTau = toVal(8, x[8]); s.sensorLag = toVal(9, x[9]); s.Q0 = toVal(10, x[10]);
   pl.resize(nLogs);
-  for (size_t k = 0; k < nLogs; ++k) { pl[k].Tamb = toVal(10, x[10 + 2 * k]); pl[k].d = toVal(11, x[11 + 2 * k]); }
+  for (size_t k = 0; k < nLogs; ++k) { pl[k].Tamb = toVal(11, x[11 + 2 * k]); pl[k].d = toVal(12, x[12 + 2 * k]); }
 }
 static double total(const std::vector<double> &x, const std::vector<Log> &logs, double huber, std::vector<double> *per = nullptr) {
   Fit::Shared s; std::vector<Fit::PerLog> pl; decode(x, logs.size(), s, pl);
@@ -115,8 +115,8 @@ int main(int argc, char **argv) {
   const int restarts = getenv("FIT_RESTARTS") ? atoi(getenv("FIT_RESTARTS")) : 10;
   const int iters = getenv("FIT_ITERS") ? atoi(getenv("FIT_ITERS")) : 3000;
   const double huber = 0.12;
-  B = {{2e5, 5e6, true}, {10, 600, true}, {3e5, 8e6, true}, {100, 4000, true}, {30, 250, false}, {5, 90, false}, {0, 4000, false}, {0, 0.6, false}, {60, 900, true}, {0, 120, false}, {15, 37.3, false}, {-6, 2, false}};
-  const size_t D = 10 + 2 * logs.size();
+  B = {{2e5, 5e6, true}, {10, 600, true}, {3e5, 8e6, true}, {100, 4000, true}, {30, 250, false}, {5, 90, false}, {0, 4000, false}, {0, 0.6, false}, {60, 900, true}, {0, 120, false}, {0, 3000, false}, {20, 37.0, false}, {-6, 2, false}};
+  const size_t D = 11 + 2 * logs.size();
   std::mt19937_64 rng(12345);
   std::normal_distribution<double> N(0, 1);
   std::uniform_real_distribution<double> U(0, 1);
@@ -139,12 +139,13 @@ int main(int argc, char **argv) {
       const double cy = total(y, logs, huber); if (cy < c) { c = cy; x = y; } else sig = std::max(0.001, sig * 0.998); }
     best = x; bestC = c; }
   Fit::Shared s; std::vector<Fit::PerLog> pl; decode(best, logs.size(), s, pl);
-  std::printf("shared: Cf=%.0f UA=%.1f Ce=%.0f hA=%.0f td=%.1f tl=%.1f ventW=%.0f tailFrac=%.2f tailTau=%.0f sensorLag=%.0f (Pmax fixed 16000)   cost(huber)=%.5f\n", s.Cf, s.UA, s.Ce, s.hA, s.td, s.tl, s.ventW, s.tailFrac, s.tailTau, s.sensorLag, bestC);
+  std::printf("shared: Cf=%.0f UA=%.1f Ce=%.0f hA=%.0f td=%.1f tl=%.1f ventW=%.0f tailFrac=%.2f tailTau=%.0f sensorLag=%.0f Q0=%.0f W (Pmax fixed 16000)   cost(huber)=%.5f\n", s.Cf, s.UA, s.Ce, s.hA, s.td, s.tl, s.ventW, s.tailFrac, s.tailTau, s.sensorLag, s.Q0, bestC);
   std::printf("K = %.2e degC/s per %% heater (air only)   tau_air = Cf/UA = %.0f s\n", 160.0 / s.Cf, s.Cf / s.UA);
   for (size_t k = 0; k < logs.size(); ++k) {
     std::vector<double> err; double n = 0; simulate(s, pl[k], logs[k], &err, huber, &n);
+    if (getenv("FIT_DUMP")) { std::printf("  residual (sim - log) every 5 min:"); for (size_t i = 0; i < err.size(); i += 30) std::printf(" %+.2f", err[i]); std::printf("\n"); }
     double ss = 0, mx = 0; for (double e : err) { ss += e * e; mx = std::max(mx, std::fabs(e)); }
-    const double hold = s.UA * (37.5 - pl[k].Tamb) / 16000.0 * 100.0;
+    const double hold = (s.UA * (37.5 - pl[k].Tamb) - s.Q0) / 16000.0 * 100.0;
     std::printf("%-34s rows=%4zu  RMS %.3f degC  worst %.2f  Tamb %.1f  mass offset %+.1f  => hold at 37.5 = %.1f %%\n", logs[k].name.c_str(), err.size(), std::sqrt(ss / std::max<size_t>(1, err.size())), mx, pl[k].Tamb, pl[k].d, hold);
   }
   return 0;
