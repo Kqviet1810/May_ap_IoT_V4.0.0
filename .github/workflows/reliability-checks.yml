@@ -171,7 +171,7 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/alarm-sound.cpp -o /tmp/mayap-alarm-sound
           /tmp/mayap-alarm-sound
 
-      - name: "Overshoot after a protection cut the heater (thermal_v3.h): the hold level keeps 60 % of itself when the controller's own overshoot was cut, fades while the held-off reading does not fall, and is left alone when it falls"
+      - name: "Overshoot after a protection cut the heater (thermal_v3.h): the hold level keeps 60 % of itself when the controller's own overshoot was cut, fades while the held-off reading does not fall, and is left alone when it falls; an unmeasured oven starts by its distance to SV and the probe ends when the reading falls"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-overshoot.cpp -o /tmp/mayap-thermal-overshoot
           /tmp/mayap-thermal-overshoot
