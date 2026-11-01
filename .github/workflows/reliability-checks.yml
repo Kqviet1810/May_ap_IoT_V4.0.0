@@ -181,6 +181,11 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-learn.cpp -o /tmp/mayap-thermal-learn
           /tmp/mayap-thermal-learn
 
+      - name: "Thermal controller 2.7.0 additions: the day-profile fan is measured and paid for one transit time ahead, Anti-Stuck waits out the delay of the oven"
+        run: |
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-fan.cpp -o /tmp/mayap-thermal-fan
+          /tmp/mayap-thermal-fan
+
       - name: "Fine temperature from a 0.1 degC sensor (sensor_fine.h): sliding least-squares value and slope, follows a fall, restarts after a gap, bounded on hostile input"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/sensor-fine.cpp -o /tmp/mayap-sensor-fine

@@ -20,6 +20,7 @@ struct ThermalV3SlotIn {
   float deliveredPct = 0.0f;          // Actual energy delivered in previous cycle [%]
   float e115Frac = 0.0f;              // E115 heater stuck evidence fraction
   float dQ = 0.1f;                    // Sensor resolution step [degC]
+  float slopeFine = NAN;              // Slope of PV from sensor_fine.h [degC/s] (NaN: not available)
   bool ventFan = false;               // Exhaust fan is running
   float ventOnInS = 1.0e6f, ventOffInS = 1.0e6f;
   float dtOverrideS = NAN;            // Host rigs only
@@ -53,6 +54,7 @@ class ThermalV3Slot {
     i.pv = in.pv;
     i.sp = in.sp;
     i.dQ = in.dQ;
+    i.slopeFine = in.slopeFine;
     i.headroomC = in.headroomC;
     i.alarmHeadroomC = in.alarmHeadroomC;
     i.capPct = in.capPct;
