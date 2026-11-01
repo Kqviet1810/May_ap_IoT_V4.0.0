@@ -15,10 +15,6 @@ struct ThermalV3SlotIn {
   bool permit = false;                // Production decided SSR may conduct (all protections green)
   bool shadow = false;                // Permit is false only because vent line blocks heater
   float capPct = 0.0f;                // Configured heater power ceiling [%]
-  float headroomC = 0.0f;             // Headroom from target to High line
-  float alarmHeadroomC = 0.0f;        // Headroom from target to Emergency line
-  float deliveredPct = 0.0f;          // Actual energy delivered in previous cycle [%]
-  float e115Frac = 0.0f;              // E115 heater stuck evidence fraction
   float dQ = 0.1f;                    // Sensor resolution step [degC]
   bool ventFan = false;               // Exhaust fan is running
   float ventOnInS = 1.0e6f, ventOffInS = 1.0e6f;
@@ -53,11 +49,7 @@ class ThermalV3Slot {
     i.pv = in.pv;
     i.sp = in.sp;
     i.dQ = in.dQ;
-    i.headroomC = in.headroomC;
-    i.alarmHeadroomC = in.alarmHeadroomC;
     i.capPct = in.capPct;
-    i.deliveredPct = in.deliveredPct;
-    i.e115Frac = in.e115Frac;
     i.dtS = dt;
     i.newSample = in.newSample;
     i.permit = in.permit;

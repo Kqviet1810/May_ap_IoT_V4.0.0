@@ -2,15 +2,17 @@
 // What the thermal controller learned about THIS oven, kept across a restart. Pure C++ (no Arduino types): MachineController keeps the bytes in the
 // internal NVS and tests/thermal-learn.cpp drives this very code.
 //
-// Only a state that proved itself is kept: the snapshot is written after the oven has stood within +-0.2 degC of SV for two hours with no door,
-// no heater-response suspicion, no High / Emergency line and a hold level that has stopped moving (StableTracker), then again only after two more
-// stable hours if the hold level moved by more than 1.5 %. At most one write every two hours, so the flash is touched a handful of times a day.
+// Only a state that proved itself is kept: the snapshot is written after the oven has stood within +-0.2 degC of SV for half an hour with no door,
+// no High / Emergency line, no heater fault and a load that has stopped moving (StableTracker), then again only after half an hour more of it if
+// the load moved by more than 2 %. At most one write every half hour (about forty a day at the very most, in practice a few: the load of an oven
+// moves slowly), so the flash is touched rarely.
 //
 // What comes back at the next start, and why:
 //   heater gain, transit time, horizon   properties of the oven; they only start the next first climb, which measures them again.
 //                                        Rejected when the heater cap (maxHeaterPower) is not the one they were learned with.
-//   hold level                           a property of the load and the room: it is applied only when the batch that is resumed is the very batch
-//                                        the snapshot belongs to (same start time), because a hold level learned on day 18 is wrong on day 1.
+//   load                                 what holds the oven at SV, a property of the load and the room: it is applied only when the batch that is
+//                                        resumed is the very batch the snapshot belongs to (same start time), because a load learned on day 18 is
+//                                        wrong on day 1. It then has an hour on probation (MachineController): if it does not hold up it is thrown away.
 // A snapshot that fails its checksum, its version or any range is ignored as a whole: the controller then starts from its priors, as it always did.
 #include <cmath>
 #include <cstddef>
@@ -19,17 +21,17 @@
 namespace thermallearn {
 
 constexpr uint32_t MAGIC = 0x314C4854UL;      // "THL1"
-constexpr uint8_t VERSION = 1U;
+constexpr uint8_t VERSION = 2U;                // 2: pHold is the load of the 2.6.0 controller (an old record is refused whole)
 constexpr size_t BLOB_SIZE = 32U;
 
-// The ranges the controller itself accepts (thermal_v3.h: KAIR_MIN/MAX, TAU_MIN_S/MAX_S, HOLD_MAX_PCT, MAX_PIPE_LEN).
+// The ranges the controller itself accepts (thermal_v3.h: KAIR_MIN/MAX, TAU_MIN_S/MAX_S, 0..100 % of load).
 constexpr float KAIR_MIN = 5.0e-5f, KAIR_MAX = 7.5e-4f;
 constexpr float TAU_MIN = 90.0f, TAU_MAX = 220.0f;
-constexpr float HOLD_MAX = 85.0f;
+constexpr float HOLD_MAX = 100.0f;
 constexpr uint16_t PIPE_MIN = 15U, PIPE_MAX = 319U;
 
 struct Snapshot {
-  float pHold = 0.0f;          // learned hold level [%]
+  float pHold = 0.0f;          // learned load [%]
   float kAir = 0.0f;           // heater gain [degC/s per %]
   float tau = 0.0f;            // transit time [s]
   uint16_t pipeLen = 0U;       // prediction horizon [s]
@@ -116,11 +118,11 @@ inline bool holdUsable(const Snapshot &s, uint8_t capPct, uint32_t batchEpoch, f
 class StableTracker {
  public:
   struct Params {
-    uint32_t needMs = 7200000UL;          // two hours of stable running before the first snapshot, and between two snapshots
+    uint32_t needMs = 1800000UL;          // half an hour of stable running before the first snapshot, and between two snapshots
     float bandC = 0.2f;                   // |PV - SV| at most this
-    float spreadPct = 1.0f;               // the hold level moved by at most this in the last window ...
-    uint32_t windowMs = 1800000UL;        // ... 30 minutes
-    float resaveDeltaPct = 1.5f;          // a later snapshot only when the hold level is this far from the saved one
+    float spreadPct = 3.0f;               // the load moved by at most this in the last window ...
+    uint32_t windowMs = 900000UL;         // ... 15 minutes
+    float resaveDeltaPct = 2.0f;          // a later snapshot only when the load is this far from the saved one
     uint32_t retryMs = 600000UL;          // a write that failed is tried again after this
     uint32_t maxGapMs = 5000UL;           // a longer silence between two calls is a break
   };

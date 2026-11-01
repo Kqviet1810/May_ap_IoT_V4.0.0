@@ -1,5 +1,5 @@
 // Unit tests of what the thermal controller keeps across a restart (MAYAP_INDUSTRIAL_v1_0_0/thermal_learn.h) and of the way the controller takes it
-// back (thermal_v3.h importOven / importHold). Only a state that proved itself is stored; a damaged or foreign one is ignored as a whole.
+// back (thermal_v3.h importOven / importLoad). Only a state that proved itself is stored; a damaged or foreign one is ignored as a whole.
 #include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_learn.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_v3.h"
 #include <cassert>
@@ -68,51 +68,51 @@ int main() {
     assert(!holdUsable(s, 80U, 1793400000UL, 37.5f));           // another heater cap
     assert(!holdUsable(s, 100U, 1793400000UL, 38.8f));          // SV moved by more than a degree
   }
-  // 4. Two stable hours before the first write, not a second earlier; a write that is not confirmed is tried again after ten minutes.
+  // 4. Half an hour of stable running before the first write, not a second earlier; a write that is not confirmed is tried again after ten minutes.
   {
     StableTracker t; const StableTracker::Params p;
     const int at = run(t, p, 1000U, 9000, [](int, bool &ok, float &pv, float &sp, float &hold) { ok = true; pv = 37.52f; sp = 37.5f; hold = 12.0f; });
-    assert(at >= 7199 && at <= 7202);
+    assert(at >= 1799 && at <= 1802);
     // not confirmed: asks again after 10 minutes (the caller's write failed)
     int again = -1;
     for (int s = at + 1; s <= at + 900 && again < 0; ++s)
       if (t.update(1000U + static_cast<uint32_t>(s) * 1000UL, true, 37.5f, 37.5f, 12.0f, p)) again = s;
     assert(again >= at + 599 && again <= at + 602);
-    std::printf("stable 2 h: write at %d s, asked again at +%d s\n", at, again - at);
+    std::printf("stable 30 min: write at %d s, asked again at +%d s\n", at, again - at);
   }
-  // 5. After a confirmed write nothing more for two hours; then only when the hold level moved by more than 1.5 %.
+  // 5. After a confirmed write nothing more for half an hour; then only when the load moved by more than 2 %.
   {
     StableTracker t; const StableTracker::Params p;
     uint32_t now = 0U; int writes = 0; float hold = 12.0f;
     for (int s = 0; s < 6 * 3600; ++s) {
       now += 1000U;
-      if (s == 3 * 3600) hold = 14.0f;                             // 2 % up, once
+      if (s == 3 * 3600) hold = 14.5f;                             // 2.5 % up, once
       if (t.update(now, true, 37.5f, 37.5f, hold, p)) { ++writes; t.saved(hold); }
     }
-    assert(writes == 2);                                           // the first at 2 h, one more once 2 stable hours passed after the move
+    assert(writes == 2);                                           // the first at 30 min, one more once half an hour of the new load passed
   }
   // 6. Any break counts from zero: an alarm (ok = false), a reading away from SV, a silence longer than 5 s.
   {
     StableTracker t; const StableTracker::Params p;
-    const int a = run(t, p, 0U, 12000, [](int s, bool &ok, float &pv, float &sp, float &hold) { ok = s != 3600; pv = 37.5f; sp = 37.5f; hold = 12.0f; });
-    assert(a >= 3600 + 7199 && a <= 3600 + 7202 - 0);              // the stretch restarted at 3600 s
+    const int a = run(t, p, 0U, 12000, [](int s, bool &ok, float &pv, float &sp, float &hold) { ok = s != 900; pv = 37.5f; sp = 37.5f; hold = 12.0f; });
+    assert(a >= 900 + 1799 && a <= 900 + 1802);                    // the stretch restarted at 900 s
     StableTracker u;
-    const int b = run(u, p, 0U, 13000, [](int s, bool &ok, float &pv, float &sp, float &hold) { ok = true; pv = s == 5000 ? 37.75f : 37.5f; sp = 37.5f; hold = 12.0f; });
-    assert(b >= 5000 + 7199 && b <= 5000 + 7202);
+    const int b = run(u, p, 0U, 13000, [](int s, bool &ok, float &pv, float &sp, float &hold) { ok = true; pv = s == 900 ? 37.75f : 37.5f; sp = 37.5f; hold = 12.0f; });
+    assert(b >= 900 + 1799 && b <= 900 + 1802);
     StableTracker w; uint32_t now = 0U; int got = -1;
     for (int s = 0; s < 12000 && got < 0; ++s) {
-      now += (s == 4000) ? 20000U : 1000U;                         // the control loop stalled for 20 s
+      now += (s == 900) ? 20000U : 1000U;                         // the control loop stalled for 20 s
       if (w.update(now, true, 37.5f, 37.5f, 12.0f, p)) got = s;
     }
-    assert(got >= 4000 + 7199 - 25 && got <= 4000 + 7202);
+    assert(got >= 900 + 1799 - 25 && got <= 900 + 1802);
   }
-  // 7. A hold level that is still moving is not a state to keep (0.1 % a minute: 3 % in the last half hour).
+  // 7. A load that is still moving is not a state to keep (0.4 % a minute: 6 % in the last quarter of an hour).
   {
     StableTracker t; const StableTracker::Params p;
-    const int at = run(t, p, 0U, 4 * 3600, [](int s, bool &ok, float &pv, float &sp, float &hold) { ok = true; pv = 37.5f; sp = 37.5f; hold = 20.0f - 0.1f * static_cast<float>(s) / 60.0f; });
+    const int at = run(t, p, 0U, 4 * 3600, [](int s, bool &ok, float &pv, float &sp, float &hold) { ok = true; pv = 37.5f; sp = 37.5f; hold = 40.0f - 0.4f * static_cast<float>(s) / 60.0f; });
     assert(at < 0);
   }
-  // 8. A snapshot that was cleared (by hand, or after a heater fault) is written again after the next stable two hours.
+  // 8. A snapshot that was cleared (by hand, or after a heater fault) is written again after the next stable half hour.
   {
     StableTracker t; const StableTracker::Params p;
     uint32_t now = 0U; int writes = 0;
@@ -127,25 +127,27 @@ int main() {
   {
     StableTracker t; const StableTracker::Params p;
     const int at = run(t, p, 0xFFFFFFFFUL - 3600000UL, 9000, [](int, bool &ok, float &pv, float &sp, float &hold) { ok = true; pv = 37.5f; sp = 37.5f; hold = 12.0f; });
-    assert(at >= 7199 && at <= 7202);
+    assert(at >= 1799 && at <= 1802);
   }
-  // 10. The controller takes the oven constants as the start of the next climb (still unmeasured), and the hold level of a resumed batch as measured.
+  // 10. The controller takes the oven constants as the start of the next climb (still unmeasured), and the load of a resumed batch as measured.
   {
     thermalv3::Controller c;
     assert(!c.identified());
-    c.importOven(2.4e-4f, 142.0f, 191U);
+    c.importOven(2.4e-4f, 142.0f);
     assert(std::fabs(c.kAir() - 2.4e-4f) < 1e-9f && std::fabs(c.tauTransit() - 142.0f) < 1e-3f && !c.identified());
-    c.importOven(1.0f, 1000.0f, 5000U);                            // nonsense is clamped, never trusted
+    c.importOven(1.0f, 1000.0f);                                   // nonsense is clamped, never trusted
     assert(c.kAir() <= 7.5e-4f && c.tauTransit() <= 220.0f);
-    c.importOven(2.4e-4f, 142.0f, 191U);
-    c.importHold(11.5f, true);
-    assert(std::fabs(c.pHold() - 11.5f) < 1e-4f && c.identified());
+    c.importOven(2.4e-4f, 142.0f);
+    c.importLoad(11.5f, true);
+    assert(std::fabs(c.load() - 11.5f) < 1e-4f && c.identified());
     // and it runs from there: a restart next to SV with the restored numbers holds without a swing
     thermalv3::Input in; in.sp = 37.5f; in.pv = 37.5f; in.dQ = 0.1f; in.capPct = 100.0f; in.dtS = 0.1f; in.permit = true;
     float last = 0.0f;
     for (int i = 0; i < 6000; ++i) last = c.step(in).powerPct;     // 10 minutes at SV
-    assert(last > 8.0f && last < 15.0f);
-    std::printf("restored hold 11.5 %% at SV: %.1f %% after ten minutes\n", last);
+    assert(last > 10.0f && last < 13.0f);
+    std::printf("restored load 11.5 %% at SV: %.1f %% after ten minutes\n", last);
+    c.forgetLoad();
+    assert(c.load() == 0.0f);
   }
   std::printf("thermal-learn: OK\n");
   return 0;
