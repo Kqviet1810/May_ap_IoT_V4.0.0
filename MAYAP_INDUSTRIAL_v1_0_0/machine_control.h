@@ -5583,16 +5583,22 @@ class MachineController {
     }
     webHeaterOff_ = false;                                    // a heater switched off from the Web never carries over into a new batch
     {
-      // Reset transient batch hold/integral state for the new batch while preserving physical oven geometry if already known.
+      // Reset transient batch integral state for the new batch while preserving physical oven geometry and warm in-RAM hold if near SP.
       const thermalv3::Controller &prevV3 = thermalV3_.controller();
       const bool keepRamOven = prevV3.identified();
-      const float ramKAir = prevV3.kAir(), ramTau = prevV3.tauTransit();
+      const float ramKAir = prevV3.kAir(), ramTau = prevV3.tauTransit(), ramHold = prevV3.pHold();
       const uint16_t ramPipe = prevV3.pipeLen();
+      const bool keepWarmHold = sensorUsable_ && std::isfinite(temperature_) &&
+          std::fabs(config_.targetTemp - temperature_) <= 2.5f &&
+          std::isfinite(ramHold) && ramHold > 10.0f && ramHold <= 75.0f;
       thermalV3_.reset();
       if (learnSavedValid_) {
         thermalV3_.controller().importOven(learnSaved_.kAir, learnSaved_.tau, learnSaved_.pipeLen);
       } else if (keepRamOven) {
         thermalV3_.controller().importOven(ramKAir, ramTau, ramPipe);
+      }
+      if (keepWarmHold) {
+        thermalV3_.controller().importHold(ramHold, keepRamOven || learnSavedValid_);
       }
       learnTracker_.breakStreak();
     }
