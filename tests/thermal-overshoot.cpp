@@ -100,14 +100,18 @@ int main() {
     assert(std::fabs(k.pHold() - 14.0f) < 0.3f);
     std::printf("start by distance: %.0f / %.0f / %.0f / %.0f %%\n", want[0], want[1], want[2], want[3]);
   }
-  // 8. The probe next to SV: a reading that falls 0.15 degC under SV after the start puts HOLD_COLD_INIT_PCT back at once.
+  // 8. The probe next to SV: a reading that falls 0.15 degC under SV after the start puts HOLD_COLD_INIT_PCT back at once,
+  //    and if the reading keeps falling under a heavy unlearned load (e.g. cold eggs at 37.50 C restart), it continues stepping pHold up
+  //    instead of freezing at 18 % for 9 minutes.
   {
     Controller c; Input in = base(37.5f); c.step(in);
     const float low = c.pHold();
     assert(low < HOLD_COLD_INIT_PCT);
     for (int i = 0; i < 300 && c.pHold() < HOLD_COLD_INIT_PCT - 0.1f; ++i) { in.pv = 37.5f - 0.003f * static_cast<float>(i); for (int k = 0; k < 10; ++k) c.step(in); }
     assert(c.pHold() >= HOLD_COLD_INIT_PCT - 0.1f);
-    std::printf("probe next to SV: hold %.1f -> %.1f %% once the reading fell\n", low, c.pHold());
+    for (int i = 60; i < 360; ++i) { in.pv = 37.5f - 0.003f * static_cast<float>(i); for (int k = 0; k < 10; ++k) c.step(in); }
+    assert(c.pHold() >= 28.0f);
+    std::printf("probe next to SV: hold %.1f -> %.1f %% as reading kept falling under load\n", low, c.pHold());
   }
   std::printf("thermal-overshoot: OK\n");
   return 0;

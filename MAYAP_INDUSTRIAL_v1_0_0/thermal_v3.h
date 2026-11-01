@@ -241,15 +241,26 @@ class Controller {
         if (pHold_ < 18.0f) {
           pHold_ = 18.0f;
           rebuildPipe();
+          probeT_ = 0.0f;
+          probePv_ = pv_;
+          probeStart_ = pv_;
+        } else if (probeT_ >= 0.45f * stepS && slopeShort_ <= -0.00025f && filteredSlope_ <= -0.00025f) {
+          const float dropC = std::max(0.0f, probeStart_ - pv_);
+          const float lift = std::min(8.5f, 4.0f + 12.0f * dropC);
+          pHold_ = std::min(42.0f, pHold_ + lift);
+          probeT_ = 0.0f;
+          probePv_ = pv_;
+          probeStart_ = pv_;
         }
-        probing_ = false;
       } else if (pv_ >= sp_ + 0.10f || probeT_ > 1800.0f || in.shadow || doorDetected_) {
         probing_ = false;
       } else if (probeT_ >= stepS) {
         probeT_ = 0.0f;
         if (pv_ < probePv_ - 0.04f || pv_ < sp_ - 0.15f) {
           if (pv_ < probePv_ - 0.04f || slopeShort_ <= 0.0f || (pv_ < sp_ - 0.35f && slopeShort_ < 0.0008f)) {
-            pHold_ = std::min(HOLD_MAX_PCT, pHold_ + 4.0f);
+            const float dropC = std::max(0.0f, probePv_ - pv_);
+            const float lift = std::min(10.0f, 4.0f + 10.0f * dropC);
+            pHold_ = std::min(HOLD_MAX_PCT, pHold_ + lift);
             probeQuiet_ = 0U;
           } else {
             ++probeQuiet_;
