@@ -14,6 +14,7 @@
 #include HDR
 #include "../../MAYAP_INDUSTRIAL_v1_0_0/vent_line.h"
 #include "../../tests/thermal-sim.h"
+#include "../../MAYAP_INDUSTRIAL_v1_0_0/sensor_fine.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -31,7 +32,7 @@ static Learned learnPass(const PlantParams &p) {
     in.pv = ch.value();
     pl.step(std::min(100.0, (double)c.step(in).powerPct), false, false);
   }
-  Learned l; l.kAir = c.kAir(); l.tau = c.tauTransit(); l.hold = c.load(); l.pipe = 0; l.identified = c.identified();
+  Learned l; l.kAir = c.kAir(); l.tau = c.tauTransit(); l.hold = c.pHold(); l.pipe = c.pipeLen(); l.identified = c.identified();
   return l;
 }
 static Res run(const PlantParams &p0, int scen) {
@@ -45,16 +46,29 @@ static Res run(const PlantParams &p0, int scen) {
   const double startAir = getenv("START") ? atof(getenv("START")) : 31.4;   // START=35.5: the oven starts 2 degC under SP (a restart, a late start in a warm room)
   Plant pl(p, startAir, startAir - 0.2); SensorChain ch(0.1); for (int i = 0; i < 8; ++i) ch.sample(pl.sensor());
   thermalv3::Controller c; thermalv3::Input in; in.sp = 37.5f; in.dQ = 0.1f; in.capPct = 100; in.dtS = 0.1f; in.permit = true;
-  if (newBatchStored && stored.identified && !getenv("NOSTORE")) { c.importOven(stored.kAir, stored.tau); c.importLoad(stored.hold, true); }
+  if (newBatchStored && stored.identified && !getenv("NOSTORE")) { c.importOven(stored.kAir, stored.tau, stored.pipe); c.importHold(stored.hold, true); }
   bool vline = false, block = false; double aboveSince = -1, abovePv = 0, offT = 0, fastT = 0, notBefore = 0; std::vector<double> starts;
   struct Snap { float kAir = 0, tau = 0, hold = 0; uint16_t pipe = 0; bool have = false; } snap;
   const float highAt = getenv("HIGHCUT") ? (float)atof(getenv("HIGHCUT")) : 0.0f;   // HIGHCUT=37.7: the High line of the field machine cuts the heater (permit lost, fans forced) until the reading is 0.15 lower and 4 min passed
   bool hc = false; double hcT = 0;
+  // FINE=1: the controller reads the fine value of sensor_fine.h (0.1 degC readings every FINE_DT s, default 1) with step FINE_DQ (default 0.03) instead of
+  // the median + IIR value; the fan line, the protections and every measure below keep reading the unchanged chain, so the two runs are comparable.
+  const bool fine = getenv("FINE") != nullptr; const double fineDt = getenv("FINE_DT") ? atof(getenv("FINE_DT")) : 1.0;
+  const float fineDq = getenv("FINE_DQ") ? (float)atof(getenv("FINE_DQ")) : 0.03f;
+  sensorfine::Estimator fe; fe.reset(); sensorfine::Params fp; double fineAt = 0.0; const long finePer = std::max(1L, (long)(fineDt * 10.0 + 0.5));
+  const bool truth = getenv("TRUTH") != nullptr;
   bool inserted = false, rebooted = false; Res r; double sqPre = 0; long nPre = 0, lastOut = -1, lastOut2 = -1; double overRun = 0;
   for (long i = 0; i < (long)(tEnd * 10); ++i) {
     double t = i * 0.1;
     if (i % 20 == 0) ch.sample(pl.sensor());
-    float pv = ch.value(); in.pv = pv;
+    float pv = ch.value();
+    if (fine) {
+      if (i % finePer == 0) { fe.update((float)(std::lround(pl.sensor() * 10.0) / 10.0), (float)t, 0.1f, fp); fineAt = t; }
+      if (getenv("FINE")[0] == '2') {   // FINE=2: the controller keeps the reading it was tuned on and gets the fine value and slope next to it
+        in.pv = pv;
+        if (fe.ready()) { in.pvFine = fe.valueAt((float)(t - fineAt)); in.slopeFine = fe.slopePerS(); } else { in.pvFine = NAN; in.slopeFine = NAN; }
+      } else { in.pv = fe.ready() ? fe.valueAt((float)(t - fineAt)) : pv; in.dQ = fineDq; }
+    } else in.pv = pv;
     // the day profile of the exhaust fans (scheduled fan of situation 1; the heavy profile of situation 7): is it running, and when does it start
     bool sched = false; double profIn = NAN;
     if (scen == 1 && t > 8400) { double ph = fmod(t, 1200.0); sched = ph < 180.0; profIn = sched ? 0.0 : 1200.0 - ph; }
@@ -79,7 +93,7 @@ static Res run(const PlantParams &p0, int scen) {
       if (nowOn && !vlOn && !sched) r.fanStarts += 1;                       // a contactor operation: the fans were stopped
       vlOn = nowOn; vline = nowOn;
     }
-    if (getenv("FANLOG") && vline != fanPrev) { std::printf("   t=%6.0f s  fan %s  pv=%.2f u=%.1f hold=%.1f why=%d sched=%d\n", t, vline ? "ON " : "off", pv, lastU, c.load(), (int)vl.why(), sched ? 1 : 0); }
+    if (getenv("FANLOG") && vline != fanPrev) { std::printf("   t=%6.0f s  fan %s  pv=%.2f u=%.1f hold=%.1f why=%d sched=%d\n", t, vline ? "ON " : "off", pv, lastU, c.pHold(), (int)vl.why(), sched ? 1 : 0); }
     fanPrev = vline;
     if (vline) r.fanOnMin += 0.1 / 60.0;
     if (getenv("NOBLOCK")) block = false; else if (!block && pv >= 37.8f) block = true; else if (block && pv <= 37.7f) block = false;
@@ -87,11 +101,11 @@ static Res run(const PlantParams &p0, int scen) {
     bool fan = vline || sched || hc;
     bool door = (scen == 3 && t >= tEv && t < tEv + 180) || (scen == 4 && t >= tEv && t < tEv + 270);
     if (scen == 4 && !inserted && t >= tEv + 270) { pl.insertColdMass(1.1, 22.0); inserted = true; }
-    if (scen == 8 && !snap.have && t >= tEv - 3600) { snap.kAir = c.kAir(); snap.tau = c.tauTransit(); snap.hold = c.load(); snap.pipe = 0; snap.have = true; }
+    if (scen == 8 && !snap.have && t >= tEv - 3600) { snap.kAir = c.kAir(); snap.tau = c.tauTransit(); snap.hold = c.pHold(); snap.pipe = c.pipeLen(); snap.have = true; }
     bool down = ((scen == 5 || scen == 8) && t >= tEv && t < tEv + 45);
     if ((scen == 5 || scen == 8) && !rebooted && t >= tEv + 45) {
       c.reset();
-      if (scen == 8 && snap.have) { c.importOven(snap.kAir, snap.tau); c.importLoad(snap.hold, true); }   // what the last stable run stored
+      if (scen == 8 && snap.have) { c.importOven(snap.kAir, snap.tau, snap.pipe); c.importHold(snap.hold, true); }   // what the last stable run stored
       rebooted = true;
     }
     const bool paused = scen == 9 && t >= tEv && t < tEv + 120;                  // batch cancelled, started again at once: the controller is frozen, not reset
@@ -101,17 +115,18 @@ static Res run(const PlantParams &p0, int scen) {
     lastU = u;
     double extra = (scen == 2 && t >= tEv && t < tEv + 150) ? 12.0 : 0.0;
     pl.step(std::min(100.0, (double)u + extra), fan, door);
-    if (getenv("DUMP") && i % 300 == 0 && t >= 0 && t <= 12000) std::printf("t=%6.0f pv=%.2f u=%5.1f hold=%5.1f int=%+.2f pred=%.2f fan=%d cut=%d blk=%d\n", t, pv, u, c.load(), c.fanBump(), c.predicted(), vline ? 1 : 0, 0, block ? 1 : 0);
-    if (r.reach < 0 && pv >= 37.4f) r.reach = t;
-    if (t < tEv && pv > r.peak) r.peak = pv;
-    if (t >= tEv - 1800 && t < tEv) { double e = pv - 37.5; sqPre += e * e; ++nPre; }
-    if (t < tEv && std::fabs(pv - 37.5) > 0.205) lastOut2 = t;
+    if (getenv("DUMP") && i % 300 == 0 && t >= 0 && t <= 12000) std::printf("t=%6.0f pv=%.2f u=%5.1f hold=%5.1f int=%+.2f pred=%.2f fan=%d cut=%d blk=%d\n", t, pv, u, c.pHold(), c.integral(), c.predicted(), vline ? 1 : 0, 0, block ? 1 : 0);
+    const float pvm = truth ? (float)pl.sensor() : pv;   // TRUTH=1: every measure below reads the real temperature of the oven, not the reading
+    if (r.reach < 0 && pvm >= 37.4f) r.reach = t;
+    if (t < tEv && pvm > r.peak) r.peak = pvm;
+    if (t >= tEv - 1800 && t < tEv) { double e = pvm - 37.5; sqPre += e * e; ++nPre; }
+    if (t < tEv && std::fabs(pvm - 37.5) > 0.205) lastOut2 = t;
     if (t >= tEv) {
-      r.minAfter = std::min(r.minAfter, (double)pv); r.maxAfter = std::max(r.maxAfter, (double)pv);
-      r.iae += std::fabs(pv - 37.5) * 0.1 / 60.0;
-      if (std::fabs(pv - 37.5) > 0.105) lastOut = t;
-      if (pv >= 37.595f) { r.tOver += 0.1 / 60.0; overRun += 0.1 / 60.0; r.tOver10 = std::max(r.tOver10, overRun); } else overRun = 0;
-      r.lowestHold = std::min(r.lowestHold, (double)c.load());
+      r.minAfter = std::min(r.minAfter, (double)pvm); r.maxAfter = std::max(r.maxAfter, (double)pvm);
+      r.iae += std::fabs(pvm - 37.5) * 0.1 / 60.0;
+      if (std::fabs(pvm - 37.5) > 0.105) lastOut = t;
+      if (pvm >= 37.595f) { r.tOver += 0.1 / 60.0; overRun += 0.1 / 60.0; r.tOver10 = std::max(r.tOver10, overRun); } else overRun = 0;
+      r.lowestHold = std::min(r.lowestHold, (double)c.pHold());
     }
   }
   r.rmsPre = std::sqrt(sqPre / std::max(1L, nPre)); r.rec = lastOut < 0 ? 0 : (lastOut - tEv) / 60.0; r.settle2 = lastOut2 < 0 ? 0 : lastOut2 / 60.0;

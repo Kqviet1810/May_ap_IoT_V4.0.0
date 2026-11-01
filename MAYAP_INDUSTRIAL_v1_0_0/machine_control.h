@@ -5230,7 +5230,7 @@ class MachineController {
     const thermalv3::Controller &v3 = thermalV3_.controller();
     m.predictedC = v3.predicted();
     m.phase = !v3.identified() ? 0U : static_cast<uint8_t>(1U + std::min<uint8_t>(v3.batchesDone(), 2U));
-    m.suspect = false;                                                    // the heater-response suspicion of the old controller is gone (E115 covers a dead heater)
+    m.suspect = v3.responseSuspect();
     m.v2State = thermalV3_.last().state;
     m.slotLastUs = slotLastUs_; m.slotMaxUs = slotMaxUs_;
     { const SensorProfile sp = sensor_.sensorProfile();
@@ -5247,10 +5247,10 @@ class MachineController {
           (sensorUsable_ ? MayapPidLog::FlSensorOk : 0U));
       s.spare = static_cast<uint8_t>((m.v2State & 0x0FU) | (static_cast<uint8_t>(thermalV3_.last().trustQ & 0x0FU) << 4));
       s.safe100 = MayapPidLog::toC100(safetyTempLast_);
-      s.hold2 = MayapPidLog::toPct2(v3.load());
+      s.hold2 = MayapPidLog::toPct2(v3.pHold());
       s.kair = MayapPidLog::toU8(v3.kAir() * 1.0e5f);
       s.tau = MayapPidLog::toU8(v3.tauTransit());
-      s.integ4 = MayapPidLog::toI8x4(v3.fanBump());
+      s.integ4 = MayapPidLog::toI8x4(v3.integral());
       s.vent = static_cast<uint8_t>((ventLine_.why() & 0x07U) | static_cast<uint8_t>(ventLine_.bits() << 3));
       {
         const uint8_t tokens = static_cast<uint8_t>(std::min(3.0f, ventLine_.tokens()));
@@ -5317,21 +5317,18 @@ class MachineController {
     if (!readLearnedBlob(s) || !thermallearn::ovenUsable(s, learnHeaterCap())) return;
     learnSaved_ = s;
     learnSavedValid_ = true;
-    thermalV3_.controller().importOven(s.kAir, s.tau);
+    thermalV3_.controller().importOven(s.kAir, s.tau, s.pipeLen);
     learnTracker_.saved(s.pHold);
     learnSource_ = 1U;
-    mayapSerialPrintf(false, "[THERMAL] restored oven: kAir=%.2e tau=%.0fs pipe=%us (load %.1f%% kept for batch %lu)\n", static_cast<double>(s.kAir),
+    mayapSerialPrintf(false, "[THERMAL] restored oven: kAir=%.2e tau=%.0fs pipe=%us (hold %.1f%% kept for batch %lu)\n", static_cast<double>(s.kAir),
                       static_cast<double>(s.tau), static_cast<unsigned>(s.pipeLen), static_cast<double>(s.pHold), static_cast<unsigned long>(s.batchEpoch));
   }
   // The batch that was running is resumed after a restart: its hold level comes back too, and the numbers count as measured.
   void applyLearnedHoldOnResume() {
     if (!learnSavedValid_ || !thermallearn::holdUsable(learnSaved_, learnHeaterCap(), batchStartEpoch_, config_.targetTemp)) return;
-    thermalV3_.controller().importLoad(learnSaved_.pHold, true);
+    thermalV3_.controller().importHold(learnSaved_.pHold, true);
     learnSource_ = 2U;
-    learnProbation_ = true;                                                // an hour to prove itself (serviceThermalLearning)
-    learnProbeStartMs_ = 0U;
-    learnDevSinceMs_ = 0U;
-    mayapSerialPrintf(false, "[THERMAL] resumed batch: load %.1f%% restored (on probation for an hour)\n", static_cast<double>(learnSaved_.pHold));
+    mayapSerialPrintf(false, "[THERMAL] resumed batch: hold level %.1f%% restored\n", static_cast<double>(learnSaved_.pHold));
   }
   bool clearThermalLearning() {
     const bool ok = eraseLearnedBlob();
@@ -5352,43 +5349,20 @@ class MachineController {
     } else {
       learnHeaterFaultSeen_ = false;
     }
-    // A load that came back from the store is on probation for an hour: if the reading stands more than 0.3 degC from SV for ten minutes in a
-    // row, or the High line trips, or the controller has to move the load by more than 25 points in the first twenty minutes, the record was
-    // wrong for this oven and this hour: it is erased and the controller starts its memory again from nothing.
-    if (learnProbation_) {
-      const thermalv3::Controller &pv3 = thermalV3_.controller();
-      if (learnProbeStartMs_ == 0U) learnProbeStartMs_ = now | 1U;
-      const uint32_t age = static_cast<uint32_t>(now - learnProbeStartMs_);
-      const bool off = batchRunning_ && sensorUsable_ && std::fabs(temperature_ - config_.targetTemp) > 0.3f && !pv3.doorDetected();
-      if (off) { if (learnDevSinceMs_ == 0U) learnDevSinceMs_ = now | 1U; } else learnDevSinceMs_ = 0U;
-      const bool deviating = learnDevSinceMs_ != 0U && static_cast<uint32_t>(now - learnDevSinceMs_) >= 600000UL;
-      const bool moved = age <= 1200000UL && std::fabs(pv3.load() - learnSaved_.pHold) > 25.0f;
-      if (deviating || highTemperatureActive_ || emergencyActive_ || moved) {
-        mayapSerialPrintf(false, "[THERMAL] the restored load did not hold up (%s): erased, starting again\n", deviating ? "off SV" : (moved ? "moved" : "High"));
-        learnProbation_ = false;
-        learnSource_ = 3U;
-        (void)eraseLearnedBlob();
-        learnSavedValid_ = false;
-        learnTracker_.invalidate();
-        thermalV3_.controller().forgetLoad();
-      } else if (age >= 3600000UL) {
-        learnProbation_ = false;
-      }
-    }
     const thermalv3::Controller &v3 = thermalV3_.controller();
     const bool stable = batchRunning_ && sensorUsable_ && !testModeActive_ && !emergencyActive_ && !highTemperatureActive_ && !ventHeaterBlock_ &&
-        !heaterNotHeatingActive_ && !v3.doorDetected() && v3.identified() &&
+        !heaterNotHeatingActive_ && !v3.responseSuspect() && !v3.doorDetected() && v3.identified() &&
         thermalV3_.last().state == thermalv3::StTrack;
-    if (!learnTracker_.update(now, stable, temperature_, config_.targetTemp, v3.load(), thermallearn::StableTracker::Params())) return;
+    if (!learnTracker_.update(now, stable, temperature_, config_.targetTemp, v3.pHold(), thermallearn::StableTracker::Params())) return;
     thermallearn::Snapshot s;
-    s.pHold = v3.load(); s.kAir = v3.kAir(); s.tau = v3.tauTransit(); s.pipeLen = v3.horizonS();
+    s.pHold = v3.pHold(); s.kAir = v3.kAir(); s.tau = v3.tauTransit(); s.pipeLen = v3.pipeLen();
     s.sp = config_.targetTemp; s.capPct = learnHeaterCap();
     s.batchEpoch = batchStartEpoch_; s.savedEpoch = rtc_.valid() ? rtc_.epoch() : 0U;
     if (writeLearnedBlob(s)) {
       learnSaved_ = s;
       learnSavedValid_ = true;
       learnTracker_.saved(s.pHold);
-      mayapSerialPrintf(false, "[THERMAL] stable for 30 min: saved load=%.1f%% kAir=%.2e tau=%.0fs\n", static_cast<double>(s.pHold),
+      mayapSerialPrintf(false, "[THERMAL] stable for 2 h: saved hold=%.1f%% kAir=%.2e tau=%.0fs\n", static_cast<double>(s.pHold),
                         static_cast<double>(s.kAir), static_cast<double>(s.tau));
     } else {
       mayapSerialPrintf(false, "[THERMAL] could not save what was learned (tries again in 10 min)\n");
@@ -5417,8 +5391,14 @@ class MachineController {
     ThermalV3SlotIn si;
     si.nowMs = now; si.pv = temperature_; si.sp = config_.targetTemp; si.newSample = newSensorSample_; si.permit = permit; si.shadow = shadow && !permit;
     si.capPct = static_cast<float>(config_.maxHeaterPower);
-    si.dQ = thermalV3SensorStepC();
+    const float offsetDown = std::max(0.0f, -config_.tempOffset);
+    si.headroomC = std::min(config_.highTempAlarm, config_.ventOnTemp) - offsetDown - config_.targetTemp;
+    si.alarmHeadroomC = config_.emergencyTemp - offsetDown - config_.targetTemp;
     const auto &st = outputs_.state();
+    si.deliveredPct = (st.heaterSsr && st.heatMaster) ? 100.0f : 0.0f;
+    const float stuckLimitMs = static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f;
+    si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterWatch_.accumOnMs()) / stuckLimitMs : 0.0f;
+    si.dQ = thermalV3SensorStepC();
     si.ventFan = st.ventFan;                                                // the fan that really runs: it takes heat out of the box
     ventProfileTiming(now, si.ventOnInS, si.ventOffInS);                     // the automatic profile knows when it starts and ends: the controller can pay for the loss in advance
     return si;
@@ -7762,9 +7742,9 @@ class MachineController {
     a.kp = config_.kp; a.ki = config_.ki; a.kd = config_.kd;
     {
       const thermalv3::Controller &v3 = thermalV3_.controller();          // Thermal V3 columns
-      a.pidCorr = v3.pTerm(); a.holdFf = v3.load(); a.ventFf = v3.fanBump();
+      a.pidCorr = v3.integral(); a.holdFf = v3.dNow(); a.ventFf = v3.dLoss();
       a.learnState = static_cast<uint8_t>(runtime_.pidMon.phase + (runtime_.pidMon.suspect ? 4U : 0U)); a.confidence = v3.batchesDone();
-      a.gain = v3.kAir() * 1000.0f; a.delaySec = v3.tauTransit(); a.holdPct = v3.load(); a.coastC = v3.coast(); a.ventGain = 0.0f; a.predErr = v3.predicted();
+      a.gain = v3.kAir() * 1000.0f; a.delaySec = v3.tdHat(); a.holdPct = v3.tauHat(); a.coastC = v3.haPct(); a.ventGain = v3.sigmaPred(); a.predErr = v3.predicted();
     }
     a.flags = static_cast<uint16_t>(
         (runtime_.batchRunning ? FlBatch : 0U) | (runtime_.autoMode ? FlAuto : 0U) | (sensorUsable_ ? FlSensorOk : 0U) |
@@ -8360,8 +8340,7 @@ class MachineController {
   uint8_t chimeSeq_ = 0U;
   thermallearn::StableTracker learnTracker_{};
   thermallearn::Snapshot learnSaved_{};
-  bool learnSavedValid_ = false, learnHeaterFaultSeen_ = false, learnProbation_ = false;
-  uint32_t learnProbeStartMs_ = 0U, learnDevSinceMs_ = 0U;
+  bool learnSavedValid_ = false, learnHeaterFaultSeen_ = false;
   uint8_t learnSource_ = 0U;                        // 0 priors, 1 oven constants restored, 2 oven constants + hold level of the resumed batch restored
   float safetyTempLast_ = NAN;
   bool lowTemperatureActive_ = false;
