@@ -29,7 +29,7 @@ int main() {
     assert(before > 5.0f);
     Input held = base(37.7f); held.permit = false;               // High: the permit is gone, the reading is 0.2 over
     c.step(held);
-    assert(std::fabs(c.pHold() - before * V3X_F4_KEEP) < 0.05f * before);
+    assert(std::fabs(c.pHold() - before * OVER_SHED_KEEP) < 0.05f * before);
     const float once = c.pHold();
     run(c, held, 60.0f);                                         // staying cut does not cut it again
     assert(c.pHold() > once * 0.97f);
@@ -87,11 +87,11 @@ int main() {
     run(c, bad, 600.0f);
     assert(std::fabs(c.pHold() - before) < 0.01f);
   }
-  // 7. 2.5.8: an oven nobody has measured starts by its distance to SV: next to SV 8 %, a bit under 8 %, two degrees under 8 %, cold the prior of 18 %;
-  //    a hold level that comes from a stored record is never replaced.
+  // 7. An oven nobody has measured starts by its distance to SV: within 3.0 C starts at HOLD_NEAR_INIT_PCT (8 %),
+  //    deep cold start (> 3.0 C below SV) starts at HOLD_COLD_INIT_PCT (14 %); a hold level from NVS is never replaced.
   {
     const float e0s[4] = {0.0f, 0.5f, 2.0f, 6.0f};
-    const float want[4] = {V3X_START_H_AT, V3X_START_H_NEAR, V3X_START_H_MID, V3X_HOLD0};
+    const float want[4] = {HOLD_NEAR_INIT_PCT, HOLD_NEAR_INIT_PCT, HOLD_NEAR_INIT_PCT, HOLD_COLD_INIT_PCT};
     for (int i = 0; i < 4; ++i) {
       Controller c; c.step(base(37.5f - e0s[i]));
       assert(std::fabs(c.pHold() - want[i]) < 0.3f);
@@ -100,13 +100,13 @@ int main() {
     assert(std::fabs(k.pHold() - 14.0f) < 0.3f);
     std::printf("start by distance: %.0f / %.0f / %.0f / %.0f %%\n", want[0], want[1], want[2], want[3]);
   }
-  // 8. The probe next to SV: a reading that falls 0.15 degC under SV after the start puts the prior hold level back at once.
+  // 8. The probe next to SV: a reading that falls 0.15 degC under SV after the start puts HOLD_COLD_INIT_PCT back at once.
   {
     Controller c; Input in = base(37.5f); c.step(in);
     const float low = c.pHold();
-    assert(low < V3X_HOLD0);
-    for (int i = 0; i < 300 && c.pHold() < V3X_HOLD0 - 0.1f; ++i) { in.pv = 37.5f - 0.003f * static_cast<float>(i); for (int k = 0; k < 10; ++k) c.step(in); }
-    assert(c.pHold() >= V3X_HOLD0 - 0.1f);
+    assert(low < HOLD_COLD_INIT_PCT);
+    for (int i = 0; i < 300 && c.pHold() < HOLD_COLD_INIT_PCT - 0.1f; ++i) { in.pv = 37.5f - 0.003f * static_cast<float>(i); for (int k = 0; k < 10; ++k) c.step(in); }
+    assert(c.pHold() >= HOLD_COLD_INIT_PCT - 0.1f);
     std::printf("probe next to SV: hold %.1f -> %.1f %% once the reading fell\n", low, c.pHold());
   }
   std::printf("thermal-overshoot: OK\n");

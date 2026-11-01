@@ -5582,6 +5582,20 @@ class MachineController {
       return false;
     }
     webHeaterOff_ = false;                                    // a heater switched off from the Web never carries over into a new batch
+    {
+      // Reset transient batch hold/integral state for the new batch while preserving physical oven geometry if already known.
+      const thermalv3::Controller &prevV3 = thermalV3_.controller();
+      const bool keepRamOven = prevV3.identified();
+      const float ramKAir = prevV3.kAir(), ramTau = prevV3.tauTransit();
+      const uint16_t ramPipe = prevV3.pipeLen();
+      thermalV3_.reset();
+      if (learnSavedValid_) {
+        thermalV3_.controller().importOven(learnSaved_.kAir, learnSaved_.tau, learnSaved_.pipeLen);
+      } else if (keepRamOven) {
+        thermalV3_.controller().importOven(ramKAir, ramTau, ramPipe);
+      }
+      learnTracker_.breakStreak();
+    }
     message = "DA BAT DAU ME";
     eventLog_.push(now, EventType::BatchStart,
                    static_cast<uint16_t>(EventCode::BatchStart));
@@ -5941,14 +5955,14 @@ class MachineController {
       ventTemperatureActive_ = ventLine_.update(now, validSafety, safetyTemp, config_.ventOnTemp, config_.ventOffTemp, vp, vc);
     }
 
-    // The heater is blocked only when the reading runs well past SV (a safety margin, not a fan rule): it comes back 0.1 degC lower. "Well past"
-    // scales with the sensor step so a coarse 0.1 sensor and a fine 0.01 one are treated alike.
+    // Interlock the heater block line with overheat exhaust ventilation (ventTemperatureActive_) as well as the over-SV safety margin
+    // so heater and overheat exhaust fan never fight each other; scheduled/profile fresh-air ventilation stays free to heat normally.
     {
       const float dQ = thermalV3SensorStepC();
       const float blockAt = std::max(config_.ventOnTemp, config_.targetTemp + std::max(VENT_HEATER_BLOCK_MIN_C, VENT_HEATER_BLOCK_STEPS * dQ));
       if (!validSafety) ventHeaterBlock_ = false;
-      else if (!ventHeaterBlock_ && safetyTemp >= blockAt) ventHeaterBlock_ = true;
-      else if (ventHeaterBlock_ && safetyTemp <= blockAt - VENT_HEATER_BLOCK_RELEASE_C) ventHeaterBlock_ = false;
+      else if (ventTemperatureActive_ || (!ventHeaterBlock_ && safetyTemp >= blockAt)) ventHeaterBlock_ = true;
+      else if (ventHeaterBlock_ && !ventTemperatureActive_ && safetyTemp <= blockAt - VENT_HEATER_BLOCK_RELEASE_C) ventHeaterBlock_ = false;
     }
 
     if ((!wasHigh && highTemperatureActive_) ||

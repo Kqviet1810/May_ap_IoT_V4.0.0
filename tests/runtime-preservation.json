@@ -58,12 +58,12 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "8700135c64113be99d53f6d72587099e0611f64baadfc01095f4b0cabffc06e3",
+      "sha256": "b51d4ab329135289d51127e95663189e791a5291f846a65e839aa3d66022e92f",
       "filter": "config"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "9c35ef56982e5dd1acfacf7646e4d3aa92ec8739b4aa5a882e76956a0ff35c83",
+      "sha256": "c4f521c18d550591216d64201a7839af5030c6779f8c08a78ce59d9719bb2bca",
       "signature": "class MachineController {"
     },
     {
@@ -369,7 +369,7 @@
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
       "signature": "bool startBatch(",
-      "sha256": "f1ccca347f0a858b8e3d5300e01d50763863c148602b667bd85dfab864982eff"
+      "sha256": "10f6aeb8641c32b4b04dfa8e882230b2c0c8e2f8db75d9709569ec76bf688448"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",

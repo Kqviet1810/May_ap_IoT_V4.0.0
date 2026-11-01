@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 
@@ -36,7 +37,7 @@ class VentLine {
   enum : uint8_t { BitWatching = 1U, BitActive = 2U, BitBudget = 4U, BitDeferred = 8U, BitMaxRun = 16U };
 
   struct Params {
-    uint32_t confirmMs = 20000UL, minOnMs = 180000UL, maxOnMs = 600000UL, minOffMs = 300000UL;
+    uint32_t confirmMs = 20000UL, minOnMs = 60000UL, maxOnMs = 600000UL, minOffMs = 300000UL;
     uint32_t windowMinMs = 150000UL, windowMaxMs = 260000UL;
     float windowTauK = 1.2f;
     float defaultTauS = 180.0f;               // when the controller has not measured the transit time
@@ -150,8 +151,9 @@ class VentLine {
       const bool offPast = haveMean && m10 <= offTemp + p.epsC;
       if (offPast) { if (!offOn_) { offOn_ = true; offSince_ = now; } } else offOn_ = false;
       const bool offConfirmed = offOn_ && since(now, offSince_) >= p.confirmMs;
-      if (run >= p.maxOnMs || (run >= p.minOnMs && offConfirmed)) {
-        maxRun_ = run >= p.maxOnMs && !(run >= p.minOnMs && offConfirmed);
+      const bool undercooled = haveMean && run >= p.confirmMs && m10 <= offTemp - std::max(0.25f, 2.5f * p.stepC);
+      if (run >= p.maxOnMs || (run >= p.minOnMs && offConfirmed) || undercooled) {
+        maxRun_ = run >= p.maxOnMs && !((run >= p.minOnMs && offConfirmed) || undercooled);
         active_ = false;
         why_ = WhyNone;
         offOn_ = false;

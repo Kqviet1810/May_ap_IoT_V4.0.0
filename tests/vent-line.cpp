@@ -122,11 +122,11 @@ int main() {
     assert(f.firstOn >= 40 + 20 && f.firstOn <= 40 + 40);
     std::printf("prediction under the threshold: start held to %d s (second window), fast overshoot not held\n", r.firstOn - 60);
   }
-  // 7. Run time: at least 3 minutes however fast the reading drops, at most 10 minutes however long it stays high; rest 5 minutes in between.
+  // 7. Run time: at least 1 minute on normal return below offTemp, at most 10 minutes however long it stays high; rest 5 minutes in between.
   {
     VentLine v;
-    const Run r = run(v, p, 0U, 400, [](int t) { return t < 60 ? 37.5f : (t < 90 ? 37.7f : 37.4f); }, tau150);
-    assert(r.firstOn >= 0 && r.firstOff - r.firstOn >= 180 && r.firstOff - r.firstOn <= 186);
+    const Run r = run(v, p, 0U, 400, [](int t) { return t < 60 ? 37.5f : (t < 92 ? 37.7f : 37.4f); }, tau150);
+    assert(r.firstOn >= 0 && r.firstOff - r.firstOn >= 60 && r.firstOff - r.firstOn <= 66);
     VentLine w;
     int on = -1, off = -1, again = -1;
     bool was = false;
@@ -197,7 +197,7 @@ int main() {
     VentLine w;
     const Run q = run(w, p, start, 900, [](int t) { return t < 40 ? 37.5f : 37.8f; }, quiet);
     assert(q.firstOn >= 40 + 20 && q.firstOn <= 40 + 40);
-    assert(q.firstOff - q.firstOn >= 180);
+    assert(q.firstOff - q.firstOn >= 60);
   }
   // 12. A fine sensor (0.01 degC steps): the threshold in true terms is onTemp - 0.005 and everything scales with the step.
   {
@@ -209,6 +209,15 @@ int main() {
     VentLine w;
     const Run q = run(w, f, 0U, 900, [](int t) { return t < 60 ? 37.5f : 37.594f; }, tau150);   // 0.006 under the threshold: not over
     assert(q.firstOn < 0);
+  }
+  // 13. Anti-undercool early stop: if an open door / cold draft pulls mean10 >= 0.25 degC below offTemp after confirmMs, stop early instead of chilling eggs.
+  {
+    VentLine::Params u = p;
+    u.minOnMs = 180000UL;
+    VentLine v;
+    const Run r = run(v, u, 0U, 300, [](int t) { return t < 40 ? 37.5f : (t < 65 ? 37.8f : 37.1f); }, tau150);
+    assert(r.firstOn >= 60 && r.firstOff - r.firstOn >= 20 && r.firstOff - r.firstOn < 60);
+    std::printf("anti-undercool early stop after %d s\n", r.firstOff - r.firstOn);
   }
 
   std::printf("vent-line: OK\n");
