@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 using namespace thermalsim;
-struct Res { double highs = 0, reach = -1, peak = 0, minAfter = 99, maxAfter = 0, rec = 0, iae = 0, rmsPre = 0, tOver = 0, tOver10 = 0, settle2 = 0, fanStarts = 0, fanOnMin = 0, lowestHold = 100; };
+struct Res { double highs = 0, reach = -1, peak = 0, minAfter = 99, maxAfter = 0, rec = 0, iae = 0, rmsPre = 0, tOver = 0, tOver10 = 0, settle2 = 0, fanStarts = 0, fanOnMin = 0, lowestHold = 100, fanHeatMin = 0, heatDuringFan = 0; };
 // A first run on a cold oven (31.4 degC): climb and 2.5 h of holding. What the controller then knows of the oven is what a stable run stores (thermal_learn.h).
 struct Learned { float kAir = 0, tau = 0, hold = 0; uint16_t pipe = 0; bool identified = false; };
 static Learned learnPass(const PlantParams &p) {
@@ -96,6 +96,7 @@ static Res run(const PlantParams &p0, int scen) {
     if (getenv("FANLOG") && vline != fanPrev) { std::printf("   t=%6.0f s  fan %s  pv=%.2f u=%.1f hold=%.1f why=%d sched=%d\n", t, vline ? "ON " : "off", pv, lastU, c.pHold(), (int)vl.why(), sched ? 1 : 0); }
     fanPrev = vline;
     if (vline) r.fanOnMin += 0.1 / 60.0;
+    if ((vline || sched || hc) && t >= 600.0) { if (lastU > 10.0f) r.fanHeatMin += 0.1 / 60.0; r.heatDuringFan += (double)lastU * 0.1 / 60.0; }
     if (getenv("NOBLOCK")) block = false; else if (!block && pv >= 37.8f) block = true; else if (block && pv <= 37.7f) block = false;
     if (highAt > 0.0f) { if (!hc && pv >= highAt) { hc = true; hcT = t; r.highs += 1; } else if (hc && pv <= highAt - 0.15f && t - hcT >= 240.0) hc = false; }
     bool fan = vline || sched || hc;
@@ -145,6 +146,6 @@ int main(int argc, char **argv) {
     if (k % stride != 0) continue;
     if (!(scenMask & (1 << sc))) continue;
     Res r = run(ov[k], sc);
-    std::printf("%zu,%d,%.0f,%.2f,%.2f,%.2f,%.1f,%.1f,%.3f,%.1f,%.0f,%.1f,%.1f,%.1f,%.1f,%.0f,%.1f,%.0f\n", k, sc, r.reach, r.peak, r.minAfter, r.maxAfter, r.rec, r.iae, r.rmsPre, ov[k].UA * 9.5 / ov[k].Pmax * 100.0, ov[k].td, r.tOver, r.tOver10, r.settle2, r.fanOnMin, r.fanStarts, r.lowestHold, r.highs);
+    std::printf("%zu,%d,%.0f,%.2f,%.2f,%.2f,%.1f,%.1f,%.3f,%.1f,%.0f,%.1f,%.1f,%.1f,%.1f,%.0f,%.1f,%.0f,%.2f,%.2f\n", k, sc, r.reach, r.peak, r.minAfter, r.maxAfter, r.rec, r.iae, r.rmsPre, ov[k].UA * 9.5 / ov[k].Pmax * 100.0, ov[k].td, r.tOver, r.tOver10, r.settle2, r.fanOnMin, r.fanStarts, r.lowestHold, r.highs, r.fanHeatMin, r.heatDuringFan);
   }
 }
