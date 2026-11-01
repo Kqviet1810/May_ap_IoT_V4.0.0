@@ -32,70 +32,24 @@
 
 namespace thermalv3 {
 
-#ifndef TV_KP_NEAR
-#define TV_KP_NEAR 20.0f
-#endif
-constexpr float KP_NEAR = TV_KP_NEAR;        // proportional gain [%/degC] when the (coast-corrected) error is at most KP_NEAR_E ...
-#ifndef TV_KP_FAR
-#define TV_KP_FAR 50.0f
-#endif
-constexpr float KP_FAR = TV_KP_FAR;         // ... and when it is at least KP_FAR_E (linear in between)
+constexpr float KP_NEAR = 20.0f;        // proportional gain [%/degC] when the (coast-corrected) error is at most KP_NEAR_E ...
+constexpr float KP_FAR = 50.0f;         // ... and when it is at least KP_FAR_E (linear in between)
 constexpr float KP_NEAR_E = 0.3f;
 constexpr float KP_FAR_E = 1.0f;
-#ifndef TV_KP_DOWN
-#define TV_KP_DOWN 90.0f
-#endif
-constexpr float KP_DOWN = TV_KP_DOWN;        // above SV: strong damping
-#ifndef TV_KI_TI_H
-#define TV_KI_TI_H 3.0f
-#endif
-constexpr float KI_TI_H = TV_KI_TI_H;      // integral time = this many horizons (the integral rate is the near-SV gain / integral time)
-constexpr float KP_MIN = 4.0f;
-#ifndef TV_KI_FAR_BOOST
-#define TV_KI_FAR_BOOST 2.0f
-#endif
-constexpr float KI_FAR_BOOST = TV_KI_FAR_BOOST;    // the integral is this much faster for an error of KP_FAR_E and more (a reading that stands far under SV)
+constexpr float KP_DOWN = 90.0f;        // above SV: strong damping
+constexpr float KI_TI_H = 3.0f;         // integral time = this many horizons (the integral rate is the near-SV gain / integral time)
+constexpr float KP_MIN = 4.0f;          // lowest near-SV gain [%/degC]
+constexpr float KI_FAR_BOOST = 2.0f;    // the integral is this much faster for an error of KP_FAR_E and more (a reading that stands far under SV)
 constexpr float ON_WAY_TAU = 4.0f;      // no integration while the present slope would reach SV within this many transit times
-#ifndef TV_LOAD_PRIOR
-#define TV_LOAD_PRIOR 12.0f
-#endif
-constexpr float LOAD_PRIOR_PCT = TV_LOAD_PRIOR;   // the load of a controller that starts next to SV with nothing remembered (a restart in the middle of a batch)
-#ifndef TV_FLIGHT_UNKNOWN_W
-#define TV_FLIGHT_UNKNOWN_W 0.2f
-#endif
-constexpr float FLIGHT_UNKNOWN_W = TV_FLIGHT_UNKNOWN_W;
-#ifndef TV_KP_FAR_MIN
-#define TV_KP_FAR_MIN 0.0f
-#endif
-constexpr float KP_FAR_MIN = TV_KP_FAR_MIN;   // lowest far-field gain: far from SV the in-flight brake decides when to stop, not a small gain
-#ifndef TV_STALL_BOOST
-#define TV_STALL_BOOST 1.0f
-#endif
-constexpr float STALL_BOOST = TV_STALL_BOOST;
-constexpr float STALL_COAST_C = 0.1f;
-#ifndef TV_LOAD_PRIOR_FAR
-#define TV_LOAD_PRIOR_FAR 1
-#endif
-constexpr bool LOAD_PRIOR_FAR = TV_LOAD_PRIOR_FAR != 0;
-#ifndef TV_SLOPE_K
-#define TV_SLOPE_K 1.7f
-#endif
-constexpr float SLOPE_K = TV_SLOPE_K;       // the rise still to come from the present slope = slope x transit time x this (heater tail, sensor lag)
-#ifndef TV_COAST_INT_MAX_C
-#define TV_COAST_INT_MAX_C 0.25f
-#endif
-constexpr float COAST_INT_MAX_C = TV_COAST_INT_MAX_C;   // no integration while this much rise is still to come
-#ifndef TV_COAST_FILTER_S
-#define TV_COAST_FILTER_S 30.0f
-#endif
-constexpr float COAST_FILTER_S = TV_COAST_FILTER_S; // the coast is released this slowly: it is fed by the heater's own commands, a fast loop would make the heater pulse
-#ifndef TV_KI_DOWN_MULT
-#define TV_KI_DOWN_MULT 8.0f
-#endif
-constexpr float KI_DOWN_MULT = TV_KI_DOWN_MULT;    // a load that is too big overshoots, one that is too small is only slow
+constexpr float LOAD_PRIOR_PCT = 12.0f; // the load of a controller that starts with nothing remembered (a first start, a restart in the middle of a batch)
+constexpr float FLIGHT_UNKNOWN_W = 0.2f; // weight of the heat in flight while the heater gain was never measured: the prior is a guess on the fast side, it brakes less
+constexpr float SLOPE_K = 1.7f;       // the rise still to come from the present slope = slope x transit time x this (heater tail, sensor lag)
+constexpr float COAST_INT_MAX_C = 0.25f;   // no integration while this much rise is still to come
+constexpr float COAST_FILTER_S = 30.0f; // the coast is released this slowly: it is fed by the heater's own commands, a fast loop would make the heater pulse
+constexpr float KI_DOWN_MULT = 8.0f;    // a load that is too big overshoots, one that is too small is only slow
 constexpr float BRAKE_WINDOW_S = 60.0f; // slope window of the coast [s]
 constexpr float DOOR_WINDOW_S = 20.0f;  // slope window of the door guard [s]
-constexpr float COAST_MAX_C = 3.0f;
+constexpr float COAST_MAX_C = 3.0f;     // the largest rise still to come that is believed [degC]
 constexpr float COAST_MIN_C = -0.2f;    // a fall of the reading or a heater that was backed off may lift the error by this much, no more
 constexpr float KAIR_PRIOR = 4.0e-4f;   // heater gain of an oven nobody has measured [degC/s per %]: on the fast side, where a wrong number only brakes more
 constexpr float KAIR_MIN = 5.0e-5f;     // [a 20 kW heater on 1.8 MJ/K is 1.1e-4, on 0.3 MJ/K it is 6.7e-4]
@@ -220,7 +174,7 @@ class Controller {
     sp_ = in.sp;
     if (!started_) {
       started_ = true;
-      if (!loadImported_ && (sp_ - pv_ <= 3.0f || LOAD_PRIOR_FAR)) load_ = std::min(capPct_, LOAD_PRIOR_PCT);
+      if (!loadImported_) load_ = std::min(capPct_, LOAD_PRIOR_PCT);
     }
     liveS_ += dt;
     load_ = std::max(0.0f, std::min(capPct_, load_));
@@ -307,7 +261,7 @@ class Controller {
     // answers fast after a long delay (a small air mass, a big heater) swung by +-1 degC under a fixed 30 %/degC.
     const float kAirH = kAir_ * static_cast<float>(horizon());
     const float kpNear = std::max(KP_MIN, std::min(KP_NEAR, 1.0f / (2.0f * kAirH)));
-    const float kpFar = std::max(std::max(kpNear, KP_FAR_MIN), std::min(KP_FAR, 1.0f / kAirH));
+    const float kpFar = std::max(kpNear, std::min(KP_FAR, 1.0f / kAirH));
     const float kpDown = std::max(12.0f, std::min(KP_DOWN, 3.0f * kpNear));
     const float ramp = std::max(0.0f, std::min(1.0f, (std::fabs(eEff) - KP_NEAR_E) / (KP_FAR_E - KP_NEAR_E)));
     const float eBelow = eEff + 0.5f * dQ_;                                    // above SV: half a sensor step is no overshoot
@@ -326,8 +280,7 @@ class Controller {
         const bool onItsWay = coast_ > COAST_INT_MAX_C || (sEff > 0.0f && e / sEff < ON_WAY_TAU * tauTransit_);   // heat is on its way or the reading is closing in on SV by itself: the load is not what it lacks
         if (!saturated && !onItsWay) {
           const float far = std::max(0.0f, std::min(1.0f, (e - KP_NEAR_E) / (KP_FAR_E - KP_NEAR_E)));
-          const float stall = coast_ < STALL_COAST_C ? STALL_BOOST : 1.0f;     // nothing on its way and still short: the load is what is missing
-          dI = ki * (1.0f + (KI_FAR_BOOST - 1.0f) * far) * stall * eEff * dt;
+          dI = ki * (1.0f + (KI_FAR_BOOST - 1.0f) * far) * eEff * dt;
         }
       } else if (eBelow < 0.0f && uRaw > 0.0f) {
         dI = ki * KI_DOWN_MULT * eBelow * dt;                                  // only while the heater is on: nothing to bleed otherwise
