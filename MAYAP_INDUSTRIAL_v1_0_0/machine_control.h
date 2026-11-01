@@ -16,6 +16,7 @@
 #include "advanced_history.h"
 #include "tech_request.h"
 #include "thermal_v3_adapter.h"
+#include "sensor_fine.h"
 #include "heater_response_watch.h"
 #include "vent_line.h"
 #include "thermal_learn.h"
@@ -4526,6 +4527,7 @@ class MachineController {
         lastSuspectCandidate_ = candidateTemp;
         if (goodSensorStreak_ < UINT8_MAX) ++goodSensorStreak_;
         newSensorSample_ = true;
+        feedFineEstimators(now, rawSensorTemp + config_.tempOffset);
         // F-08: theo doi moc "gia tri vua thay doi that su" - moi lan mau
         // moi lech qua SENSOR_FROZEN_EPSILON_C so voi moc hien tai thi doi
         // moc va reset dong ho; neu khong, cu de nguyen (dang "dung hinh" o
@@ -5351,7 +5353,7 @@ class MachineController {
     }
     const thermalv3::Controller &v3 = thermalV3_.controller();
     const bool stable = batchRunning_ && sensorUsable_ && !testModeActive_ && !emergencyActive_ && !highTemperatureActive_ && !ventHeaterBlock_ &&
-        !heaterNotHeatingActive_ && !v3.responseSuspect() && !v3.doorDetected() && v3.identified() &&
+        !heaterNotHeatingActive_ && !v3.doorDetected() && v3.identified() &&
         thermalV3_.last().state == thermalv3::StTrack;
     if (!learnTracker_.update(now, stable, temperature_, config_.targetTemp, v3.pHold(), thermallearn::StableTracker::Params())) return;
     thermallearn::Snapshot s;
@@ -5387,8 +5389,21 @@ class MachineController {
     if (onSec > 0UL) { onInS = static_cast<float>(cycleSec - phase); offInS = onInS + static_cast<float>(onSec); return true; }
     return false;
   }
+  // 2.7.0: the slope of the 0.1 degC reading (sensor_fine.h, window 40..150 s). A fan dip (0.002 degC/s) is smaller than one sensor step over the
+  // window the controller has on its own, so the controller measures what the exhaust fan takes out of the box from this slope. The value the
+  // controller regulates, the protections and the display are the unchanged chain.
+  void feedFineEstimators(uint32_t now, float q) {
+    if (thermalV3SensorStepC() < 0.05f) { fineSlopeEst_.reset(); return; }          // a 0.01 sensor needs no help
+    if (fineBaseMs_ == 0U || elapsedMs(now, fineBaseMs_) > 80000000UL) {           // float seconds stay exact: rebase about once a day
+      fineSlopeEst_.reset(); fineBaseMs_ = now ? now : 1U;
+    }
+    fineSlopeEst_.update(q, static_cast<float>(elapsedMs(now, fineBaseMs_)) * 0.001f, 0.1f, fineSlopeParams_);
+    fineLastMs_ = now;
+  }
+  bool fineFresh(uint32_t now) const { return fineBaseMs_ != 0U && fineSlopeEst_.ready() && elapsedMs(now, fineLastMs_) < 6000UL; }
   ThermalV3SlotIn buildThermalV3SlotIn(uint32_t now, bool permit, bool shadow = false) const {
     ThermalV3SlotIn si;
+    si.slopeFine = (fineFresh(now) && sensorUsable_) ? fineSlopeEst_.slopePerS() : NAN;
     si.nowMs = now; si.pv = temperature_; si.sp = config_.targetTemp; si.newSample = newSensorSample_; si.permit = permit; si.shadow = shadow && !permit;
     si.capPct = static_cast<float>(config_.maxHeaterPower);
     const float offsetDown = std::max(0.0f, -config_.tempOffset);
@@ -5582,26 +5597,6 @@ class MachineController {
       return false;
     }
     webHeaterOff_ = false;                                    // a heater switched off from the Web never carries over into a new batch
-    {
-      // Reset transient batch integral state for the new batch while preserving physical oven geometry and warm in-RAM hold if near SP.
-      const thermalv3::Controller &prevV3 = thermalV3_.controller();
-      const bool keepRamOven = prevV3.identified();
-      const float ramKAir = prevV3.kAir(), ramTau = prevV3.tauTransit(), ramHold = prevV3.pHold();
-      const uint16_t ramPipe = prevV3.pipeLen();
-      const bool keepWarmHold = sensorUsable_ && std::isfinite(temperature_) &&
-          std::fabs(config_.targetTemp - temperature_) <= 2.5f &&
-          std::isfinite(ramHold) && ramHold > 10.0f && ramHold <= 75.0f;
-      thermalV3_.reset();
-      if (learnSavedValid_) {
-        thermalV3_.controller().importOven(learnSaved_.kAir, learnSaved_.tau, learnSaved_.pipeLen);
-      } else if (keepRamOven) {
-        thermalV3_.controller().importOven(ramKAir, ramTau, ramPipe);
-      }
-      if (keepWarmHold) {
-        thermalV3_.controller().importHold(ramHold, keepRamOven || learnSavedValid_);
-      }
-      learnTracker_.breakStreak();
-    }
     message = "DA BAT DAU ME";
     eventLog_.push(now, EventType::BatchStart,
                    static_cast<uint16_t>(EventCode::BatchStart));
@@ -5961,14 +5956,14 @@ class MachineController {
       ventTemperatureActive_ = ventLine_.update(now, validSafety, safetyTemp, config_.ventOnTemp, config_.ventOffTemp, vp, vc);
     }
 
-    // Interlock the heater block line with overheat exhaust ventilation (ventTemperatureActive_) as well as the over-SV safety margin
-    // so heater and overheat exhaust fan never fight each other; scheduled/profile fresh-air ventilation stays free to heat normally.
+    // The heater is blocked only when the reading runs well past SV (a safety margin, not a fan rule): it comes back 0.1 degC lower. "Well past"
+    // scales with the sensor step so a coarse 0.1 sensor and a fine 0.01 one are treated alike.
     {
       const float dQ = thermalV3SensorStepC();
       const float blockAt = std::max(config_.ventOnTemp, config_.targetTemp + std::max(VENT_HEATER_BLOCK_MIN_C, VENT_HEATER_BLOCK_STEPS * dQ));
       if (!validSafety) ventHeaterBlock_ = false;
-      else if (ventTemperatureActive_ || (!ventHeaterBlock_ && safetyTemp >= blockAt)) ventHeaterBlock_ = true;
-      else if (ventHeaterBlock_ && !ventTemperatureActive_ && safetyTemp <= blockAt - VENT_HEATER_BLOCK_RELEASE_C) ventHeaterBlock_ = false;
+      else if (!ventHeaterBlock_ && safetyTemp >= blockAt) ventHeaterBlock_ = true;
+      else if (ventHeaterBlock_ && safetyTemp <= blockAt - VENT_HEATER_BLOCK_RELEASE_C) ventHeaterBlock_ = false;
     }
 
     if ((!wasHigh && highTemperatureActive_) ||
@@ -7762,7 +7757,7 @@ class MachineController {
     a.kp = config_.kp; a.ki = config_.ki; a.kd = config_.kd;
     {
       const thermalv3::Controller &v3 = thermalV3_.controller();          // Thermal V3 columns
-      a.pidCorr = v3.integral(); a.holdFf = v3.dNow(); a.ventFf = v3.dLoss();
+      a.pidCorr = v3.integral(); a.holdFf = v3.dNow(); a.ventFf = v3.fanBump();
       a.learnState = static_cast<uint8_t>(runtime_.pidMon.phase + (runtime_.pidMon.suspect ? 4U : 0U)); a.confidence = v3.batchesDone();
       a.gain = v3.kAir() * 1000.0f; a.delaySec = v3.tdHat(); a.holdPct = v3.tauHat(); a.coastC = v3.haPct(); a.ventGain = v3.sigmaPred(); a.predErr = v3.predicted();
     }
@@ -8423,6 +8418,9 @@ class MachineController {
   bool networkStatusInitialized_ = false;
 
   HeaterBurstScheduler heaterBurst_{HEATER_GROUP_COUNT, HEATER_BURST_QUANTUM_MS};
+  sensorfine::Estimator fineSlopeEst_;                // slope of the 0.1 degC reading (long window)
+  sensorfine::Params fineSlopeParams_;
+  uint32_t fineBaseMs_ = 0U, fineLastMs_ = 0U;
   ThermalV3Slot thermalV3_;                          // Thermal V3 controller (RAM ~3.8 KB: 10 minutes of 1 Hz history for the energy balance)
   uint32_t pidLogAt_ = 0;                            // last PID log ring sample
   uint32_t slotLastUs_ = 0, slotMaxUs_ = 0;          // controller slot time [us], reported to the PID monitor

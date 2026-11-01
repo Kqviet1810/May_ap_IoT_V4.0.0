@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.6.1";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.7.0";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -612,16 +612,16 @@ constexpr float VENT_LINE_DEFAULT_TAU_S = 180.0f;         // when the transit ti
 constexpr float VENT_LINE_FLOOR_PCT = 3.0f;               // heater mean at/below this for ... : nothing left to cut
 constexpr uint32_t VENT_LINE_FLOOR_HOLD_MS = 60000UL;
 constexpr uint32_t VENT_LINE_FLOOR_OVER_MS = 150000UL;    // ... and the reading over for this long: start the fans
-constexpr uint32_t VENT_LINE_MIN_ON_MS = 60000UL;         // the contactor of the fans is rated for few operations: run at least 1 min ...
+constexpr uint32_t VENT_LINE_MIN_ON_MS = 180000UL;        // the contactor of the fans is rated for few operations: run at least 3 min ...
 constexpr uint32_t VENT_LINE_MAX_ON_MS = 600000UL;        // ... at most 10 min (a reading still high after that is for the High / Emergency lines) ...
 constexpr uint32_t VENT_LINE_MIN_OFF_MS = 300000UL;       // ... rest at least 5 min ...
 constexpr uint8_t VENT_LINE_BUCKET_CAP = 3U;              // ... and start at most 3 times at once, then one more every 30 min (High / Emergency are not limited)
 constexpr uint32_t VENT_LINE_BUCKET_REFILL_MS = 1800000UL;
 constexpr uint32_t VENT_LINE_COALESCE_MS = 300000UL;      // a day-profile block due within this time is waited for (unless the overshoot is decisive)
 constexpr float VENT_LINE_EPS_C = 0.005f;
-// Heater block line: interlocked with overheat vent fan and max(vent ON, SV + max(MIN, STEPS * sensor step)); released RELEASE degC lower.
-constexpr float VENT_HEATER_BLOCK_MIN_C = 0.2f;
-constexpr float VENT_HEATER_BLOCK_STEPS = 2.0f;
+// Heater block line: max(vent ON, SV + max(MIN, STEPS * sensor step)); released RELEASE degC lower.
+constexpr float VENT_HEATER_BLOCK_MIN_C = 0.3f;
+constexpr float VENT_HEATER_BLOCK_STEPS = 3.0f;
 constexpr float VENT_HEATER_BLOCK_RELEASE_C = 0.1f;
 constexpr uint32_t LOW_TEMP_STARTUP_GRACE_MS = 300000UL; // 5 phut
 constexpr uint32_t LOW_TEMP_CONFIRM_MS = 300000UL;       // thap lien tuc 5 phut

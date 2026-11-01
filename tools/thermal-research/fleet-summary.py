@@ -11,8 +11,8 @@ import csv
 import statistics as st
 import sys
 
-NAMES = ["climb + hold", "scheduled fan", "one step over", "door 3 min", "door + cold tray", "reboot", "room warms up", "day profile 70 %", "reboot + stored state", "cancel + restart at once"]
-RECLIM = [40, 40, 40, 60, 90, 40, None, None, 40, 40]
+NAMES = ["climb + hold", "scheduled fan", "one step over", "door 3 min", "door + cold tray", "reboot", "room warms up", "day profile 70 %", "reboot + stored state", "cancel + restart at once", "new batch, stored state"]
+RECLIM = [40, 40, 40, 60, 90, 40, None, None, 40, 40, 40]
 
 
 def load(path):
