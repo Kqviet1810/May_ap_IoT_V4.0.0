@@ -250,7 +250,7 @@ class Controller {
     // A recovery (a door, cold eggs, a start) is a warm-up like any other, not a load to learn from while it runs: hold is read only once PV has settled
     // (|error| inside twice the landing band). Measured: mean 74.0 -> 75.7 % and the cold-tray error halves (fleet bench, fan 100 W).
     if (std::fabs(sp_ - pv_) > 2.0f * farBand_) return;
-    const float win = 1.6f * tau_, minWin = 0.6f * tau_;
+    const float win = 0.8f * tau_, minWin = 0.6f * tau_;
     const float span = std::min(win, std::min(calmS_, liveS_));
     if (span < minWin) return;
     const uint16_t w = static_cast<uint16_t>(span), delay = static_cast<uint16_t>(tau_ + 0.5f);
@@ -260,10 +260,10 @@ class Controller {
     const float u = delayedPower(delay, w);
     if (!std::isfinite(u)) return;
     const float observed = std::max(0.0f, std::min(cap_, u - lsSlope_ / kAir_));
-    // Measured on the fleet bench: 3 tau up is too slow (the PV stands under SV for a quarter of an hour), 0.5 tau swings; one transit time both ways is the
+    // Measured on the fleet bench: 3 tau up is too slow (the PV stands under SV for a quarter of an hour), 0.5 tau swings; 0.7 transit time with a 0.8 transit-time window (fleet bench with the peak-slope kAir: mean of climb/door/cold tray/day 73.6 -> 78.3 %) beats one transit time both ways, the
     // best of the four tried. Known weakness: with cold eggs (a second, slower heat sink) the hold level follows the swing of PV (cold-tray situation).
     const float gap = observed - hold_;
-    const float step = gap / tau_;
+    const float step = gap / (0.7f * tau_);
     hold_ = std::max(0.0f, std::min(cap_, hold_ + step));
   }
   // kAir at every saturated climb: the heater has been at its ceiling for a whole transit time plus a part of one, PV is far under SV and climbing.
