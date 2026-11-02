@@ -35,6 +35,7 @@ constexpr float TAU_PRIOR = 150.0f, TAU_LO = 0.6f, TAU_HI = 1.5f;
 constexpr float KAIR_WARM = 2.5e-4f;       // a start close to SV has no climb to measure kAir on: the middle of the fleet instead of its slowest oven (gain safe on both sides)
 constexpr float OBS_POLE_TAU = 1.5f, OBS_LEAK_TAU = 8.0f;   // disturbance observer: poles at 1/(1.5 tau); the rate of the load leaks away over 8 tau (measured on the fleet bench)
 constexpr float LANDING_LEAD = 1.6f;
+constexpr float DOOR_LATCH_TAU = 8.0f;
 constexpr float HOLD_PRIOR_OF_CAP = 0.12f;
 constexpr float SIGMA_FLOOR = 0.004f;      // a reading of a 0.1 degC sensor cannot be quieter than this (degC)
 constexpr uint16_t HIST_LEN = 640U;        // seconds of history (memory, not tuning): 4 x the largest transit time
@@ -71,7 +72,7 @@ class Controller {
   void reset() {
     state_ = StIdle; pv_ = NAN; sp_ = 37.5f; cap_ = 100.0f;
     kAir_ = KAIR_PRIOR; tau_ = TAU_PRIOR; hold_ = HOLD_PRIOR_OF_CAP * 100.0f;
-    identified_ = tauMeasured_ = door_ = wasLive_ = false;
+    identified_ = tauMeasured_ = door_ = wasLive_ = doorLatch_ = false; latchT_ = 0.0f;
     lead_ = slope_ = lsSlope_ = lsSigma_ = 0.0f; sigma_ = 0.02f;
     histHead_ = histCount_ = 0U; liveS_ = calmS_ = secAcc_ = lastCmd_ = 0.0f;
     swOn_ = false; swPv0_ = swT_ = 0.0f;
@@ -126,6 +127,12 @@ class Controller {
 
     // door / cold eggs: PV falls faster than half of what the hold power would lose, and by more than the noise of the slope
     door_ = !in.shadow && e > nearBand_ && lsSlope_ < -std::max(3.0f * lsSigma_, 0.5f * kAir_ * hold_);
+    // The door counts as open for the load estimate until PV is back near SV, or DOOR_LATCH_TAU transit times have run out. door_ above clears as soon as the
+    // heater has stopped the fall, with the door still open; the observer then took the door's loss for hold (18 -> 43 %) and the whole surplus arrived when the door
+    // shut (closed-loop rig, door 5 min: overshoot 1.04 -> 0.20 degC; 10 min: 2.39 -> 0.11).
+    if (door_ && latchT_ <= 0.0f) latchT_ = 1.0e-3f;
+    if (latchT_ > 0.0f) { latchT_ += dt; if (e <= nearBand_) latchT_ = 0.0f; }
+    doorLatch_ = latchT_ > 0.0f && latchT_ <= DOOR_LATCH_TAU * tau_;
     state_ = in.shadow ? StFrozen : (door_ ? StDoor : (e > farBand_ && slope_ >= 0.0f ? StClimb : StTrack));
 
     // --- once per second: history, noise, slope, balance, identification
@@ -247,7 +254,7 @@ class Controller {
   void observe() {
     const uint16_t delay = static_cast<uint16_t>(tau_ + 0.5f);
     if (histCount_ < static_cast<uint16_t>(delay + 2U) || !std::isfinite(pv_)) { pm_ = pv_; return; }
-    if (!std::isfinite(pm_) || door_ || std::fabs(sp_ - pv_) > 2.0f * farBand_) { pm_ = pv_; rate_ = 0.0f; return; }
+    if (!std::isfinite(pm_) || door_ || doorLatch_ || std::fabs(sp_ - pv_) > 2.0f * farBand_) { pm_ = pv_; rate_ = 0.0f; return; }
     const float u = uAge(delay);
     const float w = 1.0f / (OBS_POLE_TAU * tau_);
     const float err = pv_ - pm_;
@@ -271,11 +278,13 @@ class Controller {
     epFresh_ = false;
     identified_ = true;
   }
+  // (The stopwatch starts as soon as full power does: waiting 0.4 tau first measured the delay short by that wait and clamped slow ovens at the lower
+  // limit - door recoveries overshot by 1.3 degC; fleet of the closed-loop rig, door 2 min: worst overshoot 1.27 -> 0.48.)
   // Transit time by stopwatch on a clean start: full power from a PV that is not moving, far under SV, until PV has risen by what the noise allows to trust.
   void stopwatch(float e, bool ok) {
     if (tauMeasured_ || !ok) { swOn_ = false; return; }
     if (!swOn_) {
-      if (e >= farBand_ && lastCmd_ >= 0.8f * cap_ && std::fabs(lsSlope_) <= 3.0f * lsSigma_ && liveS_ > 0.4f * tau_) { swOn_ = true; swPv0_ = pv_; swT_ = 0.0f; }
+      if (e >= farBand_ && lastCmd_ >= 0.8f * cap_ && std::fabs(lsSlope_) <= 3.0f * lsSigma_ && liveS_ > 5.0f) { swOn_ = true; swPv0_ = pv_; swT_ = 0.0f; }
       return;
     }
     swT_ += 1.0f;
@@ -287,7 +296,7 @@ class Controller {
   uint8_t state_ = StIdle;
   float pv_ = NAN, sp_ = 37.5f, cap_ = 100.0f;
   float kAir_ = KAIR_PRIOR, tau_ = TAU_PRIOR, hold_ = 12.0f;
-  float epMax_ = 0.0f; bool epFresh_ = true; float pm_ = NAN, rate_ = 0.0f;
+  float epMax_ = 0.0f; bool epFresh_ = true; float latchT_ = 0.0f; bool doorLatch_ = false; float pm_ = NAN, rate_ = 0.0f;
   bool identified_ = false, tauMeasured_ = false, door_ = false, wasLive_ = false;
   float lead_ = 0.0f, slope_ = 0.0f, lsSlope_ = 0.0f, lsSigma_ = 0.0f, sigma_ = 0.02f;
   float inflightMax_ = 1.0f, farBand_ = 0.5f, nearBand_ = 0.15f, kn_ = 30.0f;
