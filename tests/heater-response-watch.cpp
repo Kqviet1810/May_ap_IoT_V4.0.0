@@ -159,6 +159,39 @@ int main() {
       assert(missed == 0 && slowest <= 1800);
     }
   }
+  // 11. A door that stays open: the temperature falls or stands still for a long time under a HEALTHY heater. With the door suspected the
+  //     on-time is not evidence (no E115 for as long as 15 minutes of pause), the oven recovers once the door is closed and nothing trips.
+  {
+    HeaterResponseWatch w;
+    bool tripped = false;
+    for (int t = 0; t <= 3600; ++t) {
+      const bool doorOpen = t < 1500;                                     // 25 minutes open
+      const float temp = doorOpen ? 34.0f - 0.0006f * t : 33.1f + 0.0020f * (t - 1500);
+      w.update(true, temp, static_cast<uint32_t>(t) * 1000UL, true, MIN_RISE, REQUIRED_MS, doorOpen && t < 1000);
+      if (w.active()) tripped = true;
+    }
+    assert(!tripped);
+    // The same temperature curve without the door evidence is exactly the false trip of the field report.
+    HeaterResponseWatch blind;
+    bool blindTripped = false;
+    for (int t = 0; t <= 1500; ++t) {
+      blind.update(true, 34.0f - 0.0006f * t, static_cast<uint32_t>(t) * 1000UL, true, MIN_RISE, REQUIRED_MS, false);
+      if (blind.active()) blindTripped = true;
+    }
+    assert(blindTripped);
+    std::puts("door open 25 min: no E115 with the door evidence; the same curve without it trips (the false alarm of the field report)");
+  }
+  // 12. A dead heater is still found when the door evidence is claimed: the pause is bounded by one window, so the trip comes within two windows.
+  {
+    HeaterResponseWatch w;
+    int at = -1;
+    for (int t = 0; t <= 4000 && at < 0; ++t) {
+      w.update(true, 34.0f, static_cast<uint32_t>(t) * 1000UL, true, MIN_RISE, REQUIRED_MS, true);
+      if (w.active()) at = t;
+    }
+    assert(at > 0 && at <= 1850);
+    std::printf("dead heater with the door evidence claimed all the time: trips at %d s (<= 2 windows)\n", at);
+  }
   std::puts("HEATER RESPONSE WATCH: ALL PASSED");
   return 0;
 }

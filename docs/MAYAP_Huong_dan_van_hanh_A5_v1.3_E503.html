@@ -183,6 +183,13 @@ tr:target td:first-child strong{color:#8a5a00}
 <td>Nhiệt dao động bất thường.</td>
 <td>Kiểm tra PID, vị trí cảm biến, tuần hoàn gió, relay/SSR và nhiễu cảm biến.</td>
 </tr>
+<tr id="E116">
+<td><strong>E116</strong></td>
+<td><code>DoorOpenSuspected</code></td>
+<td>WARNING</td>
+<td>Máy không có công tắc cửa: cửa mở được suy ra khi nhiệt độ rơi như lúc cửa mở và chưa lên lại. Cảnh báo hiện khi một phần ba bằng chứng E115 đã tích luỹ, tức là trước E115 hai phần ba cửa sổ. Trong lúc đó E115 tạm dừng cộng dồn (tối đa thêm một cửa sổ).</td>
+<td>Đóng cửa buồng ấp. Nếu cửa đã đóng mà nhiệt vẫn không lên thì kiểm tra heater, SSR, contactor (E115 sẽ báo).</td>
+</tr>
 <tr id="E115">
 <td><strong>E115</strong></td>
 <td><code>HeaterNotHeating</code></td>

@@ -2842,13 +2842,13 @@
 
   // event.code - 1000 = FaultCode, doi chieu bang loi faultDescriptor() trong
   // machine_control.h. CAP NHAT DONG BO khi firmware them ma loi moi vao
-  // FaultCode (danh sach nay khop dung 41 ma trong enum FaultCode - moi ma
+  // FaultCode (danh sach nay khop dung 42 ma trong enum FaultCode - moi ma
   // cung la mot neo #E<ma> trong docs/MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.html; test tinh bat lech).
   const FAULT_TITLES = {
     101: 'Mất cảm biến', 102: 'Cảm biến sai', 103: 'Cảm biến bất thường', 104: 'Cảm biến nhiệt bị đứng',
     110: 'Nhiệt độ thấp', 111: 'Nhiệt độ cao', 112: 'Quá nhiệt khẩn cấp',
     113: 'Nhiệt độ biến thiên nhanh', 114: 'Nhiệt độ không ổn định',
-    115: 'Thanh nhiệt không nóng', 120: 'Độ ẩm thấp', 121: 'Độ ẩm cao',
+    115: 'Thanh nhiệt không nóng', 116: 'Cửa mở? Hãy đóng cửa', 120: 'Độ ẩm thấp', 121: 'Độ ẩm cao',
     130: 'Tắt công tắc nhiệt', 132: 'Cần chuyển sang Tự động',
     133: 'Tự động bị tắt giữa mẻ', 134: 'Tự động đảo bị tắt',
     135: 'Chờ xác nhận áp lại quá lâu', 136: 'Mẻ ấp quá hạn',
@@ -2879,6 +2879,7 @@
     113: 'Tốc độ thay đổi nhiệt độ vượt ngưỡng bình thường.',
     114: 'Nhiệt độ dao động vượt biên độ cho phép quanh mức đặt.',
     115: 'Thanh nhiệt đang bật nhưng nhiệt độ không tăng đủ.',
+    116: 'Nhiệt độ rơi như khi cửa mở và chưa lên lại. Đóng cửa buồng ấp. Nếu cửa đã đóng mà nhiệt vẫn không lên thì kiểm tra thanh nhiệt (E115 sẽ báo).',
     120: 'Độ ẩm đang dưới ngưỡng cấu hình.',
     121: 'Độ ẩm đang vượt ngưỡng cấu hình.',
     130: 'Công tắc vật lý cho phép nhiệt đang tắt trong lúc mẻ chạy.',

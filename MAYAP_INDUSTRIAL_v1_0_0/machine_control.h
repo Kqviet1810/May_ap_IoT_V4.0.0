@@ -417,6 +417,9 @@ enum class FaultCode : uint16_t {
   TemperatureRateExceeded = 113,
   TemperatureUnstable = 114,
   HeaterNotHeating = 115,
+  // Warning before E115: no door switch exists, a door that stays open is inferred from the fall of the temperature. While it is suspected the E115 evidence
+  // is paused (bounded) and the HMI / Web say: close the door.
+  DoorOpenSuspected = 116,
   HumidityLow = 120,
   HumidityHigh = 121,
   HeaterSwitchOffDuringBatch = 130,
@@ -526,6 +529,7 @@ inline const FaultDescriptor &faultDescriptor(FaultCode code) {
     // toan cung nhu Low/HighTemperature - khong inhibit SSR/master, chi bao.
     {FaultCode::TemperatureRateExceeded, FaultSeverity::Warning, 60U, AlarmTempHigh, false, false, false, false, false, false, "TEMP RATE HIGH"},
     {FaultCode::TemperatureUnstable, FaultSeverity::Warning, 45U, AlarmTempHigh, false, false, false, false, false, false, "TEMP UNSTABLE"},
+    {FaultCode::DoorOpenSuspected, FaultSeverity::Warning, 190U, AlarmSystem, false, false, false, false, false, false, "DOOR OPEN SUSPECTED"},
     {FaultCode::HeaterNotHeating, FaultSeverity::Stop, 226U, AlarmSystem, true, true, true, false, true, true, "HEATER NOT HEATING"},
     // Mat mot chuc nang thiet yeu trong luc me dang chay phai bao ngay.
     {FaultCode::HeaterSwitchOffDuringBatch, FaultSeverity::Stop, 222U, AlarmSystem, false, true, true, false, false, false, "HEATER SWITCH OFF"},
@@ -618,7 +622,7 @@ inline FaultSound faultSoundClass(FaultCode code) {
     case FaultCode::ResumeRequiresAuto: case FaultCode::AutoModeOffDuringBatch: case FaultCode::AutoTurningDisabledDuringBatch:
     case FaultCode::ResumeConfirmationPending: case FaultCode::BatchOverdue: case FaultCode::ResumeRtcWaitTooLong: case FaultCode::BatchOverdueConfirmationPending:
     case FaultCode::TurnLimitConflict: case FaultCode::TurnTimeout: case FaultCode::TurnLimitStuck: case FaultCode::TurnCommandConflict:
-    case FaultCode::TurnMechanicalCheckRequired: case FaultCode::SirenBatteryLow:
+    case FaultCode::TurnMechanicalCheckRequired: case FaultCode::SirenBatteryLow: case FaultCode::DoorOpenSuspected:
       return FaultSound::Chime;
     default:
       return FaultSound::Silent;                  // diagnostics: TemperatureRateExceeded, TemperatureUnstable, StorageDegraded, RelayRateExceeded, RtcFailure,
@@ -6064,9 +6068,18 @@ class MachineController {
     const uint32_t responseRequiredOnMs =
         static_cast<uint32_t>(config_.heaterStuckDurationSec) * 1000UL;
     // GPIO1 energizes both physical SSRs: ON is full 16 kW bank power.
+    // An open door is inferred (there is no door switch): the controller sees the temperature fall the way cold air makes it fall. The suspicion is held until
+    // the temperature has shown a rise (the watch resets its evidence then) or the demand is gone; while it is held the E115 evidence is paused (bounded).
+    if (thermalV3_.controller().doorDetected()) doorSuspected_ = true;
+    if (!responseDemand || heaterWatch_.riseC(temperature_) >= config_.heaterStuckMinRiseC) doorSuspected_ = false;
     heaterWatch_.update(responseDemand, temperature_, now, outputs_.state().heaterSsr,
-                        config_.heaterStuckMinRiseC, responseRequiredOnMs);
+                        config_.heaterStuckMinRiseC, responseRequiredOnMs, doorSuspected_);
     heaterNotHeatingActive_ = heaterWatch_.active();
+    // The warning goes up when a third of the E115 evidence is in (a third of the configured window, nothing typed) with the door suspected, so it comes
+    // two thirds of a window BEFORE E115 would have.
+    const bool doorWarning = doorSuspected_ && !heaterNotHeatingActive_ && heaterWatch_.accumOnMs() + heaterWatch_.pausedMs() >= responseRequiredOnMs / 3UL;
+    faults_.set(FaultCode::DoorOpenSuspected, doorWarning, now,
+                static_cast<int16_t>(lroundf(heaterWatch_.riseC(temperature_) * 10.0f)));
 
     const bool sensorGrace = !timeReached(now, sensorStartupGraceUntil_) &&
                              !sensorUsable_;
@@ -8377,6 +8390,7 @@ class MachineController {
   bool temperatureUnstableActive_ = false;
   HeaterResponseWatch heaterWatch_;
   bool heaterNotHeatingActive_ = false;
+  bool doorSuspected_ = false;                      // the temperature fell the way an open door makes it fall (see the E115 watch)
 
   // --- Giam sat suc khoe he thong (v3.6.0) - xem serviceHealthMonitor() ---
   PeriodicGate healthCheckGate_{HEALTH_CHECK_INTERVAL_MS};
