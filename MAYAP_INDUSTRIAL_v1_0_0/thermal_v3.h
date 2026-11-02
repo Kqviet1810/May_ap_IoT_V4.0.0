@@ -247,6 +247,9 @@ class Controller {
   // THE writer of hold (besides the correction in step()): the energy balance, read only where it does not depend on kAir (PV flat within the
   // uncertainty of its slope) and over a calm stretch (no door, fan or vent-line hold):  hold = (power that reached the oven) - slope / kAir.
   void updateHold() {
+    // A recovery (a door, cold eggs, a start) is a warm-up like any other, not a load to learn from while it runs: hold is read only once PV has settled
+    // (|error| inside twice the landing band). Measured: mean 74.0 -> 75.7 % and the cold-tray error halves (fleet bench, fan 100 W).
+    if (std::fabs(sp_ - pv_) > 2.0f * farBand_) return;
     const float win = 1.6f * tau_, minWin = 0.6f * tau_;
     const float span = std::min(win, std::min(calmS_, liveS_));
     if (span < minWin) return;
