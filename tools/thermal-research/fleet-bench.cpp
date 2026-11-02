@@ -123,7 +123,7 @@ static Res run(const PlantParams &p0, int scen) {
     lastU = u;
     double extra = (scen == 2 && t >= tEv && t < tEv + 150) ? 12.0 : 0.0;
     pl.step(std::min(100.0, (double)u + extra), fan, door);
-    if (getenv("DUMP") && i % 300 == 0 && t >= 0 && t <= 12000) std::printf("t=%6.0f pv=%.2f true=%.2f u=%5.1f hold=%5.1f int=%+.2f fanLoss=%.1f bump=%.1f fan=%d on=%.0f off=%.0f\n", t, pv, pl.sensor(), u, c.pHold(), c.integral(), c.fanLoss(), c.fanBump(), (vline||sched) ? 1 : 0, in.ventOnInS, in.ventOffInS);
+    if (getenv("DUMP") && i % 300 == 0 && t >= 0 && t <= 12000) std::printf("t=%6.0f pv=%.2f true=%.2f u=%5.1f hold=%5.1f kair=%.1e id=%d tau=%.0f fanLoss=%.1f bump=%.1f fan=%d on=%.0f off=%.0f\n", t, pv, pl.sensor(), u, c.pHold(), c.kAir(), (int)c.identified(), c.tauTransit(), c.fanLoss(), c.fanBump(), (vline||sched) ? 1 : 0, in.ventOnInS, in.ventOffInS);
     const float pvm = truth ? (float)pl.sensor() : pv;   // TRUTH=1: every measure below reads the real temperature of the oven, not the reading
     if (r.reach < 0 && pvm >= 37.4f) r.reach = t;
     if (t < tEv && pvm > r.peak) r.peak = pvm;

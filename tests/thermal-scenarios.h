@@ -5,6 +5,8 @@
 // The same rig can also drive the controller and the E115 rule of firmware 2.3.4 (kept frozen in tests/fixtures/thermal-v3-2.3.4/): the
 // 29/10 failure is reproduced on the old code and shown fixed on the new one on the SAME simulated oven.
 #include "thermal-sim.h"
+#include "../MAYAP_INDUSTRIAL_v1_0_0/sensor_fine.h"
+#include <type_traits>
 #ifndef THERMAL_V3_HEADER
 #define THERMAL_V3_HEADER "../MAYAP_INDUSTRIAL_v1_0_0/thermal_v3.h"
 #endif
@@ -53,6 +55,11 @@ class LegacyHeaterWatch {
 // One oven, one controller, one E115 watch, advancing in 0.1 s steps like the control task.
 template <class Ctl, class In, class Watch>
 class RigT {
+  // The production path of a controller that takes the fine value and slope (3.5): the 0.1 degC reading every 2 s goes through sensor_fine.h
+  // (short window for the value the controller regulates, long window for the slope). The frozen 2.3.4 controller keeps the filtered chain.
+  template <class I> static auto setSlope(I &i, float s, int) -> decltype(i.slopeFine, void()) { i.slopeFine = s; }
+  template <class I> static void setSlope(I &, float, long) {}
+  static constexpr bool fineInput = std::is_same<Ctl, thermalv3::Controller>::value;
  public:
   RigT(const PlantParams &p, double airC, double eggC, double sensorStepC = 0.1) : plant(p, airC, eggC), chain(sensorStepC) {
     for (int i = 0; i < 8; ++i) chain.sample(plant.sensor());
@@ -99,8 +106,13 @@ class RigT {
 
  private:
   void one(bool door, bool vent) {
-    if (tick_ % 20 == 0) chain.sample(plant.sensor());
+    if (tick_ % 20 == 0) {
+      chain.sample(plant.sensor());
+      const float q = static_cast<float>(std::lround(plant.sensor() * 10.0) / 10.0);
+      pvEst_.update(q, static_cast<float>(t_), 0.1f, pvPar_); slopeEst_.update(q, static_cast<float>(t_), 0.1f, slopePar_); lastSample_ = t_;
+    }
     in.pv = chain.value();
+    if (fineInput && pvEst_.ready()) { in.pv = pvEst_.valueAt(static_cast<float>(t_ - lastSample_)); setSlope(in, slopeEst_.slopePerS(), 0); }
     in.permit = !tripped_ && t_ >= startS_;
     in.ventFan = vent;
     const auto o = ctl.step(in);
@@ -113,12 +125,14 @@ class RigT {
     ++tick_;
     t_ = static_cast<double>(tick_) * 0.1;
     if (!tripped_) {
-      const bool demand = in.pv < in.sp - static_cast<float>(HYST_C);
-      watch.update(demand, in.pv, static_cast<uint32_t>(t_ * 1000.0 + 0.5), on, static_cast<float>(MIN_RISE_C), E115_ON_MS);
+      const bool demand = chain.value() < in.sp - static_cast<float>(HYST_C);
+      watch.update(demand, chain.value(), static_cast<uint32_t>(t_ * 1000.0 + 0.5), on, static_cast<float>(MIN_RISE_C), E115_ON_MS);
       if (watch.active()) { tripped_ = true; tripT_ = t_; }
     }
     if (tick_ % 10 == 0) { ta_.push_back(static_cast<float>(plant.air())); pv_.push_back(in.pv); u_.push_back(static_cast<float>(u)); }
   }
+  static sensorfine::Params shortPar() { sensorfine::Params p; p.minWindowS = 10.0f; p.maxWindowS = 30.0f; return p; }
+  sensorfine::Estimator pvEst_, slopeEst_; sensorfine::Params pvPar_ = shortPar(), slopePar_; double lastSample_ = 0.0;
   long tick_ = 0;
   double t_ = 0.0, t0_ = 0.0, duty_ = 0.0, lastU_ = 0.0, tripT_ = -1.0, startS_ = 0.0;
   bool tripped_ = false;
