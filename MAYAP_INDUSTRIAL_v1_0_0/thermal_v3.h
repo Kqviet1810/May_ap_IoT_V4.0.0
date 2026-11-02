@@ -16,7 +16,7 @@
 //
 //   power  u = hold + f(el),  el = (SV - PV) - inflight,  inflight = kAir * sum over the last tau seconds of (u - hold)
 //   f: full power while el >= far (a door, cold eggs, a start), linear landing down to kn * near at el = near, kn * el below, 3 kn * el above SV.
-//   hold has ONE writer (updateHold): the energy balance on flat PV, plus a correction by the predicted error.
+//   hold has ONE writer (observe): a disturbance observer on the measured PV (see there).
 //   kAir is measured at every saturated climb, tau by the stopwatch of a clean start.
 //   The day-profile fan: its share is measured (fanLoss) and paid one transit time ahead (fanBump).
 // What the machine does around the controller (protections, vent line) can only cut; the one rule that reaches into the state: a protection cut
@@ -32,6 +32,8 @@ namespace thermalv3 {
 // a measurement may take relative to them (a physical plausibility guard, not a tuning).
 constexpr float KAIR_PRIOR = 8.0e-5f, KAIR_LO = 1.0f / 3.0f, KAIR_HI = 10.0f;
 constexpr float TAU_PRIOR = 150.0f, TAU_LO = 0.6f, TAU_HI = 1.5f;
+constexpr float KAIR_WARM = 2.5e-4f;       // a start close to SV has no climb to measure kAir on: the middle of the fleet instead of its slowest oven (gain safe on both sides)
+constexpr float OBS_POLE_TAU = 1.5f, OBS_LEAK_TAU = 8.0f;   // disturbance observer: poles at 1/(1.5 tau); the rate of the load leaks away over 8 tau (measured on the fleet bench)
 constexpr float HOLD_PRIOR_OF_CAP = 0.12f;
 constexpr float SIGMA_FLOOR = 0.004f;      // a reading of a 0.1 degC sensor cannot be quieter than this (degC)
 constexpr uint16_t HIST_LEN = 640U;        // seconds of history (memory, not tuning): 4 x the largest transit time
@@ -69,10 +71,10 @@ class Controller {
     state_ = StIdle; pv_ = NAN; sp_ = 37.5f; cap_ = 100.0f;
     kAir_ = KAIR_PRIOR; tau_ = TAU_PRIOR; hold_ = HOLD_PRIOR_OF_CAP * 100.0f;
     identified_ = tauMeasured_ = door_ = wasLive_ = false;
-    fanLoss_ = fanBump_ = fanRunS_ = 0.0f;
     lead_ = slope_ = lsSlope_ = lsSigma_ = 0.0f; sigma_ = 0.02f;
     histHead_ = histCount_ = 0U; liveS_ = calmS_ = secAcc_ = lastCmd_ = 0.0f;
     swOn_ = false; swPv0_ = swT_ = 0.0f;
+    pm_ = NAN; rate_ = 0.0f;
     derive();
     for (uint16_t i = 0U; i < HIST_LEN; ++i) { pvHist_[i] = 0.0f; uHist_[i] = 0.0f; }
   }
@@ -96,19 +98,13 @@ class Controller {
       while (secAcc_ >= 1.0f) { secAcc_ -= 1.0f; pushHist(std::isfinite(pv_) ? pv_ : 0.0f, 0.0f); }
       return out;
     }
+    // Started close to SV (a reboot, a restart): there is no climb to measure kAir on - begin at the middle of the fleet, not at its slowest oven.
+    if (!wasLive_ && !identified_ && !tauMeasured_ && liveS_ <= 0.0f && std::fabs(in.sp - in.pv) < farBand_) kAir_ = KAIR_WARM;
     wasLive_ = true; pv_ = in.pv; sp_ = in.sp;
     slope_ = std::isfinite(in.slopeFine) ? in.slopeFine : lsSlope_;
     const float e = sp_ - pv_;
 
-    // --- the day-profile fan: will it run one transit time from now? (known only while a profile runs)
-    const bool fanProfile = in.ventOnInS < 1.0e5f && in.ventOffInS < 1.0e5f;
-    const bool fanLearn = in.ventFan;
-    {
-      const bool planned = fanProfile && in.ventOnInS <= tau_ && tau_ < in.ventOffInS;
-      const float want = ((planned || in.ventFan) && !in.shadow && !door_) ? fanLoss_ : 0.0f;
-      const float stepMax = (cap_ / (0.25f * tau_)) * dt;                // the whole ceiling in a quarter of a transit time
-      fanBump_ += std::max(-stepMax, std::min(stepMax, want - fanBump_));
-    }
+    // The exhaust fan needs no rule of its own: it is a load like any other and the observer below sees it (a separate fan model counted it twice).
 
     // --- power: hold plus a saturating function of the PREDICTED error (the heat on its way is counted before it arrives)
     updateInflight();
@@ -119,12 +115,11 @@ class Controller {
     else if (el >= nearBand_) d = kn_ * nearBand_ + (span - kn_ * nearBand_) * (el - nearBand_) / std::max(1.0e-6f, farBand_ - nearBand_);
     else if (el >= 0.0f) d = kn_ * el;
     else d = std::max(-hold_, 3.0f * kn_ * el);                           // above SV: three times the gain
-    float cmd = hold_ + d + fanBump_;
+    float cmd = hold_ + d;
     if (in.shadow) cmd = 0.0f;
     cmd = std::max(0.0f, std::min(cap_, cmd));
 
     // --- hold's correction by the predicted error (inside the landing band only; the balance below is the other, slower, writer)
-    if (!in.shadow && !fanLearn && std::fabs(el) < farBand_) hold_ = std::max(0.0f, std::min(cap_, hold_ + ki_ * el * dt));
 
     // door / cold eggs: PV falls faster than half of what the hold power would lose, and by more than the noise of the slope
     door_ = !in.shadow && e > nearBand_ && lsSlope_ < -std::max(3.0f * lsSigma_, 0.5f * kAir_ * hold_);
@@ -134,13 +129,12 @@ class Controller {
     secAcc_ += dt; liveS_ += dt;
     if (secAcc_ >= 1.0f) {
       secAcc_ -= 1.0f;
-      const float net = in.shadow ? hold_ : std::max(0.0f, cmd - fanBump_);   // what the oven is given, without the fan's share
+      const float net = in.shadow ? hold_ : cmd;
       pushHist(pv_, in.shadow ? 0.0f : net);
       if (in.shadow || door_ || in.ventFan) calmS_ = 0.0f; else calmS_ += 1.0f;
       measureNoiseAndSlope();
       derive();
-      if (in.permit && !in.shadow) { updateHold(); identifyGain(e); }
-      if (fanLearn && !door_ && !in.shadow) { fanRunS_ += 1.0f; learnFan(); } else fanRunS_ = 0.0f;
+      if (in.permit && !in.shadow) { observe(); identifyGain(e); }
       stopwatch(e, in.permit && !in.shadow);
     }
     lastCmd_ = in.shadow ? 0.0f : cmd;
@@ -169,8 +163,8 @@ class Controller {
   float integral() const { return 0.0f; }
   float slopeMks() const { return slope_ * 1000.0f; }
   bool doorDetected() const { return door_; }
-  float fanLoss() const { return fanLoss_; }
-  float fanBump() const { return fanBump_; }
+  float fanLoss() const { return 0.0f; }
+  float fanBump() const { return 0.0f; }
 
   // What an earlier run of THIS oven learned (thermal_learn.h keeps it across a restart): the numbers of the oven, then the hold level of the batch.
   void importOven(float kAir, float tauTransit, uint16_t /*pipeLen*/) {
@@ -195,7 +189,6 @@ class Controller {
     farBand_ = std::max(farBand_, nearBand_ * 2.0f);
     const float siMc = 1.0f / (2.0f * kAir_ * 1.35f * tau_);
     kn_ = std::max(0.05f * span / farBand_, std::min(siMc, 0.5f * span / nearBand_));
-    ki_ = kn_ / (4.0f * 2.0f * 1.35f * tau_);                            // SIMC: Ti = 4 (tau_c + theta), tau_c = theta = 1.35 tau
   }
   void pushHist(float pv, float u) {
     pvHist_[histHead_] = pv; uHist_[histHead_] = std::max(0.0f, std::min(100.0f, u));
@@ -244,27 +237,22 @@ class Controller {
     for (uint16_t i = 0U; i < n; ++i) sum += uAge(static_cast<uint16_t>(delay + i));
     return sum / static_cast<float>(n);
   }
-  // THE writer of hold (besides the correction in step()): the energy balance, read only where it does not depend on kAir (PV flat within the
-  // uncertainty of its slope) and over a calm stretch (no door, fan or vent-line hold):  hold = (power that reached the oven) - slope / kAir.
-  void updateHold() {
-    // A recovery (a door, cold eggs, a start) is a warm-up like any other, not a load to learn from while it runs: hold is read only once PV has settled
-    // (|error| inside twice the landing band). Measured: mean 74.0 -> 75.7 % and the cold-tray error halves (fleet bench, fan 100 W).
-    if (std::fabs(sp_ - pv_) > 2.0f * farBand_) return;
-    const float win = 0.8f * tau_, minWin = 0.6f * tau_;
-    const float span = std::min(win, std::min(calmS_, liveS_));
-    if (span < minWin) return;
-    const uint16_t w = static_cast<uint16_t>(span), delay = static_cast<uint16_t>(tau_ + 0.5f);
-    if (liveS_ < static_cast<float>(w + delay + 1U)) return;
-    // Where kAir has not been measured the balance is read only on flat PV (it then does not depend on kAir); with a measured kAir it is exact on a slope too.
-    if (!identified_ && std::fabs(lsSlope_) > 3.0f * lsSigma_) return;
-    const float u = delayedPower(delay, w);
-    if (!std::isfinite(u)) return;
-    const float observed = std::max(0.0f, std::min(cap_, u - lsSlope_ / kAir_));
-    // Measured on the fleet bench: 3 tau up is too slow (the PV stands under SV for a quarter of an hour), 0.5 tau swings; 0.7 transit time with a 0.8 transit-time window (fleet bench with the peak-slope kAir: mean of climb/door/cold tray/day 73.6 -> 78.3 %) beats one transit time both ways, the
-    // best of the four tried. Known weakness: with cold eggs (a second, slower heat sink) the hold level follows the swing of PV (cold-tray situation).
-    const float gap = observed - hold_;
-    const float step = gap / (0.7f * tau_);
-    hold_ = std::max(0.0f, std::min(cap_, hold_ + step));
+  // THE writer of hold: a disturbance observer. A model of PV is driven by the power that has reached the oven (the command one transit time ago);
+  // the error between the measured and the model PV corrects the model, the load (hold) and the load's rate of change. Three poles at 1/(1.5 tau)
+  // (a ramp of load - cold eggs, the walls giving back heat - is followed without a standing error), the rate leaks away over 8 tau so that it does not
+  // wander when nothing supports it. The estimate is held while the door is open or PV is far from SV (the load is then not what the error is about).
+  void observe() {
+    const uint16_t delay = static_cast<uint16_t>(tau_ + 0.5f);
+    if (histCount_ < static_cast<uint16_t>(delay + 2U) || !std::isfinite(pv_)) { pm_ = pv_; return; }
+    if (!std::isfinite(pm_) || door_ || std::fabs(sp_ - pv_) > 2.0f * farBand_) { pm_ = pv_; rate_ = 0.0f; return; }
+    const float u = uAge(delay);
+    const float w = 1.0f / (OBS_POLE_TAU * tau_);
+    const float err = pv_ - pm_;
+    pm_ += kAir_ * (u - hold_) + 3.0f * w * err;
+    const float rLim = cap_ / (2.0f * tau_);                      // the load cannot move faster than the whole ceiling in two transit times
+    rate_ = (rate_ - (w * w * w / kAir_) * err) * (1.0f - 1.0f / (OBS_LEAK_TAU * tau_));
+    rate_ = std::max(-rLim, std::min(rLim, rate_));
+    hold_ = std::max(0.0f, std::min(cap_, hold_ + rate_ - (3.0f * w * w / kAir_) * err));
   }
   // kAir at every saturated climb: the heater has been at its ceiling for a whole transit time plus a part of one, PV is far under SV and climbing.
   void identifyGain(float e) {
@@ -293,26 +281,13 @@ class Controller {
       tau_ = std::max(TAU_PRIOR * TAU_LO, std::min(TAU_PRIOR * TAU_HI, swT_ * 1.05f)); tauMeasured_ = true; swOn_ = false;
     }
   }
-  // The fan's share, measured: while the profile fan runs, slope = kAir x (power that reached the oven - hold - fan) -> fan = power - hold - slope / kAir.
-  void learnFan() {
-    if (fanRunS_ < 0.4f * tau_ || kAir_ <= 0.0f) return;
-    const uint16_t delay = static_cast<uint16_t>(tau_ + 0.5f), n = static_cast<uint16_t>(0.27f * tau_);
-    if (liveS_ < static_cast<float>(delay + n + 1U)) return;
-    const float u = delayedPower(delay, n);
-    if (!std::isfinite(u)) return;
-    const float fmax = 0.25f * cap_;                                    // the fan cannot take more than a quarter of the ceiling
-    const float obs = std::max(0.0f, std::min(fmax, u - hold_ - slope_ / kAir_));
-    fanLoss_ = std::max(0.0f, std::min(fmax, fanLoss_ + (obs - fanLoss_) * (8.0f / tau_)));
-  }
-
   uint8_t state_ = StIdle;
   float pv_ = NAN, sp_ = 37.5f, cap_ = 100.0f;
   float kAir_ = KAIR_PRIOR, tau_ = TAU_PRIOR, hold_ = 12.0f;
-  float epMax_ = 0.0f; bool epFresh_ = true;
+  float epMax_ = 0.0f; bool epFresh_ = true; float pm_ = NAN, rate_ = 0.0f;
   bool identified_ = false, tauMeasured_ = false, door_ = false, wasLive_ = false;
-  float fanLoss_ = 0.0f, fanBump_ = 0.0f, fanRunS_ = 0.0f;
   float lead_ = 0.0f, slope_ = 0.0f, lsSlope_ = 0.0f, lsSigma_ = 0.0f, sigma_ = 0.02f;
-  float inflightMax_ = 1.0f, farBand_ = 0.5f, nearBand_ = 0.15f, kn_ = 30.0f, ki_ = 0.02f;
+  float inflightMax_ = 1.0f, farBand_ = 0.5f, nearBand_ = 0.15f, kn_ = 30.0f;
   float liveS_ = 0.0f, calmS_ = 0.0f, secAcc_ = 0.0f, lastCmd_ = 0.0f;
   bool swOn_ = false; float swPv0_ = 0.0f, swT_ = 0.0f;
   float pvHist_[HIST_LEN] = {};
