@@ -97,7 +97,7 @@ static Res run(const PlantParams &p0, int scen) {
     fanPrev = vline;
     if (vline) r.fanOnMin += 0.1 / 60.0;
     if ((vline || sched || hc) && t >= 600.0) { if (lastU > 10.0f) r.fanHeatMin += 0.1 / 60.0; r.heatDuringFan += (double)lastU * 0.1 / 60.0; }
-    if (getenv("NOBLOCK")) block = false; else if (!block && pv >= 37.8f) block = true; else if (block && pv <= 37.7f) block = false;
+    { const float bOn = getenv("BLK_ON") ? (float)atof(getenv("BLK_ON")) : 37.8f, bOff = getenv("BLK_OFF") ? (float)atof(getenv("BLK_OFF")) : 37.7f; if (getenv("NOBLOCK")) block = false; else if (!block && pv >= bOn) block = true; else if (block && pv <= bOff) block = false; }
     if (highAt > 0.0f) { if (!hc && pv >= highAt) { hc = true; hcT = t; r.highs += 1; } else if (hc && pv <= highAt - 0.15f && t - hcT >= 240.0) hc = false; }
     bool fan = vline || sched || hc;
     bool door = (scen == 3 && t >= tEv && t < tEv + 180) || (scen == 4 && t >= tEv && t < tEv + 270);

@@ -34,6 +34,7 @@ constexpr float KAIR_PRIOR = 8.0e-5f, KAIR_LO = 1.0f / 3.0f, KAIR_HI = 10.0f;
 constexpr float TAU_PRIOR = 150.0f, TAU_LO = 0.6f, TAU_HI = 1.5f;
 constexpr float KAIR_WARM = 2.5e-4f;       // a start close to SV has no climb to measure kAir on: the middle of the fleet instead of its slowest oven (gain safe on both sides)
 constexpr float OBS_POLE_TAU = 1.5f, OBS_LEAK_TAU = 8.0f;   // disturbance observer: poles at 1/(1.5 tau); the rate of the load leaks away over 8 tau (measured on the fleet bench)
+constexpr float LANDING_LEAD = 1.6f;
 constexpr float HOLD_PRIOR_OF_CAP = 0.12f;
 constexpr float SIGMA_FLOOR = 0.004f;      // a reading of a 0.1 degC sensor cannot be quieter than this (degC)
 constexpr uint16_t HIST_LEN = 640U;        // seconds of history (memory, not tuning): 4 x the largest transit time
@@ -108,7 +109,9 @@ class Controller {
 
     // --- power: hold plus a saturating function of the PREDICTED error (the heat on its way is counted before it arrives)
     updateInflight();
-    const float el = e - lead_;
+    // Landing: while climbing, the heat in flight is counted 1.6 times - the high-temperature alarm sits 0.2 degC over SV, an overshoot costs far more than an
+    // earlier landing (fleet bench with the alarm cut at SV+0.2: oven never over SV+0.2 on a cold-tray recovery 23 -> 72 %, first climb 81 -> 96 %; mean pass 80.4 -> 82.7 %).
+    const float el = e - lead_ * ((slope_ > 0.0f && e > 0.0f) ? LANDING_LEAD : 1.0f);
     const float span = std::max(1.0f, cap_ - hold_);
     float d;
     if (el >= farBand_) d = span;
