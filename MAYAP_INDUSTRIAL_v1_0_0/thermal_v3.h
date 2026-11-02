@@ -122,7 +122,15 @@ constexpr float STUCK_BASE_PCT_S = 0.025f;
 constexpr float STUCK_FAR_C = 0.8f;
 constexpr float STUCK_FAR_WAIT_S = 90.0f;
 constexpr float STUCK_PER_C_PCT_S = 0.1f;
-constexpr float STUCK_AFTER_DELAY_S = 60.0f;   // a stall counts only this long after the transit time has passed since the start
+constexpr float STUCK_AFTER_DELAY_S = 60.0f;
+// "Not moving" is read from a least-squares slope over a long window, not from an instantaneous one: a 0.1 degC reading steps every 30..100 s and wobbles
+// by +-0.05, and every step reset the old flat test (the log of 02/11: 28 minutes under SV, the longest unbroken flat stretch 97 s of the 120 s that were needed,
+// the hold level crept 0.07 %/min instead of 1.5 %/min).
+constexpr uint16_t STALL_WINDOW_S = 240U;
+// A fan, a door or a vent-line hold in that window (calmS_) is a reason for the reading to stand still: it is not a stall of the oven.
+constexpr float STALL_CALM_S = 240.0f;    // seconds without a door, fan or vent-line hold before a stall near SV counts
+constexpr float STUCK_NEAR_PCT_S = 0.025f;   // the raise near SV (the old rate: a slower one fails the reboot-under-load limit of 35.5 degC)
+constexpr float STALL_SLOPE = 0.0002f;    // [degC/s] = 0.012 degC/min: under this the reading is not rising (a slow climb of 0.04 degC/min is 3x over it)
 // 2.7.0: the exhaust fan takes heat out of the box. What it takes is learned as its own level (fanLoss_, in % of heater power) and the heater pays
 // for it ONE TRANSIT TIME AHEAD: the air cools the moment the fan starts, but the heater answers only after the delay. Everything the controller
 // learns while the day-profile fan runs goes to that level, not to the hold level, so the hold level is right again the moment the fan stops.
@@ -481,14 +489,15 @@ class Controller {
     // 37.3 degC for 20 minutes).
     // Within one transit time of a start the reading cannot have answered the heater yet: that flat stretch is the delay of the oven, not a stall.
     const bool answerDue = liveS_ > tauTransit_ + STUCK_AFTER_DELAY_S;
-    if (!in.shadow && !doorDetected_ && answerDue && errTrue >= std::max(0.08f, 0.95f * dQ) && std::fabs(filteredSlope_) < 0.0015f) {
+    if (!in.shadow && !doorDetected_ && answerDue && calmS_ >= STALL_CALM_S && errTrue >= std::max(0.08f, 0.95f * dQ) &&
+        (errTrue > STUCK_FAR_C ? std::fabs(filteredSlope_) < 0.0015f : stalledUnderSv())) {
       stuckTimer_ += dt;
 #if V3X_START && V3X_RAMP
       const float stuckWait = startPhase_ ? V3X_RAMP_WAIT : 120.0f, stuckRate = startPhase_ ? V3X_RAMP_RATE : 0.025f;
 #else
       const bool stuckFar = errTrue > STUCK_FAR_C;
       const float stuckWait = stuckFar ? STUCK_FAR_WAIT_S : STUCK_WAIT_S;
-      const float stuckRate = STUCK_BASE_PCT_S + (stuckFar ? STUCK_PER_C_PCT_S * (errTrue - STUCK_FAR_C) : 0.0f);
+      const float stuckRate = stuckFar ? STUCK_BASE_PCT_S + STUCK_PER_C_PCT_S * (errTrue - STUCK_FAR_C) : STUCK_NEAR_PCT_S;
 #endif
       if (stuckTimer_ > stuckWait) {
         if (fanLearn) fanLoss_ = std::min(FAN_MAX_PCT, fanLoss_ + stuckRate * dt);
@@ -633,6 +642,15 @@ class Controller {
     uHist_[histHead_] = static_cast<uint8_t>(std::max(0.0f, std::min(100.0f, std::round(cmd))));
     histHead_ = static_cast<uint16_t>((histHead_ + 1U) % HIST_LEN);
     if (histCount_ < HIST_LEN) ++histCount_;
+  }
+  // The reading has not risen over the last STALL_WINDOW_S seconds (least-squares slope of the 1 Hz history; a fall counts as not rising).
+  bool stalledUnderSv() const {
+    if (histCount_ <= STALL_WINDOW_S + 1U || liveS_ < static_cast<float>(STALL_WINDOW_S)) return false;
+    const float xm = 0.5f * static_cast<float>(STALL_WINDOW_S - 1U), ref = pvAge(0U);
+    float sxy = 0.0f;
+    for (uint16_t i = 0U; i < STALL_WINDOW_S; ++i) sxy += (static_cast<float>(i) - xm) * (pvAge(static_cast<uint16_t>(STALL_WINDOW_S - 1U - i)) - ref);
+    const float sxx = static_cast<float>(STALL_WINDOW_S) * (static_cast<float>(STALL_WINDOW_S) * static_cast<float>(STALL_WINDOW_S) - 1.0f) / 12.0f;
+    return sxy / sxx < STALL_SLOPE;
   }
   float pvAge(uint16_t age) const { return pvHist_[(histHead_ + HIST_LEN - 1U - age) % HIST_LEN]; }
   float uAge(uint16_t age) const { return static_cast<float>(uHist_[(histHead_ + HIST_LEN - 1U - age) % HIST_LEN]); }

@@ -181,6 +181,11 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-learn.cpp -o /tmp/mayap-thermal-learn
           /tmp/mayap-thermal-learn
 
+      - name: "Real night log of 02/11 replayed into the controller: a stall 0.1-0.24 degC under SV is answered (Anti-Stuck reads the trend over 240 s, not an instantaneous slope)"
+        run: |
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-stall-log.cpp -o /tmp/mayap-thermal-stall-log
+          /tmp/mayap-thermal-stall-log
+
       - name: "Thermal controller 2.7.0 additions: the day-profile fan is measured and paid for one transit time ahead, Anti-Stuck waits out the delay of the oven"
         run: |
           g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-fan.cpp -o /tmp/mayap-thermal-fan
