@@ -2957,7 +2957,7 @@ constexpr uint8_t PIN_DE_RE = PIN_RS485_DE_RE;
 constexpr uint32_t BAUD = 9600;
 constexpr uint8_t SLAVE_ID = 1;
 constexpr uint32_t FIRST_POLL_DELAY_MS = 500;
-constexpr uint32_t POLL_PERIOD_MS = 2000;
+constexpr uint32_t POLL_PERIOD_MS = 1000;   // 3.5: one reading a second (was 2 s) - the controller answers a change of the air earlier; the stale limit below is still > 6 polls
 // Cold start only: identify the sensor with the SAME verification (six consecutive CRC-valid, uniquely matching pairs, then three good
 // samples) but poll every 600 ms instead of every 2 s. Bounded in frames AND time, so an absent sensor is never polled fast for long.
 constexpr uint32_t STARTUP_POLL_PERIOD_MS = 600;
@@ -5315,27 +5315,14 @@ class MachineController {
     p.end();
     return ok;
   }
-  // At boot: the oven constants of the last stable run start the next first climb (which measures them again). A record that fails any check is ignored.
+  // 3.5: nothing the thermal controller learned is kept across a restart any more. After a restart (or a resumed batch) it starts from its priors and
+  // reads the oven again within a transit time or two with its disturbance observer (a start next to SV begins at the middle of the fleet's kAir).
+  // A record written by an older version stays in NVS untouched until "clear thermal learning" erases it; it is never read.
   void loadThermalLearning() {
     learnSavedValid_ = false;
     learnSource_ = 0U;
-    thermallearn::Snapshot s;
-    if (!readLearnedBlob(s) || !thermallearn::ovenUsable(s, learnHeaterCap())) return;
-    learnSaved_ = s;
-    learnSavedValid_ = true;
-    thermalV3_.controller().importOven(s.kAir, s.tau, s.pipeLen);
-    learnTracker_.saved(s.pHold);
-    learnSource_ = 1U;
-    mayapSerialPrintf(false, "[THERMAL] restored oven: kAir=%.2e tau=%.0fs pipe=%us (hold %.1f%% kept for batch %lu)\n", static_cast<double>(s.kAir),
-                      static_cast<double>(s.tau), static_cast<unsigned>(s.pipeLen), static_cast<double>(s.pHold), static_cast<unsigned long>(s.batchEpoch));
   }
-  // The batch that was running is resumed after a restart: its hold level comes back too, and the numbers count as measured.
-  void applyLearnedHoldOnResume() {
-    if (!learnSavedValid_ || !thermallearn::holdUsable(learnSaved_, learnHeaterCap(), batchStartEpoch_, config_.targetTemp)) return;
-    thermalV3_.controller().importHold(learnSaved_.pHold, true);
-    learnSource_ = 2U;
-    mayapSerialPrintf(false, "[THERMAL] resumed batch: hold level %.1f%% restored\n", static_cast<double>(learnSaved_.pHold));
-  }
+  void applyLearnedHoldOnResume() {}
   bool clearThermalLearning() {
     const bool ok = eraseLearnedBlob();
     learnSavedValid_ = false;
@@ -5355,24 +5342,7 @@ class MachineController {
     } else {
       learnHeaterFaultSeen_ = false;
     }
-    const thermalv3::Controller &v3 = thermalV3_.controller();
-    const bool stable = batchRunning_ && sensorUsable_ && !testModeActive_ && !emergencyActive_ && !highTemperatureActive_ && !ventHeaterBlock_ &&
-        !heaterNotHeatingActive_ && !v3.doorDetected() && v3.identified() &&
-        thermalV3_.last().state == thermalv3::StTrack;
-    if (!learnTracker_.update(now, stable, temperature_, config_.targetTemp, v3.pHold(), thermallearn::StableTracker::Params())) return;
-    thermallearn::Snapshot s;
-    s.pHold = v3.pHold(); s.kAir = v3.kAir(); s.tau = v3.tauTransit(); s.pipeLen = v3.pipeLen();
-    s.sp = config_.targetTemp; s.capPct = learnHeaterCap();
-    s.batchEpoch = batchStartEpoch_; s.savedEpoch = rtc_.valid() ? rtc_.epoch() : 0U;
-    if (writeLearnedBlob(s)) {
-      learnSaved_ = s;
-      learnSavedValid_ = true;
-      learnTracker_.saved(s.pHold);
-      mayapSerialPrintf(false, "[THERMAL] stable for 2 h: saved hold=%.1f%% kAir=%.2e tau=%.0fs\n", static_cast<double>(s.pHold),
-                        static_cast<double>(s.kAir), static_cast<double>(s.tau));
-    } else {
-      mayapSerialPrintf(false, "[THERMAL] could not save what was learned (tries again in 10 min)\n");
-    }
+    (void)now;                                                    // 3.5: no stable-run tracker and no NVS write any more (see loadThermalLearning)
   }
 
   // ---- Thermal V3 slot glue ----
@@ -5397,18 +5367,28 @@ class MachineController {
   // window the controller has on its own, so the controller measures what the exhaust fan takes out of the box from this slope. The value the
   // controller regulates, the protections and the display are the unchanged chain.
   void feedFineEstimators(uint32_t now, float q) {
-    if (thermalV3SensorStepC() < 0.05f) { fineSlopeEst_.reset(); return; }          // a 0.01 sensor needs no help
+    if (thermalV3SensorStepC() < 0.05f) { fineSlopeEst_.reset(); fineValueEst_.reset(); return; }   // a 0.01 sensor needs no help
     if (fineBaseMs_ == 0U || elapsedMs(now, fineBaseMs_) > 80000000UL) {           // float seconds stay exact: rebase about once a day
-      fineSlopeEst_.reset(); fineBaseMs_ = now ? now : 1U;
+      fineSlopeEst_.reset(); fineValueEst_.reset(); fineBaseMs_ = now ? now : 1U;
     }
-    fineSlopeEst_.update(q, static_cast<float>(elapsedMs(now, fineBaseMs_)) * 0.001f, 0.1f, fineSlopeParams_);
+    const float tS = static_cast<float>(elapsedMs(now, fineBaseMs_)) * 0.001f;
+    fineSlopeEst_.update(q, tS, 0.1f, fineSlopeParams_);
+    fineValueEst_.update(q, tS, 0.1f, fineValueParams_);
     fineLastMs_ = now;
   }
+  // 3.5: the value the controller regulates is the fine one (short window, 10..30 s: it follows the air, a long window lags and degrades the control);
+  // the protections and the display keep the unchanged chain. A fine value that disagrees with the chain by more than 0.3 degC is not used.
+  float fineControlValue(uint32_t now) const {
+    if (!fineFresh(now) || !fineValueEst_.ready() || !sensorUsable_) return temperature_;
+    const float v = fineValueEst_.valueAt(static_cast<float>(elapsedMs(now, fineLastMs_)) * 0.001f);
+    return (std::isfinite(v) && std::fabs(v - temperature_) < 0.3f) ? v : temperature_;
+  }
+  static sensorfine::Params fineShortParams() { sensorfine::Params p; p.minWindowS = 10.0f; p.maxWindowS = 30.0f; return p; }
   bool fineFresh(uint32_t now) const { return fineBaseMs_ != 0U && fineSlopeEst_.ready() && elapsedMs(now, fineLastMs_) < 6000UL; }
   ThermalV3SlotIn buildThermalV3SlotIn(uint32_t now, bool permit, bool shadow = false) const {
     ThermalV3SlotIn si;
     si.slopeFine = (fineFresh(now) && sensorUsable_) ? fineSlopeEst_.slopePerS() : NAN;
-    si.nowMs = now; si.pv = temperature_; si.sp = config_.targetTemp; si.newSample = newSensorSample_; si.permit = permit; si.shadow = shadow && !permit;
+    si.nowMs = now; si.pv = fineControlValue(now); si.sp = config_.targetTemp; si.newSample = newSensorSample_; si.permit = permit; si.shadow = shadow && !permit;
     si.capPct = static_cast<float>(config_.maxHeaterPower);
     const float offsetDown = std::max(0.0f, -config_.tempOffset);
     si.headroomC = std::min(config_.highTempAlarm, config_.ventOnTemp) - offsetDown - config_.targetTemp;
@@ -8434,6 +8414,8 @@ class MachineController {
   HeaterBurstScheduler heaterBurst_{HEATER_GROUP_COUNT, HEATER_BURST_QUANTUM_MS};
   sensorfine::Estimator fineSlopeEst_;                // slope of the 0.1 degC reading (long window)
   sensorfine::Params fineSlopeParams_;
+  sensorfine::Estimator fineValueEst_;                // value of the 0.1 degC reading (short window): what the controller regulates
+  sensorfine::Params fineValueParams_ = fineShortParams();
   uint32_t fineBaseMs_ = 0U, fineLastMs_ = 0U;
   ThermalV3Slot thermalV3_;                          // Thermal V3 controller (RAM ~3.8 KB: 10 minutes of 1 Hz history for the energy balance)
   uint32_t pidLogAt_ = 0;                            // last PID log ring sample

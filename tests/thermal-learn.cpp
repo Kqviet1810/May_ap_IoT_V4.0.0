@@ -136,7 +136,7 @@ int main() {
     c.importOven(2.4e-4f, 142.0f, 191U);
     assert(std::fabs(c.kAir() - 2.4e-4f) < 1e-9f && std::fabs(c.tauTransit() - 142.0f) < 1e-3f && !c.identified());
     c.importOven(1.0f, 1000.0f, 5000U);                            // nonsense is clamped, never trusted
-    assert(c.kAir() <= 7.5e-4f && c.tauTransit() <= 220.0f);
+    assert(c.kAir() <= thermalv3::KAIR_PRIOR * thermalv3::KAIR_HI && c.tauTransit() <= thermalv3::TAU_PRIOR * thermalv3::TAU_HI);
     c.importOven(2.4e-4f, 142.0f, 191U);
     c.importHold(11.5f, true);
     assert(std::fabs(c.pHold() - 11.5f) < 1e-4f && c.identified());

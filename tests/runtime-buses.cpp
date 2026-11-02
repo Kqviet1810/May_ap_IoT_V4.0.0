@@ -249,11 +249,11 @@ static void sensorHardening() {
   { reset(); SHT485Industrial s; s.begin(); run(s,8000); assert(s.dataValid());
     replyMode=0; run(s,7000); assert(!s.dataValid() && s.formatLocked());
     replyMode=1; run(s,4000); assert(s.dataValid()); }
-  // (e) fast cadence is bounded: 600 ms only until identification is done (9 frames) or the window/frame gap ends, then 2 s.
+  // (e) fast cadence is bounded: 600 ms only until identification is done (9 frames) or the window/frame gap ends, then 1 s.
   { reset(); SHT485Industrial s; s.begin(); run(s,1200); const unsigned w0=uartWrites; run(s,3000);
     const unsigned during=uartWrites-w0; assert(during>=4 && during<=6);                       // ~600 ms cadence while verifying
     run(s,6000); assert(s.goodFrames()>=9);
-    const unsigned w1=uartWrites; run(s,10000); assert(uartWrites-w1<=6 && uartWrites-w1>=4); }   // 2 s cadence afterwards
+    const unsigned w1=uartWrites; run(s,10000); assert(uartWrites-w1<=11 && uartWrites-w1>=9); }   // 1 s cadence afterwards (3.5; 2 s before: 4..6)
   // (f) an absent sensor: the UART is NOT torn down during the 600 ms window (same ~15 s as the 2 s cadence), only afterwards.
   { reset(); replyMode=0; const unsigned e0=uartEnds; SHT485Industrial s; s.begin(); run(s,14000); assert(uartEnds==e0);
     run(s,6000); assert(uartEnds==e0+1); }
@@ -301,12 +301,12 @@ int main() {
   replyMode=0; run(sensor,7000);
   assert(!sensor.online() && !sensor.dataValid());
   assert(clockMs-recoveredAt>30000 && levels[PIN_RS485_DE_RE]==LOW);
-  // An absent sensor is polled fast only inside the 15 s cold-start window, then at the normal 2 s cadence (bus load stays bounded),
+  // An absent sensor is polled fast only inside the 15 s cold-start window, then at the normal 1 s cadence (3.5; 2 s before - bus load stays bounded),
   // and the boot diagnosis says "no reply", not "unstable".
   replyMode=0;
   { SHT485Industrial absent; absent.begin(); const unsigned w0=uartWrites; run(absent,15000);
     const unsigned fast=uartWrites-w0; assert(fast>=8 && fast<=30 && absent.bootReason()==1);
-    const unsigned w1=uartWrites; run(absent,10000); assert(uartWrites-w1<=10); }   // 2 attempts per cycle at the normal 2 s cadence
+    const unsigned w1=uartWrites; run(absent,10000); assert(uartWrites-w1<=20); }   // 2 attempts per cycle at the normal 1 s cadence
   replyMode=1; replyTemperature=3751;
   SHT485Industrial precise;
   precise.begin();
@@ -326,7 +326,7 @@ int main() {
   replyTemperature=3751; run(precise,4000);
   assert(precise.dataValid());
   const uint32_t goodBeforeCrc=precise.goodFrames();
-  replyMode=2; run(precise,2200);
+  replyMode=2; run(precise,1100);                        // one failed cycle at the 1 s cadence (2.2 s at the old 2 s cadence)
   assert(precise.dataValid() && precise.formatLocked()); // CRC rejects the packet, retaining bounded last-good data.
   assert(precise.goodFrames()==goodBeforeCrc);
   run(precise,5000);

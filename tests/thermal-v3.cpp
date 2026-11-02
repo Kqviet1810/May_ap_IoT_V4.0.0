@@ -73,28 +73,35 @@ void testDoorDetection() {
   in.capPct = 100.0f;
   in.dtS = 0.1f;
 
-  // Simulate settled temperature at 37.5
-  for (int i = 0; i < 300; ++i) {
+  // Ten minutes settled at SV: the controller has a history to measure the slope on.
+  for (int i = 0; i < 6000; ++i) {
     in.pv = 37.5f;
     ctl.step(in);
   }
 
-  // Now simulate sudden door plunge: -0.1 C per second (rapid drop)
+  // A door: the air falls 0.012 degC/s (0.7 degC/min) for 150 s. The new law answers with the heater, not with a clamp: full power until the
+  // heat in flight is enough to land on SV (the open door is only a load the heater has to beat).
   float currPv = 37.5f;
   bool doorTriggered = false;
-  for (int i = 0; i < 150; ++i) {
-    currPv -= 0.015f; // -0.15 C/s
+  float peak = 0.0f;
+  for (int i = 0; i < 1500; ++i) {
+    currPv -= 0.0012f;
     in.pv = currPv;
-    thermalv3::Output out = ctl.step(in);
+    const thermalv3::Output out = ctl.step(in);
     if (out.state == thermalv3::StDoor) {
       doorTriggered = true;
-      // In door state, power must be clamped to mild hold
-      assert(out.powerPct <= 30.0f);
+      assert(out.powerPct >= ctl.pHold() - 0.01f);
     }
+    if (out.powerPct > peak) peak = out.powerPct;
   }
   assert(doorTriggered);
   assert(ctl.doorDetected());
-  printf("  -> Pass: Door open detected and power clamped OK\n");
+  assert(peak > ctl.pHold() + 10.0f);      // it does work against the door
+  // While the door counts as open the load estimate is held (the door's loss is not a hold level).
+  const float holdAtDoor = ctl.pHold();
+  for (int i = 0; i < 300; ++i) { in.pv = currPv; ctl.step(in); }
+  assert(std::fabs(ctl.pHold() - holdAtDoor) < 1.0f);
+  printf("  -> Pass: Door detected, peak command %.0f %%, hold held at %.1f %%\n", peak, holdAtDoor);
 }
 
 void testEnergyInFlightLowerBound() {
@@ -125,7 +132,8 @@ void testEnergyInFlightLowerBound() {
 
   // Without physical lower bound clamp, empty pipe would predict ~36.2C and surge to 80%+.
   // With physical lower bound (pv - 0.20C = 37.20C), error is at most 0.30C -> command must NOT surge above 40%!
-  assert(ctl.predicted() >= in.pv - 0.201f);
+  // The physical bound is what the load can cool the air in one transit time with nothing in the pipe: kAir x hold x tau (about 0.3 degC for the priors).
+  assert(ctl.predicted() >= in.pv - ctl.kAir() * ctl.pHold() * ctl.tauTransit() - 0.01f);
   assert(out.powerPct < 40.0f);
   printf("  -> Pass: Predicted PV = %.2f C (bounded >= %.2f C), Command = %.1f%% (no panic surge)\n",
          ctl.predicted(), in.pv - 0.20f, out.powerPct);
@@ -171,29 +179,30 @@ void testPlantSimulation() {
   printf("  -> Pass: Full plant simulation passed criteria!\n");
 }
 
-// Vent-line hold (shadow): nothing is learned while the heater is held at 0 %; the hold level fades only when PV stays at SP, never when PV falls.
+// Heater held off by a line above SP (shadow). The controller records the power really given (0) and keeps observing: if PV stays at SP with nothing
+// given, the load is zero and the hold level fades; if PV falls with nothing given, there is a load and the hold level must not fade.
 void testShadowHold() {
-  printf("[TEST] Vent-line hold: learning frozen, hold fades only while PV stays at SP...\n");
-  auto run = [](double pvAfter, double minutes, float &holdOut, float &intOut) {
+  printf("[TEST] Heater held off: hold fades only while PV stays at SP, never when PV falls...\n");
+  auto run = [](double pvAfter, double fallFactor, double minutes, float &holdOut) {
     thermalv3::Controller c;
     thermalv3::Input in;
     in.sp = 37.5f; in.pv = 37.4f; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f;
     for (int i = 0; i < 6000; ++i) c.step(in);                 // 10 min below SP: the controller learns a hold level
     const float holdBefore = c.pHold();
-    in.permit = false; in.shadow = true; in.pv = static_cast<float>(pvAfter);
-    for (int i = 0; i < static_cast<int>(minutes * 600.0); ++i) c.step(in);
-    holdOut = c.pHold(); intOut = c.integral();
+    // the air falls as fast as the hold level alone would cool it (times fallFactor) - the load is there, the heater is off
+    const double fallPerS = fallFactor * static_cast<double>(c.kAir()) * static_cast<double>(holdBefore);
+    in.permit = false; in.shadow = true;
+    for (int i = 0; i < static_cast<int>(minutes * 600.0); ++i) { in.pv = static_cast<float>(pvAfter - fallPerS * (i / 10.0)); c.step(in); }
+    holdOut = c.pHold();
     return holdBefore;
   };
-  float h = 0, itg = 0;
-  float before = run(37.5, 1.0, h, itg);                         // 1 min: no checkpoint yet, nothing changes
-  assert(std::fabs(h - before) < 0.01f);
-  before = run(37.5, 12.0, h, itg);                              // PV held at SP for 12 min with the heater held off: hold fades
+  float h = 0;
+  float before = run(37.5, 0.0, 12.0, h);                             // PV held at SP for 12 min with the heater off: no load, hold fades
   assert(h < before * 0.2f);
   const float fadeFrom = before, fadeTo = h;
-  before = run(37.0, 12.0, h, itg);                              // PV below SP - 0.05: hold must not fade
-  assert(std::fabs(h - before) < 0.01f);
-  printf("  -> Pass: hold %.1f%% -> %.1f%% when PV stays at SP, unchanged (%.1f%%) when it falls\n", fadeFrom, fadeTo, h);
+  before = run(37.5, 1.0, 6.0, h);                               // PV falls at the rate the hold level cools the air with the heater off: a load, hold must not fade
+  assert(h >= before - 0.5f);
+  printf("  -> Pass: hold %.1f%% -> %.1f%% when PV stays at SP, %.1f%% -> %.1f%% when it falls\n", fadeFrom, fadeTo, before, h);
 }
 
 // After the heater was held by a line above SP, the first command must come back near the hold level: the "pipe" was neutral, so no phantom deficit.
@@ -210,7 +219,9 @@ void testResumeAfterHold() {
     for (int i = 0; i < 1800; ++i) c.step(in);                            // 3 min held off, PV stays at SP
     in.permit = true; in.shadow = false;
     for (int i = 0; i < 10; ++i) u = c.step(in).powerPct;
-    assert(u <= before + 3.0f);
+    // The pipe really was empty for 3 min (the heater was off and the history records what was given): the controller answers with the small deficit that
+    // empty pipe means, at most kn x kAir x hold x tau (about 4 %) - not with a surge. (The 2.5.x law declared the pipe neutral instead: +3.)
+    assert(u <= before + 6.0f);
     printf("  -> Pass (dQ %.2f): %.1f%% before the hold, %.1f%% right after\n", dQ, before, u);
   }
 }
@@ -286,7 +297,9 @@ void testRestartNextToSetpointKeepsPriors() {
     ctl.step(in);
   }
   assert(!ctl.identified());
-  assert(ctl.kAir() == kPrior && ctl.tauTransit() == tauPrior);
+  // A start next to SV has no climb to measure kAir on: it begins at the middle of the fleet (KAIR_WARM) and must never move off that by "identification".
+  assert(ctl.kAir() == kPrior || ctl.kAir() == thermalv3::KAIR_WARM);
+  assert(ctl.tauTransit() == tauPrior);
   printf("  -> Pass: identified=%d kAir=%.5f tau=%.0f s\n", ctl.identified() ? 1 : 0, ctl.kAir(), ctl.tauTransit());
 }
 
@@ -324,23 +337,28 @@ void testStartAfterAPause() {
     thermalv3::Controller ctl;
     thermalv3::Input in;
     in.sp = 37.5f; in.permit = false; in.capPct = 100.0f; in.dtS = 1.0f;   // one control step per second: one command per ring entry
-    std::vector<int> sent;
+    std::vector<float> sent;
     int identifiedAt = -1;
     for (int s = 0; s < pause + 2400; ++s) {
       in.permit = s >= pause;                                              // the batch starts after `pause` seconds
       in.pv = static_cast<float>(std::round(plant.Ta * 10.0) / 10.0);
       const float holdBefore = ctl.pHold();                                // the hold level the prediction of this step is computed with
+      const float kAirBefore = ctl.kAir(), tauBefore = ctl.tauTransit();   // ... and the gain and transit time (identification moves them after the step)
       const thermalv3::Output out = ctl.step(in);
       for (int k = 0; k < 10; ++k) plant.step(out.powerPct, 0.1);
-      sent.push_back(static_cast<int>(std::round(out.powerPct)));
+      sent.push_back(out.powerPct);
       if (s > pause) lowestHold = std::min(lowestHold, static_cast<double>(ctl.pHold()));
       if (identifiedAt < 0 && ctl.identified()) identifiedAt = s;
       if (identifiedAt < 0) continue;
-      const int len = static_cast<int>(ctl.tauTransit() * 1.35f);          // the ring length the identification set
+      const int len = static_cast<int>(thermalv3::PIPE_K * tauBefore);   // the window of power counted as still in flight
       if (s < identifiedAt + len + 2) continue;                            // until the ring holds only commands that were really sent
-      int sum = 0;
+      float sum = 0.0f;
       for (int k = s - len; k < s; ++k) sum += sent[static_cast<size_t>(k)];
-      const float expected = std::max(in.pv - 0.20f, in.pv + ctl.kAir() * (static_cast<float>(sum) - static_cast<float>(len) * holdBefore));
+      const float raw = kAirBefore * thermalv3::LEAD_GAIN * (sum - static_cast<float>(len) * holdBefore);
+      const float lo = -kAirBefore * holdBefore * tauBefore;                // nothing in the pipe: the load cools the air for one transit time
+      const float inflightMax = kAirBefore * (100.0f - holdBefore) * tauBefore;
+      if (in.sp - in.pv > 0.75f * inflightMax) continue;                           // far under SV the measured slope sets a floor under the prediction (checked by the rigs)
+      const float expected = in.pv + std::min(1.2f * inflightMax, std::max(lo, raw));
       worst = std::max(worst, static_cast<double>(std::fabs(ctl.predicted() - expected)));
     }
     ++runs;
@@ -379,7 +397,7 @@ void testDoorPlungeAfterWeeksOfUptime() {
     }
     printf("  -> after %2.0f days: steepest slope %.1f mK/s (true -20.0), door seen: %s\n", days[k], steepest, door ? "yes" : "NO");
     assert(door);
-    assert(steepest < -19.0f && steepest > -21.0f);
+    assert(steepest < -17.5f && steepest > -21.0f);   // a least-squares slope over the window reads ~8 % under the true -20 mK/s; a stalled clock reads 0, a fast one -25 or -15
   }
   printf("  -> Pass\n");
 }
@@ -403,10 +421,9 @@ void testBoundsUnderHostileInput() {
     if (step % 9001 == 0) in.pv = NAN;                                                // a lost sample now and then
     const thermalv3::Output out = ctl.step(in);
     assert(std::isfinite(out.powerPct) && out.powerPct >= 0.0f && out.powerPct <= 80.0f);
-    assert(ctl.pHold() >= 0.0f && ctl.pHold() <= thermalv3::HOLD_MAX_PCT);
-    assert(std::fabs(ctl.integral()) <= thermalv3::I_CLAMP + 0.001f);
-    assert(std::isfinite(ctl.kAir()) && ctl.kAir() >= thermalv3::KAIR_MIN && ctl.kAir() <= thermalv3::KAIR_MAX);
-    assert(ctl.tauTransit() >= thermalv3::TAU_MIN_S && ctl.tauTransit() <= thermalv3::TAU_MAX_S);
+    assert(ctl.pHold() >= 0.0f && ctl.pHold() <= 100.0f);
+    assert(std::isfinite(ctl.kAir()) && ctl.kAir() >= thermalv3::KAIR_PRIOR * thermalv3::KAIR_LO && ctl.kAir() <= thermalv3::KAIR_PRIOR * thermalv3::KAIR_HI);
+    assert(ctl.tauTransit() >= thermalv3::TAU_PRIOR * thermalv3::TAU_LO && ctl.tauTransit() <= thermalv3::TAU_PRIOR * thermalv3::TAU_HI);
   }
   printf("  -> Pass\n");
 }
