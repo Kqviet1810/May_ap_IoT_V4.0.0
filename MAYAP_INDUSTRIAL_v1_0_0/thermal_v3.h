@@ -129,12 +129,12 @@ class Controller {
     secAcc_ += dt; liveS_ += dt;
     if (secAcc_ >= 1.0f) {
       secAcc_ -= 1.0f;
-      const float net = in.shadow ? hold_ : cmd;
+      const float net = in.shadow ? 0.0f : cmd;
       pushHist(pv_, in.shadow ? 0.0f : net);
       if (in.shadow || door_ || in.ventFan) calmS_ = 0.0f; else calmS_ += 1.0f;
       measureNoiseAndSlope();
       derive();
-      if (in.permit && !in.shadow) { observe(); identifyGain(e); }
+      if (in.permit && !in.shadow) { observe(); identifyGain(e); } else if (in.shadow) observe();
       stopwatch(e, in.permit && !in.shadow);
     }
     lastCmd_ = in.shadow ? 0.0f : cmd;
