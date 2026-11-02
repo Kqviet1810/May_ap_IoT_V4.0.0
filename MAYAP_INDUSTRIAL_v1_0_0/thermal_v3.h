@@ -102,10 +102,10 @@ class Controller {
 
     // --- the day-profile fan: will it run one transit time from now? (known only while a profile runs)
     const bool fanProfile = in.ventOnInS < 1.0e5f && in.ventOffInS < 1.0e5f;
-    const bool fanLearn = fanProfile && in.ventFan;
+    const bool fanLearn = in.ventFan;
     {
       const bool planned = fanProfile && in.ventOnInS <= tau_ && tau_ < in.ventOffInS;
-      const float want = (planned && !in.shadow && !door_) ? fanLoss_ : 0.0f;
+      const float want = ((planned || in.ventFan) && !in.shadow && !door_) ? fanLoss_ : 0.0f;
       const float stepMax = (cap_ / (0.25f * tau_)) * dt;                // the whole ceiling in a quarter of a transit time
       fanBump_ += std::max(-stepMax, std::min(stepMax, want - fanBump_));
     }
@@ -268,13 +268,16 @@ class Controller {
   }
   // kAir at every saturated climb: the heater has been at its ceiling for a whole transit time plus a part of one, PV is far under SV and climbing.
   void identifyGain(float e) {
-    if (e < farBand_ || lsSlope_ <= 3.0f * lsSigma_) return;
+    if (e < farBand_ || lsSlope_ <= 3.0f * lsSigma_) { epMax_ = 0.0f; epFresh_ = true; return; }
     const uint16_t need = static_cast<uint16_t>(1.4f * tau_);
     if (histCount_ < need) return;
     for (uint16_t i = 0U; i < need; ++i) if (uAge(i) < 0.9f * cap_) return;
-    const float obs = lsSlope_ / std::max(1.0f, cap_ - hold_);
-    const float k = std::max(KAIR_PRIOR * KAIR_LO, std::min(KAIR_PRIOR * KAIR_HI, obs));
-    kAir_ = identified_ ? kAir_ + 0.3f * (k - kAir_) : k;
+    // the slope of a saturated climb is still rising while the window runs: the PEAK of the slope over the episode is the oven's gain
+    const float obs = std::max(lsSlope_, slope_) / std::max(1.0f, cap_ - hold_);
+    epMax_ = std::max(epMax_, obs);
+    const float k = std::max(KAIR_PRIOR * KAIR_LO, std::min(KAIR_PRIOR * KAIR_HI, epMax_));
+    kAir_ = identified_ && !epFresh_ ? kAir_ + 0.3f * (k - kAir_) : k;
+    epFresh_ = false;
     identified_ = true;
   }
   // Transit time by stopwatch on a clean start: full power from a PV that is not moving, far under SV, until PV has risen by what the noise allows to trust.
@@ -305,6 +308,7 @@ class Controller {
   uint8_t state_ = StIdle;
   float pv_ = NAN, sp_ = 37.5f, cap_ = 100.0f;
   float kAir_ = KAIR_PRIOR, tau_ = TAU_PRIOR, hold_ = 12.0f;
+  float epMax_ = 0.0f; bool epFresh_ = true;
   bool identified_ = false, tauMeasured_ = false, door_ = false, wasLive_ = false;
   float fanLoss_ = 0.0f, fanBump_ = 0.0f, fanRunS_ = 0.0f;
   float lead_ = 0.0f, slope_ = 0.0f, lsSlope_ = 0.0f, lsSigma_ = 0.0f, sigma_ = 0.02f;
