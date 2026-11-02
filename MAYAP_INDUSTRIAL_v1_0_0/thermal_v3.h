@@ -137,7 +137,7 @@ constexpr float STALL_SLOPE = 0.0002f;    // [degC/s] = 0.012 degC/min: under th
 constexpr float FAN_LEARN_TAU_S = 20.0f;     // time constant of the measured fan level [s]
 constexpr float FAN_LEAD = 0.8f;           // how far ahead of the fan the heater pays, in transit times
 constexpr float FAN_ABSORB_TAU_S = 100.0f;   // time constant of the integral absorbed into the fan level while the fan runs [s]
-constexpr float FAN_MAX_PCT = 80.0f;
+constexpr float FAN_MAX_PCT = 20.0f;   // the fan level is measured against a heater gain that may still be the prior (identified = 0): a wrong measurement must not inject a large power ahead of a fan
 constexpr float FAN_SLEW_PCT_S = 5.0f;
 constexpr float FAN_NO_PROFILE_S = 1.0e5f;   // a start/stop time above this means "no day profile"
 constexpr uint16_t HIST_LEN = 640U;           // seconds of history: transit time (<=220 s) + learning window + margin
