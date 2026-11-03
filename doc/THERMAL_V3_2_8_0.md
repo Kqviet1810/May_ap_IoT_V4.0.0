@@ -79,3 +79,34 @@ Only the NOISE of E111 (High) and E112 (Emergency) changed (`alarm_sound.h`, `te
 * Web rollback to the previous firmware in developer mode (the machine still checks: batch stopped, heater switch off, an older version present).
 * Cleanup: unreferenced firmware headers (`heat_latch.h`, `output_budget.h`, `program_store.h`, `thermal_program.h`, `egg_cooling.h`) and their host tests, 10 unused constants, 14 unused functions, the persist-sink hook of the event log, the old thermal design documents and audit folders (`audit/smart-thermal`, `audit/thermal-twin`, `audit/thermal-v2`), the superseded RC documents and the 2.4 - 2.7 thermal notes.
 * Tests changed (listed because no limit is loosened silently): `tests/alarm-sound.cpp` (2.8.1 rules), `tests/web-experience.test.cjs` (the running-batch temperature form now saves the three lines; new batch-form humidity test), `tests/transaction-lifecycle.test.cjs` (no humidity tile hiding), `tests/runtime-transactions.cpp` (Web rollback in developer mode), `tests/runtime-turning.cpp` + `tools/test_turning_scheduler.py` (the E205 check is run by the real code), `tools/check_reliability.py` (envelope rule replaced by the sanitizer rule), `tools/test_heater_path.py` (four unit tests of removed code dropped), `tests/fault-manual.test.cjs` and `tools/test_web_experience.cjs` (41 rows).
+
+## 2.9.1 (field log of 03/11, firmware 2.9.0)
+
+What the log showed (`mayap-MAP-441BF6E051D0-20261103T063930.csv`, batch started 0.1 degC under SV):
+* 26 minutes to close the 0.1 degC gap; `identified = 0`, `kair = 2.5e-4`, `tau = 150` for the whole 35 minutes: the controller ran on the start prior for an oven near SV
+  (`KAIR_WARM`), 2.7 times the gain this machine measured on 01/11 (6.5e-3 degC/s at 82 % -> 9.4e-5). The proportional gain was that much too weak and the observer that slow.
+* The scheduled exhaust fan (vent reason 7) of 2 min 40 s took 0.1 degC off in 2.7 min at a request of hold + 0.5 %: about 7 % of the heater. Since 2.8.0 the controller only
+  held its estimate during the fan (the 2.7 feed-forward had been removed); every run therefore dipped.
+* The spikes of the PV curve are the 0.1 degC sensor flickering between two steps (52 of 212 raw readings 37.5 while the regulated PV stood at 37.4): measurement noise.
+
+Changes:
+1. **The numbers of the oven are kept across a restart** (NVS key `phys`, 16 bytes with a CRC; heater gain, transit time, fan loss): written when a climb or a fan run changed them,
+   read once after a restart. A start next to SV no longer guesses. Nothing else is kept. A machine that has never climbed still starts from the priors and measures on its first climb.
+2. **The scheduled fan is fed forward**: the day profile of the fan (seconds to the next run, to its end) is handed to the controller. The heater is given the fan's share from one
+   transit time before the fan starts to one before it stops (the plant then sees no fan), and the share is learned after every run from what PV did against the model (a part of the
+   shortfall per run, kAir x share x run time). A fan with no schedule (the vent line, over temperature) is never fed forward.
+3. Dropped after measuring: a median of three readings before the fine PV (the spikes did not fall, the reading came to stand 0.02 degC lower).
+
+Measured on `tools/thermal-research/log-oven.cpp` (the oven of the 29/10 fit with the heat loss and the fan of this machine, 0.1 degC sensor with noise, 10 seeds, a fan run of 160 s every 20 min):
+
+| | 2.9.0 | 2.9.1, numbers kept | 2.9.1, first start of an unmeasured oven |
+|---|---|---|---|
+| minutes to within 0.05 degC of SV from 0.1 under | 20.1 | **10.8** | 20.1 |
+| dip of the fan run: 1st / 2nd / 4th | 0.12 / 0.12 / 0.12 | 0.12 / 0.05 / **0.007** | 0.12 / 0.10 / 0.06 |
+| largest overshoot over SV | 0.00 | +0.04 | +0.00 |
+
+Fleet bench (53 ovens, 100 W fan, same bench): scheduled fan 66 -> 77 %, day profile 85 -> 87 %, every other situation unchanged. Closed-loop rig, both replays, unit tests: pass.
+The request now moves by +-7 % for the 160 s of a fan feed-forward pulse (that is the compensation, not noise).
+
+Limits: the first start of a machine that has never measured its gain is as slow as before (the stored number is what makes it fast); the fan's share is learned in units of the gain the
+controller believes, so it takes about five runs to converge there instead of three. A 0.1 degC sensor cannot show 37.50 against 37.46.

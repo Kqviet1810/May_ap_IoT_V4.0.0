@@ -116,6 +116,12 @@ static Res run(const PlantParams &p0, int scen) {
     const bool paused = scen == 9 && t >= tEv && t < tEv + 120;                  // batch cancelled, started again at once: the controller is frozen, not reset
     in.shadow = block && !hc; in.permit = !block && !paused && !hc;
     in.ventFan = vline || sched;   // the controller is told only that the fan runs
+    if (!getenv("NOSCHED")) {   // the day profile of the fan is known ahead (the machine hands it to the controller); NOSCHED=1: the fan is only said to run
+      double onIn = NAN, offIn = NAN;
+      if (scen == 1 && t > 8400) { double ph = fmod(t, 1200.0); onIn = sched ? 0.0 : 1200.0 - ph; offIn = sched ? 180.0 - ph : onIn + 180.0; }
+      if (scen == 7 && t >= tEv) { double ph = fmod(t - tEv, 2400.0); onIn = sched ? 0.0 : 2400.0 - ph; offIn = sched ? 1680.0 - ph : onIn + 1680.0; }
+      in.fanOnInS = (float)onIn; in.fanOffInS = (float)offIn;
+    }
     if (scen == 6 && t >= tEv) pl.setAmbient(tamb0 + (getenv("AMB") ? atof(getenv("AMB")) : 7.0) * std::min(1.0, (t - tEv) / 7200.0));   // AMB=-5: the room cools instead
     float u = 0; if (!down) { auto o = c.step(in); u = (block || hc) ? 0.0f : o.powerPct; }
     lastU = u;

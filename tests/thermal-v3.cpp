@@ -394,6 +394,38 @@ void testBoundsUnderHostileInput() {
   printf("  -> Pass\n");
 }
 
+// 2.9.1: the numbers of the oven kept across a restart, and the scheduled fan fed forward one transit time ahead.
+void testKeptOvenNumbersAndFanFeedForward() {
+  printf("Test: restore() takes plausible numbers only; the scheduled fan is fed forward one transit time ahead and never the fan of the vent line\n");
+  {
+    thermalv3::Controller c;
+    c.restore(9.4e-5f, 140.0f, 7.0f);
+    assert(std::fabs(c.kAir() - 9.4e-5f) < 1e-9f && std::fabs(c.tauTransit() - 140.0f) < 1e-3f && std::fabs(c.fanLoss() - 7.0f) < 1e-6f && c.identified());
+    thermalv3::Controller d;
+    d.restore(NAN, 5000.0f, -3.0f);                                      // nonsense: every part is ignored
+    thermalv3::Controller fresh;
+    assert(d.kAir() == fresh.kAir() && d.tauTransit() == fresh.tauTransit() && d.fanLoss() == 0.0f && !d.identified());
+    d.restore(1.0f, 150.0f, 90.0f);                                      // a gain 10^4 times the prior, a fan of 90 %: ignored too
+    assert(d.kAir() == fresh.kAir() && d.fanLoss() == 0.0f);
+  }
+  auto run = [](bool sched, float onIn, float offIn, bool fanRunning) {
+    thermalv3::Controller c;
+    c.restore(9.4e-5f, 150.0f, 7.0f);
+    thermalv3::Input in; in.pv = 37.5f; in.sp = 37.5f; in.dtS = 1.0f; in.permit = true; in.ventFan = fanRunning;
+    if (sched) { in.fanOnInS = onIn; in.fanOffInS = offIn; }
+    float last = 0.0f;
+    for (int i = 0; i < 400; ++i) last = c.step(in).powerPct;
+    return last - c.pHold();                                             // the command above hold: the fan's share, if it is fed forward
+  };
+  const float plain = run(false, 0, 0, false);
+  const float ahead = run(true, 120.0f, 300.0f, false);                  // the fan starts in 120 s (< one transit time): the heater is given the fan's share now
+  const float far = run(true, 600.0f, 780.0f, false);                    // 10 minutes ahead: nothing yet
+  const float ventLine = run(false, 0, 0, true);                         // a fan with no schedule: not fed forward
+  assert(std::fabs(plain) < 0.3f && ahead > 6.0f && ahead < 8.0f);
+  assert(std::fabs(far) < 0.3f && std::fabs(ventLine) < 0.3f);
+  printf("  -> Pass\n");
+}
+
 int main() {
   printf("=========================================\n");
   printf("RUNNING THERMAL V3 CONTROLLER UNIT TESTS\n");
@@ -410,6 +442,7 @@ int main() {
   testShadowHold();
   testResumeAfterHold();
   testSensorFallback();
+  testKeptOvenNumbersAndFanFeedForward();
   printf("=========================================\n");
   printf("ALL THERMAL V3 TESTS PASSED SUCCESSFULLY!\n");
   printf("=========================================\n");

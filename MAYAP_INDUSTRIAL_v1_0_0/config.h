@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.9.0";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.9.1";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -676,6 +676,7 @@ constexpr char SAFETY_NVS_RESET_KEY[] = "reset_count";
 // NVS record of the thermal controller written by versions before 2.8.0 (nothing is written or read any more); "clear thermal learning" erases it.
 constexpr char THERMAL_LEARN_NVS_NAMESPACE[] = "mayap_thm";
 constexpr char THERMAL_LEARN_NVS_KEY[] = "snap";
+constexpr char THERMAL_PHYS_NVS_KEY[] = "phys";            // 2.9.1: the three numbers of the OVEN (heater gain, transit time, what the scheduled fan takes out), 16 bytes with a CRC
 // F-07 (audit truoc phat hanh v3.7.1): truoc day turnMechanicalCheckRequired_/
 // turnFaultStreak_ (khoa dao vi nghi ngo hong co khi, xem latchTurnFault()
 // trong machine_control.h) chi la bien RAM - mat dien/watchdog/OTA restart

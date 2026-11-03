@@ -22,6 +22,8 @@ struct ThermalV3SlotIn {
   float e115Frac = 0.0f;              // E115 heater stuck evidence fraction
   float dQ = 0.1f;                    // Sensor resolution step [degC]
   float slopeFine = NAN;              // Slope of PV from sensor_fine.h [degC/s] (NaN: not available)
+  float fanOnInS = NAN;               // Day profile of the exhaust fan: seconds until its next run starts (0 while it runs); NaN: no schedule
+  float fanOffInS = NAN;              // ... and until that run ends
   float dtOverrideS = NAN;            // Host rigs only
 };
 
@@ -64,6 +66,8 @@ class ThermalV3Slot {
     i.permit = in.permit;
     i.shadow = in.shadow;
     i.ventFan = in.ventFan;
+    i.fanOnInS = in.fanOnInS;
+    i.fanOffInS = in.fanOffInS;
 
     last_ = ctl_.step(i);
     held_ = clampOut(last_.powerPct, in.capPct);
