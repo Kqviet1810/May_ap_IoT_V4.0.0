@@ -41,6 +41,8 @@ static Res run(const PlantParams &p0, int scen) {
   if (newBatchStored) { stored = learnPass(p0); p.Tamb += getenv("AMBD") ? atof(getenv("AMBD")) : 0.0; }
   const double tEv = 9000, tEnd = (scen == 6 || scen == 7) ? 9000 + 9000 : 15000;
   const bool oldFan = getenv("FAN") && !strcmp(getenv("FAN"), "v250");
+  const bool simpleFan = getenv("FAN") && !strcmp(getenv("FAN"), "simple");   // FAN=simple: over the threshold -> on; back at SP -> off; MINON / MINOFF seconds (default 180 / 300) protect the contactor
+  if (getenv("TAMB_D")) p.Tamb += atof(getenv("TAMB_D"));                    // the weather: the whole bench with a room that many degrees warmer (negative: colder)
   VentLine vl; VentLine::Params vp; vp.stepC = 0.1f; double heaterAvg = 0.0; bool vlOn = false;
   const double tamb0 = p.Tamb; float lastU = 0.0f; bool fanPrev = false;
   const double startAir = getenv("START") ? atof(getenv("START")) : 31.4;   // START=35.5: the oven starts 2 degC under SP (a restart, a late start in a warm room)
@@ -74,7 +76,11 @@ static Res run(const PlantParams &p0, int scen) {
     if (scen == 1 && t > 8400) { double ph = fmod(t, 1200.0); sched = ph < 180.0; profIn = sched ? 0.0 : 1200.0 - ph; }
     if (scen == 7 && t >= tEv) { double ph = fmod(t - tEv, 2400.0); sched = ph < 1680.0; profIn = sched ? 0.0 : 2400.0 - ph; }
     const float onT = getenv("ONT") ? (float)atof(getenv("ONT")) : 37.6f;   // the vent threshold of the field machine: one step over SP
-    if (oldFan) {
+    if (simpleFan) {
+      const double minOn = getenv("MINON") ? atof(getenv("MINON")) : 180.0, minOff = getenv("MINOFF") ? atof(getenv("MINOFF")) : 300.0;
+      if (!vline && pv >= onT && t >= notBefore) { vline = true; notBefore = t + minOn; r.fanStarts += 1; }
+      else if (vline && pv <= 37.505f && t >= notBefore) { vline = false; notBefore = t + minOff; }
+    } else if (oldFan) {
       // the rule of 2.5.0: a whole minute over the threshold without a dip, or 0.1 more for 20 s; 3 min on / 5 min off, at most 6 starts an hour
       bool onPast = pv >= onT;
       if (!onPast) { aboveSince = -1; } else if (aboveSince < 0) { aboveSince = t; abovePv = pv; } else if (pv < abovePv - 0.05f) { aboveSince = t; abovePv = pv; }
