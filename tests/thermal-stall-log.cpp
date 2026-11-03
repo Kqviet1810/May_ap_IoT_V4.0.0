@@ -28,7 +28,6 @@ int main() {
   }
   assert(all.size() >= 170);
   thermalv3::Controller c; thermalv3::Input in; in.sp = 37.5f; in.dQ = 0.1f; in.capPct = 100; in.dtS = 0.1f; in.permit = true;
-  c.importHold(all[0].hold, false);
   float maxCmd = 0.0f;
   for (int k = 0; k + 1 < 170; ++k) for (int i = 0; i < 100; ++i) {
     const float a = static_cast<float>(i) / 100.0f;

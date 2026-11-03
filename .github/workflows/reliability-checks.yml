@@ -171,11 +171,6 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/alarm-sound.cpp -o /tmp/mayap-alarm-sound
           /tmp/mayap-alarm-sound
 
-      - name: "Thermal learning record (thermal_learn.h, no longer written or read by the machine since 3.5): checksum and ranges still refuse a damaged record; the controller import clamps"
-        run: |
-          g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-learn.cpp -o /tmp/mayap-thermal-learn
-          /tmp/mayap-thermal-learn
-
       - name: "Real night log of 02/11 replayed into the controller: a stall 0.1-0.24 degC under SV is answered"
         run: |
           g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-stall-log.cpp -o /tmp/mayap-thermal-stall-log

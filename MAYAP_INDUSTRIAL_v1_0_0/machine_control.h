@@ -19,7 +19,6 @@
 #include "sensor_fine.h"
 #include "heater_response_watch.h"
 #include "vent_line.h"
-#include "thermal_learn.h"
 #include "alarm_sound.h"
 #include "pid_log.h"
 #include <esp_system.h>
@@ -3958,7 +3957,6 @@ class MachineController {
       }
     }
     faults_.set(FaultCode::BatchStateClearPending, batchClearPending_, bootAt_);
-    loadThermalLearning();
     // Nhat ky chi ghi trong pham vi mot me: dang chay hoac dang cho phuc hoi
     // (ke ca dang cho xac nhan HMI) deu tinh la "trong me".
     eventLog_.setLoggingEnabled(batchRunning_ || resumePending_);
@@ -5263,8 +5261,7 @@ class MachineController {
         s.ctl = static_cast<uint8_t>((v3.doorDetected() ? MayapPidLog::CtlDoor : 0U) | (v3.identified() ? MayapPidLog::CtlIdentified : 0U) |
             static_cast<uint8_t>(tokens << 2) | static_cast<uint8_t>((ventReason_ & 0x0FU) << 4));
       }
-      s.learn = static_cast<uint8_t>((learnSource_ & 3U) | (learnSavedValid_ ? 4U : 0U) |
-          (static_cast<uint8_t>(std::min<uint32_t>(31U, learnTracker_.stableMs() / 240000UL)) << 3));
+      s.learn = 0U;                                                          // nothing is kept across a restart any more (field kept for the frame layout)
       MayapPidLog::ring().push(s);
     }
   }
@@ -5287,27 +5284,8 @@ class MachineController {
     if (chime) ++chimeSeq_;
   }
 
-  // ---- What the thermal controller learned about this oven, kept across a restart (thermal_learn.h) ----
-  uint8_t learnHeaterCap() const { return static_cast<uint8_t>(std::min<int>(100, static_cast<int>(config_.maxHeaterPower))); }
-  bool readLearnedBlob(thermallearn::Snapshot &s) {
-    Preferences p;
-    if (!p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) return false;
-    uint8_t blob[thermallearn::BLOB_SIZE];
-    bool ok = false;
-    if (p.getBytesLength(THERMAL_LEARN_NVS_KEY) == sizeof(blob) && p.getBytes(THERMAL_LEARN_NVS_KEY, blob, sizeof(blob)) == sizeof(blob))
-      ok = thermallearn::decode(blob, sizeof(blob), s);
-    p.end();
-    return ok;
-  }
-  bool writeLearnedBlob(const thermallearn::Snapshot &s) {
-    uint8_t blob[thermallearn::BLOB_SIZE];
-    if (!thermallearn::encode(s, blob)) return false;
-    Preferences p;
-    if (!p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) return false;
-    const bool ok = p.putBytes(THERMAL_LEARN_NVS_KEY, blob, sizeof(blob)) == sizeof(blob);
-    p.end();
-    return ok;
-  }
+  // ---- Thermal learning: 2.8.0 keeps nothing across a restart (the controller reads the oven again in a transit time or two) ----
+  // A record written by an older version may still sit in NVS; "clear thermal learning" erases it and restarts the controller from its priors.
   bool eraseLearnedBlob() {
     Preferences p;
     if (!p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) return false;
@@ -5315,34 +5293,10 @@ class MachineController {
     p.end();
     return ok;
   }
-  // 3.5: nothing the thermal controller learned is kept across a restart any more. After a restart (or a resumed batch) it starts from its priors and
-  // reads the oven again within a transit time or two with its disturbance observer (a start next to SV begins at the middle of the fleet's kAir).
-  // A record written by an older version stays in NVS untouched until "clear thermal learning" erases it; it is never read.
-  void loadThermalLearning() {
-    learnSavedValid_ = false;
-    learnSource_ = 0U;
-  }
-  void applyLearnedHoldOnResume() {}
   bool clearThermalLearning() {
     const bool ok = eraseLearnedBlob();
-    learnSavedValid_ = false;
-    learnSource_ = 0U;
-    learnTracker_.invalidate();
     thermalV3_.reset();
     return ok;
-  }
-  // Every cycle: when has the oven proved itself (two stable hours), and did the heater ever stop answering (then nothing learned is trusted).
-  void serviceThermalLearning(uint32_t now) {
-    if (heaterNotHeatingActive_) {
-      if (!learnHeaterFaultSeen_) {
-        learnHeaterFaultSeen_ = true;
-        if (learnSavedValid_) { (void)eraseLearnedBlob(); learnSavedValid_ = false; }
-        learnTracker_.invalidate();
-      }
-    } else {
-      learnHeaterFaultSeen_ = false;
-    }
-    (void)now;                                                    // 3.5: no stable-run tracker and no NVS write any more (see loadThermalLearning)
   }
 
   // ---- Thermal V3 slot glue ----
@@ -5398,8 +5352,7 @@ class MachineController {
     const float stuckLimitMs = static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f;
     si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterWatch_.accumOnMs()) / stuckLimitMs : 0.0f;
     si.dQ = thermalV3SensorStepC();
-    si.ventFan = st.ventFan;                                                // the fan that really runs: it takes heat out of the box
-    ventProfileTiming(now, si.ventOnInS, si.ventOffInS);                     // the automatic profile knows when it starts and ends: the controller can pay for the loss in advance
+    si.ventFan = st.ventFan;                                                // the fan that really runs
     return si;
   }
   float thermalV3Command(uint32_t now, bool permit, bool shadow) {
@@ -5857,7 +5810,6 @@ class MachineController {
     else trayPosition_ = TrayPosition::Unknown;
     needHome_ = trayPosition_ == TrayPosition::Unknown;
     heatRestartNotBefore_ = now + FAN_PRESTART_MS;
-    applyLearnedHoldOnResume();
     eventLog_.push(now, EventType::BatchStart,
                    static_cast<uint16_t>(EventCode::BatchResume),
                    static_cast<int16_t>(std::min<uint32_t>(elapsedBeforeStartSec_ / 60UL,
@@ -7719,7 +7671,6 @@ class MachineController {
     snprintf(runtime_.machineState, sizeof(runtime_.machineState), "%s", state);
     serviceTech(now);
     publishPidMonitor(now);
-    serviceThermalLearning(now);
     hmiSetRuntime(runtime_);
     mayapRealtimeSetRuntime(runtime_);
     mayapCloudSetRuntime(runtime_);
@@ -7750,7 +7701,7 @@ class MachineController {
     a.kp = config_.kp; a.ki = config_.ki; a.kd = config_.kd;
     {
       const thermalv3::Controller &v3 = thermalV3_.controller();          // Thermal V3 columns
-      a.pidCorr = v3.integral(); a.holdFf = v3.dNow(); a.ventFf = v3.fanBump();
+      a.pidCorr = v3.integral(); a.holdFf = v3.dNow(); a.ventFf = 0.0f;
       a.learnState = static_cast<uint8_t>(runtime_.pidMon.phase + (runtime_.pidMon.suspect ? 4U : 0U)); a.confidence = v3.batchesDone();
       a.gain = v3.kAir() * 1000.0f; a.delaySec = v3.tdHat(); a.holdPct = v3.tauHat(); a.coastC = v3.haPct(); a.ventGain = v3.sigmaPred(); a.predErr = v3.predicted();
     }
@@ -8346,10 +8297,6 @@ class MachineController {
   bool sirenWanted_ = false;                        // the siren (external + ATtiny mirror) is wanted now
   uint32_t audibleMask_ = AlarmNone, outputConflictMutedUntil_ = 0U;
   uint8_t chimeSeq_ = 0U;
-  thermallearn::StableTracker learnTracker_{};
-  thermallearn::Snapshot learnSaved_{};
-  bool learnSavedValid_ = false, learnHeaterFaultSeen_ = false;
-  uint8_t learnSource_ = 0U;                        // 0 priors, 1 oven constants restored, 2 oven constants + hold level of the resumed batch restored
   float safetyTempLast_ = NAN;
   bool lowTemperatureActive_ = false;
   bool warmupDone_ = false;                          // the first climb of the batch reached SV (or timed out): E110 is judged from here on
