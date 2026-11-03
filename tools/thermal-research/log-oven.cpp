@@ -31,7 +31,7 @@ static Res run(uint32_t seed) {
   Plant pl(pp, start, start); pl.settleAt(start);
   thermalv3::Controller c;
   if (getenv("KAIR")) c.restore((float)atof(getenv("KAIR")), getenv("TAU") ? (float)atof(getenv("TAU")) : 0.0f, getenv("FANLOSS") ? (float)atof(getenv("FANLOSS")) : 0.0f);   // KAIR=9.4e-5: the numbers of this oven were kept across the restart
-  sensorfine::Estimator fv, fs; sensorfine::Params pv, ps; pv.minWindowS = 10.0f; pv.maxWindowS = 30.0f;
+  sensorfine::Estimator fv, fs; sensorfine::Params pv, ps; pv.minWindowS = getenv("VMIN") ? (float)atof(getenv("VMIN")) : 10.0f; pv.maxWindowS = getenv("VMAX") ? (float)atof(getenv("VMAX")) : 30.0f;   // the window of the fine value the controller regulates
   uint32_t rng = seed * 2654435761u + 12345u;
   std::vector<double> airT, reqT, pvT; double qh[3] = {start, start, start};
   double lastU = 0; Res r; float pvFine = (float)start;
