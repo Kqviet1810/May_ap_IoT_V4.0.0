@@ -58,3 +58,14 @@ from a wish list.
 Run one batch from cold, open the door for 2 minutes once settled, and let the exhaust fan run once. Accept when: (1) during the door the SSR is at 60 - 100 %, not a drip; (2) after the
 door the air is back within +-0.3 degC in 30 minutes; (3) no stand-still more than 0.1 degC under SV for more than 10 minutes; (4) no add / drop cycle with a period under 10 minutes at
 steady state; (5) the dip during the fan is noted (it is not removed). Report the first-climb peak: if it rings the alarm, say so.
+
+## 2.8.1: over-temperature siren waits, then stops at the line
+
+Only the NOISE of E111 (High) and E112 (Emergency) changed (`alarm_sound.h`, `tests/alarm-sound.cpp`); heater cut, forced exhaust fan and their hysteresis are untouched.
+
+* Crossing the line starts a 180 s grace time (the exhaust fan is forced on by the line). The siren/buzzer sounds only if the reading is still at or over the line when it ends.
+  Falling under the line inside the grace time = no sound at all (the first-climb overshoot no longer rings a false alarm).
+* Exception: a reading 0.5 degC or more over the line sounds at once (a real runaway does not wait).
+* Once loud, it stops as soon as the reading is under the line (2 s to confirm), instead of 0.2 degC under it, so the siren and the battery are not used longer than needed.
+  A new crossing starts a new grace time.
+* Tests changed in `alarm-sound.cpp` (they asserted "loud at once" and "quiet 0.2 under"): rewritten for the rules above.
