@@ -6,8 +6,8 @@
 // event, hold %, delay s, minutes over SP+0.1 (total, longest run), minutes to settle within +-0.2, fan minutes, fan starts, lowest hold level.
 // Situations: 0 climb and hold, 1 scheduled fan, 2 one step over SP, 3 door 3 min, 4 door 4.5 min + cold tray, 5 reboot (45 s without power),
 //   6 the room warms up 7 degC in 2 h (the hold the oven needs falls to a few percent), 7 the day profile of the last week (28 of every 40 min the fans run),
-//   8 reboot (45 s) that takes back what a stable run had stored an hour earlier (oven constants + hold level, thermal_learn.h),
-//   9 the batch is cancelled for 2 min and started again at once (the controller keeps what it learned, nothing is stored).
+//   8 reboot (45 s), second run (2.8.0 keeps nothing across a restart: the same as 5),
+//   9 the batch is cancelled for 2 min and started again at once (the controller keeps what it learned).
 #ifndef HDR
 #define HDR "../../MAYAP_INDUSTRIAL_v1_0_0/thermal_v3.h"
 #endif
@@ -22,7 +22,7 @@
 #include <vector>
 using namespace thermalsim;
 struct Res { double highs = 0, reach = -1, peak = 0, minAfter = 99, maxAfter = 0, rec = 0, iae = 0, rmsPre = 0, tOver = 0, tOver10 = 0, settle2 = 0, fanStarts = 0, fanOnMin = 0, lowestHold = 100, fanHeatMin = 0, heatDuringFan = 0; };
-// A first run on a cold oven (31.4 degC): climb and 2.5 h of holding. What the controller then knows of the oven is what a stable run stores (thermal_learn.h).
+// A first run on a cold oven (31.4 degC): climb and 2.5 h of holding. What the controller then knows of the oven is what it measured on that climb.
 struct Learned { float kAir = 0, tau = 0, hold = 0; uint16_t pipe = 0; bool identified = false; };
 static Learned learnPass(const PlantParams &p) {
   Plant pl(p, 31.4, 31.2); SensorChain ch(0.1); for (int i = 0; i < 8; ++i) ch.sample(pl.sensor());
@@ -41,12 +41,13 @@ static Res run(const PlantParams &p0, int scen) {
   if (newBatchStored) { stored = learnPass(p0); p.Tamb += getenv("AMBD") ? atof(getenv("AMBD")) : 0.0; }
   const double tEv = 9000, tEnd = (scen == 6 || scen == 7) ? 9000 + 9000 : 15000;
   const bool oldFan = getenv("FAN") && !strcmp(getenv("FAN"), "v250");
+  const bool simpleFan = getenv("FAN") && !strcmp(getenv("FAN"), "simple");   // FAN=simple: over the threshold -> on; back at SP -> off; MINON / MINOFF seconds (default 180 / 300) protect the contactor
+  if (getenv("TAMB_D")) p.Tamb += atof(getenv("TAMB_D"));                    // the weather: the whole bench with a room that many degrees warmer (negative: colder)
   VentLine vl; VentLine::Params vp; vp.stepC = 0.1f; double heaterAvg = 0.0; bool vlOn = false;
   const double tamb0 = p.Tamb; float lastU = 0.0f; bool fanPrev = false;
   const double startAir = getenv("START") ? atof(getenv("START")) : 31.4;   // START=35.5: the oven starts 2 degC under SP (a restart, a late start in a warm room)
   Plant pl(p, startAir, startAir - 0.2); SensorChain ch(0.1); for (int i = 0; i < 8; ++i) ch.sample(pl.sensor());
   thermalv3::Controller c; thermalv3::Input in; in.sp = 37.5f; in.dQ = 0.1f; in.capPct = 100; in.dtS = 0.1f; in.permit = true;
-  if (newBatchStored && stored.identified && !getenv("NOSTORE")) { c.importOven(stored.kAir, stored.tau, stored.pipe); c.importHold(stored.hold, true); }
   bool vline = false, block = false; double aboveSince = -1, abovePv = 0, offT = 0, fastT = 0, notBefore = 0; std::vector<double> starts;
   struct Snap { float kAir = 0, tau = 0, hold = 0; uint16_t pipe = 0; bool have = false; } snap;
   const float highAt = getenv("HIGHCUT") ? (float)atof(getenv("HIGHCUT")) : 0.0f;   // HIGHCUT=37.7: the High line of the field machine cuts the heater (permit lost, fans forced) until the reading is 0.15 lower and 4 min passed
@@ -74,7 +75,11 @@ static Res run(const PlantParams &p0, int scen) {
     if (scen == 1 && t > 8400) { double ph = fmod(t, 1200.0); sched = ph < 180.0; profIn = sched ? 0.0 : 1200.0 - ph; }
     if (scen == 7 && t >= tEv) { double ph = fmod(t - tEv, 2400.0); sched = ph < 1680.0; profIn = sched ? 0.0 : 2400.0 - ph; }
     const float onT = getenv("ONT") ? (float)atof(getenv("ONT")) : 37.6f;   // the vent threshold of the field machine: one step over SP
-    if (oldFan) {
+    if (simpleFan) {
+      const double minOn = getenv("MINON") ? atof(getenv("MINON")) : 180.0, minOff = getenv("MINOFF") ? atof(getenv("MINOFF")) : 300.0;
+      if (!vline && pv >= onT && t >= notBefore) { vline = true; notBefore = t + minOn; r.fanStarts += 1; }
+      else if (vline && pv <= 37.505f && t >= notBefore) { vline = false; notBefore = t + minOff; }
+    } else if (oldFan) {
       // the rule of 2.5.0: a whole minute over the threshold without a dip, or 0.1 more for 20 s; 3 min on / 5 min off, at most 6 starts an hour
       bool onPast = pv >= onT;
       if (!onPast) { aboveSince = -1; } else if (aboveSince < 0) { aboveSince = t; abovePv = pv; } else if (pv < abovePv - 0.05f) { aboveSince = t; abovePv = pv; }
@@ -97,7 +102,7 @@ static Res run(const PlantParams &p0, int scen) {
     fanPrev = vline;
     if (vline) r.fanOnMin += 0.1 / 60.0;
     if ((vline || sched || hc) && t >= 600.0) { if (lastU > 10.0f) r.fanHeatMin += 0.1 / 60.0; r.heatDuringFan += (double)lastU * 0.1 / 60.0; }
-    if (getenv("NOBLOCK")) block = false; else if (!block && pv >= 37.8f) block = true; else if (block && pv <= 37.7f) block = false;
+    { const float bOn = getenv("BLK_ON") ? (float)atof(getenv("BLK_ON")) : 37.8f, bOff = getenv("BLK_OFF") ? (float)atof(getenv("BLK_OFF")) : 37.7f; if (getenv("NOBLOCK")) block = false; else if (!block && pv >= bOn) block = true; else if (block && pv <= bOff) block = false; }
     if (highAt > 0.0f) { if (!hc && pv >= highAt) { hc = true; hcT = t; r.highs += 1; } else if (hc && pv <= highAt - 0.15f && t - hcT >= 240.0) hc = false; }
     bool fan = vline || sched || hc;
     bool door = (scen == 3 && t >= tEv && t < tEv + 180) || (scen == 4 && t >= tEv && t < tEv + 270);
@@ -106,24 +111,17 @@ static Res run(const PlantParams &p0, int scen) {
     bool down = ((scen == 5 || scen == 8) && t >= tEv && t < tEv + 45);
     if ((scen == 5 || scen == 8) && !rebooted && t >= tEv + 45) {
       c.reset();
-      if (scen == 8 && snap.have) { c.importOven(snap.kAir, snap.tau, snap.pipe); c.importHold(snap.hold, true); }   // what the last stable run stored
       rebooted = true;
     }
     const bool paused = scen == 9 && t >= tEv && t < tEv + 120;                  // batch cancelled, started again at once: the controller is frozen, not reset
     in.shadow = block && !hc; in.permit = !block && !paused && !hc;
-    if (getenv("NOFANIN")) { in.ventFan = false; in.ventOnInS = 1.0e6f; in.ventOffInS = 1.0e6f; }
-    else {   // what the machine tells the controller: the fan that really runs, and the day profile (start / end of the block) when one runs
-      in.ventFan = vline || sched;
-      if (scen == 1 && t > 8400) { double ph = fmod(t, 1200.0); in.ventOnInS = sched ? 0.0f : (float)(1200.0 - ph); in.ventOffInS = sched ? (float)(180.0 - ph) : (float)(1200.0 - ph + 180.0); }
-      else if (scen == 7 && t >= tEv) { double ph = fmod(t - tEv, 2400.0); in.ventOnInS = sched ? 0.0f : (float)(2400.0 - ph); in.ventOffInS = sched ? (float)(1680.0 - ph) : (float)(2400.0 - ph + 1680.0); }
-      else { in.ventOnInS = 1.0e6f; in.ventOffInS = 1.0e6f; }
-    }
+    in.ventFan = vline || sched;   // the controller is told only that the fan runs
     if (scen == 6 && t >= tEv) pl.setAmbient(tamb0 + (getenv("AMB") ? atof(getenv("AMB")) : 7.0) * std::min(1.0, (t - tEv) / 7200.0));   // AMB=-5: the room cools instead
     float u = 0; if (!down) { auto o = c.step(in); u = (block || hc) ? 0.0f : o.powerPct; }
     lastU = u;
     double extra = (scen == 2 && t >= tEv && t < tEv + 150) ? 12.0 : 0.0;
     pl.step(std::min(100.0, (double)u + extra), fan, door);
-    if (getenv("DUMP") && i % 300 == 0 && t >= 0 && t <= 12000) std::printf("t=%6.0f pv=%.2f true=%.2f u=%5.1f hold=%5.1f int=%+.2f fanLoss=%.1f bump=%.1f fan=%d on=%.0f off=%.0f\n", t, pv, pl.sensor(), u, c.pHold(), c.integral(), c.fanLoss(), c.fanBump(), (vline||sched) ? 1 : 0, in.ventOnInS, in.ventOffInS);
+    if (getenv("DUMP") && i % 300 == 0 && t >= 0 && t <= 12000) std::printf("t=%6.0f pv=%.2f true=%.2f u=%5.1f hold=%5.1f kair=%.1e id=%d tau=%.0f fan=%d\n", t, pv, pl.sensor(), u, c.pHold(), c.kAir(), (int)c.identified(), c.tauTransit(), (vline||sched) ? 1 : 0);
     const float pvm = truth ? (float)pl.sensor() : pv;   // TRUTH=1: every measure below reads the real temperature of the oven, not the reading
     if (r.reach < 0 && pvm >= 37.4f) r.reach = t;
     if (t < tEv && pvm > r.peak) r.peak = pvm;

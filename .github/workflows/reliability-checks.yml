@@ -171,20 +171,10 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/alarm-sound.cpp -o /tmp/mayap-alarm-sound
           /tmp/mayap-alarm-sound
 
-      - name: "Overshoot after a protection cut the heater (thermal_v3.h): the hold level keeps 60 % of itself when the controller's own overshoot was cut, fades while the held-off reading does not fall, and is left alone when it falls; an unmeasured oven starts by its distance to SV and the probe ends when the reading falls"
+      - name: "Real night log of 02/11 replayed into the controller: a stall 0.1-0.24 degC under SV is answered"
         run: |
-          g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-overshoot.cpp -o /tmp/mayap-thermal-overshoot
-          /tmp/mayap-thermal-overshoot
-
-      - name: "Thermal learning kept across a restart (thermal_learn.h): checksum and ranges refuse a damaged record, two stable hours before a write, the hold level only for the batch it belongs to, the controller takes it back"
-        run: |
-          g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-learn.cpp -o /tmp/mayap-thermal-learn
-          /tmp/mayap-thermal-learn
-
-      - name: "Thermal controller 2.7.0 additions: the day-profile fan is measured and paid for one transit time ahead, Anti-Stuck waits out the delay of the oven"
-        run: |
-          g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-fan.cpp -o /tmp/mayap-thermal-fan
-          /tmp/mayap-thermal-fan
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-stall-log.cpp -o /tmp/mayap-thermal-stall-log
+          /tmp/mayap-thermal-stall-log
 
       - name: "Fine temperature from a 0.1 degC sensor (sensor_fine.h): sliding least-squares value and slope, follows a fall, restarts after a gap, bounded on hostile input"
         run: |

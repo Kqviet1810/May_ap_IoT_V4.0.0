@@ -58,12 +58,12 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "8a2513679a45fdee419a969d1a983c0b775600d527b4517278df2fbebcc10437",
+      "sha256": "065ed97768a57beddfa7f64698ef71ce9ca1c5e01c96e0dbebbf2fbd69ef54bd",
       "filter": "config"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "9db0357d5d578abed99b753b7108a040171b281f4eb819bbc91102e0be251f67",
+      "sha256": "9fb370010395e42838ea2939671165a9fdaf2b9cd15a461c569b0a5fc350a4a5",
       "signature": "class MachineController {"
     },
     {
@@ -79,7 +79,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "2609cb98483175fccdd2c7074c9802ddaf9319fa2903ebaeaf071b035350082c",
+      "sha256": "ca34f64958acbb1c4d7881528d5bdcc2f263e48423bdcb029c45734c972e84dd",
       "signature": "inline const FaultDescriptor &faultDescriptor("
     },
     {

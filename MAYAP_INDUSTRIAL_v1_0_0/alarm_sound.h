@@ -9,8 +9,10 @@
 //     Silent - shown on the HMI / Web / push only: diagnostics
 //   Every sound follows the LIVE condition, never the stored record: a latched fault that is gone is silent at once (the record stays for ACK).
 //
-//   The over-temperature lines (High, Emergency) are LOUD at once: the siren sounds the moment the line is crossed and stops when the reading is
-//   0.2 degC under it. With the owner's lines (SV 37.5, High 37.7) that is: over 0.2 degC -> loud siren, back down 0.2 degC -> silence.
+//   The over-temperature lines (High, Emergency) are not loud at once: crossing a line starts a grace time (the exhaust fan is forced on by the line and
+//   normally brings the reading back, e.g. the overshoot of a first climb). The siren sounds only if the reading is STILL at or over the line when the
+//   grace time ends, or at once when it is far over (panicC). It stops as soon as the reading is under the line (2 s to confirm), so the battery is not
+//   spent on a siren that has nothing left to say. The protective actions (heater cut, forced fans) never wait for this: only the noise does.
 #include <cmath>
 #include <cstdint>
 
@@ -21,32 +23,37 @@ class LoudVoice {
   struct Params {
     uint32_t steadyMs = 300000UL;         // the siren is continuous this long, then pulsed (a reading stuck over the line for hours must not be a wall of noise)
     uint32_t onMs = 5000UL, offMs = 25000UL;
-    float offBelowC = 0.2f;               // sound ends when the reading is this far under the line ...
+    uint32_t graceMs = 180000UL;          // the siren waits this long after the line is crossed (the fan has had its time to bring the reading down) ...
+    float panicC = 0.5f;                  // ... unless the reading is this far over the line: then it sounds at once
+    float offBelowC = 0.0f;               // sound ends when the reading is this far under the line ...
     uint32_t offConfirmMs = 2000UL;       // ... for this long (the lock of the heater has its own, longer, hysteresis)
-    float rearmC = 0.0f;                  // after such an end it is loud again as soon as the reading is back at the line (+ this)
     float ackRiseC = 0.2f;                // ACK mutes; the siren is back when the reading rose this much since the ACK ...
     uint32_t ackCheckMs = 120000UL;       // ... or when, at every check of this length, it has not fallen by ackFallC ...
     float ackFallC = 0.1f;
     uint32_t ackMaxMs = 600000UL;         // ... and in any case after this long
   };
 
-  void reset() { sounding_ = false; quiet_ = false; muted_ = false; offOn_ = false; }
+  void reset() { sounding_ = false; armed_ = false; muted_ = false; offOn_ = false; }
   // Every cycle. `active` = the line itself (High: highTemperatureActive_; Emergency: emergencyActive_); `line` = its threshold.
   void update(uint32_t now, bool valid, float pv, float line, bool active, const Params &p) {
     if (!valid || !std::isfinite(pv) || !active) { reset(); return; }
-    if (pv <= line - p.offBelowC) {
+    if (pv < line - p.offBelowC) {
       if (!offOn_) { offOn_ = true; offSince_ = now; }
     } else {
       offOn_ = false;
     }
-    if (offOn_ && static_cast<uint32_t>(now - offSince_) >= p.offConfirmMs) {      // fell 0.2 degC: silence now, whatever the lock of the heater still does
-      quiet_ = true; sounding_ = false; muted_ = false; offOn_ = false;
+    if (offOn_ && static_cast<uint32_t>(now - offSince_) >= p.offConfirmMs) {      // fell under the line: silence now, grace time starts again next crossing
+      sounding_ = false; armed_ = false; muted_ = false; offOn_ = false;
       return;
     }
-    if (quiet_) {
-      if (pv >= line + p.rearmC) quiet_ = false; else return;
+    if (!armed_) {
+      if (pv < line) return;                                                         // not over the line yet
+      armed_ = true; overSince_ = now;                                               // the grace time starts when the line is crossed
     }
-    if (!sounding_) { sounding_ = true; muted_ = false; soundAt_ = now; return; }
+    if (!sounding_) {
+      if (pv >= line + p.panicC || static_cast<uint32_t>(now - overSince_) >= p.graceMs) { sounding_ = true; muted_ = false; soundAt_ = now; }
+      return;
+    }
     if (muted_) {
       if (pv >= ackPv_ + p.ackRiseC) {
         muted_ = false;
@@ -76,8 +83,8 @@ class LoudVoice {
   }
 
  private:
-  bool sounding_ = false, quiet_ = false, muted_ = false, offOn_ = false;
-  uint32_t soundAt_ = 0U, offSince_ = 0U, muteStart_ = 0U, ackAt_ = 0U;
+  bool sounding_ = false, armed_ = false, muted_ = false, offOn_ = false;
+  uint32_t soundAt_ = 0U, overSince_ = 0U, offSince_ = 0U, muteStart_ = 0U, ackAt_ = 0U;
   float ackPv_ = 0.0f;
 };
 

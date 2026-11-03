@@ -1,816 +1,299 @@
 #pragma once
 // =========================================================================================
-// Thermal V3.0.0 - Robust Industrial Incubation Thermal Controller
-// Pure C++11 (no Arduino dependencies), header-only.
+// Thermal core 3.5 - one body, no tuning constants. Pure C++11, header-only.
 //
-// Key principles:
-// 1. Direct Physical Transit Measurement (Stopwatch identification of tau_transit) on a real start only.
-// 2. Direct Physical Gain Measurement (Peak slope observed during a climb the heater really spent at its ceiling).
-// 3. Energy-In-Flight Predictive Control:
-//      PV_predicted = PV + k_air * sum(P_pipe - P_hold)
-//    The model may only BRAKE near and far from SP (never add power the measured PV does not ask for); a measured momentum brake
-//    (PV slope x transit time) backs it up where the model's picture of the load is wrong.
-// 4. Asymmetric Anti-Windup Proportional-Integral tracking with slow base hold adaptation.
-// 5. Active Disturbance Rejection:
-//      - Door-Open Guard (prevents dangerous heat accumulation while doors are open; bounded in time).
-// 6. Hold level learned from the measured energy balance, everywhere (not only next to SP):
-//      hold = (power that reached the oven, delayed by the transit time) - (measured slope / heater gain)
-//    The model above counts commanded power above the hold level as heat that is on its way. A tray of cold eggs
-//    (or any other heat sink) takes most of that heat, so with a fixed 18 % hold the model promised +2 degC that never
-//    came, throttled the heater to 60 % while the oven was 4 degC under SP, and kept doing so for as long as the eggs
-//    were cold (the batch of 29/10: E115 cut the heater of a healthy oven). Measuring the balance keeps the model honest
-//    for any load, with no number about the load given. Every step of that learning is rate-limited and bounded, and where
-//    gain or delay have not been measured (a restart) it reads the balance only where it cannot depend on them.
+// The oven is an integrating process with a transport delay:   d(PV)/dt = kAir * (u(t - tau) - hold - fan)
+//   kAir [degC/s per %] heater gain, tau [s] transport delay, hold [%] the power that keeps PV flat (loss + eggs), fan [%] what the fan takes out.
+//
+// Rule of this file: a threshold is DERIVED where it can be. Everything below comes from five measured numbers:
+//   kAir, tau, hold  (identified while the controller runs; nothing is kept across a restart),  cap (the heater ceiling),  sigma (the noise of PV, measured).
+//   inflightMax = kAir * (cap - hold) * tau     the most heat that can be on its way: degC that full power puts into the pipe
+//   far         = inflightMax / 2               landing starts when the PREDICTED error is under this: the braking distance of THIS oven
+//   near        = 0.3 * far
+//   kn          = 1 / (2 * kAir * 1.35 tau)     the gain next to SV (SIMC for an integrator with a delay)
+// The typed numbers are the priors (kAir, tau, hold) a never-measured oven starts from, their plausibility range, and the few factors listed below with
+// the measurement that fixed each.
+//
+//   power  u = hold + f(el),  el = (SV - PV) - inflight,  inflight = kAir * sum over the last tau seconds of (u - hold)
+//   f: full power while el >= far (a door, cold eggs, a start), linear landing down to kn * near at el = near, kn * el below, 3 kn * el above SV.
+//   hold has ONE writer (observe): a disturbance observer on the measured PV (see there).
+//   kAir is measured at every saturated climb, tau by the stopwatch of a clean start.
+//   The exhaust fan: the controller is told only that it runs, and holds the load estimate meanwhile. The vent line (vent_line.h) alone decides when the fan
+//   runs (over temperature, a minimum run so the contactor is not burnt, off again at SV).
+// What the machine does around the controller (protections, vent line) can only cut; the one rule that reaches into the state: a protection cut
+// over SV takes the power that made that overshoot out of hold.
 // =========================================================================================
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <algorithm>
 
 namespace thermalv3 {
 
-constexpr float KP_UP = 30.0f;      // Proportional gain below SP [% / degC]
-constexpr float KP_DOWN = 90.0f;    // Proportional gain above SP (3x asymmetric)
-constexpr float KI = 0.020f;        // Integral rate [% / (degC * s)]
-constexpr float I_CLAMP = 15.0f;    // Hard anti-windup clamp [%]
-// Near SP the controller decides from the MEASURED PV only (no energy-in-flight model): a PI whose gain follows the two measured
-// numbers of the oven (heater gain and transport delay).  The model drives the climb only; between the two the weight fades linearly.
-constexpr float MODEL_FAR_C = 1.0f;     // |error| at/above this: the energy-in-flight model decides (climb)
-constexpr float MODEL_NEAR_C = 0.3f;    // |error| at/below this: measured PV only (hold)
-constexpr float KP_HOLD_MIN = 4.0f;     // lowest hold-regime proportional gain [% / degC]
-constexpr float HOLD_MAX_PCT = 85.0f;   // ceiling of the learned hold level [%]: cold eggs can take most of the heater to keep the air flat
-constexpr float KAIR_MIN = 5.0e-5f;     // heater gain limits [degC/s per %]: a 20 kW heater on 1.8 MJ/K is 1.1e-4, on 0.3 MJ/K it is 6.7e-4
-constexpr float KAIR_MAX = 7.5e-4f;
-constexpr float DOOR_MAX_S = 300.0f;    // the door guard holds the heater back for at most this long per event
-constexpr float DOOR_REARM_SLOPE = -0.006f;   // after a time-out the guard re-arms only once the fall has slowed below this [degC/s]
-constexpr float LEARN_WINDOW_S = 240.0f;      // energy-balance window: the last 4 minutes of PV against the power that reached the oven (a 0.1 degC step is 0.0004 degC/s over it)
-constexpr float LEARN_MIN_S = 90.0f;          // shortest window that is still trusted (right after a disturbance)
-constexpr float LEARN_TAU_UP_S = 120.0f;      // the hold level follows a RISING balance (a sink appeared) with this time constant ...
-constexpr float LEARN_TAU_DOWN_S = 40.0f;     // ... and a FALLING one (the sink is gone: a shut door, removed eggs) much faster: a hold level that is too high overshoots
-constexpr float LEARN_STEP_UP_MAX = 0.5f;     // largest change of the hold level per second [%]
-constexpr float LEARN_STEP_DOWN_MAX = 1.5f;
-constexpr float LEARN_FALL_MAX_PCT = 30.0f;   // a falling PV may lift the hold level at most this far above the power that reached the oven
-constexpr float LEARN_FLAT_CORR_PCT = 12.0f;  // without a measured heater gain the balance is read only where slope / gain is below this [%]
-constexpr float LEARN_FLAT_U_RANGE = 20.0f;   // ... and where the power that reached the oven did not change by more than this [%]
-constexpr float LEARN_FLAT_LIVE_S = 600.0f;   // ... and after the controller has been running this long (the response of a start is over)
-constexpr float TAU_MIN_S = 90.0f;            // the transit time is never taken shorter than this: a stopwatch that ran while the energy of an earlier
-constexpr float TAU_MAX_S = 220.0f;           // command was still on its way reads too short, and a delay that is too short makes every brake too weak
-constexpr float IDENT_MIN_ERR_C = 2.0f;       // the transit time is timed only on a start at least this far under SP ...
-constexpr float IDENT_MAX_SLOPE = 0.002f;     // ... from a PV that is not moving [degC/s]
-constexpr uint16_t MOMENTUM_WINDOW_S = 40U;   // PV slope window of the momentum brake [s]
-constexpr float MOMENTUM_NOISE_STEPS = 1.5f;  // a slope below this many sensor steps over that window is quantisation, not momentum
-// 2.5.7: two rules against the overshoot of the restart after a protection cut the heater (the field log of 31/10: the High line at SV+0.2 over and over).
-// The switches exist only so that tools/thermal-research/fleet-bench.cpp can compare with and without (-DV3X_F1=0 -DV3X_F4=0); the machine runs both.
-#ifndef V3X_F1
-#define V3X_F1 1     // the heater is held off by a protection and the reading does not fall: the hold level fades (as it does under the vent-line hold)
-#endif
-#ifndef V3X_F4
-#define V3X_F4 1     // the controller drove the reading over SV by V3X_F4_OVER and a protection cut the heater: the hold level was too big, it keeps a share of itself
-#endif
-#ifndef V3X_F4_KEEP
-#define V3X_F4_KEEP 0.6f
-#endif
-#ifndef V3X_F4_OVER
-#define V3X_F4_OVER 0.15f
-#endif
-// 2.5.8: what the controller does with an oven nobody has measured depends on how far under SV it starts (e0): at SV a hold level of 0 (a falling reading is then
-// answered by a quick pump-up), next to SV a low one, a bit under SV a middle one; a cold start keeps the prior (the climb measures the oven).
-#ifndef V3X_START
-#define V3X_START 1
-#endif
-#ifndef V3X_START_H_AT
-#define V3X_START_H_AT 8.0f     // e0 <= 0.1 degC (0 and 5 were tried: a restart under a full tray then sags below the limit of tests/thermal-closed-loop.cpp)
-#endif
-#ifndef V3X_START_H_NEAR
-#define V3X_START_H_NEAR 8.0f   // 0.1 < e0 <= 1.0 degC
-#endif
-#ifndef V3X_START_H_MID
-#define V3X_START_H_MID 8.0f    // 1.0 < e0 <= 3.0 degC
-#endif
-#ifndef V3X_PROBE
-#define V3X_PROBE 1             // next to SV the hold level is FOUND: power rises by V3X_PROBE_STEP_PCT every max(V3X_PROBE_STEP_S, transit time) while the reading keeps falling
-#endif
-#ifndef V3X_PROBE_STEP_PCT
-#define V3X_PROBE_STEP_PCT 2.0f
-#endif
-#ifndef V3X_PROBE_STEP_S
-#define V3X_PROBE_STEP_S 120.0f
-#endif
-#ifndef V3X_PROBE_BAIL
-#define V3X_PROBE_BAIL 0.15f     // the reading fell this far under SV: this oven wants its heat (a loaded oven after a restart): back to the prior hold level, at once
-#endif
-#ifndef V3X_PROBE_QUIET
-#define V3X_PROBE_QUIET 2       // the probe ends when the reading did not fall over this many steps in a row
-#endif
-#ifndef V3X_RAMP
-#define V3X_RAMP 0              // in the first half hour after such a start a reading that stands under SV is answered sooner and faster
-#endif
-#ifndef V3X_RAMP_WAIT
-#define V3X_RAMP_WAIT 45.0f
-#endif
-#ifndef V3X_RAMP_RATE
-#define V3X_RAMP_RATE 0.05f
-#endif
-#ifndef V3X_HOLD0
-#define V3X_HOLD0 18.0f   // the hold level of an oven nobody has measured (the bench compares other values)
-#endif
-// 2.7.0: Anti-Stuck. A reading that rests under SV (flat, one step or more) raises the hold level at STUCK_BASE_PCT_S after STUCK_WAIT_S. Far under SV
-// (more than STUCK_FAR_C) a stall is not the approach to SV, it is a load the hold level does not know (the log of 01/11 stood at 36 degC for an hour
-// under the old 1.5 %/min): there it waits STUCK_FAR_WAIT_S and the raise grows with the distance. Near SV nothing changes (a faster raise there
-// made the empty oven overshoot by 0.75 degC in tests/thermal-closed-loop.cpp).
-constexpr float STUCK_WAIT_S = 120.0f;
-constexpr float STUCK_BASE_PCT_S = 0.025f;
-constexpr float STUCK_FAR_C = 0.8f;
-constexpr float STUCK_FAR_WAIT_S = 90.0f;
-constexpr float STUCK_PER_C_PCT_S = 0.1f;
-constexpr float STUCK_AFTER_DELAY_S = 60.0f;   // a stall counts only this long after the transit time has passed since the start
-// 2.7.0: the exhaust fan takes heat out of the box. What it takes is learned as its own level (fanLoss_, in % of heater power) and the heater pays
-// for it ONE TRANSIT TIME AHEAD: the air cools the moment the fan starts, but the heater answers only after the delay. Everything the controller
-// learns while the day-profile fan runs goes to that level, not to the hold level, so the hold level is right again the moment the fan stops.
-constexpr float FAN_LEARN_TAU_S = 20.0f;     // time constant of the measured fan level [s]
-constexpr float FAN_LEAD = 0.8f;           // how far ahead of the fan the heater pays, in transit times
-constexpr float FAN_ABSORB_TAU_S = 100.0f;   // time constant of the integral absorbed into the fan level while the fan runs [s]
-constexpr float FAN_MAX_PCT = 80.0f;
-constexpr float FAN_SLEW_PCT_S = 5.0f;
-constexpr float FAN_NO_PROFILE_S = 1.0e5f;   // a start/stop time above this means "no day profile"
-constexpr uint16_t HIST_LEN = 640U;           // seconds of history: transit time (<=220 s) + learning window + margin
+// Priors of an oven nobody has measured (this machine's own: first climb 0.39 degC/min at 78 % -> 8.3e-5; log of 02/11 -> 5e-5..1e-4) and the range
+// a measurement may take relative to them (a physical plausibility guard, not a tuning).
+constexpr float KAIR_PRIOR = 8.0e-5f, KAIR_LO = 1.0f / 3.0f, KAIR_HI = 10.0f;
+constexpr float TAU_PRIOR = 150.0f, TAU_LO = 0.6f, TAU_HI = 1.5f;
+constexpr float KAIR_WARM = 2.5e-4f;       // a start close to SV has no climb to measure kAir on: the middle of the fleet instead of its slowest oven (gain safe on both sides)
+constexpr float OBS_POLE_TAU = 1.5f, OBS_LEAK_TAU = 8.0f;   // disturbance observer: poles at 1/(1.5 tau); the rate of the load leaks away over 8 tau (measured on the fleet bench)
+constexpr float PIPE_K = 1.3f;             // heat in flight: the last 1.3 transit times of power (the delay and the tail of the first-order lag behind it)
+constexpr float LEAD_GAIN = 1.4f;          // ... at kAir x 1.4: the climb slope is what the eggs and walls leave of the air's own rate (A7 of the rig: 3.9e-4 against Pmax/Cf = 5.3e-4), and the heat in flight raises the air at that rate (closed-loop rig, door 2 min: overshoot 0.48 -> <= 0.30)
+constexpr float KAIR_START = 1.6e-4f;      // kAir before any climb has been measured: between the slowest oven of the fleet and the middle (higher starts overshoot, lower ones undershoot)
+constexpr float DOOR_LATCH_TAU = 6.0f;      // a door is "open" for the load estimate for at most 6 transit times
+constexpr float DOOR_LOAD = 0.1f;           // ... and only when the fall is worth a load of 10 % of the headroom (a real door is 5-10 times that; the dip of a landing is not)
+constexpr float HOLD_PRIOR_OF_CAP = 0.12f;
+constexpr float SIGMA_FLOOR = 0.004f;      // a reading of a 0.1 degC sensor cannot be quieter than this (degC)
+constexpr uint16_t HIST_LEN = 640U;        // seconds of history (memory, not tuning): 4 x the largest transit time
 
-enum State : uint8_t {
-  StIdle = 0,    // Standby / Not permitted to heat
-  StClimb = 1,   // Phase 1: High-power climb with automatic parameter discovery
-  StTrack = 2,   // Phase 2: Steady-state predictive tracking & micro-trim PI
-  StDoor = 3,    // Disturbance: Door open detected (power clamped to prevent surge)
-  StFrozen = 4   // Safety lock: Sensor missing, permit lost or alarm threshold
-};
+enum State : uint8_t { StIdle = 0, StClimb = 1, StTrack = 2, StDoor = 3, StFrozen = 4 };
 
 struct Input {
-  float pv = NAN;                // Filtered process temperature [degC]
-  float sp = 37.5f;              // Target setpoint [degC]
-  float dQ = 0.1f;               // Sensor resolution step (0.1 or 0.01) [degC]
-  float slopeFine = NAN;         // 2.7.0: slope of PV from sensor_fine.h (long window) [degC/s]; NaN: not available
-  float capPct = 100.0f;         // Configured maximum heater ceiling [%]
-  float deliveredPct = 0.0f;     // Actual energy delivered in previous cycle [%]
-  float dtS = 0.1f;              // Step interval [seconds]
-  bool newSample = false;        // New valid sensor sample available
-  bool permit = false;           // Production safety permit (all protections green)
-  bool shadow = false;           // Vent line pause (keep state alive, command 0%)
-  bool ventFan = false;          // Exhaust/ventilation fan is running
-  float ventOnInS = 1.0e6f;      // Seconds until next scheduled vent start
-  float ventOffInS = 1.0e6f;     // Seconds until active vent stops
-  float headroomC = 0.7f;        // Headroom to High-Temp alarm [degC]
-  float alarmHeadroomC = 0.7f;   // Headroom to Emergency shutdown line [degC]
-  float e115Frac = 0.0f;         // Heater stuck evidence fraction [0.0..1.0]
+  float pv = NAN;                // PV the controller regulates [degC] (0.01 effective)
+  float sp = 37.5f;
+  float dQ = 0.1f;               // unused (kept for the callers)
+  float slopeFine = NAN;         // long-window slope of PV [degC/s]; NaN: the controller reads its own
+  float capPct = 100.0f;
+  float deliveredPct = 0.0f;     // unused
+  float dtS = 0.1f;
+  bool newSample = false;        // unused
+  bool permit = false;
+  bool shadow = false;           // vent line holds the heater at 0 %
+  bool ventFan = false;          // the exhaust fan runs (the only thing the controller is told about it)
+  float headroomC = 0.7f, alarmHeadroomC = 0.7f, e115Frac = 0.0f;   // unused
 };
 
 struct Output {
-  float powerPct = 0.0f;         // Commanded heater power [0.0 .. capPct]
-  uint8_t state = StIdle;        // Controller operational state
-  bool powerLimited = false;     // Power capped by ceiling or safety
-  uint8_t trustQ = 15;           // Telemetry signal quality index (0..15)
+  float powerPct = 0.0f;
+  uint8_t state = StIdle;
+  bool powerLimited = false;
+  uint8_t trustQ = 15;
 };
 
 class Controller {
  public:
-  static constexpr uint16_t MAX_PIPE_LEN = 320U;
-  static constexpr uint8_t SLOPE_HIST_CAP = 30U;
-
   Controller() { reset(); }
 
   void reset() {
-    state_ = StIdle;
-    pv_ = NAN;
-    sp_ = 37.5f;
-    capPct_ = 100.0f;
-
-    // Priors of an oven nobody has measured (a controller that restarts next to SP never sees a start to measure). They lean to the fast,
-    // high-gain, long-delay side of the ovens this controller meets, because that is the side on which wrong numbers make it swing:
-    // gains and brakes sized for them are only slow on a slower oven, and the first climb replaces them with measurements anyway.
-    kAir_ = 0.0004f;           // [degC/s per 100 % power]
-    tauTransit_ = 150.0f;      // transport delay [seconds]
-    pHold_ = V3X_HOLD0;        // nominal hold power [%]
-    integral_ = 0.0f;
-    fanLoss_ = 0.0f;
-    fanBump_ = 0.0f;
-    fanRunS_ = 0.0f;
-    pvPredicted_ = 30.0f;
-
-    pipeLen_ = 202U;
-    pipeIdx_ = 0U;
-    for (uint16_t i = 0U; i < MAX_PIPE_LEN; ++i) pipe_[i] = static_cast<uint8_t>(pHold_);
-    recomputePipeSum();
-
-    histHead_ = 0U;
-    histCount_ = 0U;
-    slopeShort_ = 0.0f;
-    wasLive_ = false;
-    startDone_ = holdImported_ = startPhase_ = probing_ = false;
-    probeT_ = probePv_ = probeStart_ = 0.0f; probeQuiet_ = 0;
-    startS_ = 0.0f;
-    dQ_ = 0.1f;
-    liveS_ = 0.0f;
-    calmS_ = 0.0f;
-    lastCmd_ = 0.0f;
-
-    secAcc_ = 0.0f;
-    clockS_ = 0.0;
-    heaterOnTime_ = -1.0;
-    pvAtOn_ = NAN;
-    identified_ = false;
-
-    filteredSlope_ = 0.0f;
-    peakClimbSlope_ = 0.0f;
-    slopeHistCount_ = 0U;
-    slopeHistHead_ = 0U;
-    for (uint8_t i = 0U; i < SLOPE_HIST_CAP; ++i) {
-      slopePvHist_[i] = 0.0f;
-      slopeTimeHist_[i] = 0.0;
-    }
-
-    doorDetected_ = false;
-    doorTimer_ = 0.0f;
-    doorArmed_ = true;
-    doorCalmS_ = 0.0f;
-    stuckTimer_ = 0.0f;
-    shadowS_ = 0.0f;
-    shadowRefPv_ = NAN;
-    shadowRefS_ = 0.0f;
-    shadowFade_ = false;
-    respSuspect_ = false;
-    respHighPwrTimer_ = 0.0f;
-    respPvStart_ = NAN;
+    state_ = StIdle; pv_ = NAN; sp_ = 37.5f; cap_ = 100.0f;
+    kAir_ = KAIR_START; tau_ = TAU_PRIOR; hold_ = HOLD_PRIOR_OF_CAP * 100.0f;
+    identified_ = tauMeasured_ = door_ = wasLive_ = doorLatch_ = nearSeen_ = false; latchT_ = 0.0f;
+    lead_ = slope_ = lsSlope_ = lsSigma_ = 0.0f; sigma_ = 0.02f;
+    histHead_ = histCount_ = 0U; liveS_ = secAcc_ = lastCmd_ = 0.0f;
+    swOn_ = false; swPv0_ = swT_ = 0.0f;
+    pm_ = NAN; rate_ = 0.0f;
+    derive();
+    for (uint16_t i = 0U; i < HIST_LEN; ++i) { pvHist_[i] = 0.0f; uHist_[i] = 0.0f; }
   }
 
   Output step(const Input &in) {
     Output out;
     const float dt = !std::isfinite(in.dtS) ? 0.1f : (in.dtS < 0.001f ? 0.001f : (in.dtS > 1.0f ? 1.0f : in.dtS));
-    clockS_ += static_cast<double>(dt);
-
     const bool pvValid = std::isfinite(in.pv) && in.pv > 0.0f && in.pv < 60.0f;
     const bool spValid = std::isfinite(in.sp) && in.sp > 20.0f && in.sp < 50.0f;
     const bool live = (in.permit || in.shadow) && pvValid && spValid;
-    capPct_ = (std::isfinite(in.capPct) && in.capPct > 0.0f) ? std::min(100.0f, in.capPct) : 0.0f;
+    cap_ = (std::isfinite(in.capPct) && in.capPct > 0.0f) ? std::min(100.0f, in.capPct) : 0.0f;
 
-    if (!live || capPct_ <= 0.0f) {
-      state_ = StFrozen;
-      out.powerPct = 0.0f;
-      out.state = state_;
-      // The heater is not conducting: what was in flight drains out of the model and the history records the truth (zeros), so the
-      // first command after the pause is not computed from the commands that came before it.
-      // The heater is held off by a protection (High, the Web, a lost permit) while the reading is valid: it is a measurement. The controller was in charge
-      // one cycle ago and the reading is over SV by 0.15 degC or more: its own hold level made that overshoot, and it keeps 60 % of itself (once per cut).
-      // Then, as under the vent-line hold, every 3 minutes of a reading that stays at/above SV - 0.05 and does not fall more than one sensor step says the
-      // oven loses little heat: the hold level fades (time constant 180 s). If the reading falls later the usual rules raise it again.
-      if (pvValid && spValid && capPct_ > 0.0f && !in.permit && !in.shadow) {
-#if V3X_F4
-        if (wasLive_ && in.pv >= in.sp + V3X_F4_OVER) pHold_ *= V3X_F4_KEEP;
-#endif
-#if V3X_F1
-        fadeWhileHeldOff(in.pv, in.sp, dt);
-#endif
+    if (!live || cap_ <= 0.0f) {
+      state_ = StFrozen; out.state = state_;
+      // A protection cut the heater while PV stood over SV: the power that made that overshoot comes out of hold.
+      if (pvValid && spValid && cap_ > 0.0f && !in.permit && !in.shadow && wasLive_ && in.pv > in.sp + std::max(3.0f * sigma_, nearBand_)) {
+        hold_ = std::max(0.0f, hold_ - (in.pv - in.sp) / std::max(1.0e-9f, kAir_ * tau_));
       }
-      wasLive_ = false;
-      liveS_ = 0.0f;
-      calmS_ = 0.0f;
-      lastCmd_ = 0.0f;
-      if (!identified_) heaterOnTime_ = -1.0;       // a pause breaks the stopwatch of the start
+      wasLive_ = false; liveS_ = lastCmd_ = 0.0f; swOn_ = false;
       secAcc_ += dt;
-      while (secAcc_ >= 1.0f) {
-        secAcc_ -= 1.0f;
-        pushPipe(0U);
-        pushHist(std::isfinite(pv_) ? pv_ : 0.0f, 0.0f);
-      }
+      while (secAcc_ >= 1.0f) { secAcc_ -= 1.0f; pushHist(std::isfinite(pv_) ? pv_ : 0.0f, 0.0f); }
       return out;
     }
+    // Started close to SV (a reboot, a restart): there is no climb to measure kAir on - begin at the middle of the fleet, not at its slowest oven.
+    if (!wasLive_ && !identified_ && !tauMeasured_ && liveS_ <= 0.0f && std::fabs(in.sp - in.pv) < farBand_) kAir_ = KAIR_WARM;
+    wasLive_ = true; pv_ = in.pv; sp_ = in.sp;
+    slope_ = std::isfinite(in.slopeFine) ? in.slopeFine : lsSlope_;
+    const float e = sp_ - pv_;
 
-    wasLive_ = true;
-    pv_ = in.pv;
-    sp_ = in.sp;
-    fineOk_ = std::isfinite(in.slopeFine) && std::fabs(in.slopeFine) < 0.2f;
-    slopeFine_ = fineOk_ ? in.slopeFine : 0.0f;
-#if V3X_START
-    if (!startDone_) {
-      startDone_ = true;
-      if (!holdImported_) {
-        const float e0 = in.sp - in.pv;
-        const float h = e0 <= 0.1f ? V3X_START_H_AT : (e0 <= 1.0f ? V3X_START_H_NEAR : (e0 <= 3.0f ? V3X_START_H_MID : pHold_));
-        if (h != pHold_) { pHold_ = h; rebuildPipe(); }
-        startPhase_ = e0 <= 3.0f;
-        startS_ = 0.0f;
-#if V3X_PROBE
-        if (e0 <= 1.0f) { probing_ = true; probeT_ = 0.0f; probePv_ = probeStart_ = in.pv; probeQuiet_ = 0; }
-#endif
-      }
-    }
-    if (startPhase_) { startS_ += dt; if (startS_ > 1800.0f) startPhase_ = false; }
-#if V3X_PROBE
-    if (probing_) {
-      probeT_ += dt;
-      const float stepS = std::max(V3X_PROBE_STEP_S, tauTransit_);
-      if (in.pv < in.sp - V3X_PROBE_BAIL && in.pv < probeStart_ - V3X_PROBE_BAIL) {   // under SV AND fallen since the start
-        if (pHold_ < V3X_HOLD0) { pHold_ = V3X_HOLD0; rebuildPipe(); }
-        probing_ = false;
-      }
-      else if (in.pv >= in.sp + 0.1f || probeT_ > 1800.0f || in.shadow || doorDetected_) probing_ = false;
-      else if (probeT_ >= stepS) {
-        probeT_ = 0.0f;
-        if (in.pv < probePv_ - 0.04f || in.pv < in.sp - 0.15f) {        // still falling (or well under SV): the power asked for is not enough yet
-          if (in.pv < probePv_ - 0.04f || slopeShort_ <= 0.0f) { pHold_ = std::min(HOLD_MAX_PCT, pHold_ + V3X_PROBE_STEP_PCT); probeQuiet_ = 0; }
-          else ++probeQuiet_;
-        } else ++probeQuiet_;
-        probePv_ = in.pv;
-        if (probeQuiet_ >= V3X_PROBE_QUIET) probing_ = false;
-      }
-    }
-#endif
-#endif
+    // The exhaust fan needs no rule of its own: it is a load like any other and the observer below sees it (a separate fan model counted it twice).
 
-    // -------------------------------------------------------------------------
-    // 1. Sliding-Window Slope Estimation (10s to 25s window)
-    // -------------------------------------------------------------------------
-    updateSlope(pv_, clockS_);
+    // --- power: hold plus a saturating function of the PREDICTED error (the heat on its way is counted before it arrives)
+    ventFan_ = in.ventFan;   // the fan takes heat out for a few minutes and stops: that load is not a hold level to learn (the observer is held while it runs)
+    updateInflight();
+    const float el = e - lead_;
+    const float span = std::max(1.0f, cap_ - hold_);
+    float d;
+    if (el >= farBand_) d = span;
+    else if (el >= nearBand_) d = kn_ * nearBand_ + (span - kn_ * nearBand_) * (el - nearBand_) / std::max(1.0e-6f, farBand_ - nearBand_);
+    else if (el >= 0.0f) d = kn_ * el;
+    else d = std::max(-hold_, 3.0f * kn_ * el);                           // above SV: three times the gain
+    float cmd = hold_ + d;
+    if (in.shadow) cmd = 0.0f;
+    cmd = std::max(0.0f, std::min(cap_, cmd));
 
-    // -------------------------------------------------------------------------
-    // 2. Physical Transit Time & Gain Discovery
-    // -------------------------------------------------------------------------
-    if (!std::isfinite(respPvStart_)) respPvStart_ = pv_;
+    // --- hold's correction by the predicted error (inside the landing band only; the balance below is the other, slower, writer)
 
-    // Transit time: a stopwatch from "the heater is put to work at (nearly) full power on an oven that is far under SP and not moving"
-    // to the first 0.15 degC of rise. Only a real start is a clean measurement. A controller that restarts next to the set-point (an
-    // update, a power blip) or in the middle of a fall has nothing to time: the first 0.15 degC it happens to see would be taken for the
-    // delay of the oven and the energy balance below would be aligned on it.
-    if (!identified_) {
-      if (heaterOnTime_ < 0.0) {
-        if (in.permit && !in.shadow && slopeHistCount_ >= SLOPE_HIST_CAP && std::fabs(filteredSlope_) <= IDENT_MAX_SLOPE &&
-            (sp_ - pv_) >= IDENT_MIN_ERR_C && lastCmd_ >= 0.8f * capPct_) {
-          heaterOnTime_ = clockS_;
-          pvAtOn_ = pv_;
-        }
-      } else if (lastCmd_ < 0.4f * capPct_) {
-        heaterOnTime_ = -1.0;                       // the heater was backed off: the stopwatch no longer times a full-power start
-      } else if ((pv_ - pvAtOn_) >= 0.15f) {
-        const float measuredDelay = static_cast<float>(clockS_ - heaterOnTime_);
-        tauTransit_ = std::max(TAU_MIN_S, std::min(TAU_MAX_S, measuredDelay * 1.05f));
-        // Total effective prediction horizon includes heater lag ~ 1.35x
-        pipeLen_ = std::max<uint16_t>(15U, std::min<uint16_t>(MAX_PIPE_LEN - 1U, static_cast<uint16_t>(tauTransit_ * 1.35f)));
-        rebuildPipe();
-        identified_ = true;
-      }
-    }
+    // door / cold eggs: PV falls faster than half of what the hold power would lose, and by more than the noise of the slope
+    door_ = !in.shadow && e > nearBand_ && lsSlope_ < -std::max(3.0f * lsSigma_, 0.5f * kAir_ * hold_);
+    // The door counts as open for the load estimate until PV is back near SV, or DOOR_LATCH_TAU transit times have run out. door_ above clears as soon as the
+    // heater has stopped the fall, with the door still open; the observer then took the door's loss for hold (18 -> 43 %) and the whole surplus arrived when the door
+    // shut (closed-loop rig, door 5 min: overshoot 1.04 -> 0.20 degC; 10 min: 2.39 -> 0.11).
+    if (e < 2.0f * farBand_) nearSeen_ = true;                       // a door opens on an oven that has been running near SV, not on a cold start
+    if (door_ && latchT_ <= 0.0f && nearSeen_ && -lsSlope_ / kAir_ > DOOR_LOAD * std::max(1.0f, cap_ - hold_)) latchT_ = 1.0e-3f;
+    if (latchT_ > 0.0f) { latchT_ += dt; if (e <= nearBand_) latchT_ = 0.0f; }
+    doorLatch_ = latchT_ > 0.0f && latchT_ <= DOOR_LATCH_TAU * tau_;
+    state_ = in.shadow ? StFrozen : (door_ ? StDoor : (e > farBand_ && slope_ >= 0.0f ? StClimb : StTrack));
 
-    // Heater gain: the steepest 40 s least-squares slope seen while the heater really is at its ceiling (the 3 s slope of a 0.1 degC sensor
-    // is a staircase, and its peaks are the stairs). "Really": the power that reached the oven during that slope, one transit time ago,
-    // was at least 90 % of the ceiling, so the slope is the answer of the oven to that power and to nothing else. The hold level used
-    // here is capped: a large learned hold (cold eggs) must not push the gain up, because a gain that is too big only makes the controller
-    // cautious, one that is too small makes it rash.
-    if (pv_ < sp_ - 1.0f && slopeShort_ > peakClimbSlope_ && in.permit) {
-      const float uWin = delayedPower(static_cast<uint16_t>(tauTransit_ + 0.5f), MOMENTUM_WINDOW_S);
-      if (uWin >= 0.9f * capPct_) {
-        peakClimbSlope_ = slopeShort_;
-        const float estK = peakClimbSlope_ / std::max(10.0f, uWin - std::min(pHold_, 40.0f));
-        kAir_ = std::max(KAIR_MIN, std::min(KAIR_MAX, estK));
-      }
-    }
-
-    // -------------------------------------------------------------------------
-    // 3. Active Disturbance Rejection
-    // -------------------------------------------------------------------------
-    // Door Open Plunge Detection: temperature falling fast (< -0.7 C/min) below SP. The guard holds the heater back for the time the
-    // door is really open; it lets go when the fall stops, and in any case after DOOR_MAX_S (a cold tray keeps pulling the air down long
-    // after the door is shut, and a heater held at the hold level while the oven needs it only deepens the dip). After a time-out it
-    // is armed again only once the fall has slowed, so one long fall is not clamped twice.
-    const float doorSlope = filteredSlope_;
-    if (doorSlope > DOOR_REARM_SLOPE) doorCalmS_ += dt; else doorCalmS_ = 0.0f;
-    if (!doorArmed_ && !doorDetected_ && doorCalmS_ >= 20.0f) doorArmed_ = true;
-    if (doorArmed_ && doorSlope < -0.012f && (sp_ - pv_) > 0.40f) {
-      doorDetected_ = true;
-      doorArmed_ = false;
-      doorTimer_ = 0.0f;
-    }
-    if (doorDetected_) {
-      doorTimer_ += dt;
-      if ((doorSlope > -0.003f && doorTimer_ > 15.0f) || doorTimer_ > DOOR_MAX_S) {
-        doorDetected_ = false;
-      }
-    }
-
-    // -------------------------------------------------------------------------
-    // 4. Energy-In-Flight Predictive Calculation (drives the climb; fades out near SP)
-    // -------------------------------------------------------------------------
-    // Every threshold below that compares PV with SP is a multiple of the sensor step dQ (0.1 or 0.01 degC): the same code is flat on a
-    // coarse sensor and tight on a fine one, and one quantum of a coarse sensor never counts as a real error.
-    const float dQ = (std::isfinite(in.dQ) && in.dQ >= 0.005f && in.dQ <= 0.2f) ? in.dQ : 0.1f;
-    dQ_ = dQ;
-    auto deadZone = [dQ](float e) { return e > 0.5f * dQ ? e - 0.5f * dQ : (e < -0.5f * dQ ? e + 0.5f * dQ : 0.0f); };
-
-    const float excessEnergy = static_cast<float>(pipeSum_) - static_cast<float>(pipeLen_) * pHold_;
-    pvPredicted_ = std::max(pv_ - 0.20f, pv_ + kAir_ * excessEnergy);
-
-    const float errPred = sp_ - pvPredicted_;
-    const float errTrue = sp_ - pv_;
-
-    // -------------------------------------------------------------------------
-    // 5. Control Law: P on a blend of predicted (far) and measured (near) error + Conditional Anti-Windup I
-    // -------------------------------------------------------------------------
-    const float wModel = std::max(0.0f, std::min(1.0f, (std::fabs(errTrue) - MODEL_NEAR_C) / (MODEL_FAR_C - MODEL_NEAR_C)));
-    const float kpHold = std::max(KP_HOLD_MIN, std::min(KP_UP, 1.0f / (2.0f * kAir_ * static_cast<float>(pipeLen_))));
-    // The far-field gain is sized to the oven as well: 1 degC of error asks for the power that would move the air by 1 degC within one
-    // horizon (gain x horizon = kAir x pipeLen). 30 %/degC is right for a slow oven (kAir x pipeLen < 0.033); an oven that answers fast
-    // after a long delay (small air mass, 20 kW) swung by +-1 degC under it.
-    const float kpFar = std::max(kpHold, std::min(KP_UP, 1.0f / (kAir_ * static_cast<float>(pipeLen_))));
-    const float kp = wModel * kpFar + (1.0f - wModel) * kpHold;
-    // Near SP the model may only BRAKE (it sees power already on its way that will carry PV over SP); it may not ADD power for an
-    // energy "deficit" it infers from the commanded history (a held heater, a changed hold level): the measured PV decides that.
-    const float errMeas = deadZone(errTrue);
-    // Momentum brake: whatever the model believes, PV keeps rising at about the present slope for one transit time after the heater is
-    // cut. It is measured, so it is right when the model is not (the load that held the hold level up has just gone: a door shut, a tray
-    // taken out) and it is the same size as the model's lift when the model is right.
-    const float errMomentum = deadZone(errTrue - std::max(0.0f, slopeShort_ - MOMENTUM_NOISE_STEPS * dQ_ / static_cast<float>(MOMENTUM_WINDOW_S)) * tauTransit_);
-    const float errModel = std::min(deadZone(errPred), errMomentum);
-    const float errCtl = wModel * errModel + (1.0f - wModel) * std::min(errMeas, errModel);
-    const float pTerm = errCtl >= 0.0f ? kp * errCtl : KP_DOWN * errCtl;   // strong damping above SP against overshoot
-
-    // The vent line holds the heater at 0 %: the controller is not in charge, so nothing is learned from the error (no integral, no hold,
-    // no stuck rule). But the held heater is also a measurement: every 3 minutes of hold, if PV stayed at/above SP - 0.05 and did not fall
-    // more than one 0.1 degC step, the oven loses little heat and the stored hold level is too big (eggs warm): it then fades (time constant
-    // 180 s). If PV falls later the normal rules raise the hold again.
-    if (in.shadow) {
-      if (shadowS_ <= 0.0f) { shadowRefPv_ = pv_; shadowRefS_ = 0.0f; shadowFade_ = false; }
-      shadowS_ += dt;
-      if (shadowS_ - shadowRefS_ >= 180.0f) {
-        shadowFade_ = pv_ >= sp_ - 0.5f * dQ && pv_ >= shadowRefPv_ - 1.01f * dQ;
-        shadowRefPv_ = pv_;
-        shadowRefS_ = shadowS_;
-      }
-      if (shadowFade_) pHold_ = std::max(0.0f, pHold_ - pHold_ * (dt / 180.0f));
-      stuckTimer_ = 0.0f;
-    } else {
-      shadowS_ = 0.0f;
-      shadowFade_ = false;
-    }
-
-    // Fan feed-forward: is the day-profile fan going to be running one transit time from now? (known only while a profile runs)
-    const bool fanProfile = in.ventOnInS < FAN_NO_PROFILE_S && in.ventOffInS < FAN_NO_PROFILE_S;
-    const bool fanLearn = fanProfile && in.ventFan;
-    {
-      const float lead = tauTransit_ * FAN_LEAD;
-      const bool planned = fanProfile && in.ventOnInS <= lead && lead < in.ventOffInS;
-      const float want = (planned && !in.shadow && !doorDetected_) ? fanLoss_ : 0.0f;
-      const float stepMax = FAN_SLEW_PCT_S * dt;
-      fanBump_ += std::max(-stepMax, std::min(stepMax, want - fanBump_));
-    }
-    // Integral term on True Error (active within +-0.75 degC)
-    if (!in.shadow && !doorDetected_ && std::fabs(errTrue) <= 0.75f) {
-      integral_ += std::min(KI, kpHold / (4.0f * static_cast<float>(pipeLen_))) * deadZone(errTrue) * dt;   // Ti >= 4 x the measured delay (SIMC), never faster than before
-      integral_ = std::max(-I_CLAMP, std::min(I_CLAMP, integral_));
-
-      // Slow absorption of persistent integral into pHold (time constant ~300s)
-      if (fanLearn) {   // the fan runs: what the error asks for is the fan's share
-        const float shift = integral_ * (dt / FAN_ABSORB_TAU_S);
-        fanLoss_ = std::max(0.0f, std::min(FAN_MAX_PCT, fanLoss_ + shift));
-        integral_ -= shift;
-      } else {
-        const float shift = integral_ * (dt / 300.0f);
-        pHold_ = std::max(0.0f, std::min(HOLD_MAX_PCT, pHold_ + shift));
-        integral_ -= shift;
-      }
-    } else if (!in.shadow && !doorDetected_) {
-      integral_ *= std::max(0.0f, 1.0f - 0.05f * dt);
-    }
-
-    // Anti-Stuck protection: if temperature rests flat one sensor step or more (but at least 0.08 degC) below SP for > 120 s. It used to wait for
-    // three steps; a PV that stood 0.2 degC under SP was then too far for the proportional term and not far enough for this rule (the log of 30/10:
-    // 37.3 degC for 20 minutes).
-    // Within one transit time of a start the reading cannot have answered the heater yet: that flat stretch is the delay of the oven, not a stall.
-    const bool answerDue = liveS_ > tauTransit_ + STUCK_AFTER_DELAY_S;
-    if (!in.shadow && !doorDetected_ && answerDue && errTrue >= std::max(0.08f, 0.95f * dQ) && std::fabs(filteredSlope_) < 0.0015f) {
-      stuckTimer_ += dt;
-#if V3X_START && V3X_RAMP
-      const float stuckWait = startPhase_ ? V3X_RAMP_WAIT : 120.0f, stuckRate = startPhase_ ? V3X_RAMP_RATE : 0.025f;
-#else
-      const bool stuckFar = errTrue > STUCK_FAR_C;
-      const float stuckWait = stuckFar ? STUCK_FAR_WAIT_S : STUCK_WAIT_S;
-      const float stuckRate = STUCK_BASE_PCT_S + (stuckFar ? STUCK_PER_C_PCT_S * (errTrue - STUCK_FAR_C) : 0.0f);
-#endif
-      if (stuckTimer_ > stuckWait) {
-        if (fanLearn) fanLoss_ = std::min(FAN_MAX_PCT, fanLoss_ + stuckRate * dt);
-        else pHold_ = std::min(HOLD_MAX_PCT, pHold_ + stuckRate * dt);
-      }
-    } else if (!in.shadow) {
-      stuckTimer_ = 0.0f;
-    }
-
-    // Raw commanded power
-    float cmd = pHold_ + pTerm + integral_ + fanBump_;
-
-    // Door open guard clamp
-    if (doorDetected_) {
-      cmd = std::min(cmd, pHold_ + 6.0f + fanBump_);
-      state_ = StDoor;
-    } else if (in.shadow) {
-      cmd = 0.0f;
-      state_ = StFrozen;
-    } else if (sp_ - pv_ > 1.2f && filteredSlope_ >= 0.0f) {
-      state_ = StClimb;
-    } else {
-      state_ = StTrack;
-    }
-
-    // Clamp to valid boundaries
-    cmd = std::max(0.0f, std::min(capPct_, cmd));
-
-    // -------------------------------------------------------------------------
-    // 6. Update Transit History Buffer (1 Hz)
-    // -------------------------------------------------------------------------
-    secAcc_ += dt;
-    liveS_ += dt;
+    // --- once per second: history, noise, slope, balance, identification
+    secAcc_ += dt; liveS_ += dt;
     if (secAcc_ >= 1.0f) {
       secAcc_ -= 1.0f;
-      // A heater held off by the vent line is not a command the model should count as missing energy: it records the hold level.
-      pushPipe(static_cast<uint8_t>(std::round(std::max(0.0f, in.shadow ? pHold_ : cmd - fanBump_))));
-      // The history keeps what was physically sent (a held heater sent nothing). Calm = no door, no vent-line hold, no fan: the
-      // balance below is only read over a calm stretch.
-      pushHist(pv_, in.shadow ? 0.0f : cmd);
-      if (in.shadow || doorDetected_ || in.ventFan) calmS_ = 0.0f; else calmS_ += 1.0f;
-      updateMomentum();
-      learnBalance(in.permit);
-      if (fanLearn && !doorDetected_ && !in.shadow) { fanRunS_ += 1.0f; learnFan(); } else fanRunS_ = 0.0f;
+      const float net = in.shadow ? 0.0f : cmd;
+      pushHist(pv_, in.shadow ? 0.0f : net);
+      measureNoiseAndSlope();
+      derive();
+      if (in.permit && !in.shadow) { observe(); identifyGain(e); } else if (in.shadow) observe();
+      stopwatch(e, in.permit && !in.shadow);
     }
-
-    // -------------------------------------------------------------------------
-    // 7. Safety Watchdog
-    // -------------------------------------------------------------------------
-    if (cmd > 40.0f) {
-      respHighPwrTimer_ += dt;
-      // The reference follows the lowest PV (a dip must not leave a stale high reference behind) and a rise of 0.2 degC starts a new
-      // window, the same way the E115 evidence works (heater_response_watch.h).
-      if (std::isfinite(respPvStart_) && pv_ < respPvStart_) respPvStart_ = pv_;
-      if (std::isfinite(respPvStart_) && (pv_ - respPvStart_) >= 0.20f) {
-        respPvStart_ = pv_;
-        respHighPwrTimer_ = 0.0f;
-        respSuspect_ = false;
-      } else if (respHighPwrTimer_ > 360.0f && std::isfinite(respPvStart_)) {
-        respSuspect_ = true;
-      }
-    } else {
-      respHighPwrTimer_ = 0.0f;
-      respPvStart_ = pv_;
-      respSuspect_ = false;
-    }
-
     lastCmd_ = in.shadow ? 0.0f : cmd;
-    out.powerPct = cmd;
-    out.state = state_;
-    out.powerLimited = (cmd >= capPct_);
-    out.trustQ = doorDetected_ ? 6U : (identified_ ? 15U : 10U);
+    out.powerPct = cmd; out.state = state_; out.powerLimited = cmd >= cap_;
+    out.trustQ = door_ ? 6U : (identified_ ? 15U : 10U);
     return out;
   }
 
-  // Telemetry readouts for machine supervision and web monitors
-  float predicted() const { return pvPredicted_; }
+  // Telemetry for the machine and the web.
+  float predicted() const { return pv_ + lead_; }
   uint8_t state() const { return state_; }
   uint8_t phase() const { return (state_ == StTrack || state_ == StDoor) ? 2U : (state_ == StClimb ? 1U : 0U); }
-  bool responseSuspect() const { return respSuspect_; }
+  bool responseSuspect() const { return false; }
   bool identified() const { return identified_; }
   uint8_t batchesDone() const { return identified_ ? 2U : 0U; }
   float kAir() const { return kAir_; }
-  float tauTransit() const { return tauTransit_; }
-  uint16_t pipeLen() const { return pipeLen_; }
-  float tdHat() const { return tauTransit_; }
-  float tauHat() const { return pHold_; }
-  float pHold() const { return pHold_; }
-  float dNow() const { return pHold_; }
+  float tauTransit() const { return tau_; }
+  uint16_t pipeLen() const { return static_cast<uint16_t>(std::max(15.0f, std::min(319.0f, tau_ * 1.35f))); }
+  float tdHat() const { return tau_; }
+  float tauHat() const { return hold_; }
+  float pHold() const { return hold_; }
+  float dNow() const { return hold_; }
   float dLoss() const { return 0.0f; }
   float haPct() const { return 0.0f; }
-  float sigmaPred() const { return 0.05f; }
-  float integral() const { return integral_; }
-  float fanLoss() const { return fanLoss_; }
-  float fanBump() const { return fanBump_; }
-  float slopeMks() const { return filteredSlope_ * 1000.0f; }
-  bool doorDetected() const { return doorDetected_; }
-
-  // What an earlier run of THIS oven learned (see thermal_learn.h, which keeps it across a restart).
-  // Heater gain and transit time are properties of the oven: they come back as the starting numbers of the next first climb, which measures
-  // them again (identified_ stays false). Nothing here is trusted more than the measurement that follows it.
-  void importOven(float kAir, float tauTransit, uint16_t pipeLen) {
-    if (std::isfinite(kAir)) kAir_ = std::max(KAIR_MIN, std::min(KAIR_MAX, kAir));
-    if (std::isfinite(tauTransit)) tauTransit_ = std::max(TAU_MIN_S, std::min(TAU_MAX_S, tauTransit));
-    pipeLen_ = std::max<uint16_t>(15U, std::min<uint16_t>(MAX_PIPE_LEN - 1U, pipeLen));
-    pipeIdx_ = 0U;
-    rebuildPipe();
-  }
-  // The hold level of the batch that is being resumed after a restart (the load did not change: same eggs, same room) and the fact that the
-  // numbers above were measured on this oven. The learner keeps working: it follows the load from here, fast down and slow up as always.
-  void importHold(float pHold, bool measured) {
-    if (std::isfinite(pHold)) pHold_ = std::max(0.0f, std::min(HOLD_MAX_PCT, pHold));
-    identified_ = measured;
-    holdImported_ = true;
-    rebuildPipe();
-  }
+  float sigmaPred() const { return sigma_; }
+  float integral() const { return 0.0f; }
+  float slopeMks() const { return slope_ * 1000.0f; }
+  bool doorDetected() const { return door_; }
 
  private:
-  void recomputePipeSum() {
-    int32_t sum = 0;
-    for (uint16_t i = 0U; i < pipeLen_; ++i) sum += pipe_[i];
-    pipeSum_ = sum;
+  // Every threshold from the measured numbers (see the header). Called once per second.
+  void derive() {
+    const float cap = cap_ > 0.0f ? cap_ : 100.0f;
+    const float span = std::max(1.0f, cap - hold_);
+    inflightMax_ = kAir_ * span * tau_;
+    farBand_ = std::max(0.5f * inflightMax_, 6.0f * sigma_);
+    nearBand_ = std::max(0.3f * farBand_, 3.0f * sigma_);
+    farBand_ = std::max(farBand_, nearBand_ * 2.0f);
+    const float siMc = 1.0f / (2.0f * kAir_ * 1.35f * tau_);
+    kn_ = std::max(0.05f * span / farBand_, std::min(siMc, 0.5f * span / nearBand_));
   }
-  // A new horizon: the ring must hold the last pipeLen_ commands that really went out, oldest at the write position. Entries the history
-  // does not reach back to are the hold level (nothing was in flight before the controller started). The write position goes back to 0
-  // with the oldest command: it may lie beyond a shorter ring, and a push there would corrupt the running sum.
-  void rebuildPipe() {
-    pipeIdx_ = 0U;
-    for (uint16_t i = 0U; i < pipeLen_; ++i) {
-      const uint16_t age = static_cast<uint16_t>(pipeLen_ - 1U - i);
-      pipe_[i] = age < histCount_ ? uHist_[(histHead_ + HIST_LEN - 1U - age) % HIST_LEN] : static_cast<uint8_t>(pHold_);
-    }
-    recomputePipeSum();
-  }
-  void pushPipe(uint8_t value) {
-    pipeSum_ += static_cast<int32_t>(value) - static_cast<int32_t>(pipe_[pipeIdx_]);
-    pipe_[pipeIdx_] = value;
-    pipeIdx_ = static_cast<uint16_t>((pipeIdx_ + 1U) % pipeLen_);
-  }
-  void pushHist(float pv, float cmd) {
-    pvHist_[histHead_] = pv;
-    uHist_[histHead_] = static_cast<uint8_t>(std::max(0.0f, std::min(100.0f, std::round(cmd))));
+  void pushHist(float pv, float u) {
+    pvHist_[histHead_] = pv; uHist_[histHead_] = std::max(0.0f, std::min(100.0f, u));
     histHead_ = static_cast<uint16_t>((histHead_ + 1U) % HIST_LEN);
     if (histCount_ < HIST_LEN) ++histCount_;
   }
-  float pvAge(uint16_t age) const { return pvHist_[(histHead_ + HIST_LEN - 1U - age) % HIST_LEN]; }
-  float uAge(uint16_t age) const { return static_cast<float>(uHist_[(histHead_ + HIST_LEN - 1U - age) % HIST_LEN]); }
-
-  // Mean power that reached the oven during the n seconds that ended `delay` seconds ago (history: 1 Hz, newest last). Returns 0 while
-  // the history is shorter than that.
+  float pvAge(uint16_t a) const { return pvHist_[(histHead_ + HIST_LEN - 1U - a) % HIST_LEN]; }
+  float uAge(uint16_t a) const { return uHist_[(histHead_ + HIST_LEN - 1U - a) % HIST_LEN]; }
+  // Noise and slope of PV from the last 0.8 tau seconds: least-squares line, its residual (sigma) and the uncertainty of its slope.
+  void measureNoiseAndSlope() {
+    const uint16_t n = static_cast<uint16_t>(std::min<float>(std::max(30.0f, 0.8f * tau_), static_cast<float>(HIST_LEN - 1U)));
+    if (histCount_ < n || liveS_ < static_cast<float>(n)) { lsSlope_ = 0.0f; lsSigma_ = sigma_; return; }
+    const float xm = 0.5f * static_cast<float>(n - 1U), ref = pvAge(0U);
+    float sxy = 0.0f;
+    for (uint16_t i = 0U; i < n; ++i) sxy += (static_cast<float>(i) - xm) * (pvAge(static_cast<uint16_t>(n - 1U - i)) - ref);
+    const float sxx = static_cast<float>(n) * (static_cast<float>(n) * static_cast<float>(n) - 1.0f) / 12.0f;
+    const float b = sxy / sxx;
+    float ss = 0.0f;
+    // residual about the fitted line (with its own intercept)
+    float ym = 0.0f;
+    for (uint16_t i = 0U; i < n; ++i) ym += pvAge(i) - ref;
+    ym /= static_cast<float>(n);
+    for (uint16_t i = 0U; i < n; ++i) {
+      const float x = static_cast<float>(i) - xm, y = pvAge(static_cast<uint16_t>(n - 1U - i)) - ref;
+      const float r = y - (ym + b * x);
+      ss += r * r;
+    }
+    const float sig = std::max(SIGMA_FLOOR, std::sqrt(ss / static_cast<float>(n - 2U)));
+    sigma_ += 0.1f * (sig - sigma_);
+    lsSlope_ = b;
+    lsSigma_ = std::max(sigma_ * std::sqrt(1.0f / sxx), 1.0e-6f);
+  }
+  // Heat in flight: what was commanded in the last tau seconds above what the oven loses has not reached the air yet.
+  void updateInflight() {
+    const uint16_t n = static_cast<uint16_t>(std::min<float>(PIPE_K * tau_, static_cast<float>(histCount_)));
+    float sum = 0.0f;
+    for (uint16_t i = 0U; i < n; ++i) sum += uAge(i) - hold_;
+    float lead = kAir_ * LEAD_GAIN * sum;
+    // On a climb (far under SV) the measured slope is a floor for the heat in flight (a wrong kAir cannot hide it); near SV its noise must not count.
+    if (std::isfinite(pv_) && sp_ - pv_ > 1.5f * farBand_) lead = std::max(lead, 0.8f * std::max(0.0f, slope_) * tau_);
+    lead_ = std::max(-kAir_ * hold_ * tau_, std::min(1.2f * inflightMax_, lead));
+  }
   float delayedPower(uint16_t delay, uint16_t n) const {
-    if (n == 0U || histCount_ < static_cast<uint16_t>(delay + n + 1U)) return 0.0f;
+    if (n == 0U || histCount_ < static_cast<uint16_t>(delay + n + 1U)) return NAN;
     float sum = 0.0f;
     for (uint16_t i = 0U; i < n; ++i) sum += uAge(static_cast<uint16_t>(delay + i));
     return sum / static_cast<float>(n);
   }
-
-  // Energy balance, once per second. The power that reached the oven over the last w seconds is the command of one transit time earlier;
-  // the measured slope of PV over the same w seconds says how much of it moved the temperature (slope / heater gain). The rest is what
-  // the oven loses or soaks up: the power that would hold PV flat right now. Heater gain and transit time are the ones measured on the
-  // first climb; nothing about the load is assumed, so cold eggs, a door, a different cart all show up as a different hold level.
-  //
-  // Where gain or delay have not been measured (the controller restarted next to SP) the balance is read only where it cannot depend
-  // on them: a PV that is nearly flat and a power that did not change. A wrong gain can never turn the balance into a runaway.
-  void learnBalance(bool permit) {
-    if (!permit || kAir_ <= 0.0f) return;
-    const float spanS = std::min(LEARN_WINDOW_S, std::min(calmS_, liveS_));
-    if (spanS < LEARN_MIN_S) return;
-    const uint16_t w = static_cast<uint16_t>(spanS);
-    const uint16_t delay = static_cast<uint16_t>(tauTransit_ + 0.5f);
-    if (histCount_ < static_cast<uint16_t>(w + delay + 1U)) return;     // the history does not reach that far back yet
-    // The power that reached the oven during the window was commanded one transit time earlier, and that stretch must belong to this run as
-    // well: across a pause (a controller that has been idle since power-up, a batch that starts later) the history holds the idle, the power
-    // steps from nothing to full inside the window, and the answer of the oven to a step is spread over its whole delay: the balance would read
-    // a hold level of about nothing right at a start.
-    if (liveS_ < static_cast<float>(w + delay + 1U)) return;
-    // Least-squares slope of the last w seconds of PV (x = seconds, oldest first).
-    const float xm = 0.5f * static_cast<float>(w - 1U);
-    const float ref = pvAge(0U);                                        // differences to the newest value: a 37 degC offset would cost float precision
-    float sxy = 0.0f;
-    for (uint16_t i = 0U; i < w; ++i) sxy += (static_cast<float>(i) - xm) * (pvAge(static_cast<uint16_t>(w - 1U - i)) - ref);
-    const float sxx = static_cast<float>(w) * (static_cast<float>(w) * static_cast<float>(w) - 1.0f) / 12.0f;
-    const float slope = sxy / sxx;
-    // Mean power that was reaching the oven during that stretch (and how much it moved).
-    float uSum = 0.0f, uMin = 100.0f, uMax = 0.0f;
-    for (uint16_t i = 0U; i < w; ++i) {
-      const float u = uAge(static_cast<uint16_t>(delay + i));
-      uSum += u;
-      uMin = std::min(uMin, u);
-      uMax = std::max(uMax, u);
+  // THE writer of hold: a disturbance observer. A model of PV is driven by the power that has reached the oven (the command one transit time ago);
+  // the error between the measured and the model PV corrects the model, the load (hold) and the load's rate of change. Three poles at 1/(1.5 tau)
+  // (a ramp of load - cold eggs, the walls giving back heat - is followed without a standing error), the rate leaks away over 8 tau so that it does not
+  // wander when nothing supports it. The estimate is held while the door is open or PV is far from SV (the load is then not what the error is about).
+  void observe() {
+    const uint16_t delay = static_cast<uint16_t>(tau_ + 0.5f);
+    if (histCount_ < static_cast<uint16_t>(delay + 2U) || !std::isfinite(pv_)) { pm_ = pv_; return; }
+    if (!std::isfinite(pm_) || door_ || doorLatch_ || ventFan_ || std::fabs(sp_ - pv_) > 2.0f * farBand_) { pm_ = pv_; rate_ = 0.0f; return; }
+    const float u = uAge(delay);
+    const float w = 1.0f / (OBS_POLE_TAU * tau_);
+    const float err = pv_ - pm_;
+    pm_ += kAir_ * (u - hold_) + 3.0f * w * err;
+    const float rLim = cap_ / (2.0f * tau_);                      // the load cannot move faster than the whole ceiling in two transit times
+    rate_ = (rate_ - (w * w * w / kAir_) * err) * (1.0f - 1.0f / (OBS_LEAK_TAU * tau_));
+    rate_ = std::max(-rLim, std::min(rLim, rate_));
+    hold_ = std::max(0.0f, std::min(cap_, hold_ + rate_ - (3.0f * w * w / kAir_) * err));
+  }
+  // kAir at every saturated climb: the heater has been at its ceiling for a whole transit time plus a part of one, PV is far under SV and climbing.
+  void identifyGain(float e) {
+    if (e < farBand_ || lsSlope_ <= 3.0f * lsSigma_) { epMax_ = 0.0f; epFresh_ = true; return; }
+    const uint16_t need = static_cast<uint16_t>(1.4f * tau_);
+    if (histCount_ < need) return;
+    for (uint16_t i = 0U; i < need; ++i) if (uAge(i) < 0.9f * cap_) return;
+    // the slope of a saturated climb is still rising while the window runs: the PEAK of the slope over the episode is the oven's gain
+    const float obs = std::max(lsSlope_, slope_) / std::max(1.0f, cap_ - hold_);
+    epMax_ = std::max(epMax_, obs);
+    const float k = std::max(KAIR_PRIOR * KAIR_LO, std::min(KAIR_PRIOR * KAIR_HI, epMax_));
+    kAir_ = identified_ && !epFresh_ ? kAir_ + 0.3f * (k - kAir_) : k;
+    epFresh_ = false;
+    identified_ = true;
+  }
+  // (The stopwatch starts as soon as full power does: waiting 0.4 tau first measured the delay short by that wait and clamped slow ovens at the lower
+  // limit - door recoveries overshot by 1.3 degC; fleet of the closed-loop rig, door 2 min: worst overshoot 1.27 -> 0.48.)
+  // Transit time by stopwatch on a clean start: full power from a PV that is not moving, far under SV, until PV has risen by what the noise allows to trust.
+  void stopwatch(float e, bool ok) {
+    if (tauMeasured_ || !ok) { swOn_ = false; return; }
+    if (!swOn_) {
+      if (e >= farBand_ && lastCmd_ >= 0.8f * cap_ && std::fabs(lsSlope_) <= 3.0f * lsSigma_ && liveS_ > 5.0f) { swOn_ = true; swPv0_ = pv_; swT_ = 0.0f; }
+      return;
     }
-    const float uMean = uSum / static_cast<float>(w);
-    const float corr = slope / kAir_;                                   // power that went into the temperature rather than into the losses [%]
-    if (!identified_ && (uMax - uMin > LEARN_FLAT_U_RANGE || liveS_ < LEARN_FLAT_LIVE_S)) return;
-    if (peakClimbSlope_ < 0.0005f && std::fabs(corr) > LEARN_FLAT_CORR_PCT) return;
-    const float observed = std::max(0.0f, std::min(std::min(HOLD_MAX_PCT, uMean + LEARN_FALL_MAX_PCT), uMean - corr));
-    // Asymmetric: a hold level that is too LOW only makes the oven slow, one that is too HIGH makes it overshoot.
-    const float gap = observed - pHold_;
-    const float step = gap >= 0.0f ? std::min(LEARN_STEP_UP_MAX, gap / LEARN_TAU_UP_S)
-                                   : std::max(-LEARN_STEP_DOWN_MAX, gap / LEARN_TAU_DOWN_S);
-    pHold_ = std::max(0.0f, std::min(HOLD_MAX_PCT, pHold_ + step));
-  }
-
-  // Slope of the last MOMENTUM_WINDOW_S seconds of PV, once per second (least squares on the 1 Hz history): the momentum brake reads it.
-  void fadeWhileHeldOff(float pv, float sp, float dt) {
-    if (shadowS_ <= 0.0f) { shadowRefPv_ = pv; shadowRefS_ = 0.0f; shadowFade_ = false; }
-    shadowS_ += dt;
-    if (shadowS_ - shadowRefS_ >= 180.0f) {
-      shadowFade_ = pv >= sp - 0.5f * dQ_ && pv >= shadowRefPv_ - 1.01f * dQ_;
-      shadowRefPv_ = pv;
-      shadowRefS_ = shadowS_;
-    }
-    if (shadowFade_) pHold_ = std::max(0.0f, pHold_ - pHold_ * (dt / 180.0f));
-  }
-  // The fan's share, measured: while the day-profile fan runs, the balance of the oven reads  slope = kAir x (power that reached it - hold - fan loss).
-  // The fan level is what is missing: fanLoss = power that reached the oven (one transit time ago) - hold - slope / kAir. The slope of a fan dip
-  // (0.002 degC/s) is smaller than one sensor step over the momentum window, so it comes from sensor_fine.h when the machine gives it.
-  void learnFan() {
-    if (fanRunS_ < 60.0f || kAir_ <= 0.0f) return;
-    const uint16_t delay = static_cast<uint16_t>(tauTransit_ + 0.5f);
-    if (histCount_ < static_cast<uint16_t>(delay + MOMENTUM_WINDOW_S + 1U) || liveS_ < static_cast<float>(delay + MOMENTUM_WINDOW_S + 1U)) return;
-    const float slope = fineOk_ ? slopeFine_ : slopeShort_;
-    const float uDel = delayedPower(delay, MOMENTUM_WINDOW_S);
-    const float obs = std::max(0.0f, std::min(FAN_MAX_PCT, uDel - pHold_ - slope / kAir_));
-    fanLoss_ += (obs - fanLoss_) * (1.0f / FAN_LEARN_TAU_S);
-    fanLoss_ = std::max(0.0f, std::min(FAN_MAX_PCT, fanLoss_));
-  }
-  void updateMomentum() {
-    if (histCount_ < MOMENTUM_WINDOW_S || liveS_ < static_cast<float>(MOMENTUM_WINDOW_S)) { slopeShort_ = 0.0f; return; }
-    const float xm = 0.5f * static_cast<float>(MOMENTUM_WINDOW_S - 1U);
-    const float ref = pvAge(0U);
-    float sxy = 0.0f;
-    for (uint16_t i = 0U; i < MOMENTUM_WINDOW_S; ++i) sxy += (static_cast<float>(i) - xm) * (pvAge(static_cast<uint16_t>(MOMENTUM_WINDOW_S - 1U - i)) - ref);
-    const float sxx = static_cast<float>(MOMENTUM_WINDOW_S) * (static_cast<float>(MOMENTUM_WINDOW_S) * static_cast<float>(MOMENTUM_WINDOW_S) - 1.0f) / 12.0f;
-    slopeShort_ = sxy / sxx;
-  }
-
-  void updateSlope(float pv, double nowS) {
-    if (slopeHistCount_ < SLOPE_HIST_CAP) {
-      slopePvHist_[slopeHistHead_] = pv;
-      slopeTimeHist_[slopeHistHead_] = nowS;
-      slopeHistHead_ = (slopeHistHead_ + 1U) % SLOPE_HIST_CAP;
-      ++slopeHistCount_;
-    } else {
-      const uint8_t oldest = slopeHistHead_;
-      const float dtSpan = static_cast<float>(nowS - slopeTimeHist_[oldest]);
-      if (dtSpan > 2.0f) {
-        const float rawSlope = (pv - slopePvHist_[oldest]) / dtSpan;
-        const float alpha = std::min(1.0f, static_cast<float>(nowS - slopeTimeHist_[(oldest + SLOPE_HIST_CAP - 1U) % SLOPE_HIST_CAP]) / 3.0f);
-        filteredSlope_ += alpha * (rawSlope - filteredSlope_);
-      }
-      slopePvHist_[slopeHistHead_] = pv;
-      slopeTimeHist_[slopeHistHead_] = nowS;
-      slopeHistHead_ = (slopeHistHead_ + 1U) % SLOPE_HIST_CAP;
+    swT_ += 1.0f;
+    if (lastCmd_ < 0.4f * cap_) { swOn_ = false; return; }
+    if (pv_ - swPv0_ >= std::max(0.1f, 8.0f * sigma_)) {
+      tau_ = std::max(TAU_PRIOR * TAU_LO, std::min(TAU_PRIOR * TAU_HI, swT_ * 1.05f)); tauMeasured_ = true; swOn_ = false;
     }
   }
-
   uint8_t state_ = StIdle;
-  float pv_ = NAN;
-  float sp_ = 37.5f;
-  float capPct_ = 100.0f;
-
-  float kAir_ = 0.0004f;
-  float tauTransit_ = 150.0f;
-  float pHold_ = 18.0f;
-  float integral_ = 0.0f;
-  float fanLoss_ = 0.0f;         // [%] heater power the day-profile fan takes out of the box (learned while it runs)
-  float fanRunS_ = 0.0f;         // seconds the day-profile fan has been running (measurements wait for the dip to show)
-  float fanBump_ = 0.0f;         // [%] what the heater adds now for the fan that will run one transit time from now
-  float pvPredicted_ = 30.0f;
-
-  uint16_t pipeLen_ = 202U;
-  uint16_t pipeIdx_ = 0U;
-  uint8_t pipe_[MAX_PIPE_LEN] = {};
-  int32_t pipeSum_ = 0;          // sum of the pipeLen_ entries in use
-
-  float pvHist_[HIST_LEN] = {};  // 1 Hz: the PV the controller saw
-  uint8_t uHist_[HIST_LEN] = {}; // 1 Hz: the command that was physically sent [%]
-  uint16_t histHead_ = 0U;
-  uint16_t histCount_ = 0U;
-  bool probing_ = false;
-  float probeT_ = 0.0f, probePv_ = 0.0f, probeStart_ = 0.0f;
-  int probeQuiet_ = 0;
-  bool startDone_ = false, holdImported_ = false, startPhase_ = false;   // 2.5.8: the start rules ran / hold level came from a stored record / first half hour
-  float startS_ = 0.0f;
-  bool wasLive_ = false;         // the last cycle ran the control law (a permit lost now, with the reading over SV, is the controller's own overshoot)
-  bool fineOk_ = false;
-  float slopeFine_ = 0.0f;
-  float slopeShort_ = 0.0f;      // [degC/s] least-squares slope of the last MOMENTUM_WINDOW_S seconds
-  float dQ_ = 0.1f;              // sensor step of the last call [degC]
-  float liveS_ = 0.0f;           // seconds the controller has been running without a pause
-  float calmS_ = 0.0f;           // seconds without a door, a vent-line hold or a vent fan
-  float lastCmd_ = 0.0f;         // the command of the previous call [%] (what the oven was given)
-
-  float secAcc_ = 0.0f;
-  // The time base is a double: a float that accumulates 0.1 s steps runs 25 % fast after 6 days and stops after about 20, and every slope
-  // (door detection included) is a difference of two of its readings.
-  double clockS_ = 0.0;
-  double heaterOnTime_ = -1.0;
-  float pvAtOn_ = NAN;
-  bool identified_ = false;
-
-  float filteredSlope_ = 0.0f;
-  float peakClimbSlope_ = 0.0f;
-  uint8_t slopeHistCount_ = 0U;
-  uint8_t slopeHistHead_ = 0U;
-  float slopePvHist_[SLOPE_HIST_CAP] = {};
-  double slopeTimeHist_[SLOPE_HIST_CAP] = {};
-
-  bool doorDetected_ = false;
-  bool doorArmed_ = true;
-  float doorTimer_ = 0.0f;
-  float doorCalmS_ = 0.0f;
-  float stuckTimer_ = 0.0f;
-  float shadowS_ = 0.0f;         // seconds the vent line has been holding the heater at 0 %
-  float shadowRefPv_ = NAN;      // PV at the last 3-minute checkpoint of that hold
-  float shadowRefS_ = 0.0f;
-  bool shadowFade_ = false;      // the hold level is fading (heater held off, PV did not fall)
-
-  bool respSuspect_ = false;
-  float respHighPwrTimer_ = 0.0f;
-  float respPvStart_ = NAN;
+  float pv_ = NAN, sp_ = 37.5f, cap_ = 100.0f;
+  float kAir_ = KAIR_PRIOR, tau_ = TAU_PRIOR, hold_ = 12.0f;
+  float epMax_ = 0.0f; bool epFresh_ = true; float latchT_ = 0.0f; bool doorLatch_ = false, nearSeen_ = false; float pm_ = NAN, rate_ = 0.0f;
+  bool ventFan_ = false;
+  bool identified_ = false, tauMeasured_ = false, door_ = false, wasLive_ = false;
+  float lead_ = 0.0f, slope_ = 0.0f, lsSlope_ = 0.0f, lsSigma_ = 0.0f, sigma_ = 0.02f;
+  float inflightMax_ = 1.0f, farBand_ = 0.5f, nearBand_ = 0.15f, kn_ = 30.0f;
+  float liveS_ = 0.0f, secAcc_ = 0.0f, lastCmd_ = 0.0f;
+  bool swOn_ = false; float swPv0_ = 0.0f, swT_ = 0.0f;
+  float pvHist_[HIST_LEN] = {};
+  float uHist_[HIST_LEN] = {};
+  uint16_t histHead_ = 0U, histCount_ = 0U;
 };
 
 }  // namespace thermalv3

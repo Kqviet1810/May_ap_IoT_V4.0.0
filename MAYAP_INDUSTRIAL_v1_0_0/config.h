@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.7.0";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.8.1";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -682,8 +682,7 @@ constexpr uint32_t BATCH_CLEAR_RETRY_MS = 3000UL;
 constexpr char SAFETY_NVS_NAMESPACE[] = "mayap_safe";
 constexpr char SAFETY_NVS_STOP_KEY[] = "stop_intent";
 constexpr char SAFETY_NVS_RESET_KEY[] = "reset_count";
-// What the thermal controller learned about this oven (thermal_learn.h: 32 bytes with a checksum), written after two stable hours of a batch.
-// Nothing here is a setting: a damaged or foreign record is ignored and the controller starts from its priors.
+// NVS record of the thermal controller written by versions before 2.8.0 (nothing is written or read any more); "clear thermal learning" erases it.
 constexpr char THERMAL_LEARN_NVS_NAMESPACE[] = "mayap_thm";
 constexpr char THERMAL_LEARN_NVS_KEY[] = "snap";
 // F-07 (audit truoc phat hanh v3.7.1): truoc day turnMechanicalCheckRequired_/

@@ -26,7 +26,7 @@ function objectKeys(app, name) {
 
 test('every firmware fault code has a Web title, a Web description and exactly one manual row anchor', () => {
   const codes = firmwareCodes();
-  assert.equal(codes.length, 41);
+  assert.equal(codes.length, 42);
   const app = read('app.js');
   assert.deepEqual(objectKeys(app, 'FAULT_TITLES'), codes);
   assert.deepEqual(objectKeys(app, 'FAULT_DESCRIPTIONS'), codes);

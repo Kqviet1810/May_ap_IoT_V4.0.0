@@ -14,6 +14,7 @@ struct ThermalV3SlotIn {
   bool newSample = false;             // A new accepted sensor sample arrived since last call
   bool permit = false;                // Production decided SSR may conduct (all protections green)
   bool shadow = false;                // Permit is false only because vent line blocks heater
+  bool ventFan = false;               // Exhaust fan is running
   float capPct = 0.0f;                // Configured heater power ceiling [%]
   float headroomC = 0.0f;             // Headroom from target to High line
   float alarmHeadroomC = 0.0f;        // Headroom from target to Emergency line
@@ -21,8 +22,6 @@ struct ThermalV3SlotIn {
   float e115Frac = 0.0f;              // E115 heater stuck evidence fraction
   float dQ = 0.1f;                    // Sensor resolution step [degC]
   float slopeFine = NAN;              // Slope of PV from sensor_fine.h [degC/s] (NaN: not available)
-  bool ventFan = false;               // Exhaust fan is running
-  float ventOnInS = 1.0e6f, ventOffInS = 1.0e6f;
   float dtOverrideS = NAN;            // Host rigs only
 };
 
@@ -65,8 +64,6 @@ class ThermalV3Slot {
     i.permit = in.permit;
     i.shadow = in.shadow;
     i.ventFan = in.ventFan;
-    i.ventOnInS = in.ventOnInS;
-    i.ventOffInS = in.ventOffInS;
 
     last_ = ctl_.step(i);
     held_ = clampOut(last_.powerPct, in.capPct);

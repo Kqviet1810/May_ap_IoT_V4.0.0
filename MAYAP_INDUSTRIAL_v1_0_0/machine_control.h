@@ -19,7 +19,6 @@
 #include "sensor_fine.h"
 #include "heater_response_watch.h"
 #include "vent_line.h"
-#include "thermal_learn.h"
 #include "alarm_sound.h"
 #include "pid_log.h"
 #include <esp_system.h>
@@ -417,6 +416,9 @@ enum class FaultCode : uint16_t {
   TemperatureRateExceeded = 113,
   TemperatureUnstable = 114,
   HeaterNotHeating = 115,
+  // Warning before E115: no door switch exists, a door that stays open is inferred from the fall of the temperature. While it is suspected the E115 evidence
+  // is paused (bounded) and the HMI / Web say: close the door.
+  DoorOpenSuspected = 116,
   HumidityLow = 120,
   HumidityHigh = 121,
   HeaterSwitchOffDuringBatch = 130,
@@ -526,6 +528,7 @@ inline const FaultDescriptor &faultDescriptor(FaultCode code) {
     // toan cung nhu Low/HighTemperature - khong inhibit SSR/master, chi bao.
     {FaultCode::TemperatureRateExceeded, FaultSeverity::Warning, 60U, AlarmTempHigh, false, false, false, false, false, false, "TEMP RATE HIGH"},
     {FaultCode::TemperatureUnstable, FaultSeverity::Warning, 45U, AlarmTempHigh, false, false, false, false, false, false, "TEMP UNSTABLE"},
+    {FaultCode::DoorOpenSuspected, FaultSeverity::Warning, 190U, AlarmSystem, false, false, false, false, false, false, "DOOR OPEN SUSPECTED"},
     {FaultCode::HeaterNotHeating, FaultSeverity::Stop, 226U, AlarmSystem, true, true, true, false, true, true, "HEATER NOT HEATING"},
     // Mat mot chuc nang thiet yeu trong luc me dang chay phai bao ngay.
     {FaultCode::HeaterSwitchOffDuringBatch, FaultSeverity::Stop, 222U, AlarmSystem, false, true, true, false, false, false, "HEATER SWITCH OFF"},
@@ -618,7 +621,7 @@ inline FaultSound faultSoundClass(FaultCode code) {
     case FaultCode::ResumeRequiresAuto: case FaultCode::AutoModeOffDuringBatch: case FaultCode::AutoTurningDisabledDuringBatch:
     case FaultCode::ResumeConfirmationPending: case FaultCode::BatchOverdue: case FaultCode::ResumeRtcWaitTooLong: case FaultCode::BatchOverdueConfirmationPending:
     case FaultCode::TurnLimitConflict: case FaultCode::TurnTimeout: case FaultCode::TurnLimitStuck: case FaultCode::TurnCommandConflict:
-    case FaultCode::TurnMechanicalCheckRequired: case FaultCode::SirenBatteryLow:
+    case FaultCode::TurnMechanicalCheckRequired: case FaultCode::SirenBatteryLow: case FaultCode::DoorOpenSuspected:
       return FaultSound::Chime;
     default:
       return FaultSound::Silent;                  // diagnostics: TemperatureRateExceeded, TemperatureUnstable, StorageDegraded, RelayRateExceeded, RtcFailure,
@@ -2953,7 +2956,7 @@ constexpr uint8_t PIN_DE_RE = PIN_RS485_DE_RE;
 constexpr uint32_t BAUD = 9600;
 constexpr uint8_t SLAVE_ID = 1;
 constexpr uint32_t FIRST_POLL_DELAY_MS = 500;
-constexpr uint32_t POLL_PERIOD_MS = 2000;
+constexpr uint32_t POLL_PERIOD_MS = 1000;   // 3.5: one reading a second (was 2 s) - the controller answers a change of the air earlier; the stale limit below is still > 6 polls
 // Cold start only: identify the sensor with the SAME verification (six consecutive CRC-valid, uniquely matching pairs, then three good
 // samples) but poll every 600 ms instead of every 2 s. Bounded in frames AND time, so an absent sensor is never polled fast for long.
 constexpr uint32_t STARTUP_POLL_PERIOD_MS = 600;
@@ -3954,7 +3957,6 @@ class MachineController {
       }
     }
     faults_.set(FaultCode::BatchStateClearPending, batchClearPending_, bootAt_);
-    loadThermalLearning();
     // Nhat ky chi ghi trong pham vi mot me: dang chay hoac dang cho phuc hoi
     // (ke ca dang cho xac nhan HMI) deu tinh la "trong me".
     eventLog_.setLoggingEnabled(batchRunning_ || resumePending_);
@@ -5259,8 +5261,7 @@ class MachineController {
         s.ctl = static_cast<uint8_t>((v3.doorDetected() ? MayapPidLog::CtlDoor : 0U) | (v3.identified() ? MayapPidLog::CtlIdentified : 0U) |
             static_cast<uint8_t>(tokens << 2) | static_cast<uint8_t>((ventReason_ & 0x0FU) << 4));
       }
-      s.learn = static_cast<uint8_t>((learnSource_ & 3U) | (learnSavedValid_ ? 4U : 0U) |
-          (static_cast<uint8_t>(std::min<uint32_t>(31U, learnTracker_.stableMs() / 240000UL)) << 3));
+      s.learn = 0U;                                                          // nothing is kept across a restart any more (field kept for the frame layout)
       MayapPidLog::ring().push(s);
     }
   }
@@ -5283,27 +5284,8 @@ class MachineController {
     if (chime) ++chimeSeq_;
   }
 
-  // ---- What the thermal controller learned about this oven, kept across a restart (thermal_learn.h) ----
-  uint8_t learnHeaterCap() const { return static_cast<uint8_t>(std::min<int>(100, static_cast<int>(config_.maxHeaterPower))); }
-  bool readLearnedBlob(thermallearn::Snapshot &s) {
-    Preferences p;
-    if (!p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) return false;
-    uint8_t blob[thermallearn::BLOB_SIZE];
-    bool ok = false;
-    if (p.getBytesLength(THERMAL_LEARN_NVS_KEY) == sizeof(blob) && p.getBytes(THERMAL_LEARN_NVS_KEY, blob, sizeof(blob)) == sizeof(blob))
-      ok = thermallearn::decode(blob, sizeof(blob), s);
-    p.end();
-    return ok;
-  }
-  bool writeLearnedBlob(const thermallearn::Snapshot &s) {
-    uint8_t blob[thermallearn::BLOB_SIZE];
-    if (!thermallearn::encode(s, blob)) return false;
-    Preferences p;
-    if (!p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) return false;
-    const bool ok = p.putBytes(THERMAL_LEARN_NVS_KEY, blob, sizeof(blob)) == sizeof(blob);
-    p.end();
-    return ok;
-  }
+  // ---- Thermal learning: 2.8.0 keeps nothing across a restart (the controller reads the oven again in a transit time or two) ----
+  // A record written by an older version may still sit in NVS; "clear thermal learning" erases it and restarts the controller from its priors.
   bool eraseLearnedBlob() {
     Preferences p;
     if (!p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) return false;
@@ -5311,64 +5293,10 @@ class MachineController {
     p.end();
     return ok;
   }
-  // At boot: the oven constants of the last stable run start the next first climb (which measures them again). A record that fails any check is ignored.
-  void loadThermalLearning() {
-    learnSavedValid_ = false;
-    learnSource_ = 0U;
-    thermallearn::Snapshot s;
-    if (!readLearnedBlob(s) || !thermallearn::ovenUsable(s, learnHeaterCap())) return;
-    learnSaved_ = s;
-    learnSavedValid_ = true;
-    thermalV3_.controller().importOven(s.kAir, s.tau, s.pipeLen);
-    learnTracker_.saved(s.pHold);
-    learnSource_ = 1U;
-    mayapSerialPrintf(false, "[THERMAL] restored oven: kAir=%.2e tau=%.0fs pipe=%us (hold %.1f%% kept for batch %lu)\n", static_cast<double>(s.kAir),
-                      static_cast<double>(s.tau), static_cast<unsigned>(s.pipeLen), static_cast<double>(s.pHold), static_cast<unsigned long>(s.batchEpoch));
-  }
-  // The batch that was running is resumed after a restart: its hold level comes back too, and the numbers count as measured.
-  void applyLearnedHoldOnResume() {
-    if (!learnSavedValid_ || !thermallearn::holdUsable(learnSaved_, learnHeaterCap(), batchStartEpoch_, config_.targetTemp)) return;
-    thermalV3_.controller().importHold(learnSaved_.pHold, true);
-    learnSource_ = 2U;
-    mayapSerialPrintf(false, "[THERMAL] resumed batch: hold level %.1f%% restored\n", static_cast<double>(learnSaved_.pHold));
-  }
   bool clearThermalLearning() {
     const bool ok = eraseLearnedBlob();
-    learnSavedValid_ = false;
-    learnSource_ = 0U;
-    learnTracker_.invalidate();
     thermalV3_.reset();
     return ok;
-  }
-  // Every cycle: when has the oven proved itself (two stable hours), and did the heater ever stop answering (then nothing learned is trusted).
-  void serviceThermalLearning(uint32_t now) {
-    if (heaterNotHeatingActive_) {
-      if (!learnHeaterFaultSeen_) {
-        learnHeaterFaultSeen_ = true;
-        if (learnSavedValid_) { (void)eraseLearnedBlob(); learnSavedValid_ = false; }
-        learnTracker_.invalidate();
-      }
-    } else {
-      learnHeaterFaultSeen_ = false;
-    }
-    const thermalv3::Controller &v3 = thermalV3_.controller();
-    const bool stable = batchRunning_ && sensorUsable_ && !testModeActive_ && !emergencyActive_ && !highTemperatureActive_ && !ventHeaterBlock_ &&
-        !heaterNotHeatingActive_ && !v3.doorDetected() && v3.identified() &&
-        thermalV3_.last().state == thermalv3::StTrack;
-    if (!learnTracker_.update(now, stable, temperature_, config_.targetTemp, v3.pHold(), thermallearn::StableTracker::Params())) return;
-    thermallearn::Snapshot s;
-    s.pHold = v3.pHold(); s.kAir = v3.kAir(); s.tau = v3.tauTransit(); s.pipeLen = v3.pipeLen();
-    s.sp = config_.targetTemp; s.capPct = learnHeaterCap();
-    s.batchEpoch = batchStartEpoch_; s.savedEpoch = rtc_.valid() ? rtc_.epoch() : 0U;
-    if (writeLearnedBlob(s)) {
-      learnSaved_ = s;
-      learnSavedValid_ = true;
-      learnTracker_.saved(s.pHold);
-      mayapSerialPrintf(false, "[THERMAL] stable for 2 h: saved hold=%.1f%% kAir=%.2e tau=%.0fs\n", static_cast<double>(s.pHold),
-                        static_cast<double>(s.kAir), static_cast<double>(s.tau));
-    } else {
-      mayapSerialPrintf(false, "[THERMAL] could not save what was learned (tries again in 10 min)\n");
-    }
   }
 
   // ---- Thermal V3 slot glue ----
@@ -5393,18 +5321,28 @@ class MachineController {
   // window the controller has on its own, so the controller measures what the exhaust fan takes out of the box from this slope. The value the
   // controller regulates, the protections and the display are the unchanged chain.
   void feedFineEstimators(uint32_t now, float q) {
-    if (thermalV3SensorStepC() < 0.05f) { fineSlopeEst_.reset(); return; }          // a 0.01 sensor needs no help
+    if (thermalV3SensorStepC() < 0.05f) { fineSlopeEst_.reset(); fineValueEst_.reset(); return; }   // a 0.01 sensor needs no help
     if (fineBaseMs_ == 0U || elapsedMs(now, fineBaseMs_) > 80000000UL) {           // float seconds stay exact: rebase about once a day
-      fineSlopeEst_.reset(); fineBaseMs_ = now ? now : 1U;
+      fineSlopeEst_.reset(); fineValueEst_.reset(); fineBaseMs_ = now ? now : 1U;
     }
-    fineSlopeEst_.update(q, static_cast<float>(elapsedMs(now, fineBaseMs_)) * 0.001f, 0.1f, fineSlopeParams_);
+    const float tS = static_cast<float>(elapsedMs(now, fineBaseMs_)) * 0.001f;
+    fineSlopeEst_.update(q, tS, 0.1f, fineSlopeParams_);
+    fineValueEst_.update(q, tS, 0.1f, fineValueParams_);
     fineLastMs_ = now;
   }
+  // 3.5: the value the controller regulates is the fine one (short window, 10..30 s: it follows the air, a long window lags and degrades the control);
+  // the protections and the display keep the unchanged chain. A fine value that disagrees with the chain by more than 0.3 degC is not used.
+  float fineControlValue(uint32_t now) const {
+    if (!fineFresh(now) || !fineValueEst_.ready() || !sensorUsable_) return temperature_;
+    const float v = fineValueEst_.valueAt(static_cast<float>(elapsedMs(now, fineLastMs_)) * 0.001f);
+    return (std::isfinite(v) && std::fabs(v - temperature_) < 0.3f) ? v : temperature_;
+  }
+  static sensorfine::Params fineShortParams() { sensorfine::Params p; p.minWindowS = 10.0f; p.maxWindowS = 30.0f; return p; }
   bool fineFresh(uint32_t now) const { return fineBaseMs_ != 0U && fineSlopeEst_.ready() && elapsedMs(now, fineLastMs_) < 6000UL; }
   ThermalV3SlotIn buildThermalV3SlotIn(uint32_t now, bool permit, bool shadow = false) const {
     ThermalV3SlotIn si;
     si.slopeFine = (fineFresh(now) && sensorUsable_) ? fineSlopeEst_.slopePerS() : NAN;
-    si.nowMs = now; si.pv = temperature_; si.sp = config_.targetTemp; si.newSample = newSensorSample_; si.permit = permit; si.shadow = shadow && !permit;
+    si.nowMs = now; si.pv = fineControlValue(now); si.sp = config_.targetTemp; si.newSample = newSensorSample_; si.permit = permit; si.shadow = shadow && !permit;
     si.capPct = static_cast<float>(config_.maxHeaterPower);
     const float offsetDown = std::max(0.0f, -config_.tempOffset);
     si.headroomC = std::min(config_.highTempAlarm, config_.ventOnTemp) - offsetDown - config_.targetTemp;
@@ -5414,8 +5352,7 @@ class MachineController {
     const float stuckLimitMs = static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f;
     si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterWatch_.accumOnMs()) / stuckLimitMs : 0.0f;
     si.dQ = thermalV3SensorStepC();
-    si.ventFan = st.ventFan;                                                // the fan that really runs: it takes heat out of the box
-    ventProfileTiming(now, si.ventOnInS, si.ventOffInS);                     // the automatic profile knows when it starts and ends: the controller can pay for the loss in advance
+    si.ventFan = st.ventFan;                                                // the fan that really runs
     return si;
   }
   float thermalV3Command(uint32_t now, bool permit, bool shadow) {
@@ -5873,7 +5810,6 @@ class MachineController {
     else trayPosition_ = TrayPosition::Unknown;
     needHome_ = trayPosition_ == TrayPosition::Unknown;
     heatRestartNotBefore_ = now + FAN_PRESTART_MS;
-    applyLearnedHoldOnResume();
     eventLog_.push(now, EventType::BatchStart,
                    static_cast<uint16_t>(EventCode::BatchResume),
                    static_cast<int16_t>(std::min<uint32_t>(elapsedBeforeStartSec_ / 60UL,
@@ -6064,9 +6000,18 @@ class MachineController {
     const uint32_t responseRequiredOnMs =
         static_cast<uint32_t>(config_.heaterStuckDurationSec) * 1000UL;
     // GPIO1 energizes both physical SSRs: ON is full 16 kW bank power.
+    // An open door is inferred (there is no door switch): the controller sees the temperature fall the way cold air makes it fall. The suspicion is held until
+    // the temperature has shown a rise (the watch resets its evidence then) or the demand is gone; while it is held the E115 evidence is paused (bounded).
+    if (thermalV3_.controller().doorDetected()) doorSuspected_ = true;
+    if (!responseDemand || heaterWatch_.riseC(temperature_) >= config_.heaterStuckMinRiseC) doorSuspected_ = false;
     heaterWatch_.update(responseDemand, temperature_, now, outputs_.state().heaterSsr,
-                        config_.heaterStuckMinRiseC, responseRequiredOnMs);
+                        config_.heaterStuckMinRiseC, responseRequiredOnMs, doorSuspected_);
     heaterNotHeatingActive_ = heaterWatch_.active();
+    // The warning goes up when a third of the E115 evidence is in (a third of the configured window, nothing typed) with the door suspected, so it comes
+    // two thirds of a window BEFORE E115 would have.
+    const bool doorWarning = doorSuspected_ && !heaterNotHeatingActive_ && heaterWatch_.accumOnMs() + heaterWatch_.pausedMs() >= responseRequiredOnMs / 3UL;
+    faults_.set(FaultCode::DoorOpenSuspected, doorWarning, now,
+                static_cast<int16_t>(lroundf(heaterWatch_.riseC(temperature_) * 10.0f)));
 
     const bool sensorGrace = !timeReached(now, sensorStartupGraceUntil_) &&
                              !sensorUsable_;
@@ -7726,7 +7671,6 @@ class MachineController {
     snprintf(runtime_.machineState, sizeof(runtime_.machineState), "%s", state);
     serviceTech(now);
     publishPidMonitor(now);
-    serviceThermalLearning(now);
     hmiSetRuntime(runtime_);
     mayapRealtimeSetRuntime(runtime_);
     mayapCloudSetRuntime(runtime_);
@@ -7757,7 +7701,7 @@ class MachineController {
     a.kp = config_.kp; a.ki = config_.ki; a.kd = config_.kd;
     {
       const thermalv3::Controller &v3 = thermalV3_.controller();          // Thermal V3 columns
-      a.pidCorr = v3.integral(); a.holdFf = v3.dNow(); a.ventFf = v3.fanBump();
+      a.pidCorr = v3.integral(); a.holdFf = v3.dNow(); a.ventFf = 0.0f;
       a.learnState = static_cast<uint8_t>(runtime_.pidMon.phase + (runtime_.pidMon.suspect ? 4U : 0U)); a.confidence = v3.batchesDone();
       a.gain = v3.kAir() * 1000.0f; a.delaySec = v3.tdHat(); a.holdPct = v3.tauHat(); a.coastC = v3.haPct(); a.ventGain = v3.sigmaPred(); a.predErr = v3.predicted();
     }
@@ -8353,10 +8297,6 @@ class MachineController {
   bool sirenWanted_ = false;                        // the siren (external + ATtiny mirror) is wanted now
   uint32_t audibleMask_ = AlarmNone, outputConflictMutedUntil_ = 0U;
   uint8_t chimeSeq_ = 0U;
-  thermallearn::StableTracker learnTracker_{};
-  thermallearn::Snapshot learnSaved_{};
-  bool learnSavedValid_ = false, learnHeaterFaultSeen_ = false;
-  uint8_t learnSource_ = 0U;                        // 0 priors, 1 oven constants restored, 2 oven constants + hold level of the resumed batch restored
   float safetyTempLast_ = NAN;
   bool lowTemperatureActive_ = false;
   bool warmupDone_ = false;                          // the first climb of the batch reached SV (or timed out): E110 is judged from here on
@@ -8377,6 +8317,7 @@ class MachineController {
   bool temperatureUnstableActive_ = false;
   HeaterResponseWatch heaterWatch_;
   bool heaterNotHeatingActive_ = false;
+  bool doorSuspected_ = false;                      // the temperature fell the way an open door makes it fall (see the E115 watch)
 
   // --- Giam sat suc khoe he thong (v3.6.0) - xem serviceHealthMonitor() ---
   PeriodicGate healthCheckGate_{HEALTH_CHECK_INTERVAL_MS};
@@ -8420,6 +8361,8 @@ class MachineController {
   HeaterBurstScheduler heaterBurst_{HEATER_GROUP_COUNT, HEATER_BURST_QUANTUM_MS};
   sensorfine::Estimator fineSlopeEst_;                // slope of the 0.1 degC reading (long window)
   sensorfine::Params fineSlopeParams_;
+  sensorfine::Estimator fineValueEst_;                // value of the 0.1 degC reading (short window): what the controller regulates
+  sensorfine::Params fineValueParams_ = fineShortParams();
   uint32_t fineBaseMs_ = 0U, fineLastMs_ = 0U;
   ThermalV3Slot thermalV3_;                          // Thermal V3 controller (RAM ~3.8 KB: 10 minutes of 1 Hz history for the energy balance)
   uint32_t pidLogAt_ = 0;                            // last PID log ring sample
