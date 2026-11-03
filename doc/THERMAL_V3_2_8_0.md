@@ -95,7 +95,7 @@ Changes:
 2. **The scheduled fan is fed forward**: the day profile of the fan (seconds to the next run, to its end) is handed to the controller. The heater is given the fan's share from one
    transit time before the fan starts to one before it stops (the plant then sees no fan), and the share is learned after every run from what PV did against the model (a part of the
    shortfall per run, kAir x share x run time). A fan with no schedule (the vent line, over temperature) is never fed forward.
-3. Dropped after measuring: a median of three readings before the fine PV (the spikes did not fall, the reading came to stand 0.02 degC lower).
+3. Dropped after measuring: a median of three readings before the fine PV (the spikes did not fall, the reading came to stand 0.02 degC lower); a longer window of the fine PV (40..120 s instead of 10..30 s: on the oven of the field log the spikes fell four times and the control did not change, but on the fleet bench the mean pass fell 84.4 -> 81.5 % (20..60 s) -> 73.1 % (40..120 s), scheduled fan 96 -> 85 -> 75 %: the fast ovens need the short window). The SSR pulse count does not depend on the jitter of the request: 1560 pulses an hour at 13 % with or without +-0.6 % of jitter (the pulse-density scheduler, quantum 300 ms); the fan's feed-forward pulse adds 7 % of power for 160 s every 20 min (1672 pulses an hour).
 
 Measured on `tools/thermal-research/log-oven.cpp` (the oven of the 29/10 fit with the heat loss and the fan of this machine, 0.1 degC sensor with noise, 10 seeds, a fan run of 160 s every 20 min):
 
