@@ -5206,6 +5206,55 @@ class MachineController {
 
   // ---- Thermal learning: 2.8.0 keeps nothing across a restart (the controller reads the oven again in a transit time or two) ----
   // A record written by an older version may still sit in NVS; "clear thermal learning" erases it and restarts the controller from its priors.
+  // ---- The numbers of the oven (2.9.1): heater gain, transit time, fan loss. Written when a climb or a fan run has changed them, read once after a restart ----
+  struct ThermalPhysRecord { uint16_t version; uint16_t crc; float kAir; float tau; float fanW; };
+  static uint16_t thermalPhysCrc(const ThermalPhysRecord &r) {
+    const uint8_t *b = reinterpret_cast<const uint8_t *>(&r) + 4U;
+    uint16_t crc = 0xFFFFU;
+    for (size_t i = 0U; i < sizeof(ThermalPhysRecord) - 4U; ++i) {
+      crc = static_cast<uint16_t>(crc ^ (static_cast<uint16_t>(b[i]) << 8U));
+      for (uint8_t k = 0U; k < 8U; ++k) crc = static_cast<uint16_t>((crc & 0x8000U) ? ((crc << 1U) ^ 0x1021U) : (crc << 1U));
+    }
+    return crc;
+  }
+  void serviceThermalPhysics(uint32_t now) {
+    if (!physLoaded_) {
+      physLoaded_ = true;
+      Preferences p;
+      ThermalPhysRecord r{};
+      if (p.begin(THERMAL_LEARN_NVS_NAMESPACE, true)) {
+        const size_t n = p.getBytes(THERMAL_PHYS_NVS_KEY, &r, sizeof(r));
+        p.end();
+        if (n == sizeof(r) && r.version == 1U && r.crc == thermalPhysCrc(r)) {
+          thermalV3_.controller().restore(r.kAir, r.tau, r.fanW);
+          physSaved_ = r; physHave_ = true;
+        }
+      }
+      physLastSaveMs_ = now;
+      return;
+    }
+    if (elapsedMs(now, physLastSaveMs_) < 600000UL) return;                 // at most one write every 10 minutes
+    const thermalv3::Controller &c = thermalV3_.controller();
+    if (!c.identified()) return;
+    const float tau = c.tauMeasured() ? c.tauTransit() : (physHave_ ? physSaved_.tau : 0.0f);
+    const bool changed = !physHave_ || fabsf(c.kAir() - physSaved_.kAir) > 0.03f * physSaved_.kAir ||
+                         fabsf(tau - physSaved_.tau) > 5.0f || fabsf(c.fanLoss() - physSaved_.fanW) > 0.5f;
+    if (!changed) return;
+    physLastSaveMs_ = now;
+    ThermalPhysRecord r{};
+    r.version = 1U; r.kAir = c.kAir(); r.tau = tau; r.fanW = c.fanLoss(); r.crc = thermalPhysCrc(r);
+    Preferences p;
+    if (p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) {
+      if (p.putBytes(THERMAL_PHYS_NVS_KEY, &r, sizeof(r)) == sizeof(r)) {
+        physSaved_ = r; physHave_ = true;
+        mayapSerialPrintf(false, "[THERMAL] kept kAir=%.2e tau=%.0f s fan=%.1f %%\n", static_cast<double>(r.kAir), static_cast<double>(r.tau), static_cast<double>(r.fanW));
+      }
+      p.end();
+    }
+  }
+  bool physLoaded_ = false, physHave_ = false;
+  ThermalPhysRecord physSaved_{};
+  uint32_t physLastSaveMs_ = 0U;
   bool eraseLearnedBlob() {
     Preferences p;
     if (!p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) return false;
@@ -5216,6 +5265,7 @@ class MachineController {
   bool clearThermalLearning() {
     const bool ok = eraseLearnedBlob();
     thermalV3_.reset();
+    physHave_ = false;
     return ok;
   }
 
@@ -5273,9 +5323,12 @@ class MachineController {
     si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterWatch_.accumOnMs()) / stuckLimitMs : 0.0f;
     si.dQ = thermalV3SensorStepC();
     si.ventFan = st.ventFan;                                                // the fan that really runs
+    float onIn = NAN, offIn = NAN;
+    if (ventProfileTiming(now, onIn, offIn)) { si.fanOnInS = onIn; si.fanOffInS = offIn; }   // the day profile of the fan is known ahead
     return si;
   }
   float thermalV3Command(uint32_t now, bool permit, bool shadow) {
+    serviceThermalPhysics(now);
     const uint32_t t0 = static_cast<uint32_t>(esp_timer_get_time());
     const float u = thermalV3_.step(buildThermalV3SlotIn(now, permit, shadow));
     slotLastUs_ = static_cast<uint32_t>(esp_timer_get_time()) - t0;

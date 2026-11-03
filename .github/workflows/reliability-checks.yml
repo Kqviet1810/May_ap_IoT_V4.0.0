@@ -184,6 +184,11 @@ jobs:
       - name: "Fleet bench builds (210 random ovens x 10 situations with the real vent line and the restored state)"
         run: g++ -O2 -std=c++17 -Wall -Wextra -Werror tools/thermal-research/fleet-bench.cpp -o /tmp/mayap-fleet-bench
 
+      - name: "The oven of the field log of 03/11 (tools/thermal-research/log-oven.cpp): started 0.1 degC under SV with its numbers kept across the restart, a scheduled fan every 20 min - back within 0.05 degC in 15 min, the fan's dip learned away by the 4th run, no overshoot"
+        run: |
+          g++ -O2 -std=c++11 -Wall -Wextra -Werror -I MAYAP_INDUSTRIAL_v1_0_0 -I tests tools/thermal-research/log-oven.cpp -o /tmp/mayap-log-oven
+          /tmp/mayap-log-oven --gate
+
       - name: "E115 evidence (heater_response_watch.h): unit tests of the rule MachineController runs"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/heater-response-watch.cpp -o /tmp/mayap-heater-response-watch
