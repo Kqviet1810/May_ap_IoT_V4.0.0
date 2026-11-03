@@ -6,7 +6,7 @@
 //  2. A family of ovens that differ in air mass, heater delay, wall loss, egg mass and coupling (12 hand-made + generated ones): the first
 //     climb (also of a controller that has been idle since power-up, and of an empty oven), a tray of cold eggs of 0.5 / 1.0 times the eggs
 //     inside, a door, the vent fan, a set-point step, a reboot in the middle of it all, a day of ordinary operation. Every scenario also runs
-//     on the 2.3.4 pair (tests/fixtures) on the same ovens and prints its numbers under the new ones: the comparison in doc/THERMAL_V3_2_4_0.md
+//     on the 2.3.4 pair (tests/fixtures) on the same ovens and prints its numbers under the new ones: the comparison in doc/THERMAL_V3_2_8_0.md
 //     is this output.
 //  3. A heater that is really dead must still stop the batch (E115), and in time.
 //

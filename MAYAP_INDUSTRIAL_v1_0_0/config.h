@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.8.1";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.9.0";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -237,12 +237,6 @@ constexpr uint8_t HEALTH_HEAP_WARN_CLEAR_PERCENT = 35U; // tre (hysteresis) khi 
 constexpr uint8_t HEALTH_HEAP_SERIOUS_PERCENT = 15U;    // len lich tu khoi dong lai luc an toan
 constexpr uint8_t HEALTH_HEAP_CRITICAL_PERCENT = 6U;    // khoi dong lai NGAY, khong cho
 constexpr uint8_t HEALTH_STREAK_CONFIRM = 3U;
-// Du doan nhiet do: chu ky lay mau nen de tinh toc do, va thoi gian "nhin
-// truoc" - neu toc do hien tai se cham nguong Bao cao/Bao thap trong khoang
-// thoi gian nay thi bao truoc, KHONG cho doi that su cham nguong.
-constexpr uint32_t HEALTH_TEMP_TREND_WINDOW_MS = 180000UL; // 3 phut/mau nen
-constexpr float HEALTH_TEMP_TREND_MIN_RATE_C_PER_MIN = 0.02f; // bo qua troi noise
-constexpr float HEALTH_TEMP_TREND_LOOKAHEAD_MIN = 5.0f; // canh bao neu <=5 phut nua cham nguong
 // EEPROM phai thu lai (retry) qua nhieu lan trong 1 chu ky kiem tra - dau
 // hieu suy giam som cua chip nho truoc khi hong han.
 constexpr uint8_t HEALTH_EEPROM_RETRY_WARN_COUNT = 5U;
@@ -321,7 +315,6 @@ constexpr uint8_t ATTINY_MSG_ACTIVITY_OFF = 7U;
 constexpr uint8_t ATTINY_MSG_STATUS_BASE = 8U;
 constexpr uint8_t ATTINY_MSG_STATUS_MAX = 23U;
 constexpr uint8_t ATTINY_MSG_MAX_COMMAND = 7U;
-constexpr uint8_t ATTINY_MSG_MAX_CODE = 23U;
 constexpr uint8_t ATTINY_STATUS_FLAG_BATCH = 1U;
 constexpr uint8_t ATTINY_STATUS_FLAG_9V_LOW = 2U;
 constexpr uint8_t ATTINY_STATUS_FLAG_SIREN = 4U;
@@ -668,8 +661,6 @@ constexpr uint32_t BATCH_OVERDUE_AUTO_STOP_GRACE_SEC = 12UL * 3600UL;
 constexpr uint32_t RESUME_RTC_WAIT_ALERT_MS = 300000UL; // 5 phut
 // Trend trong me: 5 phut/mau. Event quan trong duoc ghi ngay khi xay ra.
 constexpr uint32_t BATCH_LOG_SAMPLE_MS = 300000UL;
-constexpr size_t BATCH_LOG_MIN_FREE_BYTES = 256U * 1024U;
-constexpr uint8_t BATCH_LOG_MAX_FILES = 8U;
 // Mac dinh ngung dao trong 3 ngay cuoi truoc no. Ap dung theo tong so ngay me.
 constexpr uint8_t TURN_LOCKDOWN_DAYS = 3U;
 // Khi nguoi dung dung/huy me ma chua xoa duoc ban ghi EEPROM, may van dung
@@ -1345,7 +1336,8 @@ enum class HmiCommandType : uint8_t {
   WebTurnHold,        // Remote: alarmMask = direction (0 stop, 1 left, 2 right) | lease ms << 8 (the machine stops by itself when the lease ends)
   FactoryReset,       // Local only: khoi phuc cai dat goc (MachineConfig, NVS, EEPROM) va khoi dong lai
   DeveloperModeSet,   // Local only: alarmMask 1 = bat CD nha phat trien (full quyen tu xa), 0 = tat
-  ClearThermalLearn   // Local only: erase what the thermal controller learned (NVS) and start it from its priors; refused while a batch runs
+  ClearThermalLearn,  // Local only: erase what the thermal controller learned (NVS) and start it from its priors; refused while a batch runs
+  TurnMechanicalCheck // Local only: the machine turns the tray to both sides to test the limit switches and the gear (E205); clears E205 when both sides are reached
 };
 // Permission bits of the Web output control (HMI Advanced). Heater, vent, circulation, light, siren, egg turning.
 enum : uint8_t { WebCtlHeater = 1, WebCtlVent = 2, WebCtlCirc = 4, WebCtlLight = 8, WebCtlSiren = 16, WebCtlTurn = 32, WebCtlAutoUpdate = 64, WebCtlAll = 127 };

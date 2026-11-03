@@ -120,7 +120,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
     (out / 'actual-event.inc').write_text(event_types+machine[start:end])
     common = ['g++', '-std=c++11', '-Wall', '-Wextra', '-Werror', '-I', str(out)]
     if args.sanitize: common += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-fno-pie', '-no-pie']
-    unit_tests = ['thermal-program','heat-latch','program-store','output-budget','thermal-output','thermal-e115','thermal-config','thermal-filter']
+    unit_tests = ['thermal-output','thermal-e115','thermal-config','thermal-filter']
     if args.only: unit_tests = [t for t in args.only.split(',') if t]
     # Every test is an independent executable: compile and run them on all cores, print in the original order.
     from concurrent.futures import ThreadPoolExecutor

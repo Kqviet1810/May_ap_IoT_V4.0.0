@@ -43,7 +43,6 @@ VNT = forceVentFan · CIR = forceCirculationFan · L = latching.
 | E315 | BatchLogUnavailable | Warn | – | – | – | – | – | – | logger unhealthy during batch | logger healthy |
 | E401 | HeapLow | Warn | – | – | – | – | – | – | free heap ≤ warn % for 3 samples | hysteresis |
 | E402 | HeapCritical | Warn | – | – | – | – | – | – | free heap ≤ critical % | restart |
-| E403 | TemperatureTrendWarning | Warn | – | – | – | – | – | – | extrapolated to reach high/low alarm within lookahead | trend ends |
 | E404 | StorageRetryTrend | Warn | – | – | – | – | – | – | soft I2C retries ≥ threshold per window | next window |
 
 `✓*` = **declared in the table but NOT effective while a batch is running** — see

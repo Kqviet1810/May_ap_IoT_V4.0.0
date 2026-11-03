@@ -247,7 +247,7 @@ test('thermal final bounds match firmware', () => {
   assert.equal(h.window.invalidField, 'tempOffset');
 });
 
-test('running-batch target edit re-anchors safety and ventilation envelope instead of editing locked thresholds', () => {
+test('running-batch temperature form saves the three alarm lines like outside a batch (the machine keeps their order)', () => {
   const h = browser();
   h.device.config = Object.fromEntries(h.REQUIRED_CONFIG_KEYS.map(key => [key, 0]));
   Object.assign(h.device.config, {
@@ -255,15 +255,29 @@ test('running-batch target edit re-anchors safety and ventilation envelope inste
     ventOnTemp:38.0, ventOffTemp:37.6, highTempAlarmWithoutBatch:true
   });
   h.device.snapshot = { runtime:{ batchRunning:true, resumeConfirmationRequired:false } };
-  h.elements.set('targetTemp', { value:30 });
+  h.elements.set('targetTemp', { value:37.6 });
+  h.elements.set('lowAlarm', { value:36.0 });
+  h.elements.set('highAlarm', { value:37.9 });
+  h.elements.set('emergencyTemp', { value:38.6 });
+  h.elements.set('highTempAlarmWithoutBatch', { checked:false });
   const cfg = h.buildConfig('temperature');
-  assert.equal(cfg.targetTemp, 30);
-  assert.ok(Math.abs(cfg.lowTempAlarm - 29.0) < 1e-9);
-  assert.ok(Math.abs(cfg.highTempAlarm - 30.7) < 1e-9);
-  assert.ok(Math.abs(cfg.emergencyTemp - 31.5) < 1e-9);
-  assert.ok(Math.abs(cfg.ventOnTemp - 30.5) < 1e-9);
-  assert.ok(Math.abs(cfg.ventOffTemp - 30.1) < 1e-9);
-  assert.equal(cfg.highTempAlarmWithoutBatch, true);
+  assert.equal(cfg.targetTemp, 37.6);
+  assert.equal(cfg.lowTempAlarm, 36.0);
+  assert.equal(cfg.highTempAlarm, 37.9);
+  assert.equal(cfg.emergencyTemp, 38.6);
+  assert.equal(cfg.highTempAlarmWithoutBatch, false);
+  assert.equal(cfg.ventOnTemp, 38.0);                                          // the vent lines are not touched by this form
+});
+
+test('batch form carries the low-humidity alarm (the only humidity alarm line the Web sets)', () => {
+  const h = browser();
+  h.device.config = Object.fromEntries(h.REQUIRED_CONFIG_KEYS.map(key => [key, 0]));
+  Object.assign(h.device.config, { targetTemp:37.5, lowTempAlarm:36.5, highTempAlarm:38.2, emergencyTemp:39.0, lowHumidityAlarm:45 });
+  for (const [id, value] of [['batchTarget', '37.5'], ['totalDays', '21'], ['lowHumidityAlarm', '58']]) h.elements.set(id, { value });
+  h.elements.set('resumeAfterPowerLoss', { checked:true });
+  const cfg = h.buildConfig('batch');
+  assert.equal(cfg.lowHumidityAlarm, 58);
+  assert.equal(h.device.config.lowHumidityAlarm, 45);                          // the stored config is not mutated
 });
 
 test('Notes and custom Reminders persist through account-scoped D1 APIs, not device realtime', () => {

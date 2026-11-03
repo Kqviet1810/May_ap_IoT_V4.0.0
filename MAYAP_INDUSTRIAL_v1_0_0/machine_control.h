@@ -256,13 +256,7 @@ struct EventEntry {
 
 class EventLog {
  public:
-  using PersistSinkFn = void (*)(const EventEntry &entry, void *context);
-
   void begin(uint32_t) {}
-  void attachPersistSink(PersistSinkFn sink, void *context) {
-    persistSink_ = sink;
-    persistContext_ = context;
-  }
 
   // Dong bo moc thoi gian DS3231 voi millis(). Khi RTC vua hop le, cac su kien
   // da phat sinh trong lan khoi dong hien tai duoc bo sung timestamp theo tuoi.
@@ -291,7 +285,6 @@ class EventLog {
   // Nhat ky chi co y nghia trong pham vi mot me. Ngoai me chi giu Boot va AutoTune start/end; khong ghi su kien thuong - tranh nhieu su kien khong
   // lien quan lam loang lich su thao tac cua me that su.
   void setLoggingEnabled(bool enabled) { loggingEnabled_ = enabled; }
-  bool loggingEnabled() const { return loggingEnabled_; }
 
   void push(uint32_t now, EventType type, uint16_t code,
             int16_t value = 0, uint8_t flags = 0U) {
@@ -317,7 +310,6 @@ class EventLog {
     entry.flags = flags;
     head_ = static_cast<uint8_t>((head_ + 1U) % EVENT_LOG_RAM_SIZE);
     if (count_ < EVENT_LOG_RAM_SIZE) ++count_;
-    if (persistSink_) persistSink_(entry, persistContext_);
   }
   bool clear(uint32_t) { head_ = count_ = 0U; ++sequence_; return true; }
   uint32_t sequence() const { return sequence_; }
@@ -363,8 +355,6 @@ class EventLog {
   uint32_t sequence_ = 0U;
   uint32_t clockEpoch_ = 0U;
   uint32_t clockSyncedAtMs_ = 0U;
-  PersistSinkFn persistSink_ = nullptr;
-  void *persistContext_ = nullptr;
   bool loggingEnabled_ = false;
 };
 
@@ -390,10 +380,8 @@ class BatchLogger {
   void printFiles() const {
     mayapSerialPrintf(false, "[BLOG] DISABLED IN RECOVERY BUILD\n");
   }
-  bool appendEvent(const EventEntry &) { return true; }
   bool appendSample(uint32_t, uint32_t, float, float, float, uint16_t, uint8_t) { return true; }
   bool service(uint8_t = 2U) { return true; }
-  static void eventSink(const EventEntry &, void *) {}
  private:
   bool active_ = false;
 };
@@ -464,7 +452,6 @@ enum class FaultCode : uint16_t {
   // khong phai loi an toan tuc thi. Xem serviceHealthMonitor().
   HeapLow = 401,
   HeapCritical = 402,
-  TemperatureTrendWarning = 403,
   StorageRetryTrend = 404,
   // Nhom 500: bao mat dien qua ATtiny13A (mach doc lap dung pin CR2032, xem
   // doc/attiny_power_alarm.md) - CHI CANH BAO CHAN DOAN, khong anh huong
@@ -592,7 +579,6 @@ inline const FaultDescriptor &faultDescriptor(FaultCode code) {
     {FaultCode::HeapLow, FaultSeverity::Warning, 30U, AlarmSystem, false, false, false, false, false, false, "HEAP LOW"},
     // HeapCritical sheds Online workloads; local control never restarts for RAM pressure.
     {FaultCode::HeapCritical, FaultSeverity::Warning, 35U, AlarmSystem, false, false, false, false, false, false, "HEAP CRITICAL"},
-    {FaultCode::TemperatureTrendWarning, FaultSeverity::Warning, 48U, AlarmTempHigh, false, false, false, false, false, false, "TEMP TREND WARNING"},
     {FaultCode::StorageRetryTrend, FaultSeverity::Warning, 72U, AlarmSystem, false, false, false, false, false, false, "STORAGE RETRY TREND"},
     // Nhom 500: bao mat dien qua ATtiny13A - chi chan doan, khong dropHeatMaster/
     // inhibitSsr/inhibitsTurning (mach nay hoan toan tach biet dieu khien chinh).
@@ -625,7 +611,7 @@ inline FaultSound faultSoundClass(FaultCode code) {
       return FaultSound::Chime;
     default:
       return FaultSound::Silent;                  // diagnostics: TemperatureRateExceeded, TemperatureUnstable, StorageDegraded, RelayRateExceeded, RtcFailure,
-  }                                               // BatchLogUnavailable, Heap*, TemperatureTrendWarning, StorageRetryTrend, AttinyBusUnresponsive, AttinyStateUnsynced
+  }                                               // BatchLogUnavailable, Heap*, StorageRetryTrend, AttinyBusUnresponsive, AttinyStateUnsynced
 }
 
 struct FaultState {
@@ -2974,11 +2960,6 @@ constexpr uint32_t TX_TAIL_GUARD_US = 1500;
 constexpr uint32_t TX_ROOM_TIMEOUT_MS = 20;
 constexpr uint8_t RX_BYTES_PER_UPDATE = 16;
 constexpr uint8_t RX_PURGE_BYTES_PER_ATTEMPT = 16;
-constexpr int16_t TEMP_MIN_X10 = -400;
-constexpr int16_t TEMP_MAX_X10 = 600;
-constexpr int16_t HUM_MIN_X10 = 0;
-constexpr int16_t HUM_MAX_X10 = 1000;
-constexpr uint8_t MEDIAN_WINDOW = 3;
 constexpr int32_t IIR_NUMERATOR = 3;
 constexpr int32_t IIR_DENOMINATOR = 8;
 }
@@ -4145,47 +4126,6 @@ class MachineController {
     faults_.set(FaultCode::HeapLow, healthHeapLowActive_, now, static_cast<int16_t>(percent));
   }
 
-  // Du doan nhiet do: ngoai suy toc do thay doi hien tai (do rieng, cua so
-  // HEALTH_TEMP_TREND_WINDOW_MS - KHAC voi tempRateRefValue_/tempRateWindowSec
-  // dung phat hien thay doi DOT NGOT) - neu voi toc do nay se cham nguong
-  // Bao cao/Bao thap trong vong HEALTH_TEMP_TREND_LOOKAHEAD_MIN phut nua thi
-  // bao TRUOC, khong doi that su cham nguong roi HighTemperature/LowTemperature
-  // moi bao nhu truoc day.
-  void serviceHealthTemperatureTrend(uint32_t now) {
-    bool warn = false;
-    int16_t warnDetail = 0;
-    const uint32_t baselineAgeMs = elapsedMs(now, healthTempBaselineAt_);
-    if (batchRunning_ && sensorUsable_ && isfinite(temperature_) &&
-        isfinite(healthTempBaseline_) && baselineAgeMs > 0U) {
-      const float windowMin = static_cast<float>(baselineAgeMs) / 60000.0f;
-      const float ratePerMin = (temperature_ - healthTempBaseline_) / windowMin;
-      if (ratePerMin >= HEALTH_TEMP_TREND_MIN_RATE_C_PER_MIN &&
-          temperature_ < config_.highTempAlarm) {
-        const float minutesToHigh = (config_.highTempAlarm - temperature_) / ratePerMin;
-        if (minutesToHigh > 0.0f && minutesToHigh <= HEALTH_TEMP_TREND_LOOKAHEAD_MIN) {
-          warn = true;
-          warnDetail = static_cast<int16_t>(lroundf(minutesToHigh));
-        }
-      } else if (ratePerMin <= -HEALTH_TEMP_TREND_MIN_RATE_C_PER_MIN &&
-                 temperature_ > config_.lowTempAlarm) {
-        const float minutesToLow = (temperature_ - config_.lowTempAlarm) / (-ratePerMin);
-        if (minutesToLow > 0.0f && minutesToLow <= HEALTH_TEMP_TREND_LOOKAHEAD_MIN) {
-          warn = true;
-          // Am = dang huong xuong Bao thap (phan biet voi huong len Bao cao).
-          warnDetail = static_cast<int16_t>(-lroundf(minutesToLow));
-        }
-      }
-    }
-    faults_.set(FaultCode::TemperatureTrendWarning, warn, now, warnDetail);
-
-    if (!isfinite(healthTempBaseline_) ||
-        baselineAgeMs >= HEALTH_TEMP_TREND_WINDOW_MS) {
-      healthTempBaseline_ = (sensorUsable_ && isfinite(temperature_))
-                                 ? temperature_ : NAN;
-      healthTempBaselineAt_ = now;
-    }
-  }
-
   // EEPROM phai thu lai (retry) qua nhieu lan trong 1 chu ky kiem tra - dau
   // hieu suy giam som cua chip nho truoc khi hong han. Bo dem tu xoa ve 0
   // moi chu ky (xem ExternalEeprom24xx::takeSoftRetryEvents()).
@@ -4238,7 +4178,6 @@ class MachineController {
     serviceHealthHeap(now, healthHeapLastBest_ ? healthHeapLastBest_ : ESP.getFreeHeap());
     healthHeapWindowBest_ = 0U;
     healthHeapWindowWorst_ = UINT32_MAX;
-    serviceHealthTemperatureTrend(now);
     serviceHealthStorageRetry(now);
   }
 
@@ -4596,44 +4535,20 @@ class MachineController {
       requested.nextDirection = config_.nextDirection;
       // turningEnabled/turnIntervalMin/turnMaxRunSec KHONG con bi khoa khi
       // dang co me nua (theo dung UI HMI/web da mo khoa cho "phan dao" -
-      // Trong me/resume chi mo cac tham so VAN HANH: SV, bao am, nguong
-      // quat hut, chu ky/bat-tat dao, dao tay dong lich va cho phep ONLINE->
-      // OFFLINE. Calibration, nguong safety, PID/tuning, timeout co khi,
-      // sensor/recovery va OFFLINE->ONLINE deu bi khoa o lop luu that su nay
-      // de web/Serial/HMI khong the di vong qua khoa giao dien.
-      const float targetDelta = requested.targetTemp - config_.targetTemp;
-      const bool targetChanged = fabsf(targetDelta) > 0.0005f;
-      const auto shiftedWithTarget = [targetDelta](float before, float after) {
-        return fabsf((after - before) - targetDelta) <= 0.0015f;
-      };
-      const bool thermalEnvelopeFollowsTarget = targetChanged &&
-          shiftedWithTarget(config_.lowTempAlarm, requested.lowTempAlarm) &&
-          shiftedWithTarget(config_.highTempAlarm, requested.highTempAlarm) &&
-          shiftedWithTarget(config_.emergencyTemp, requested.emergencyTemp) &&
-          shiftedWithTarget(config_.ventOnTemp, requested.ventOnTemp) &&
-          shiftedWithTarget(config_.ventOffTemp, requested.ventOffTemp);
-      const bool directSafetyThresholdChange =
-          requested.lowTempAlarm != config_.lowTempAlarm ||
-          requested.highTempAlarm != config_.highTempAlarm ||
-          requested.emergencyTemp != config_.emergencyTemp;
-      // Trong me, SV duoc phep doi. Neu SV doi, chi cho phep ba nguong safety
-      // va hai nguong quat hut di chuyen CUNG delta de giu nguyen khoang cach;
-      // moi kieu sua safety truc tiep khac van bi khoa.
-      const bool thermalEnvelopeViolation = targetChanged
-          ? !thermalEnvelopeFollowsTarget
-          : directSafetyThresholdChange;
+      // Trong me/resume mo cac tham so VAN HANH: SV, ba nguong canh bao nhiet
+      // (thu tu thap < SV < cao < khan cap do sanitizeMachineConfig giu), bao am,
+      // nguong quat hut, so ngay ap, tu ap lai sau mat dien, chu ky/bat-tat dao,
+      // dao tay dong lich va cho phep ONLINE->OFFLINE. Calibration (offset),
+      // PID/tuning, timeout co khi, sensor/recovery va OFFLINE->ONLINE van bi
+      // khoa o lop luu that su nay de web/Serial/HMI khong the di vong qua khoa giao dien.
       // Technical fields (PID, protection, calibration, tune relay) change only inside an unlocked HMI "Nang cao" session, or through a
       // Web request the HMI approved (that path saves directly, not through here). A Web config patch can never reach this far.
       const AdvancedHistory::Snapshot beforeAdvanced = AdvancedHistory::fromConfig(config_);
       const bool advancedChange = !AdvancedHistory::same(beforeAdvanced, AdvancedHistory::fromConfig(requested));
       const bool techLocked = advancedChange && !techGate_.hmiUnlocked(now);
       const bool protectedBatchChange = (batchRunning_ || resumePending_) && (
-          requested.autoResumeOnPowerLoss != config_.autoResumeOnPowerLoss ||
-          requested.totalIncubationDays != config_.totalIncubationDays ||
-          thermalEnvelopeViolation ||
           requested.tempOffset != config_.tempOffset ||
           requested.humidityOffset != config_.humidityOffset ||
-          requested.highTempAlarmWithoutBatch != config_.highTempAlarmWithoutBatch ||
           requested.kp != config_.kp || requested.ki != config_.ki ||
           requested.kd != config_.kd ||
           requested.pidCycleSec != config_.pidCycleSec ||
@@ -5066,6 +4981,11 @@ class MachineController {
           webOutputsRevoke(now, static_cast<uint8_t>(~mask & WebCtlAll));       // a permission taken away also ends its override at once
           message = "DA LUU QUYEN DIEU KHIEN WEB";
         }
+        break;
+      }
+      case HmiCommandType::TurnMechanicalCheck: {
+        if (remote) { message = "CHI HMI DUOC KIEM TRA"; break; }
+        ok = startTurnCheck(message);
         break;
       }
       case HmiCommandType::ClearThermalLearn: {
@@ -6224,6 +6144,7 @@ class MachineController {
     if (in.limitLeft && in.limitRight) {
       latchTurnFault(FaultCode::TurnLimitConflict, "HAI HANH TRINH CUNG ON");
     }
+    if (turnCheckLeg_ != 0U) { updateTurnCheck(now); return; }
     if (turnFaultLatched_) { stopTurn(false); turnPhase_ = TurnPhase::Fault; return; }
     if (faults_.turningInhibited() || highTemperatureActive_ || emergencyActive_) {
       stopTurn(false);
@@ -6536,6 +6457,76 @@ class MachineController {
                 trayPosition_ == TrayPosition::Unknown;
     return true;
   }
+
+  // ---- Check of the turning gear after E205: the machine itself turns the tray to both sides ----
+  // Started from the HMI ("KIEM TRA" on the E205 screen). It first goes AWAY from the side the tray sits on (or to the left when it sits on none), then back
+  // to the other side: both limit switches must close, each within the configured run time and each opening again. When both are reached E205 is cleared
+  // (RAM and NVS); when one is not, the failure is raised as the usual turn fault (E201 / E202) and E205 stays, so the machine keeps reporting.
+  bool startTurnCheck(const char *&message) {
+    const InputState &in = inputs_.state();
+    if (!turnMechanicalCheckRequired_) { message = "KHONG CAN KIEM TRA"; return false; }
+    if (turnCheckLeg_ != 0U) { message = "DANG KIEM TRA DAO"; return false; }
+    if (testModeActive_ || mayapFirmwareMaintenanceActive()) { message = "THOAT TEST/OTA TRUOC"; return false; }
+    if (in.limitLeft && in.limitRight) { message = "LOI 2 HANH TRINH"; return false; }
+    if (in.turnLeft || in.turnRight) { message = "THA NUT DAO TRAY"; return false; }
+    if (highTemperatureActive_ || emergencyActive_) { message = "NHIET DANG QUA CAO"; return false; }
+    if (turnFaultLatched_ && !clearTurnFault()) { message = "THA NUT/KT HANH TRINH"; return false; }
+    stopTurn(false);
+    turnPhase_ = TurnPhase::Idle;
+    turnCheckFirst_ = in.limitLeft ? TurnDirection::Right : TurnDirection::Left;
+    turnCheckLeg_ = 1U;
+    mayapSerialPrintf(false, "[TURN] MECHANICAL CHECK START\n");
+    message = "DANG KIEM TRA DAO";
+    return true;
+  }
+
+  void abortTurnCheck() {
+    turnCheckLeg_ = 0U;
+    stopTurn(false);
+    turnPhase_ = TurnPhase::Idle;
+  }
+
+  void updateTurnCheck(uint32_t now) {
+    const InputState &in = inputs_.state();
+    if (highTemperatureActive_ || emergencyActive_ || in.turnLeft || in.turnRight) { abortTurnCheck(); return; }
+    const TurnDirection dir = turnCheckLeg_ == 1U ? turnCheckFirst_
+        : (turnCheckFirst_ == TurnDirection::Left ? TurnDirection::Right : TurnDirection::Left);
+    const bool hit = dir == TurnDirection::Left ? in.limitLeft : in.limitRight;
+    const bool moving = turnPhase_ == TurnPhase::MovingLeft || turnPhase_ == TurnPhase::MovingRight;
+    if (moving && hit) {
+      stopTurn(false);
+      trayPosition_ = dir == TurnDirection::Left ? TrayPosition::Left : TrayPosition::Right;
+      if (turnCheckLeg_ == 1U) { turnCheckLeg_ = 2U; return; }
+      turnCheckLeg_ = 0U;
+      turnMechanicalCheckRequired_ = false;
+      turnFaultStreak_ = 0U;
+      testLimitVerifiedLeft_ = testLimitVerifiedRight_ = false;
+      needHome_ = false;
+      (void)safetyJournal_.setTurnMechanicalCheckRequired(false);
+      (void)safetyJournal_.setTurnFaultStreak(0U);
+      faults_.set(FaultCode::TurnMechanicalCheckRequired, false, now);
+      mayapSerialPrintf(false, "[TURN] MECHANICAL CHECK OK - both limit switches reached\n");
+      return;
+    }
+    if (moving) {
+      const bool originStillActive = (dir == TurnDirection::Left && moveOrigin_ == TrayPosition::Right && in.limitRight) ||
+                                     (dir == TurnDirection::Right && moveOrigin_ == TrayPosition::Left && in.limitLeft);
+      if (originStillActive && elapsedMs(now, moveStartedAt_) >= TURN_LIMIT_RELEASE_TIMEOUT_MS) {
+        abortTurnCheck(); latchTurnFault(FaultCode::TurnLimitStuck, "KIEM TRA: HANH TRINH KHONG NHA"); return;
+      }
+      if (elapsedMs(now, moveStartedAt_) >= static_cast<uint32_t>(config_.turnMaxRunSec) * 1000UL) {
+        abortTurnCheck(); latchTurnFault(FaultCode::TurnTimeout, "KIEM TRA: DAO QUA THOI GIAN"); return;
+      }
+      return;
+    }
+    if (turnPhase_ == TurnPhase::DeadtimeLeft || turnPhase_ == TurnPhase::DeadtimeRight) {
+      if (timeReached(now, deadtimeUntil_)) beginPhysicalMove(now, dir);
+      return;
+    }
+    if (hit) { abortTurnCheck(); return; }                                   // the target switch is already closed: nothing to prove, start again from the HMI
+    requestTurn(now, dir, false, false);
+  }
+
 
   // ----------------------------- Heating/Output -------------------------------
   void updateHeatingAndOutputs(uint32_t now) {
@@ -8215,6 +8206,8 @@ class MachineController {
   // nhan lai qua Test Mode (ca 2 CTHT deu Success - xem updateTestMode()).
   uint8_t turnFaultStreak_ = 0U;
   bool turnMechanicalCheckRequired_ = false;
+  uint8_t turnCheckLeg_ = 0U;                                 // 0 idle, 1 first side, 2 second side of the check after E205
+  TurnDirection turnCheckFirst_ = TurnDirection::Left;
   // F-06: xem updateBatchOverdue()/SafetyJournal::batchOverdueAcknowledged().
   bool batchOverdueAcknowledged_ = false;
   bool batchOverdueSirenActive_ = false;
@@ -8334,8 +8327,6 @@ class MachineController {
   uint8_t healthHeapLowStreak_ = 0U;
   bool healthHeapLowActive_ = false;
   uint8_t healthHeapSeriousStreak_ = 0U;
-  float healthTempBaseline_ = NAN;
-  uint32_t healthTempBaselineAt_ = 0U;
   // Cong tac den (PIN_IN_LIGHT) van la nguon dieu khien mac dinh (xem
   // updateHeatingAndOutputs()); nut bat/tat den tren web CHI de lai 1 lenh
   // "ghi de" tam thoi - het hieu luc ngay khi cong tac vat ly thuc su doi

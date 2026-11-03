@@ -169,7 +169,6 @@ class Controller {
   float tauHat() const { return hold_; }
   float pHold() const { return hold_; }
   float dNow() const { return hold_; }
-  float dLoss() const { return 0.0f; }
   float haPct() const { return 0.0f; }
   float sigmaPred() const { return sigma_; }
   float integral() const { return 0.0f; }
@@ -228,12 +227,6 @@ class Controller {
     // On a climb (far under SV) the measured slope is a floor for the heat in flight (a wrong kAir cannot hide it); near SV its noise must not count.
     if (std::isfinite(pv_) && sp_ - pv_ > 1.5f * farBand_) lead = std::max(lead, 0.8f * std::max(0.0f, slope_) * tau_);
     lead_ = std::max(-kAir_ * hold_ * tau_, std::min(1.2f * inflightMax_, lead));
-  }
-  float delayedPower(uint16_t delay, uint16_t n) const {
-    if (n == 0U || histCount_ < static_cast<uint16_t>(delay + n + 1U)) return NAN;
-    float sum = 0.0f;
-    for (uint16_t i = 0U; i < n; ++i) sum += uAge(static_cast<uint16_t>(delay + i));
-    return sum / static_cast<float>(n);
   }
   // THE writer of hold: a disturbance observer. A model of PV is driven by the power that has reached the oven (the command one transit time ago);
   // the error between the measured and the model PV corrects the model, the load (hold) and the load's rate of change. Three poles at 1/(1.5 tau)

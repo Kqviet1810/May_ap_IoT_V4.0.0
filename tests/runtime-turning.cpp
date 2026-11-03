@@ -12,6 +12,7 @@ constexpr unsigned TURN_LOCKDOWN_DAYS=3, POST_COOL_MS=1000,
  TURN_LIMIT_RELEASE_TIMEOUT_MS=1000, TURN_INPUT_CONFLICT_MS=1000, TURN_DIRECTION_DEADTIME_MS=100;
 constexpr bool HOME_TO_LEFT=true;
 uint32_t elapsedMs(uint32_t n,uint32_t t) { return n-t; }
+bool mayapFirmwareMaintenanceActive() { return false; }
 bool timeReached(uint32_t n,uint32_t t) { return int32_t(n-t)>=0; }
 void mayapSerialPrintf(bool,const char*,...) {}
 struct InputState { bool autoMode=true,limitLeft=true,limitRight=false,turnLeft=false,turnRight=false,circulationFan=true; };
@@ -19,11 +20,11 @@ struct Controller {
  uint8_t webTurnDir_=0; uint32_t webTurnUntil_=0; bool webOverrideLive(uint32_t u,uint32_t n) const { return u!=0U && (int32_t)(n-u)<0; }
  struct { uint32_t now=1000000; bool ok=true; bool valid() const { return ok; } uint32_t epoch() const { return now; } } rtc_;
  struct { InputState value; const InputState& state() const { return value; } } inputs_;
- struct { bool inhibit=false; bool turningInhibited() const { return inhibit; } } faults_;
+ struct { bool inhibit=false; bool turningInhibited() const { return inhibit; } template<class... T> void set(T...) {} template<class... T> bool acknowledge(T...) { return true; } } faults_;
  struct { struct State { bool heaterSsr=false; } value; State state() const { return value; } } outputs_;
  struct { bool turningEnabled=true,manualTurnReanchorsSchedule=false; uint16_t turnIntervalMin=120,turnMaxRunSec=30,totalIncubationDays=21; TurnDirection nextDirection=TurnDirection::Right; } config_;
  struct { template<class... T> void push(T...) {} } eventLog_;
- struct { bool setTurnFaultStreak(unsigned) { return true; } } safetyJournal_;
+ struct { bool setTurnFaultStreak(unsigned) { return true; } bool setTurnMechanicalCheckRequired(bool) { return true; } } safetyJournal_;
  bool batchRunning_=true,needHome_=true,previousAutoMode_=true,testModeActive_=false,turnFaultLatched_=false,
  highTemperatureActive_=false,emergencyActive_=false,sensorUsable_=true,manualTurnRearmRequired_=false,
  resumePending_=false,moveIsHoming_=false,moveCounts_=false;
@@ -34,6 +35,8 @@ struct Controller {
  TurnPhase turnPhase_=TurnPhase::Idle; BatchPhase batchPhase_=BatchPhase::Homing;
  uint32_t elapsedBatchSec(uint32_t) const { return batchElapsed; }
  bool saveBatchRecord() { ++saves; return true; }
+ bool turnMechanicalCheckRequired_=false,testLimitVerifiedLeft_=false,testLimitVerifiedRight_=false; uint8_t turnCheckLeg_=0U; TurnDirection turnCheckFirst_=TurnDirection::Left;
+ bool clearTurnFault() { turnFaultLatched_=false; return true; }
  void latchTurnFault(FaultCode,const char*) { turnFaultLatched_=true; stopTurn(true); }
  #include "actual-turning.inc"
 };
@@ -101,5 +104,56 @@ int main() {
  mode.updateTurning(6000); mode.updateTurning(6100);
  mode.inputs_.value.limitLeft=true; mode.updateTurning(6200); mode.updateTurning(6201);
  assert(mode.lastTurnEpoch_==1000000 && mode.turnPhase_==TurnPhase::DeadtimeRight);
+
+ // E205 check: the machine turns the tray to both sides by itself; both limit switches reached -> E205 cleared.
+ {
+  Controller k; k.turnMechanicalCheckRequired_=true; k.faults_.inhibit=true; k.batchRunning_=false;
+  const char *msg="";
+  assert(k.startTurnCheck(msg) && k.turnCheckLeg_==1U && k.turnCheckFirst_==TurnDirection::Right);   // sits on the left: first go right
+  uint32_t t=1000; k.updateTurning(t);
+  assert(k.turnPhase_==TurnPhase::DeadtimeRight);
+  t+=150; k.updateTurning(t); assert(k.turnPhase_==TurnPhase::MovingRight);
+  k.inputs_.value.limitLeft=false; t+=100; k.updateTurning(t);                       // the left switch opens
+  k.inputs_.value.limitRight=true; t+=100; k.updateTurning(t);                       // the right one closes
+  assert(k.turnCheckLeg_==2U && k.turnPhase_==TurnPhase::Idle && k.trayPosition_==TrayPosition::Right);
+  t+=10; k.updateTurning(t); assert(k.turnPhase_==TurnPhase::DeadtimeLeft);
+  t+=150; k.updateTurning(t); assert(k.turnPhase_==TurnPhase::MovingLeft);
+  k.inputs_.value.limitRight=false; t+=100; k.updateTurning(t);
+  k.inputs_.value.limitLeft=true; t+=100; k.updateTurning(t);
+  assert(k.turnCheckLeg_==0U && !k.turnMechanicalCheckRequired_ && k.turnFaultStreak_==0U && k.trayPosition_==TrayPosition::Left && !k.needHome_);
+ }
+ // E205 check from no side: left first, then right.
+ {
+  Controller k; k.turnMechanicalCheckRequired_=true; k.inputs_.value.limitLeft=false; const char *msg="";
+  assert(k.startTurnCheck(msg) && k.turnCheckFirst_==TurnDirection::Left);
+ }
+ // A side that is never reached: the usual turn fault (TurnTimeout) is raised and E205 stays, so the machine keeps reporting.
+ {
+  Controller k; k.turnMechanicalCheckRequired_=true; const char *msg="";
+  assert(k.startTurnCheck(msg));
+  uint32_t t=1000; k.updateTurning(t); t+=150; k.updateTurning(t); assert(k.turnPhase_==TurnPhase::MovingRight);
+  k.inputs_.value.limitLeft=false;
+  for (int i=0;i<40;++i) { t+=1000; k.updateTurning(t); }
+  assert(k.turnCheckLeg_==0U && k.turnFaultLatched_ && k.turnMechanicalCheckRequired_);
+ }
+ // A switch that does not open again (the one the tray left): TurnLimitStuck, E205 stays.
+ {
+  Controller k; k.turnMechanicalCheckRequired_=true; const char *msg="";
+  assert(k.startTurnCheck(msg));
+  uint32_t t=1000; k.updateTurning(t); t+=150; k.updateTurning(t); t+=1500; k.updateTurning(t);
+  assert(k.turnCheckLeg_==0U && k.turnFaultLatched_ && k.turnMechanicalCheckRequired_);
+ }
+ // Refusals: nothing to check, both switches closed, a panel button held, overheat.
+ {
+  const char *msg="";
+  Controller a; assert(!a.startTurnCheck(msg));
+  Controller b; b.turnMechanicalCheckRequired_=true; b.inputs_.value.limitRight=true; assert(!b.startTurnCheck(msg));
+  Controller c2; c2.turnMechanicalCheckRequired_=true; c2.inputs_.value.turnLeft=true; assert(!c2.startTurnCheck(msg));
+  Controller d2; d2.turnMechanicalCheckRequired_=true; d2.highTemperatureActive_=true; assert(!d2.startTurnCheck(msg));
+  // overheat during the check ends it quietly and leaves E205 in place
+  Controller e2; e2.turnMechanicalCheckRequired_=true; assert(e2.startTurnCheck(msg));
+  e2.highTemperatureActive_=true; e2.updateTurning(1100);
+  assert(e2.turnCheckLeg_==0U && e2.turnMechanicalCheckRequired_ && !e2.turnFaultLatched_);
+ }
  std::puts("Production turning scheduler regression PASS");
 }

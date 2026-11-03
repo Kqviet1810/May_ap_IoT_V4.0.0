@@ -115,7 +115,6 @@ class SnapshotPacer {
     if (!congested_) extra_ = extra_ > SNAPSHOT_GAP_STEP_DOWN_MS ? extra_ - SNAPSHOT_GAP_STEP_DOWN_MS : 0U;
     congested_ = false;
   }
-  uint32_t sentCount() const { return sent_; }
   uint32_t congestionEvents() const { return congestionEvents_; }
   uint32_t extraMs() const { return extra_; }
  private:

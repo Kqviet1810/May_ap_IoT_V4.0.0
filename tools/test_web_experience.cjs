@@ -110,7 +110,7 @@ async function main() {
     }
     await manual.goto('http://127.0.0.1:8765/docs/MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.html#danh-sach-ma-loi', { waitUntil: 'load' });
     assert.equal(await manual.locator('#danh-sach-ma-loi').count(), 1);
-    assert.equal(await manual.locator('tr[id^="E"]').count(), 42);
+    assert.equal(await manual.locator('tr[id^="E"]').count(), 41);
     await manual.close();
     await page.screenshot({ path: path.join(out, 'v4-clean-web.png') });
     fs.writeFileSync(path.join(out, 'web-browser-qa.json'), JSON.stringify({

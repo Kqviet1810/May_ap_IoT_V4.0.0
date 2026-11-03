@@ -64,7 +64,7 @@ static const char* PER_CYCLE[] = {
 // serviceHealthMonitor() - chay sau HEALTH_BASELINE_CAPTURE_DELAY_MS (60 s),
 // lap lai moi HEALTH_CHECK_INTERVAL_MS (30 s). Ca 4 deu goi vo dieu kien.
 static const char* HEALTH[] = {
-  "HeapCritical","HeapLow","TemperatureTrendWarning","StorageRetryTrend"
+  "HeapCritical","HeapLow","StorageRetryTrend"
 };
 
 static void normalCycle(bool withHealth){

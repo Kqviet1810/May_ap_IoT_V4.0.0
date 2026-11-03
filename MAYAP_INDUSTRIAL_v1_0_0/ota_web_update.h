@@ -186,8 +186,6 @@ inline void mayapRequestFirmwareWebCheckNow() {
   __atomic_store_n(&MayapFirmwareWebInternal::checkNowRequestFlag, 1U, __ATOMIC_RELEASE);
 }
 
-// Phan tich/so sanh nam trong firmware_check_parse.h (kiem thu duoc tren may tinh). Giu ten cu cho phan con lai.
-inline bool mayapFirmwareVersionNewer(const char *a, const char *b) { return MayapFirmwareCheckParse::versionNewer(a, b); }
 
 inline bool mayapFirmwareMetadataValid(const char *version, const char *hash,
                                       const char *signature, uint32_t size) {

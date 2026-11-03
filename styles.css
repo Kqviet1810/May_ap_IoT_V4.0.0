@@ -376,7 +376,7 @@ input:disabled,select:disabled,textarea:disabled,.customSelectTrigger:disabled{o
 .batchPanel{padding:22px}
 .batchPanel .panelHead{align-items:center}
 .batchGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px}
-.batchGrid.noHumidity .compactToggle{grid-column:1/-1;min-height:64px}
+
 /* 2 cot (khong phai 3) - dang dung cho ca 2 muc Nhiet do va Nang cao, nhieu
    nhan dai (vd "Toc do tang/giam bat thuong") nen 3 cot lam chu bi bop/
    xuong dong lien tuc, kho doc. Giu nguyen ten class "tempGrid" (khong doi
@@ -889,7 +889,6 @@ body[data-page="batch"] .telemetryCanvasWrap{flex:1 1 0;height:0;min-height:72px
   html[data-ui="modern"] .deviceStatusGrid::before,html[data-ui="modern"] .batchGrid::before{content:"";position:absolute;top:0;left:20%;right:20%;height:2px;background:linear-gradient(90deg,transparent,var(--primary),transparent);opacity:.8;pointer-events:none}
   html[data-ui="modern"] .deviceStatusGrid::after,html[data-ui="modern"] .batchGrid::after{content:"";position:absolute;left:50%;top:16px;bottom:16px;width:1px;background:linear-gradient(180deg,transparent,var(--line) 16%,var(--line) 84%,transparent);pointer-events:none}
   html[data-ui="modern"] .deviceStatusGrid:has(.outputStrip.hasHumidifier)::after{bottom:92px}
-  html[data-ui="modern"] .batchGrid.noHumidity::after{bottom:84px}
   html[data-ui="modern"] body[data-page="device"] .quickGrid,html[data-ui="modern"] body[data-page="device"] .outputStrip{display:contents}
   html[data-ui="modern"] body[data-page="device"] .quickField,html[data-ui="modern"] body[data-page="device"] .outputStrip>div:not([hidden]),html[data-ui="modern"] body[data-page="device"] .outputStrip>button,html[data-ui="modern"] .batchGrid>.compactTile{position:relative;display:flex;flex-direction:column;justify-content:center;gap:5px;min-width:0;min-height:76px;padding:14px 18px;border:0;border-radius:0;background:transparent}
   html[data-ui="modern"] body[data-page="device"] .quickField:nth-child(n+3),html[data-ui="modern"] body[data-page="device"] .outputStrip>div:not([hidden]),html[data-ui="modern"] body[data-page="device"] .outputStrip>button,html[data-ui="modern"] .batchGrid>.compactTile:nth-child(n+3){background-image:none}
@@ -904,7 +903,6 @@ body[data-page="batch"] .telemetryCanvasWrap{flex:1 1 0;height:0;min-height:72px
   html[data-ui="modern"] body[data-page="device"] .outputStrip>div.on:has(#outputSiren),html[data-ui="modern"] body[data-page="device"] .outputStrip>button.on:has(#outputSiren){background:linear-gradient(135deg,color-mix(in srgb,var(--danger,#d64545) 14%,transparent),transparent 72%)}
   html[data-ui="modern"] body[data-page="device"] .outputStrip>button.on:has(#outputSiren)::after{border-color:var(--danger,#d64545);background:var(--danger,#d64545);box-shadow:0 0 0 3px color-mix(in srgb,var(--danger,#d64545) 22%,transparent),0 0 12px var(--danger,#d64545)}
   html[data-ui="modern"] body[data-page="device"] .outputStrip.hasHumidifier>button:last-child{grid-column:1/-1;width:auto;justify-self:stretch}
-  html[data-ui="modern"] .batchGrid.noHumidity .compactToggle{grid-column:1/-1;min-height:76px}
   html[data-ui="modern"] .batchGrid .compactToggle{flex-direction:row;align-items:center;justify-content:space-between;gap:12px}
 }
 @media(min-width:361px) and (max-width:800px) and (max-height:700px){

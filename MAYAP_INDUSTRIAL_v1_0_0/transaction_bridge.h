@@ -1007,22 +1007,16 @@ inline void handleCommandMessage(const JsonDocument &doc) {
     if (!MayapTech::stage(kind, mask, values, requestId)) { publishAck(requestId, "busy", "TECH_BUSY"); return; }
   }
 
-  // Rollback thay doi firmware dang boot. Kenh realtime hien dung credential
-  // chung, nen rollback tu xa bi khoa. Rollback van dung duoc tren HMI
-  // voi man xac nhan CO/HUY da co san.
-  if (type == HmiCommandType::FirmwareRollback) {
-    publishAck(requestId, "rejected", "QUAY LAI CAN XAC NHAN TAI MAY");
-    return;
-  }
-
-  // Lenh FirmwareWebApply tu xa chi duoc phep khi dang o CD Nha phat trien (Developer Mode)
-  if (type == HmiCommandType::FirmwareWebApply) {
+  // Cap nhat va quay lai ban cu tu Web chi duoc phep khi may dang o Che do nha phat trien (Developer Mode); ngoai che do do quay lai
+  // chi lam duoc tren HMI voi man hinh xac nhan CO/HUY. May van tu kiem tra (dung me/test, tat cong tac nhiet, con ban cu) truoc khi doi.
+  if (type == HmiCommandType::FirmwareWebApply || type == HmiCommandType::FirmwareRollback) {
     bool devAllowed = false;
     portENTER_CRITICAL(&realtimeMux);
     devAllowed = knownRuntimeValid && knownRuntime.tech.devMode;
     portEXIT_CRITICAL(&realtimeMux);
     if (!devAllowed) {
-      publishAck(requestId, "rejected", "CAN_BAT_CD_NHA_PHAT_TRIEN");
+      publishAck(requestId, "rejected", type == HmiCommandType::FirmwareRollback ? "QUAY LAI CAN CD_NHA_PHAT_TRIEN HOAC XAC NHAN TAI MAY"
+                                                                                  : "CAN_BAT_CD_NHA_PHAT_TRIEN");
       return;
     }
   }
@@ -1695,7 +1689,6 @@ inline void mayapRealtimeBegin() {
   MayapRealtimeInternal::ensureIdentity();
   MayapFirmwareCheck::busyProbe() = mayapWebInUse;   // the daily firmware check (HTTPS) waits while the Web is being used
 }
-inline void mayapMqttRecover(uint32_t) {}
 inline void mayapRealtimeUpdate(uint32_t now) {
   using namespace MayapRealtimeInternal;
   // The owner drains inbound packets before this call and passes a fresh clock

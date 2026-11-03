@@ -125,6 +125,11 @@ static void techTests(){
  { JsonDocument d=techCommand("apply_firmware_now");handleCommandMessage(d);assert(acks.back()=="rejected"&&commandCount==0); }
  reset();knownRuntime.tech.webCtlMask=0;knownRuntime.tech.devMode=true;
  { JsonDocument d=techCommand("apply_firmware_now");handleCommandMessage(d);assert(acks.back()!="rejected"&&commandCount==1); }
+ // "roll back" from the Web: the same rule (developer mode only); the machine still checks for an old version itself
+ reset();knownRuntime.tech.devMode=false;
+ { JsonDocument d=techCommand("firmware_rollback");handleCommandMessage(d);assert(acks.back()=="rejected"&&commandCount==0); }
+ reset();knownRuntime.tech.devMode=true;
+ { JsonDocument d=techCommand("firmware_rollback");handleCommandMessage(d);assert(acks.back()!="rejected"&&commandCount==1&&lastQueued().type==HmiCommandType::FirmwareRollback); }
  knownRuntime.tech.webCtlMask=63;knownRuntime.tech.devMode=false;
  // saturation: a full tracker / full queue leaves nothing parked
  reset();techState(true,true);for(auto &p:pendingCommands)p.used=true;
