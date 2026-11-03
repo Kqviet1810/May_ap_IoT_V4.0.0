@@ -69,3 +69,13 @@ Only the NOISE of E111 (High) and E112 (Emergency) changed (`alarm_sound.h`, `te
 * Once loud, it stops as soon as the reading is under the line (2 s to confirm), instead of 0.2 degC under it, so the siren and the battery are not used longer than needed.
   A new crossing starts a new grace time.
 * Tests changed in `alarm-sound.cpp` (they asserted "loud at once" and "quiet 0.2 under"): rewritten for the rules above.
+
+## 2.9.0
+
+* E403 (predicted temperature) removed from the whole code base (firmware, Web, manual, audit tables).
+* While a batch runs the Web and the HMI can change: the three temperature alarm lines (the machine keeps low < SV < high < emergency), the outside-batch alarm switch, the total number of days, the auto-resume switch. Offsets, PID, protection, sensor time-out and Offline -> Online stay locked.
+* Web: the batch page tile "Do am tham khao" (a local note that never reached the machine) is now "Canh bao am thap" = `lowHumidityAlarm`, sent to the machine (default 45 %RH; E120 needs a batch and the delay of `humidityAlarmDelaySec`, default 60 s).
+* E205: on the HMI the alarm screen offers KIEM TRA / HUY. KIEM TRA turns the tray to both sides by itself (first away from the side it sits on); both limit switches must close and open again within the configured run time, then E205 is cleared (RAM and NVS). A failure raises E201 / E202 and E205 stays. HUY = ACK (the reminder comes back by itself). HMI only; the Test Mode route still works.
+* Web rollback to the previous firmware in developer mode (the machine still checks: batch stopped, heater switch off, an older version present).
+* Cleanup: unreferenced firmware headers (`heat_latch.h`, `output_budget.h`, `program_store.h`, `thermal_program.h`, `egg_cooling.h`) and their host tests, 10 unused constants, 14 unused functions, the persist-sink hook of the event log, the old thermal design documents and audit folders (`audit/smart-thermal`, `audit/thermal-twin`, `audit/thermal-v2`), the superseded RC documents and the 2.4 - 2.7 thermal notes.
+* Tests changed (listed because no limit is loosened silently): `tests/alarm-sound.cpp` (2.8.1 rules), `tests/web-experience.test.cjs` (the running-batch temperature form now saves the three lines; new batch-form humidity test), `tests/transaction-lifecycle.test.cjs` (no humidity tile hiding), `tests/runtime-transactions.cpp` (Web rollback in developer mode), `tests/runtime-turning.cpp` + `tools/test_turning_scheduler.py` (the E205 check is run by the real code), `tools/check_reliability.py` (envelope rule replaced by the sanitizer rule), `tools/test_heater_path.py` (four unit tests of removed code dropped), `tests/fault-manual.test.cjs` and `tools/test_web_experience.cjs` (41 rows).

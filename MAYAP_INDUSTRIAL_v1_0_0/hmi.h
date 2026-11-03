@@ -815,7 +815,7 @@ enum class View : uint8_t {
   ConnMenu, MemberList, SleepTime, GuestMode
 };
 
-enum class ConfirmAction : uint8_t { None, BatchToggle, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AdvRestore, MemberRemove, FactoryReset, ClearThermalLearn };
+enum class ConfirmAction : uint8_t { None, BatchToggle, ResumeBatch, TurningToggle, CloudPinReset, FirmwareWebApply, FirmwareRollback, BatchOverdueContinue, AdvRestore, MemberRemove, FactoryReset, ClearThermalLearn, TurnCheck };
 
 // NANG CAO menu (declared here because goBack() returns to these rows).
 constexpr uint8_t ADV_ITEM_COUNT = 13U;
@@ -980,7 +980,6 @@ uint8_t chungTop = 0;
 uint8_t listIndex = 0;
 uint8_t listTop = 0;
 uint8_t selectedGroup = 0;
-uint32_t wifiPortalLastCommandAt = 0;
 uint32_t testModeLastCommandAt = 0;
 TestLimitId testLimitSelected = TestLimitId::Left;
 
@@ -1192,11 +1191,9 @@ HmiI2cUnlockFn i2cUnlockCallback = nullptr;
 // hang voi Cai dat chung thay vi chon sau vao trong do - menu chinh chi con
 // 3 muc (Cai dat me/Cai dat chung/Thoat) bi che la "trong", dua Nhat ky me
 // ra day vua giai quyet, vua dung ban chat cua no.
-constexpr uint8_t MAIN_COUNT_MAX = 6;
 uint8_t mainItemCount() {
   return currentConfig.humidifierInstalled ? 6U : 5U;
 }
-constexpr uint8_t MAIN_COUNT = 6;
 const char *mainItemLabel(uint8_t index) {
   const bool humid = currentConfig.humidifierInstalled;
   switch (index) {
@@ -1218,10 +1215,6 @@ uint8_t visibleChungGroupCount() {
   return currentConfig.humidifierInstalled ? 5U : 4U;
 }
 uint8_t chungGroupAt(uint8_t index) { return CHUNG_GROUP_IDS[index < 5U ? index : 4U]; }
-uint8_t chungIndexOfGroup(uint8_t group) {
-  for (uint8_t i = 0; i < 5U; ++i) if (CHUNG_GROUP_IDS[i] == group) return i;
-  return 0U;
-}
 uint8_t chungAdvancedIndex() { return visibleChungGroupCount(); }
 uint8_t chungTestIndex() { return static_cast<uint8_t>(visibleChungGroupCount() + 1U); }
 uint8_t chungItemCount() { return static_cast<uint8_t>(visibleChungGroupCount() + 3U); }
@@ -1257,9 +1250,16 @@ const char *groupExtraLabelFor(GroupExtra extra) {
 bool settingLockedDuringBatch(uint8_t settingIndex) {
   if (!currentRuntime.batchRunning && !currentRuntime.resumeConfirmationRequired) return false;
   const uint16_t offset = SETTINGS[settingIndex].offset;
-  // Mo dung nhom VAN HANH co the can chinh khi dang ap. Calibration, alarm
-  // safety, PID/tuning, timeout co khi va recovery/system settings bi khoa.
+  // Mo dung nhom VAN HANH co the can chinh khi dang ap (gom ba nguong canh bao
+  // nhiet, so ngay ap, tu ap lai). Calibration, PID/tuning, timeout co khi va
+  // recovery/system settings bi khoa.
   if (offset == offsetof(MachineConfig, targetTemp) ||
+      offset == offsetof(MachineConfig, lowTempAlarm) ||
+      offset == offsetof(MachineConfig, highTempAlarm) ||
+      offset == offsetof(MachineConfig, emergencyTemp) ||
+      offset == offsetof(MachineConfig, highTempAlarmWithoutBatch) ||
+      offset == offsetof(MachineConfig, totalIncubationDays) ||
+      offset == offsetof(MachineConfig, autoResumeOnPowerLoss) ||
       offset == offsetof(MachineConfig, lowHumidityAlarm) ||
       offset == offsetof(MachineConfig, humidifierEnabled) ||
       offset == offsetof(MachineConfig, targetHumidity) ||
@@ -1671,11 +1671,6 @@ void openGroup(uint8_t group) {
   dirty = true;
 }
 
-void openChungMenu() {
-  chungIndex = chungTop = 0;
-  view = View::ChungMenu;
-  dirty = true;
-}
 
 void selectChungItem() {
   const uint8_t groupCount = visibleChungGroupCount();
@@ -1711,17 +1706,6 @@ void openTestMode() {
   }
 }
 
-void openWifiChange() {
-  if (currentConfig.connectivityMode != ConnectivityMode::Online) {
-    showToast("CHI DUNG DUOC KHI ONLINE", true);
-    return;
-  }
-  if (queueCommand(HmiCommandType::WifiPortalStart)) {
-    wifiPortalLastCommandAt = millis();
-    view = View::WifiChange;
-    dirty = true;
-  }
-}
 
 void openGuestMode() {
   if (currentConfig.connectivityMode != ConnectivityMode::Online) {
@@ -2592,6 +2576,11 @@ void executeConfirmation(bool accepted) {
         showToast("DANG XOA DU LIEU HOC...");
       }
       view = returnView;
+    } else if (action == ConfirmAction::TurnCheck) {
+      if (queueCommand(HmiCommandType::TurnMechanicalCheck)) {
+        showToast("DANG KIEM TRA DAO TRAI/PHAI");
+      }
+      view = returnView;
     } else if (action == ConfirmAction::FirmwareRollback) {
       // Khong dung man rieng nhu FirmwareProgress (rollback la doi con tro
       // + khoi dong lai gan nhu tuc thi, khong co qua trinh tai % nao de
@@ -2617,6 +2606,10 @@ void executeConfirmation(bool accepted) {
       batchOverdueDecisionSubmitted = true;
       view = View::Home;
       homePage = 1;
+    } else if (action == ConfirmAction::TurnCheck) {
+      // HUY: tat coi (ACK); E205 van con, chuong nhac lai theo chu ky.
+      (void)requestAlarmAcknowledge();
+      view = returnView;
     } else if (action == ConfirmAction::FirmwareWebApply) {
       // Bam "Khong" (ke ca khi man hinh nay tu dong bat len do nhac dinh
       // ky) - hen 12h sau nhac lai, KHONG lam gi them, ve lai man hinh
@@ -2992,6 +2985,17 @@ void openFactoryResetConfirm() {
   confirmAction = ConfirmAction::FactoryReset;
   confirmReturnView = View::AdvMenu;
   confirmYes = false;
+  clearToast();
+  armInputGuard();
+  dirty = true;
+}
+
+// E205 (turning gear needs a check): KIEM TRA = the machine turns the tray to both sides by itself; HUY = silence (the reminder comes back by itself).
+void openTurnCheckConfirm() {
+  confirmAction = ConfirmAction::TurnCheck;
+  confirmReturnView = alarmReturnView;
+  view = alarmReturnView;
+  confirmYes = true;
   clearToast();
   armInputGuard();
   dirty = true;
@@ -3630,8 +3634,11 @@ void handleInput() {
       }
       if (rotary.button == ButtonEvent::ShortPress) {
         // Nhan ngan chi ACK/tat coi va quay lai man dang dung. Loi van con
-        // trong he thong, co the xem lai bang nhan giu tai Home.
-        if (requestAlarmAcknowledge()) {
+        // trong he thong, co the xem lai bang nhan giu tai Home. Rieng E205
+        // (can kiem tra co khi dao) hoi truoc: KIEM TRA hay HUY (HUY = ACK).
+        if (currentRuntime.activeFaults[alarmIndex < count ? alarmIndex : 0].code == 205U) {
+          openTurnCheckConfirm();
+        } else if (requestAlarmAcknowledge()) {
           view = alarmReturnView;
           dirty = true;
         }
@@ -3880,7 +3887,7 @@ void drawAlarm() {
            fault.code, alarmIndex + 1U, count);
   lcd.setFont(u8g2_font_5x8_tf);
   lcd.drawStr(1, 51, footer);
-  lcd.drawStr(1, 61, "NHAN:TAT COI  GIU:NHAT KY");
+  lcd.drawStr(1, 61, fault.code == 205U ? "NHAN:KIEM TRA/HUY  GIU:LOG" : "NHAN:TAT COI  GIU:NHAT KY");
 }
 
 void drawCenteredText(int16_t y, const char *text) {
@@ -4053,12 +4060,6 @@ void drawTurnStatus() {
   }
 }
 
-void drawStatusPair(int16_t y, const char *left, const char *right) {
-  lcd.drawStr(1, y, left ? left : "");
-  if (!right) return;
-  const int16_t rightWidth = static_cast<int16_t>(lcd.getStrWidth(right));
-  lcd.drawStr(max(1, 127 - rightWidth), y, right);
-}
 
 // Cot phai co vi tri X co dinh (khong phu thuoc do dai "ON"/"OFF"), de OUT
 // va HUT luon thang cot voi nhau giua cac lan cap nhat.
@@ -4695,6 +4696,7 @@ void drawYesNoButtons(bool yesSelected, const char *yesLabel, const char *noLabe
   // o: baseline tinh theo getAscent() cua chinh font dang dung thay vi hang
   // so btnY+15 co dinh - doi font sau nay van tu can dung, khong bi lech.
   lcd.setFont(u8g2_font_helvB10_tf);
+  if (lcd.getStrWidth(yesLabel) > btnW - 4 || lcd.getStrWidth(noLabel) > btnW - 4) lcd.setFont(u8g2_font_6x12_tf);   // a long label ("KIEM TRA") falls back to the smaller font
   const int16_t ascent = static_cast<int16_t>(lcd.getAscent());
   const int16_t baseline = btnY + (btnH + ascent) / 2;
 
@@ -5309,6 +5311,7 @@ void drawConfirmScreen() {
 
   const char *line1;
   const char *line2 = "";
+  const char *yesLabel = "CO";
   if (confirmAction == ConfirmAction::ResumeBatch) {
     line1 = "MAT DIEN - TIEP TUC";
     line2 = "ME DANG AP?";
@@ -5328,6 +5331,10 @@ void drawConfirmScreen() {
   } else if (confirmAction == ConfirmAction::ClearThermalLearn) {
     line1 = "XOA DU LIEU HOC NHIET?";
     line2 = "MAY HOC LAI TU DAU";
+  } else if (confirmAction == ConfirmAction::TurnCheck) {
+    line1 = "KIEM TRA CO KHI DAO?";
+    line2 = "MAY TU DAO TRAI/PHAI";
+    yesLabel = "KIEM TRA";
   } else if (confirmAction == ConfirmAction::MemberRemove) {
     static char memberLine[24];
     snprintf(memberLine, sizeof(memberLine), "%.16s", memberView.entry[memberRemovePending < MEMBER_LIST_MAX ? memberRemovePending : 0].name);
@@ -5365,7 +5372,7 @@ void drawConfirmScreen() {
                     u8g2_font_5x8_tf, u8g2_font_5x8_tf);
   }
 
-  drawYesNoButtons(confirmYes, "CO", "HUY");
+  drawYesNoButtons(confirmYes, yesLabel, "HUY");
 }
 
 void drawToast(uint32_t now) {

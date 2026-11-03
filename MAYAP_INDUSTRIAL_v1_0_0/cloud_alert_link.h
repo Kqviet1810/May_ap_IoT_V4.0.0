@@ -280,7 +280,6 @@ inline const char *faultSummaryText(uint16_t code) {
 // the tham chieu toi kieu Mayap::FaultSeverity (chi ton tai sau khi
 // machine_control.h duoc doc). Dung thang gia tri so, khop dinh nghia enum
 // {Info=0, Warning=1, Stop=2, Emergency=3} trong machine_control.h.
-constexpr uint8_t FAULT_SEVERITY_INFO = 0U;
 constexpr uint8_t FAULT_SEVERITY_WARNING = 1U;
 constexpr uint8_t FAULT_SEVERITY_STOP = 2U;
 constexpr uint8_t FAULT_SEVERITY_EMERGENCY = 3U;

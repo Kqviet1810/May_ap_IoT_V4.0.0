@@ -106,7 +106,6 @@ class VentLine {
   uint8_t why() const { return why_; }
   uint8_t bits() const { return bits_; }
   float tokens() const { return tokens_ < 0.0f ? 0.0f : tokens_; }
-  float mean30() const { return mean(RING); }
 
  private:
   void clearWatch() {

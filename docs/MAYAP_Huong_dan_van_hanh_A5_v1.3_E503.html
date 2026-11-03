@@ -47,9 +47,9 @@ tr:target td:first-child strong{color:#8a5a00}
 @media print { .toolbar { display:none; } .sheet { padding:0; max-width:none; } }
 @media screen { body { background:#e9efef; } .sheet { box-shadow:0 4px 18px rgba(0,0,0,.12); min-height:210mm; } }
 </style></head><body><div class="toolbar"><a class="tb" href="../">&larr; Quay lại MAYAP</a><a class="tb" href="#danh-sach-ma-loi">Danh sách mã lỗi</a><a class="tb" href="./MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.pdf">Mở PDF</a><button onclick="window.print()">In / Lưu PDF</button></div><main class="sheet"><h1>MÁY ẤP TRỨNG MAYAP - HƯỚNG DẪN VẬN HÀNH VÀ MÃ LỖI</h1>
-<p><strong>Phiên bản tài liệu:</strong> v1.3<br />
-<strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - nhánh <code>main</code><br />
-<strong>Ngày cập nhật:</strong> 30/09/2026<br />
+<p><strong>Phiên bản tài liệu:</strong> v1.4 (tên file giữ nguyên để các liên kết cũ vẫn mở được)<br />
+<strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - bản <strong>2.9.0</strong> (Web 1.1.29)<br />
+<strong>Ngày cập nhật:</strong> 03/11/2026<br />
 <strong>Nguồn chuẩn mã lỗi:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0/machine_control.h</code></p>
 <blockquote>
 <p>Tài liệu này thay thế danh sách mã lỗi cũ chỉ cập nhật tới E502. Firmware hiện tại có <strong>41 mã lỗi thực</strong>, không tính <code>None = 0</code>.</p>
@@ -159,14 +159,14 @@ tr:target td:first-child strong{color:#8a5a00}
 <td><strong>E111</strong></td>
 <td><code>HighTemperature</code></td>
 <td>STOP</td>
-<td>Nhiệt độ cao. Cấm SSR, cắt contactor nhiệt, dừng đảo và bật thông gió/tuần hoàn bảo vệ.</td>
+<td>Nhiệt độ cao. Cấm SSR, cắt contactor nhiệt, dừng đảo và bật thông gió/tuần hoàn bảo vệ ngay khi chạm ngưỡng. <strong>Còi chỉ kêu nếu sau 3 phút quạt hút chạy mà nhiệt vẫn không xuống dưới ngưỡng</strong> (hoặc vượt ngưỡng từ 0,5 °C trở lên thì kêu ngay); nhiệt xuống dưới ngưỡng là còi tắt.</td>
 <td>Kiểm tra SSR dính, contactor, cảm biến, luồng khí; xác nhận nhiệt giảm an toàn trước khi chạy lại.</td>
 </tr>
 <tr id="E112">
 <td><strong>E112</strong></td>
 <td><code>EmergencyTemperature</code></td>
 <td>EMERGENCY</td>
-<td>Quá nhiệt khẩn cấp. Cắt gia nhiệt ngay, dừng đảo, bật quạt bảo vệ và cảnh báo khẩn.</td>
+<td>Quá nhiệt khẩn cấp. Cắt gia nhiệt ngay, dừng đảo, bật quạt bảo vệ. Còi theo cùng quy tắc với E111: chờ 3 phút nếu nhiệt chưa xuống dưới ngưỡng khẩn cấp, kêu ngay khi vượt ngưỡng từ 0,5 °C, tắt khi nhiệt xuống dưới ngưỡng.</td>
 <td>Cắt nguồn gia nhiệt nếu cần, kiểm tra SSR/contactor và nhiệt độ thực tế. Không reset liên tục khi nhiệt còn cao.</td>
 </tr>
 <tr id="E113">
@@ -215,7 +215,7 @@ tr:target td:first-child strong{color:#8a5a00}
 <td><strong>E120</strong></td>
 <td><code>HumidityLow</code></td>
 <td>WARNING</td>
-<td>Độ ẩm thấp hơn ngưỡng cài đặt.</td>
+<td>Độ ẩm thấp hơn ngưỡng <strong>Cảnh báo ẩm thấp</strong> (mặc định 45 %RH) trong thời gian trễ cài đặt (mặc định 60 giây). Chỉ kiểm tra khi đang có mẻ. Ngưỡng này đặt ở trang Mẻ ấp trên Web (ô <em>Cảnh báo ẩm thấp</em>) hoặc trên HMI (Cài đặt mẻ → Cảnh báo ẩm); nó khác với ngưỡng bật/tắt bộ tạo ẩm.</td>
 <td>Kiểm tra nước, bộ tạo ẩm, cảm biến ẩm và thông gió.</td>
 </tr>
 <tr id="E121">
@@ -345,7 +345,7 @@ tr:target td:first-child strong{color:#8a5a00}
 <td><code>TurnMechanicalCheckRequired</code></td>
 <td>STOP</td>
 <td>Lỗi đảo lặp lại vượt ngưỡng; hệ thống yêu cầu kiểm tra cơ khí trước khi cho đảo lại.</td>
-<td>Vào Test Mode, kiểm tra cả hai chiều và cả hai công tắc hành trình đạt Success rồi mới đưa vào vận hành.</td>
+<td>Kiểm tra dây, công tắc hành trình và cơ cấu đảo. Trên màn hình HMI đang báo E205 bấm nút: chọn <strong>KIỂM TRA</strong> để máy tự đảo thử sang trái rồi sang phải (cả hai công tắc hành trình phải đóng và nhả đúng thời gian, E205 tự hết); nếu chưa được máy báo lỗi đảo (E201/E202) và E205 vẫn còn. Chọn <strong>HỦY</strong> để tắt tiếng, nhắc lại sau ít phút. Không làm được từ Web. Cách cũ qua Test Mode vẫn dùng được.</td>
 </tr>
 </tbody>
 </table>
@@ -452,13 +452,6 @@ tr:target td:first-child strong{color:#8a5a00}
 <td>Heap xuống mức nguy cấp; firmware có thể yêu cầu restart chủ động để tự phục hồi.</td>
 <td>Kiểm tra log sau restart; nếu lặp lại cần audit memory/network task.</td>
 </tr>
-<tr id="E403">
-<td><strong>E403</strong></td>
-<td><code>TemperatureTrendWarning</code></td>
-<td>WARNING</td>
-<td>Xu hướng nhiệt cho thấy nguy cơ lệch dù chưa chạm ngưỡng lỗi cứng.</td>
-<td>Kiểm tra tải nhiệt, PID, cảm biến và thông gió trước khi lỗi nặng hơn.</td>
-</tr>
 <tr id="E404">
 <td><strong>E404</strong></td>
 <td><code>StorageRetryTrend</code></td>
@@ -556,4 +549,22 @@ tr:target td:first-child strong{color:#8a5a00}
 <li>Tài liệu này và bản PDF phát hành cho người vận hành.</li>
 </ol>
 <hr />
-<p><strong>Kết thúc tài liệu - v1.3 / 41 mã lỗi / firmware v1.0.0</strong></p></main></body></html>
+<h1>8. Đổi Wi-Fi của máy</h1>
+<ol>
+<li>Máy phải đang ở chế độ <strong>Online</strong> (mục Đổi Wi-Fi chỉ hiện khi Online).</li>
+<li>Trên màn hình máy: <strong>Cài đặt chung → Hệ thống → Đổi Wi-Fi</strong>, nhấn để mở cổng. Màn hình hiện tên mạng <code>MAYAP-XXXX</code> và mật khẩu.</li>
+<li>Trên điện thoại kết nối vào mạng <code>MAYAP-XXXX</code> bằng mật khẩu đó, mở trang <code>http://192.168.4.1/</code> (hoặc nút <em>Mở trang đổi Wi-Fi</em> trong Cài đặt của Web), chọn mạng mới và nhập mật khẩu.</li>
+<li>Máy thử kết nối tối đa 15 giây: <em>ĐANG THỬ KẾT NỐI</em> → <em>ĐÃ KẾT NỐI!</em> (máy chuyển sang Wi-Fi mới) hoặc <em>KHÔNG THỂ KẾT NỐI</em> (thử lại với mạng/mật khẩu khác).</li>
+<li>Cổng tự đóng sau 2 phút nếu không thao tác. Máy tự kết nối lại khi mất Wi-Fi, không cần thao tác.</li>
+</ol>
+<hr />
+<h1>9. Chỉnh thông số khi đang ấp</h1>
+<p>Từ 2.9.0 các thông số sau chỉnh và lưu được cả khi đang có mẻ (trên máy và trên Web): nhiệt độ đặt, ba ngưỡng cảnh báo nhiệt (thấp, cao, khẩn cấp; máy giữ đúng thứ tự thấp &lt; đặt &lt; cao &lt; khẩn cấp), công tắc cảnh báo ngoài mẻ, cảnh báo ẩm thấp, tổng số ngày ấp, tự áp lại sau mất điện, ngưỡng quạt hút, chu kỳ đảo. Hiệu chuẩn (offset), PID, bảo vệ, thời gian chờ cảm biến và chuyển Offline→Online vẫn bị khóa khi đang ấp.</p>
+<hr />
+<h1>10. Quay lại phần mềm cũ</h1>
+<ul>
+<li>Trên máy: <strong>Cài đặt chung → Hệ thống → Cập nhật → Quay lại bản cũ</strong> (cần xác nhận CÓ).</li>
+<li>Trên Web: chỉ khi máy đang bật <strong>Chế độ nhà phát triển</strong>, nút <em>Quay lại phần mềm trước đó</em> trong Cài đặt gửi lệnh sau khi bạn xác nhận. Cả hai cách yêu cầu đã dừng mẻ, công tắc nhiệt tắt và còn bản cũ trong máy (chỉ lùi được một bậc).</li>
+</ul>
+<hr />
+<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 2.9.0</strong></p></main></body></html>

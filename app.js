@@ -54,8 +54,7 @@
 
   const DEFAULT_BATCH_META = Object.freeze({
     name: 'Mẻ ấp 01',
-    startDate: new Date().toISOString().slice(0, 10),
-    targetHumidity: 58
+    startDate: new Date().toISOString().slice(0, 10)
   });
 
   // Chu thich giu NGAN (~30 ky tu) de luon vua DUNG 1 DONG - CSS con chan
@@ -1208,16 +1207,13 @@
     }
     if ($('batchTarget')) $('batchTarget').readOnly = !device?.config;
 
-    // Safety thresholds are immutable during a running/resume-pending batch.
-    // SV remains editable; buildConfig() re-anchors the full thermal envelope.
-    const thermalSafetyLocked = Boolean(device?.snapshot?.runtime?.batchRunning ||
-                                        device?.snapshot?.runtime?.resumeConfirmationRequired);
+    // The three temperature alarm lines and the outside-batch switch can be edited during a batch too (the machine keeps low < SV < high < emergency).
     for (const id of ['lowAlarm', 'highAlarm', 'emergencyTemp']) {
       const input = $(id);
-      if (input) input.readOnly = !device?.config || thermalSafetyLocked;
+      if (input) input.readOnly = !device?.config;
     }
     const outsideBatchAlarm = $('highTempAlarmWithoutBatch');
-    if (outsideBatchAlarm) outsideBatchAlarm.disabled = !device?.config || thermalSafetyLocked;
+    if (outsideBatchAlarm) outsideBatchAlarm.disabled = !device?.config;
 
     const ssid = device?.presence?.ssid || '';
     $('wifiSettingSummary').textContent = connection === 'online'
@@ -1333,9 +1329,24 @@
       summaryEl.textContent = `Phiên bản v${currentVersion} · chưa xác định bản mới nhất`;
       bodyEl.innerHTML = `<p class="settingFootnote">Chưa lấy được danh sách phiên bản. Kiểm tra lại trên màn hình máy: Cài đặt chung → Hệ thống → Cập nhật.</p>${rollbackButtonHtml}`;
     }
-    $('firmwareRollbackBtn')?.addEventListener('click', () => {
-      // Rollback chi duoc xac nhan vat ly tren HMI; web khong gui WebSocket.
-      toast('Quay lại phần mềm phải xác nhận trực tiếp trên màn hình máy: Cài đặt chung → Hệ thống → Cập nhật → Quay lại bản cũ.', 6500);
+    $('firmwareRollbackBtn')?.addEventListener('click', async () => {
+      // In developer mode the Web can roll back (the machine still checks: batch stopped, heater switch off, an old version present).
+      // Outside it the rollback is confirmed on the machine's screen only.
+      const isDev = device?.snapshot?.runtime?.tech?.devMode === true;
+      if (!isDev) {
+        toast('Quay lại phần mềm phải xác nhận trực tiếp trên màn hình máy: Cài đặt chung → Hệ thống → Cập nhật → Quay lại bản cũ. Hoặc bật Chế độ nhà phát triển.', 6500);
+        return;
+      }
+      const ok = await confirmAction({
+        title: 'Quay lại phần mềm trước đó?',
+        message: 'Máy sẽ khởi động lại bằng phiên bản phần mềm cũ hơn. Chỉ làm được khi đã dừng mẻ và tắt công tắc nhiệt.',
+        accept: 'Quay lại',
+        danger: true,
+      });
+      if (ok) {
+        sendCommand('firmware_rollback');
+        toast('Đã gửi lệnh quay lại phần mềm cũ. Máy sẽ khởi động lại nếu còn bản cũ.', 8000);
+      }
     });
   }
 
@@ -1646,17 +1657,11 @@
     $('batchPill').textContent = runtime.batchRunning ? `NGÀY ${runtime.currentDay || 1}` : 'CHƯA BẮT ĐẦU';
     $('batchPill').className = runtime.batchRunning ? 'pill online' : 'pill soft';
 
-    // F-10 (audit truoc phat hanh v3.7.1): HMI da khoa "Tong so ngay ap"
-    // trong luc dang chay me (settingLockedDuringBatch() trong hmi.h), nhung
-    // web truoc day KHONG khoa - nguoi dung sua o day bi ESP32 tu choi ca
-    // giao dich (bao gom moi thay doi khac trong cung form), khong ro ly do.
-    // Khoa ngay tren giao dien de khop voi HMI, tranh gap phai tinh huong do.
+    // The total number of days can be changed during a batch too (the machine and the HMI allow it).
     const totalDaysInput = $('totalDays');
     if (totalDaysInput) {
-      totalDaysInput.disabled = Boolean(runtime.batchRunning);
-      totalDaysInput.title = runtime.batchRunning
-        ? 'Đang có mẻ chạy - khoá số ngày ấp (giống trên máy), dừng mẻ để đổi'
-        : '';
+      totalDaysInput.disabled = false;
+      totalDaysInput.title = '';
     }
 
     if (device.dataSource !== 'live' || device.liveEpoch !== state.subscriptionEpoch || !isDeviceOnline(device)) {
@@ -1879,8 +1884,6 @@
     $('outputStrip')?.classList?.toggle('hasHumidifier', installed);
     $('humidifierSetting').hidden = !installed;
     if (!installed) $('humidifierSetting').open = false;
-    $('batchHumidityTile').hidden = installed;
-    $('batchGrid')?.classList?.toggle('noHumidity', installed);
   }
 
   function applyConfigToUi(device, force = false) {
@@ -1913,6 +1916,7 @@
 
     assign('batchForm', 'batchTarget', config.targetTemp);
     assign('batchForm', 'totalDays', config.totalIncubationDays);
+    assign('batchForm', 'lowHumidityAlarm', config.lowHumidityAlarm);
     check('batchForm', 'resumeAfterPowerLoss', config.autoResumeAfterPower);
     check('humidifierForm', 'humidifierEnabled', config.humidifierEnabled);
     assign('humidifierForm', 'humidifierOffHumidity', config.targetHumidity);
@@ -1921,7 +1925,6 @@
     if (!hasDirtyForm('batchForm') || force) {
       $('batchName').value = device.batchMeta.name;
       $('startDate').value = device.batchMeta.startDate;
-      if (!config.humidifierInstalled) $('targetHumidity').value = device.batchMeta.targetHumidity;
     }
 
     assign('temperatureForm', 'targetTemp', config.targetTemp);
@@ -2016,24 +2019,15 @@
       shiftTempThresholds(config, config.targetTemp, newTarget);
       config.targetTemp = newTarget;
       config.totalIncubationDays = Number($('totalDays').value);
+      config.lowHumidityAlarm = Number($('lowHumidityAlarm').value);
       config.autoResumeAfterPower = $('resumeAfterPowerLoss').checked;
     } else if (group === 'temperature') {
       const newTarget = Number($('targetTemp').value);
-      const thermalSafetyLocked = Boolean(device.snapshot?.runtime?.batchRunning ||
-                                          device.snapshot?.runtime?.resumeConfirmationRequired);
-      if (thermalSafetyLocked) {
-        // Trong me/resume, safety thresholds khong duoc sua truc tiep. Re-anchor
-        // ca envelope theo SV moi de MachineController co the chap nhan dung
-        // invariant thay vi de nguong cu cach SV hang nhieu do C.
-        shiftTempThresholds(config, config.targetTemp, newTarget);
-        config.targetTemp = newTarget;
-      } else {
-        config.targetTemp = newTarget;
-        config.lowTempAlarm = Number($('lowAlarm').value);
-        config.highTempAlarm = Number($('highAlarm').value);
-        config.emergencyTemp = Number($('emergencyTemp').value);
-        config.highTempAlarmWithoutBatch = $('highTempAlarmWithoutBatch').checked;
-      }
+      config.targetTemp = newTarget;
+      config.lowTempAlarm = Number($('lowAlarm').value);
+      config.highTempAlarm = Number($('highAlarm').value);
+      config.emergencyTemp = Number($('emergencyTemp').value);
+      config.highTempAlarmWithoutBatch = $('highTempAlarmWithoutBatch').checked;
     } else if (group === 'vent') {
       config.ventOnTemp = Number($('ventOn').value);
       config.ventOffTemp = Number($('ventOff').value);
@@ -2247,8 +2241,7 @@
     if (group === 'batch') {
       device.batchMeta = {
         name: $('batchName').value.trim(),
-        startDate: $('startDate').value,
-        targetHumidity: Number($('targetHumidity').value)
+        startDate: $('startDate').value
       };
       saveDeviceRuntime(device);
     }
@@ -2574,6 +2567,7 @@
     'DA GUI YEU CAU DAT LAI PIN': 'Đã gửi yêu cầu đặt lại mã PIN lên máy chủ',
     'DANG TAI FIRMWARE...': 'Máy đang tải phần mềm mới - không tắt nguồn',
     'DANG KIEM TRA BAN MOI': 'Máy đang kiểm tra phiên bản mới',
+    'QUAY LAI CAN CD_NHA_PHAT_TRIEN HOAC XAC NHAN TAI MAY': 'Cần bật Chế độ nhà phát triển, hoặc xác nhận quay lại trên màn hình máy',
     'DANG QUAY LAI FIRMWARE CU...': 'Máy đang quay lại phần mềm trước đó - sắp khởi động lại',
     'KHONG CO BAN CU DE QUAY LAI': 'Không còn bản phần mềm trước đó để quay lại',
     'DA CHON TIEP TUC ME': 'Đã chọn tiếp tục mẻ ấp dở',
@@ -2842,7 +2836,7 @@
 
   // event.code - 1000 = FaultCode, doi chieu bang loi faultDescriptor() trong
   // machine_control.h. CAP NHAT DONG BO khi firmware them ma loi moi vao
-  // FaultCode (danh sach nay khop dung 42 ma trong enum FaultCode - moi ma
+  // FaultCode (danh sach nay khop dung 41 ma trong enum FaultCode - moi ma
   // cung la mot neo #E<ma> trong docs/MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.html; test tinh bat lech).
   const FAULT_TITLES = {
     101: 'Mất cảm biến', 102: 'Cảm biến sai', 103: 'Cảm biến bất thường', 104: 'Cảm biến nhiệt bị đứng',
@@ -2860,7 +2854,7 @@
     306: 'Lỗi đồng hồ RTC', 313: 'Chưa xoá dữ liệu mẻ',
     314: 'Lỗi nhật ký an toàn', 315: 'Mất nhật ký mẻ',
     401: 'RAM thấp (cảnh báo sớm)', 402: 'RAM cạn - tự khởi động lại',
-    403: 'Dự đoán sắp chạm ngưỡng nhiệt', 404: 'Bộ nhớ máy cần thử lại nhiều',
+    404: 'Bộ nhớ máy cần thử lại nhiều',
     501: 'Mất liên lạc mạch báo mất điện (ATtiny)', 502: 'Pin còi sắp hết — hãy thay pin',
     503: 'Trạng thái ESP32 - ATtiny chưa đồng bộ'
   };
@@ -2906,7 +2900,6 @@
     315: 'Log chi tiết mẻ ấp không ghi được (không ảnh hưởng an toàn).',
     401: 'Bộ nhớ RAM còn lại thấp hơn ngưỡng an toàn - hệ thống đang tự theo dõi, chưa ảnh hưởng vận hành.',
     402: 'RAM cạn kiệt nghiêm trọng - máy tự khởi động lại có kiểm soát để phòng tránh treo máy đột ngột. Nhiệt/đảo trứng phục hồi ngay sau khi khởi động lại xong.',
-    403: 'Theo tốc độ thay đổi nhiệt độ hiện tại, dự đoán sắp chạm ngưỡng cảnh báo trong ít phút tới - cảnh báo sớm, không phải đã vượt ngưỡng.',
     404: 'Bộ nhớ máy phải thử lại nhiều lần bất thường khi đọc/ghi - dấu hiệu suy giảm sớm của chip nhớ, nên theo dõi thêm.',
     501: 'Mạch báo mất điện độc lập (ATtiny13A) không phản hồi lệnh/ping từ máy - có thể mạch mất nguồn pin dự phòng hoặc dây tín hiệu bị đứt. Không ảnh hưởng nhiệt/đảo trứng, nhưng nếu mất điện lưới xảy ra lúc này, còi báo dự phòng có thể không kêu.',
     502: 'ATtiny phát hiện pin 9V nuôi còi đã xuống dưới khoảng 7V. Đây là cảnh báo nhẹ, không khóa vận hành; hãy thay pin sớm để còi vẫn hoạt động khi mất điện. Hệ thống sẽ nhắc lại định kỳ cho tới khi ATtiny xác nhận nguồn 9V đã phục hồi.',
@@ -3884,11 +3877,11 @@
     if (!$('startDate').value) return invalidate('batchForm', 'startDate', 'Hãy chọn ngày bắt đầu.');
     const days = Number($('totalDays').value);
     const temperature = Number($('batchTarget').value);
-    const humidity = Number($('targetHumidity').value);
+    const humidity = Number($('lowHumidityAlarm').value);
     if (!(days >= 1 && days <= 40)) return invalidate('batchForm', 'totalDays', 'Tổng số ngày ấp phải từ 1 đến 40 ngày.');
     if (!(temperature >= 30 && temperature <= 40)) return invalidate('batchForm', 'batchTarget', 'Nhiệt độ đặt phải từ 30,0 đến 40,0°C.');
-    if (!currentDevice()?.config?.humidifierInstalled && !(humidity >= 20 && humidity <= 95)) {
-      return invalidate('batchForm', 'targetHumidity', 'Độ ẩm tham khảo phải từ 20 đến 95%RH.');
+    if (!(humidity >= 10 && humidity <= 90)) {
+      return invalidate('batchForm', 'lowHumidityAlarm', 'Cảnh báo ẩm thấp phải từ 10 đến 90%RH.');
     }
     return true;
   }

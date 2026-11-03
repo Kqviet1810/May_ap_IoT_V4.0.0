@@ -235,11 +235,9 @@ test('humidifier form is hardware gated and maps two thresholds to one bounded h
     ['humidifierOffHumidity', '60']]) h.elements.set(id, { value });
   h.elements.set('humidifierEnabled', { checked: true });
   h.elements.set('humidifierSetting', { hidden: true, open: true });
-  h.elements.set('batchHumidityTile', { hidden: false });
   assert.equal(h.validateHumidifierForm(), true);
   h.syncHumidifierFeatureUi(h.device.config);
   assert.equal(h.elements.get('humidifierSetting').hidden, false);
-  assert.equal(h.elements.get('batchHumidityTile').hidden, true);
   const config = h.buildConfig('humidifier');
   assert.equal(config.targetHumidity, 60);
   assert.equal(config.humidifierHysteresisRh, 6);

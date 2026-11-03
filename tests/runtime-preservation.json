@@ -58,12 +58,12 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/config.h",
-      "sha256": "065ed97768a57beddfa7f64698ef71ce9ca1c5e01c96e0dbebbf2fbd69ef54bd",
+      "sha256": "d5899113a2f71bf6a7e3c655eddb48e9e05d08eee15c1f8d7fc351538c12826d",
       "filter": "config"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "9fb370010395e42838ea2939671165a9fdaf2b9cd15a461c569b0a5fc350a4a5",
+      "sha256": "028b151e646b042867a59ca3f1ccf271e4d4d40ca000adbe9b4602e5b3be3508",
       "signature": "class MachineController {"
     },
     {
@@ -79,7 +79,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
-      "sha256": "ca34f64958acbb1c4d7881528d5bdcc2f263e48423bdcb029c45734c972e84dd",
+      "sha256": "8816bfbd492467c91848bd93cdfcd37a1c58e6fae87a3ae1570cbe192504b452",
       "signature": "inline const FaultDescriptor &faultDescriptor("
     },
     {
@@ -364,7 +364,7 @@
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/heater_burst_scheduler.h",
-      "sha256": "9cbefddadd06ddb9e517d1f264f9f2ef9d56dc95634b3e912ff53cac0fd0eb58"
+      "sha256": "e45aadd8479cbbac61ece11030518280e7204151454b2672431f8f8ff2ac79f8"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
@@ -379,7 +379,7 @@
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
       "signature": "void updateTurning(",
-      "sha256": "216100f7f96a93206e9d653630c0fa846b74b4cc2271fe11b079c043cc14886c"
+      "sha256": "b677e39a2d1e69f6a4ca3681b5fbb923310d73aa65cf9845459328c2f219edc0"
     },
     {
       "file": "MAYAP_INDUSTRIAL_v1_0_0/machine_control.h",
@@ -465,5 +465,6 @@
   "release256ReviewNote": "2026-11-01: reviewed 2.5.6 (the over-temperature lines are loud at once). machine_control.h class MachineController: updateSoundPolicy() feeds one voice class, alarmsound::LoudVoice (alarm_sound.h, the code tests/alarm-sound.cpp executes), for both lines: High (E111, config highTempAlarm) and Emergency (E112, emergencyTemp). The external siren (sirenWanted_, the ATtiny mirror) and the HMI buzzer (audibleAlarmMask bits AlarmTempHigh / AlarmEmergency, Temporal-3 pattern in hmi.h) sound the moment the line is crossed and stop when the reading is 0.2 degC under it for 2 s; it sounds again when the reading is back at the line; continuous for 5 min, then 5 s on / 25 s off. ACK at the machine (HMI command and serial) mutes either voice: the siren is back when the reading rose 0.2 degC, or at every 2-minute check when it has not fallen 0.1 degC, and in any case after 10 min; a remote ACK stays refused for the Emergency as before. The staged 2.5.5 voices (three beeps for High, note-then-siren for Emergency) are removed. The protective actions are not touched: heater cut, master contactor drop, forced exhaust fans, their thresholds and hysteresis, SensorLost/Invalid, OutputArbiter, burst scheduler, E115, turning, EEPROM and network logic are as in 2.5.5; only the noise follows the line. hmi.h: the AlarmTempHigh bit uses the Temporal-3 pattern like AlarmEmergency. config.h: firmware version 2.5.6.",
   "release257ReviewNote": "2026-11-01: reviewed 2.5.7 (the restart after a protection cut the heater no longer repeats the overshoot). The change is in thermal_v3.h (not pinned by this manifest): when the heater is held off by a protection (permit lost, not the vent-line hold) and the reading is valid, (a) on the cycle the controller loses its permit with the reading 0.15 degC or more over SV, the hold level keeps 60 % of itself, once; (b) every 3 minutes of a reading that stays at/above SV - 0.05 degC and does not fall more than one sensor step, the hold level fades with a time constant of 180 s (the rule the vent-line hold already had). Why: the field log of 31/10 shows an oven that was never measured (hold prior 18 %, real hold a few percent in a hot afternoon) going 0.2 degC over SV, High (SV+0.2) cutting the heater for 14 minutes with the reading hardly falling, and the heater coming back with the same 17.5 %. machine_control.h class MachineController is unchanged since 2.5.6. config.h: firmware version 2.5.7 only.",
   "release258ReviewNote": "2026-11-01: reviewed 2.5.8 (the start of an oven nobody has measured). Only thermal_v3.h (not pinned by this manifest) changes: on the first cycle of a controller that has no stored hold level (importHold not called), the hold level is set by the distance to SV (e0 <= 3 degC: 8 %; colder: the prior of 18 % as before); for e0 <= 1 degC a probe raises it by 2 % every max(120 s, transit time) while the reading keeps falling, ends after two quiet steps, and puts the prior of 18 % back at once when the reading has fallen 0.15 degC under SV since the start. Why: the field log of 31/10 (an unmeasured oven at 34.8 degC went 0.2 over SV; a restart next to SV with the prior of 18 % overshoots in most ovens of the bench). Tried and rejected: hold 0 / 5 % at SV (the reboot-under-a-full-tray test of tests/thermal-closed-loop.cpp then falls to 35.36 against its limit of 35.50; no limit was changed). machine_control.h class MachineController is unchanged since 2.5.6. config.h: firmware version 2.5.8 only.",
-  "release270ReviewNote": "2026-11-01: reviewed 2.7.0 (the exhaust fan is measured and paid for ahead; Anti-Stuck far under SV). machine_control.h changes only in the thermal slot: the machine feeds sensor_fine.h (slope of the 0.1 degC reading, long window) to the controller as Input::slopeFine and no longer holds the learned-state save back on the controller's responseSuspect flag (the E115 heater watch and the High/Emergency lines are unchanged and still read the raw reading). The value the controller regulates, every protection and the display are the unchanged chain. thermal_v3.h and sensor_fine.h are not pinned by this manifest."
+  "release270ReviewNote": "2026-11-01: reviewed 2.7.0 (the exhaust fan is measured and paid for ahead; Anti-Stuck far under SV). machine_control.h changes only in the thermal slot: the machine feeds sensor_fine.h (slope of the 0.1 degC reading, long window) to the controller as Input::slopeFine and no longer holds the learned-state save back on the controller's responseSuspect flag (the E115 heater watch and the High/Emergency lines are unchanged and still read the raw reading). The value the controller regulates, every protection and the display are the unchanged chain. thermal_v3.h and sensor_fine.h are not pinned by this manifest.",
+  "release290ReviewNote": "2026-11-03: reviewed 2.9.0. machine_control.h: faultDescriptor() loses TemperatureTrendWarning (E403, removed with serviceHealthTemperatureTrend and its HEALTH_TEMP_TREND_* constants); updateTurning() gains one line that hands the motor to updateTurnCheck() while the check after E205 runs (startTurnCheck / updateTurnCheck / abortTurnCheck, started only from the HMI: the machine turns the tray to both sides, both limit switches must close and open again within the configured run time, then E205 is cleared in RAM and NVS; a failure raises the usual E201/E202 and E205 stays). The batch lock in processHmiTransactions no longer holds the three temperature alarm lines, the outside-batch alarm switch, the total number of days and the auto-resume switch (sanitizeMachineConfig keeps low < SV < high < emergency); calibration offsets, PID, protection, sensor timeout and connectivity stay locked. heater_burst_scheduler.h: an unused helper removed. config.h: version 2.9.0, unused constants removed. Unreferenced firmware headers removed (heat_latch.h, output_budget.h, program_store.h, thermal_program.h, egg_cooling.h) with their host tests."
 }

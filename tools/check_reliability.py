@@ -251,7 +251,7 @@ require_re(
 )
 require(machine, "std::max(rawSensorTemp, candidateRawCorrected)", "negative temperature calibration cannot weaken overheat safety")
 require(machine, "tempOscillationLastWindowCrossCount_", "TemperatureUnstable preserves triggering detail")
-require(machine, "thermalEnvelopeFollowsTarget", "batch setpoint keeps thermal safety envelope")
+require(machine, "cfg.highTempAlarm + EMERGENCY_ABOVE_HIGH_C", "alarm lines edited during a batch keep low < SV < high < emergency (sanitizer)")
 require(machine, "cfg.sensorTimeoutSec = defaults.sensorTimeoutSec;", "legacy sensor timeout normalized in controller")
 require(hmi, "cfg.sensorTimeoutSec = defaults.sensorTimeoutSec;", "legacy sensor timeout normalized in UI/realtime sanitizer")
 if 'id="sensorTimeout"' in index:

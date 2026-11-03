@@ -19,10 +19,10 @@
 | **Còi** | còi ngoài + buzzer | E111, E112 (giọng riêng bên dưới), E304 |
 | **Cảnh báo** (cắt heater) | buzzer đến khi ACK hoặc hết lỗi; sau ACK, còn lỗi thì nhắc lại mỗi 15 phút (trước đây 5 phút) | E101, E102, E103, E104, E115, E130, E301, E303, E313, E314 |
 | **Nhắc** | 3 bíp ngắn khi xuất hiện, nhắc thưa mỗi 30 phút khi còn lỗi, không cần ACK | E110, E120, E121, E132, E133, E134, E135, E136, E137, E138, E201–E205, E502 |
-| **Im** | chỉ hiện ở HMI, Web, push | E113, E114, E302, E305, E306, E315, E401, E402, E403, E404, E501, E503 |
+| **Im** | chỉ hiện ở HMI, Web, push | E113, E114, E302, E305, E306, E315, E401, E402, E404, E501, E503 |
 | **Riêng** | còi to ngay khi vượt ngưỡng, ngừng khi hạ 0,2 °C | E111 (Báo cao), E112 (Khẩn cấp) |
 
-Khác với trước: E138 (mẻ quá hạn chờ xác nhận) không còn bật còi ngoài, chỉ nhắc 30 phút một lần; E113, E114, E403 không còn làm buzzer kêu qua bit "Nhiệt cao"; mã chẩn đoán không còn kêu theo nhóm "Hệ thống".
+Khác với trước: E138 (mẻ quá hạn chờ xác nhận) không còn bật còi ngoài, chỉ nhắc 30 phút một lần; E113, E114 không còn làm buzzer kêu qua bit "Nhiệt cao"; mã chẩn đoán không còn kêu theo nhóm "Hệ thống".
 
 ## Hai mã cao nhiệt (bản 2.5.6: kêu to ngay, hạ 0,2 °C thì ngừng)
 

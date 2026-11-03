@@ -5,15 +5,6 @@
 class HeaterBurstScheduler {
  public:
   struct Demand { bool groupA = false; bool groupB = false; };
-  // HeaterNotHeating measures energy at total rated power, not merely "any ON".
-  static uint32_t fullPowerEquivalentMs(uint32_t dt, uint8_t groups,
-                                       bool a, bool b, uint8_t &remainder) {
-    const uint8_t count = groups == 2U ? 2U : 1U;
-    const uint8_t active = static_cast<uint8_t>(a) + (count == 2U && b ? 1U : 0U);
-    const uint64_t energy = static_cast<uint64_t>(dt) * active + remainder;
-    remainder = static_cast<uint8_t>(energy % count);
-    return static_cast<uint32_t>(energy / count);
-  }
   // Current GPIO1 drives both SSRs; production passes one logical 16 kW bank.
   explicit HeaterBurstScheduler(uint8_t groups = 1U, uint32_t quantumMs = 300U)
       : groups_(groups == 2U ? 2U : 1U),

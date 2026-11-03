@@ -31,7 +31,6 @@ inline bool putVarLen(uint8_t *out, size_t cap, size_t &pos, size_t value) {
   } while (value);
   return true;
 }
-inline size_t varLenBytes(size_t value) { return value < 128U ? 1U : value < 16384U ? 2U : value < 2097152U ? 3U : 4U; }
 inline bool putU16(uint8_t *out, size_t cap, size_t &pos, size_t value) {
   if (value > 65535U || pos + 2U > cap) return false;
   out[pos++] = static_cast<uint8_t>(value >> 8U);
