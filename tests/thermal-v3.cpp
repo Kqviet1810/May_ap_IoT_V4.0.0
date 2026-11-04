@@ -394,86 +394,6 @@ void testBoundsUnderHostileInput() {
   printf("  -> Pass\n");
 }
 
-// 2.9.1: the numbers of the oven kept across a restart. 2.9.5: the exhaust fan is a disturbance - the scheduled fan is no longer fed forward.
-void testKeptOvenNumbersAndNoFanFeedForward() {
-  printf("Test: restore() takes plausible numbers only; no fan - scheduled or not - is fed forward\n");
-  {
-    thermalv3::Controller c;
-    c.restore(9.4e-5f, 140.0f, 7.0f);
-    assert(std::fabs(c.kAir() - 9.4e-5f) < 1e-9f && c.identified());          // the fan's share is no longer kept: only kAir and tau
-    thermalv3::Controller d;
-    d.restore(NAN, 5000.0f, -3.0f);                                      // nonsense: every part is ignored
-    thermalv3::Controller fresh;
-    assert(d.kAir() == fresh.kAir() && d.tauTransit() == fresh.tauTransit() && d.fanLoss() == 0.0f && !d.identified());
-    d.restore(1.0f, 150.0f, 90.0f);                                      // a gain 10^4 times the prior: ignored too
-    assert(d.kAir() == fresh.kAir() && d.fanLoss() == 0.0f);
-  }
-  auto run = [](bool sched, float onIn, float offIn, bool fanRunning) {
-    thermalv3::Controller c;
-    c.restore(9.4e-5f, 150.0f, 7.0f);
-    thermalv3::Input in; in.pv = 37.5f; in.sp = 37.5f; in.dtS = 1.0f; in.permit = true; in.ventFan = fanRunning;
-    if (sched) { in.fanOnInS = onIn; in.fanOffInS = offIn; }
-    float last = 0.0f;
-    for (int i = 0; i < 400; ++i) last = c.step(in).powerPct;
-    return last - c.pHold();                                             // the command above hold: the fan's share, if it were fed forward
-  };
-  assert(std::fabs(run(false, 0, 0, false)) < 0.3f);
-  assert(std::fabs(run(true, 120.0f, 300.0f, false)) < 0.3f);            // the fan starts in 120 s: nothing is given ahead of it any more
-  assert(std::fabs(run(true, 0.0f, 180.0f, true)) < 0.3f);               // the fan runs by the day profile: nothing either
-  assert(std::fabs(run(false, 0, 0, true)) < 0.3f);                      // a fan with no schedule: nothing
-  printf("  -> Pass\n");
-}
-
-// 2.9.5: a stall under SV (PV flat, a few tenths under, the command at hold) is answered. The heat the model calls "in flight" has not shown up in PV for a
-// whole transit time, so it is not credited any more and the loop raises the power; it does so by a bounded amount, and not while PV is moving by itself.
-void testStallIsAnswered() {
-  printf("Test: a stall 0.3 degC under SV is answered within ten minutes; a PV that is climbing by itself is left alone\n");
-  auto drive = [](float slopePerS, float seconds) {
-    thermalv3::Controller c;
-    thermalv3::Input in; in.sp = 37.5f; in.dtS = 1.0f; in.permit = true;
-    float pv = 37.2f, hold0 = c.pHold(), u = 0.0f;
-    for (int i = 0; i < static_cast<int>(seconds); ++i) {
-      pv += slopePerS;
-      in.pv = std::floor(pv * 10.0f + 0.5f) / 10.0f;                                // a 0.1 degC reading
-      u = c.step(in).powerPct;
-    }
-    return u - hold0;
-  };
-  const float flat = drive(0.0f, 900.0f);                                    // 15 minutes, PV flat at 37.2
-  const float moving = drive(2.0e-4f, 900.0f);                               // PV climbs 0.18 degC in that time: it gets there by itself
-  printf("  flat 15 min: command above the prior hold +%.1f %%, climbing: +%.1f %%\n", static_cast<double>(flat), static_cast<double>(moving));
-  assert(flat > 3.0f && flat < 40.0f);
-  assert(moving < flat);
-  printf("  -> Pass\n");
-}
-
-// 2.9.5, the owner's rule of 04/11: prevention, not cure. A stay a few tenths UNDER SV costs the eggs nothing, a stay over SV is hard to undo.
-void testPreventionNotCure() {
-  printf("Test: over SV the heater is pulled down hard; a slow fall is let go a few tenths; a flat stay under SV is pumped\n");
-  auto settle = [](thermalv3::Controller &c, thermalv3::Input &in) {
-    in.sp = 37.5f; in.dtS = 1.0f; in.permit = true;
-    for (int i = 0; i < 400; ++i) { in.pv = 37.5f; c.step(in); }
-  };
-  {
-    thermalv3::Controller flat, over;
-    thermalv3::Input a, b; settle(flat, a); settle(over, b);
-    float cFlat = 0.0f, cOver = 0.0f;
-    for (int i = 0; i < 30; ++i) { a.pv = 37.5f; b.pv = 37.6f; cFlat = flat.step(a).powerPct; cOver = over.step(b).powerPct; }
-    printf("  at SV: %.1f %%, 0.1 over SV: %.1f %%\n", static_cast<double>(cFlat), static_cast<double>(cOver));
-    assert(cOver < cFlat - 4.0f);                                            // six times the gain: a tenth over takes more than 4 % off
-  }
-  {
-    thermalv3::Controller falling, flat;
-    thermalv3::Input a, b; settle(falling, a); settle(flat, b);
-    float cFall = 0.0f, cFlat = 0.0f;
-    for (int i = 0; i < 400; ++i) { a.pv = 37.5f - 0.00025f * static_cast<float>(i); b.pv = a.pv; cFall = falling.step(a).powerPct; }   // 0.1 degC under SV after 400 s, falling slowly
-    for (int i = 0; i < 400; ++i) { b.pv = 37.4f; cFlat = flat.step(b).powerPct; }                                                      // 0.1 degC under SV, not moving
-    printf("  falling slowly 0.1 under SV: %.1f %%, flat 0.1 under SV: %.1f %%\n", static_cast<double>(cFall), static_cast<double>(cFlat));
-    assert(cFall < cFlat);                                                   // the fall is let go, the stand-still is pumped
-  }
-  printf("  -> Pass\n");
-}
-
 int main() {
   printf("=========================================\n");
   printf("RUNNING THERMAL V3 CONTROLLER UNIT TESTS\n");
@@ -490,9 +410,6 @@ int main() {
   testShadowHold();
   testResumeAfterHold();
   testSensorFallback();
-  testKeptOvenNumbersAndNoFanFeedForward();
-  testStallIsAnswered();
-  testPreventionNotCure();
   printf("=========================================\n");
   printf("ALL THERMAL V3 TESTS PASSED SUCCESSFULLY!\n");
   printf("=========================================\n");

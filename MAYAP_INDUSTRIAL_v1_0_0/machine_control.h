@@ -5206,55 +5206,6 @@ class MachineController {
 
   // ---- Thermal learning: 2.8.0 keeps nothing across a restart (the controller reads the oven again in a transit time or two) ----
   // A record written by an older version may still sit in NVS; "clear thermal learning" erases it and restarts the controller from its priors.
-  // ---- The numbers of the oven (2.9.1): heater gain, transit time, fan loss. Written when a climb or a fan run has changed them, read once after a restart ----
-  struct ThermalPhysRecord { uint16_t version; uint16_t crc; float kAir; float tau; float fanW; };
-  static uint16_t thermalPhysCrc(const ThermalPhysRecord &r) {
-    const uint8_t *b = reinterpret_cast<const uint8_t *>(&r) + 4U;
-    uint16_t crc = 0xFFFFU;
-    for (size_t i = 0U; i < sizeof(ThermalPhysRecord) - 4U; ++i) {
-      crc = static_cast<uint16_t>(crc ^ (static_cast<uint16_t>(b[i]) << 8U));
-      for (uint8_t k = 0U; k < 8U; ++k) crc = static_cast<uint16_t>((crc & 0x8000U) ? ((crc << 1U) ^ 0x1021U) : (crc << 1U));
-    }
-    return crc;
-  }
-  void serviceThermalPhysics(uint32_t now) {
-    if (!physLoaded_) {
-      physLoaded_ = true;
-      Preferences p;
-      ThermalPhysRecord r{};
-      if (p.begin(THERMAL_LEARN_NVS_NAMESPACE, true)) {
-        const size_t n = p.getBytes(THERMAL_PHYS_NVS_KEY, &r, sizeof(r));
-        p.end();
-        if (n == sizeof(r) && r.version == 1U && r.crc == thermalPhysCrc(r)) {
-          thermalV3_.controller().restore(r.kAir, r.tau, r.fanW);
-          physSaved_ = r; physHave_ = true;
-        }
-      }
-      physLastSaveMs_ = now;
-      return;
-    }
-    if (elapsedMs(now, physLastSaveMs_) < 600000UL) return;                 // at most one write every 10 minutes
-    const thermalv3::Controller &c = thermalV3_.controller();
-    if (!c.identified()) return;
-    const float tau = c.tauMeasured() ? c.tauTransit() : (physHave_ ? physSaved_.tau : 0.0f);
-    const bool changed = !physHave_ || fabsf(c.kAir() - physSaved_.kAir) > 0.03f * physSaved_.kAir ||
-                         fabsf(tau - physSaved_.tau) > 5.0f || fabsf(c.fanLoss() - physSaved_.fanW) > 0.5f;
-    if (!changed) return;
-    physLastSaveMs_ = now;
-    ThermalPhysRecord r{};
-    r.version = 1U; r.kAir = c.kAir(); r.tau = tau; r.fanW = c.fanLoss(); r.crc = thermalPhysCrc(r);
-    Preferences p;
-    if (p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) {
-      if (p.putBytes(THERMAL_PHYS_NVS_KEY, &r, sizeof(r)) == sizeof(r)) {
-        physSaved_ = r; physHave_ = true;
-        mayapSerialPrintf(false, "[THERMAL] kept kAir=%.2e tau=%.0f s fan=%.1f %%\n", static_cast<double>(r.kAir), static_cast<double>(r.tau), static_cast<double>(r.fanW));
-      }
-      p.end();
-    }
-  }
-  bool physLoaded_ = false, physHave_ = false;
-  ThermalPhysRecord physSaved_{};
-  uint32_t physLastSaveMs_ = 0U;
   bool eraseLearnedBlob() {
     Preferences p;
     if (!p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) return false;
@@ -5265,7 +5216,6 @@ class MachineController {
   bool clearThermalLearning() {
     const bool ok = eraseLearnedBlob();
     thermalV3_.reset();
-    physHave_ = false;
     return ok;
   }
 
@@ -5323,12 +5273,9 @@ class MachineController {
     si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterWatch_.accumOnMs()) / stuckLimitMs : 0.0f;
     si.dQ = thermalV3SensorStepC();
     si.ventFan = st.ventFan;                                                // the fan that really runs
-    float onIn = NAN, offIn = NAN;
-    if (ventProfileTiming(now, onIn, offIn)) { si.fanOnInS = onIn; si.fanOffInS = offIn; }   // the day profile of the fan is known ahead
     return si;
   }
   float thermalV3Command(uint32_t now, bool permit, bool shadow) {
-    serviceThermalPhysics(now);
     const uint32_t t0 = static_cast<uint32_t>(esp_timer_get_time());
     const float u = thermalV3_.step(buildThermalV3SlotIn(now, permit, shadow));
     slotLastUs_ = static_cast<uint32_t>(esp_timer_get_time()) - t0;
@@ -5793,6 +5740,22 @@ class MachineController {
   }
 
   // ----------------------------- Alarm ---------------------------------------
+  // Mean of the last 5 s of the safety reading (five 1 s buckets). Empty or invalid input restarts it, so a stale mean never trips an alarm.
+  float highMean5s(uint32_t now, bool valid, float v) {
+    if (!valid) { for (uint8_t i = 0U; i < 5U; ++i) hmCnt_[i] = 0U; return NAN; }
+    const uint32_t sec = now / 1000UL;
+    uint8_t slot = static_cast<uint8_t>(sec % 5UL);
+    if (hmSec_[slot] != sec) { hmSec_[slot] = sec; hmSum_[slot] = 0.0f; hmCnt_[slot] = 0U; }
+    hmSum_[slot] += v; ++hmCnt_[slot];
+    float sum = 0.0f; uint32_t n = 0U;
+    for (uint8_t i = 0U; i < 5U; ++i) {
+      if (hmCnt_[i] != 0U && sec - hmSec_[i] < 5UL) { sum += hmSum_[i]; n += hmCnt_[i]; }
+    }
+    return n ? sum / static_cast<float>(n) : NAN;
+  }
+  float hmSum_[5] = {0, 0, 0, 0, 0};
+  uint32_t hmSec_[5] = {0, 0, 0, 0, 0};
+  uint16_t hmCnt_[5] = {0, 0, 0, 0, 0};
   void updateAlarms(uint32_t now) {
     const float safetyTemp = isfinite(rawTemperature_)
         ? (isfinite(temperature_) ? std::max(rawTemperature_, temperature_) : rawTemperature_)
@@ -5829,8 +5792,11 @@ class MachineController {
 
     // Cap 2 co xac nhan vao va xac nhan thoat rieng, khong chap chon contactor.
     if (!highTemperatureActive_) {
-      const bool highTrip = tempAlarmEligible && validSafety &&
-                            safetyTemp >= config_.highTempAlarm;
+      // E111 trips on the 5 s mean of the reading, not on one sample: a single raw sample that touches the line while the screen (filtered) shows less
+      // is a sensor step, not an overheat. E112 keeps its immediate trip on the higher of raw and filtered.
+      const float highMean = highMean5s(now, validSafety, safetyTemp);
+      const bool highTrip = tempAlarmEligible && validSafety && isfinite(highMean) &&
+                            highMean >= config_.highTempAlarm;
       if (highTripTimer_.update(now, highTrip, HIGH_TEMP_CONFIRM_MS)) {
         highTemperatureActive_ = true;
         highClearTimer_.reset();
@@ -8333,11 +8299,11 @@ class MachineController {
   ConditionTimer highClearTimer_{};
   ConditionTimer emergencyClearTimer_{};
   ConditionTimer humidityTimer_{};
-  bool ventHeaterBlock_ = false;                     // the heater is held off well above SV (see updateAlarms); the fan has its own line
   bool ventTemperatureActive_ = false;
   VentLine ventLine_{};
   uint32_t lastWebVentCmdAt_ = 0U, lastWebCircCmdAt_ = 0U, lastWebHeaterCmdAt_ = 0U;   // spacing of repeated remote toggles (per kind)
   bool otaCheckpointDone_ = false;                   // the batch was checkpointed for the update that is downloading now
+  bool ventHeaterBlock_ = false;                     // the heater is held off well above SV (see updateAlarms); the fan has its own line
   uint8_t ventReason_ = 0U;
   alarmsound::LoudVoice highLoud_{}, emergencyLoud_{};
   alarmsound::Reminder chimeReminder_{};

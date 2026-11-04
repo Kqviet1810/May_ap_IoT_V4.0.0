@@ -166,7 +166,7 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/vent-line.cpp -o /tmp/mayap-vent-line
           /tmp/mayap-vent-line
 
-      - name: "Alarm sound policy (alarm_sound.h): both over-temperature lines have one rule - the siren sounds while the alarm is on and is silent the moment it is off (no grace time, nothing reset by a dip); continuous 5 min then pulsed; ACK mute; Chime reminders"
+      - name: "Alarm sound policy (alarm_sound.h): both over-temperature lines (High, Emergency) wait a 180 s grace time, sound only if the reading is still at or over the line (at once when 0.5 degC over) and stop as soon as it is under the line, continuous for 5 min then pulsed; ACK mutes; the Reminder chime"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/alarm-sound.cpp -o /tmp/mayap-alarm-sound
           /tmp/mayap-alarm-sound
@@ -183,11 +183,6 @@ jobs:
 
       - name: "Fleet bench builds (210 random ovens x 10 situations with the real vent line and the restored state)"
         run: g++ -O2 -std=c++17 -Wall -Wextra -Werror tools/thermal-research/fleet-bench.cpp -o /tmp/mayap-fleet-bench
-
-      - name: "The oven of the field log of 03/11 (tools/thermal-research/log-oven.cpp): kept numbers - back within 0.05 degC in 15 min, no overshoot, the fan dip <= 0.16 degC; a first start 0.2 degC under SV - back in 21 min (the stall of 2.9.1 answered)"
-        run: |
-          g++ -O2 -std=c++11 -Wall -Wextra -Werror -I MAYAP_INDUSTRIAL_v1_0_0 -I tests tools/thermal-research/log-oven.cpp -o /tmp/mayap-log-oven
-          /tmp/mayap-log-oven --gate
 
       - name: "E115 evidence (heater_response_watch.h): unit tests of the rule MachineController runs"
         run: |
