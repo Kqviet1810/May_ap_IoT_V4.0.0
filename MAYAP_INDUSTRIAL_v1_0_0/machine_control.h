@@ -5312,14 +5312,7 @@ class MachineController {
   ThermalV3SlotIn buildThermalV3SlotIn(uint32_t now, bool permit, bool shadow = false) const {
     ThermalV3SlotIn si;
     si.slopeFine = (fineFresh(now) && sensorUsable_) ? fineSlopeEst_.slopePerS() : NAN;
-    si.nowMs = now;
-    float ctlPv = fineControlValue(now);
-    if (sensorUsable_ && isfinite(temperature_) && temperature_ >= config_.targetTemp &&
-        (!isfinite(ctlPv) || ctlPv < temperature_)) {
-      ctlPv = temperature_;
-    }
-    si.pv = ctlPv;
-    si.sp = config_.targetTemp;
+    si.nowMs = now; si.pv = fineControlValue(now); si.sp = config_.targetTemp; si.newSample = newSensorSample_; si.permit = permit; si.shadow = shadow && !permit;
     si.capPct = static_cast<float>(config_.maxHeaterPower);
     const float offsetDown = std::max(0.0f, -config_.tempOffset);
     si.headroomC = std::min(config_.highTempAlarm, config_.ventOnTemp) - offsetDown - config_.targetTemp;
@@ -6773,16 +6766,11 @@ class MachineController {
     // the burst scheduler and the output arbiter like any other request.
     const bool v3Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && ventHeaterBlock_ && actuatorReady;   // blocked ONLY by the heater block line
     float commandedPower = thermalV3Command(now, normalSsrPermit && actuatorReady, v3Shadow);
-    if (req.ventFanForceOn) commandedPower = 0.0f;
     // ====================================================================================================
     newSensorSample_ = false;
 
     const bool masterPermit = normalMasterPermit;
-    const bool overTempCut = sensorUsable_ && isfinite(temperature_) && (temperature_ >= config_.targetTemp + 0.05f);
-    if (commandedPower <= 0.0f || overTempCut) {
-      heaterBurst_.reset();
-    }
-    const bool ssrPermit = normalSsrPermit && masterPermit && !overTempCut;
+    const bool ssrPermit = normalSsrPermit && masterPermit;
     req.heatMaster = masterPermit;
     const auto burst = heaterBurst_.update(now, commandedPower,
         ssrPermit && actuatorReady);

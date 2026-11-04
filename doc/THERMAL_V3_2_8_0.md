@@ -110,20 +110,3 @@ The request now moves by +-7 % for the 160 s of a fan feed-forward pulse (that i
 
 Limits: the first start of a machine that has never measured its gain is as slow as before (the stored number is what makes it fast); the fan's share is learned in units of the gain the
 controller believes, so it takes about five runs to converge there instead of three. A 0.1 degC sensor cannot show 37.50 against 37.46.
-
-## 2.9.2 (anti-overshoot at 37.6 degC & smooth narrow-band tracking)
-
-Resolves the persistent field issues: (1) temperature jumping/pumping at 37.6 degC causing sporadic overshoot; (2) stall and chattering (pump-then-cut cycle) around 37.4 degC during start near SV, door opening, or loading cold eggs.
-
-* **Strict Zero-Power Clamp above SV**:
-  - When `pv >= sp + 0.08 degC` (e.g. 37.58..37.60 degC), heater command is clamped to 0.0% unconditionally.
-  - Negative heat-in-flight (`lead < 0`) is forbidden from creating positive predicted error (`el > 0`) when `e <= 0` (PV above SP).
-  - Scheduled fan feedforward `ff` is inhibited if the air is already above SV (`pv > sp + 0.02 degC`).
-  - `HeaterBurstScheduler` energy balance is instantly reset when `temperature >= sp + 0.05 degC`, preventing any residual 300 ms pulse.
-  - Controller input `si.pv` takes `max(fineControlValue, temperature)` above SV so 10..30 s filter lag never masks a true high reading.
-* **Smooth Narrow-Band Tracking & Anti-Stall**:
-  - Softened in-flight lead when approaching SV (`0 < e < nearBand`) to prevent premature braking.
-  - Symmetric (1.0x) damping instead of brutal 3.0x cut when true PV is still below SV (`e > 0`).
-  - Narrow-band anti-windup integrator (`narrowI`) within `nearBand` to eliminate the stubborn 0.1 degC steady-state offset.
-  - `DOOR_LATCH_TAU` reduced from 6.0 to 2.5 with early release when recovering (`lsSlope > 0.001 degC/s` for > 60 s), allowing the observer to learn cold egg absorption without 15-minute freeze.
-  - Overheat forced exhaust fan unconditionally cuts heater power (`req.ventFanForceOn -> commandedPower = 0.0%`).
