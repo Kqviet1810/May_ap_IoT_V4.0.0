@@ -110,3 +110,39 @@ The request now moves by +-7 % for the 160 s of a fan feed-forward pulse (that i
 
 Limits: the first start of a machine that has never measured its gain is as slow as before (the stored number is what makes it fast); the fan's share is learned in units of the gain the
 controller believes, so it takes about five runs to converge there instead of three. A 0.1 degC sensor cannot show 37.50 against 37.46.
+
+## 2.9.5 (field logs of 03/11 and 04/11, 2.9.1; the owner's list of 04/11)
+
+What the logs and the list showed, and what was done. The principle: fix what was measured, remove what fights, change nothing that the bench and the closed-loop tests do not confirm.
+
+**Alarms (one rule, no waiting, no latch)** - `alarm_sound.h`, `machine_control.h` (updateAlarms, updateSoundPolicy), `config.h`
+* The siren of E111 (High) and E112 (Emergency) sounds while the alarm is on and is silent the moment it is off. The 180 s grace time of 2.8.1 is gone: it started again at every dip, so a reading
+  that flickered around the line never made a sound.
+* An alarm TRIPS on the higher of the raw and the filtered reading and CLEARS on the filtered one alone, 5 s under the line (no 0.2 / 0.3 degC extra, no 10 / 30 s). The clear line of E112 was 37.8 - 0.3 = 37.5 =
+  SV, tested on the raw reading, which flickers by a sensor step: the alarm and the heater block stayed on a PV that had long been at SV (screenshot of 04/11).
+* E110 (Low): 2 min under the line (was 5), 1 min after the start (was 5), clears as soon as PV is above the line (was +0.2).
+* The restart lock after an Emergency is 10 s (was 30 s).
+
+**Heater block line removed** - `ventHeaterBlock_` (the heater held off at SV + 0.3 / the vent threshold) is gone from `machine_control.h` and `config.h`. High and Emergency stop the heater already; a third line with its
+  own thresholds was one more thing that stayed on after PV was back.
+
+**Scheduled fan** - the warm-up hold of the day profile now starts when the batch begins more than 0.1 degC under SV (was 1.0) and ends at SV - 0.05 (was 0.5): a start 0.2 degC under SV no longer
+  dipped to 37.12 because the first run began 100 s after the start (log of 03/11). The feed-forward of the fan (2.9.1) and its learning (`measureFan`, `fanW_`) are removed: with the transit time unmeasured
+  (`tau_s` = 150 in every row of both logs) the power came 150 s before the fan and PV rose 0.1 degC ahead of 5 of 5 runs (log of 04/11), after which the vent line ran its own fan 11 times. The dip of a run is
+  about 0.12 degC and the loop brings it back.
+
+**Stall** - `stallWatch` in `thermal_v3.h` (see its header). Measured on the oven of the 03/11 log (`tools/thermal-research/log-oven.cpp`, no numbers kept): back within 0.05 degC from 0.2 degC under SV in
+  17.9 min (2.9.1: 23.5), from 0.5 degC under in 18.9 min (26.6), over SV <= +0.10; the real night log of 02/11 is answered with hold 9.5 -> 18.9 % (2.9.1: 18.0) and a largest command of 22.4 %.
+
+### Measured and not done (so that they are not tried again)
+* A measured, running heater-gain estimate near SV (a regression of the PV slope on the power one transit time ago): the signal is a percent of power against 0.1 degC of sensor, the gain moved 1-3 minutes of 25. Dropped.
+* A check of the heat "in flight" against the PV that followed: too slow (the door latch blocks it for 15 min) and it lowered the gain too far. Dropped.
+* A higher gain near SV for every oven (x2 ... x6): faster on the slow ovens, worse on the fleet (mean pass 88.8 -> 80.0 % at x3). Only a stalled oven gets it.
+* A new core with two modes and three gains (a PI with a brake on the rate of rise, full power far from SV): the best steady hold of everything measured (98 % pass, error 0.3 against 1.5) but on the project's wider
+  oven families of `tests/thermal-closed-loop.cpp` (heater gain up to 5 times the fleet's, delay up to 200 s) it overshot by 3 degC on the first climb. Not shipped; the file is kept out of the tree.
+
+### Test changes (listed because the rule is: no limit is loosened silently)
+* `tests/alarm-sound.cpp`: rewritten for the one rule (they asserted a 180 s wait and a 2 s confirm).
+* `tests/thermal-v3.cpp`: `testKeptOvenNumbersAndFanFeedForward` -> `testKeptOvenNumbersAndNoFanFeedForward` (the fan is not fed forward at all); new `testStallIsAnswered`.
+* `tools/thermal-research/log-oven.cpp --gate`: the fan-dip limit (4th run <= 0.03) is replaced by "the dip <= 0.16 and the loop brings it back"; the late-error limit is 0.10 (was 0.05) because the dip is no longer
+  compensated; a second gate for a first start (nothing kept) was added.

@@ -19,7 +19,11 @@
 //   hold has ONE writer (observe): a disturbance observer on the measured PV (see there).
 //   kAir is measured at every saturated climb, tau by the stopwatch of a clean start.
 //   The exhaust fan: the controller is told only that it runs, and holds the load estimate meanwhile. The vent line (vent_line.h) alone decides when the fan
-//   runs (over temperature, a minimum run so the contactor is not burnt, off again at SV).
+//   runs (over temperature, a minimum run so the contactor is not burnt, off again at SV). 2.9.5: a fan is a disturbance - the day profile is no longer fed
+//   forward (with the transit time unmeasured the power arrived before the fan and PV rose 0.1 degC ahead of every run).
+//   2.9.5: a STALL is answered (stallWatch): PV a tenth or more from SV, close to it (< 1 degC), ten minutes after the last big error, and so slow that the gap
+//   would need more than ten minutes to close, for one transit time. The heat the model calls "in flight" has then not shown up in PV: it is not credited
+//   any more and the gain next to SV is doubled until PV moves again. No heater gain is needed, so a wrong gain cannot hide the stall.
 // What the machine does around the controller (protections, vent line) can only cut; the one rule that reaches into the state: a protection cut
 // over SV takes the power that made that overshoot out of hold.
 // =========================================================================================
@@ -41,7 +45,9 @@ constexpr float KAIR_START = 1.6e-4f;      // kAir before any climb has been mea
 constexpr float DOOR_LATCH_TAU = 6.0f;      // a door is "open" for the load estimate for at most 6 transit times
 constexpr float DOOR_LOAD = 0.1f;           // ... and only when the fall is worth a load of 10 % of the headroom (a real door is 5-10 times that; the dip of a landing is not)
 constexpr float HOLD_PRIOR_OF_CAP = 0.12f;
-constexpr float FAN_LEARN_GAIN = 0.7f;      // the share of the measured shortfall of a fan run that is taken into the fan's loss
+constexpr float STALL_CLOSE_S = 600.0f;     // a gap that the present speed would need more than ten minutes to close counts as a stall
+constexpr float STALL_QUIET_C = 1.0f, STALL_QUIET_S = 600.0f;   // a stall counts only inside this error, ten minutes after the last big one
+constexpr float STALL_BOOST = 2.0f;         // ... and while it lasts the gain next to SV is this much higher (the loop is slower than its model says)
 constexpr float SIGMA_FLOOR = 0.004f;      // a reading of a 0.1 degC sensor cannot be quieter than this (degC)
 constexpr uint16_t HIST_LEN = 640U;        // seconds of history (memory, not tuning): 4 x the largest transit time
 
@@ -82,9 +88,9 @@ class Controller {
     lead_ = slope_ = lsSlope_ = lsSigma_ = 0.0f; sigma_ = 0.02f;
     histHead_ = histCount_ = 0U; liveS_ = secAcc_ = lastCmd_ = 0.0f;
     swOn_ = false; swPv0_ = swT_ = 0.0f;
-    pm_ = NAN; rate_ = 0.0f; fanW_ = 0.0f; fanSched_ = fanSchedPrev_ = fanRun_ = false;
+    pm_ = NAN; rate_ = 0.0f; fanPrev_ = false; stallS_ = 0.0f; stallActive_ = false; quietS_ = 0.0f;
     derive();
-    for (uint16_t i = 0U; i < HIST_LEN; ++i) { pvHist_[i] = 0.0f; uHist_[i] = 0.0f; ffHist_[i] = 0.0f; }
+    for (uint16_t i = 0U; i < HIST_LEN; ++i) { pvHist_[i] = 0.0f; uHist_[i] = 0.0f; }
   }
 
   Output step(const Input &in) {
@@ -103,7 +109,7 @@ class Controller {
       }
       wasLive_ = false; liveS_ = lastCmd_ = 0.0f; swOn_ = false;
       secAcc_ += dt;
-      while (secAcc_ >= 1.0f) { secAcc_ -= 1.0f; pushHist(std::isfinite(pv_) ? pv_ : 0.0f, 0.0f, 0.0f); }
+      while (secAcc_ >= 1.0f) { secAcc_ -= 1.0f; pushHist(std::isfinite(pv_) ? pv_ : 0.0f, 0.0f); }
       return out;
     }
     // Started close to SV (a reboot, a restart): there is no climb to measure kAir on - begin at the middle of the fleet, not at its slowest oven.
@@ -112,27 +118,22 @@ class Controller {
     slope_ = std::isfinite(in.slopeFine) ? in.slopeFine : lsSlope_;
     const float e = sp_ - pv_;
 
-    // --- the exhaust fan. The fan of the day profile is known ahead: it takes fanW out of the oven for its whole run, and the heater needs one transit time
-    // to answer, so the heater is given fanW from one transit time before the fan starts to one before it stops (the plant then sees no fan at all).
-    // fanW is learned by the observer while that fan runs (it is the load the observer finds then; hold is what it finds with the fan off).
-    // Any other fan (the vent line, over temperature) is not fed forward - it is there because the oven is too hot - and the observer is held while it runs.
+    // --- the exhaust fan is a disturbance: no feed-forward, no model of it (2.9.1 fed the day profile ahead by one transit time; with the transit time not
+    // measured the power arrived before the fan and PV rose 0.1 degC ahead of every run). The observer is held while any fan runs, the loop answers the dip.
     ventFan_ = in.ventFan;
-    const bool haveSched = std::isfinite(in.fanOnInS) && std::isfinite(in.fanOffInS);
-    fanSched_ = in.ventFan && haveSched && in.fanOnInS <= 0.5f;
-    if (fanSched_ != fanSchedPrev_) { rate_ = 0.0f; fanSchedPrev_ = fanSched_; }
-    float ff = 0.0f;
-    if (haveSched && !in.shadow && fanW_ > 0.0f && in.fanOnInS <= tau_ && in.fanOffInS > tau_) ff = std::min(fanW_, 0.4f * cap_);
+    if (ventFan_ != fanPrev_) { rate_ = 0.0f; fanPrev_ = ventFan_; }
 
     // --- power: hold plus a saturating function of the PREDICTED error (the heat on its way is counted before it arrives)
     updateInflight();
-    const float el = e - lead_;
+    const float el = e - (stallActive_ ? 0.0f : lead_);                  // a stalled oven does not get credit for heat that never arrives
     const float span = std::max(1.0f, cap_ - hold_);
+    const float boost = stallActive_ ? STALL_BOOST : 1.0f;
     float d;
     if (el >= farBand_) d = span;
     else if (el >= nearBand_) d = kn_ * nearBand_ + (span - kn_ * nearBand_) * (el - nearBand_) / std::max(1.0e-6f, farBand_ - nearBand_);
-    else if (el >= 0.0f) d = kn_ * el;
-    else d = std::max(-hold_, 3.0f * kn_ * el);                           // above SV: three times the gain
-    float cmd = hold_ + ff + d;
+    else if (el >= 0.0f) d = kn_ * boost * el;
+    else d = std::max(-hold_, 3.0f * kn_ * boost * el);                   // above SV: three times the gain
+    float cmd = hold_ + d;
     if (in.shadow) cmd = 0.0f;
     cmd = std::max(0.0f, std::min(cap_, cmd));
 
@@ -154,10 +155,10 @@ class Controller {
     if (secAcc_ >= 1.0f) {
       secAcc_ -= 1.0f;
       const float net = in.shadow ? 0.0f : cmd;
-      pushHist(pv_, in.shadow ? 0.0f : net, in.shadow ? 0.0f : ff);
+      pushHist(pv_, in.shadow ? 0.0f : net);
       measureNoiseAndSlope();
       derive();
-      if (in.permit && !in.shadow) { observe(); identifyGain(e); measureFan(); } else if (in.shadow) observe();
+      if (in.permit && !in.shadow) { observe(); identifyGain(e); stallWatch(e); } else if (in.shadow) observe();
       stopwatch(e, in.permit && !in.shadow);
     }
     lastCmd_ = in.shadow ? 0.0f : cmd;
@@ -174,14 +175,14 @@ class Controller {
   bool identified() const { return identified_; }
   uint8_t batchesDone() const { return identified_ ? 2U : 0U; }
   float kAir() const { return kAir_; }
-  float fanLoss() const { return fanW_; }
+  float fanLoss() const { return 0.0f; }                                      // kept for the record layout: the fan is no longer modelled
   bool tauMeasured() const { return tauMeasured_; }
   // The numbers that belong to the OVEN, not to a batch (what a climb measured, what the fan takes out): the machine keeps them across a restart so that a
   // start close to SV does not have to guess them. A value outside its plausible range is ignored; tau 0 = never measured.
   void restore(float kAir, float tau, float fanW) {
     if (std::isfinite(kAir) && kAir >= KAIR_PRIOR * KAIR_LO && kAir <= KAIR_PRIOR * KAIR_HI) { kAir_ = kAir; identified_ = true; }
     if (std::isfinite(tau) && tau >= TAU_PRIOR * TAU_LO && tau <= TAU_PRIOR * TAU_HI) tau_ = tau;   // a prior only: the next clean climb measures it again
-    if (std::isfinite(fanW) && fanW >= 0.0f && fanW <= 40.0f) fanW_ = fanW;
+    (void)fanW;
     derive();
   }
   float tauTransit() const { return tau_; }
@@ -208,14 +209,13 @@ class Controller {
     const float siMc = 1.0f / (2.0f * kAir_ * 1.35f * tau_);
     kn_ = std::max(0.05f * span / farBand_, std::min(siMc, 0.5f * span / nearBand_));
   }
-  void pushHist(float pv, float u, float ff) {
-    pvHist_[histHead_] = pv; uHist_[histHead_] = std::max(0.0f, std::min(100.0f, u)); ffHist_[histHead_] = ff;
+  void pushHist(float pv, float u) {
+    pvHist_[histHead_] = pv; uHist_[histHead_] = std::max(0.0f, std::min(100.0f, u));
     histHead_ = static_cast<uint16_t>((histHead_ + 1U) % HIST_LEN);
     if (histCount_ < HIST_LEN) ++histCount_;
   }
   float pvAge(uint16_t a) const { return pvHist_[(histHead_ + HIST_LEN - 1U - a) % HIST_LEN]; }
   float uAge(uint16_t a) const { return uHist_[(histHead_ + HIST_LEN - 1U - a) % HIST_LEN]; }
-  float ffAge(uint16_t a) const { return ffHist_[(histHead_ + HIST_LEN - 1U - a) % HIST_LEN]; }
   // Noise and slope of PV from the last 0.8 tau seconds: least-squares line, its residual (sigma) and the uncertainty of its slope.
   void measureNoiseAndSlope() {
     const uint16_t n = static_cast<uint16_t>(std::min<float>(std::max(30.0f, 0.8f * tau_), static_cast<float>(HIST_LEN - 1U)));
@@ -244,7 +244,7 @@ class Controller {
   void updateInflight() {
     const uint16_t n = static_cast<uint16_t>(std::min<float>(PIPE_K * tau_, static_cast<float>(histCount_)));
     float sum = 0.0f;
-    for (uint16_t i = 0U; i < n; ++i) sum += uAge(i) - ffAge(i) - hold_;       // the fan's share is spent on the fan, not on the air
+    for (uint16_t i = 0U; i < n; ++i) sum += uAge(i) - hold_;
     float lead = kAir_ * LEAD_GAIN * sum;
     // On a climb (far under SV) the measured slope is a floor for the heat in flight (a wrong kAir cannot hide it); near SV its noise must not count.
     if (std::isfinite(pv_) && sp_ - pv_ > 1.5f * farBand_) lead = std::max(lead, 0.8f * std::max(0.0f, slope_) * tau_);
@@ -267,22 +267,23 @@ class Controller {
     rate_ = std::max(-rLim, std::min(rLim, rate_));
     hold_ = std::max(0.0f, std::min(cap_, hold_ + rate_ - (3.0f * w * w / kAir_) * err));
   }
-  // What the scheduled fan takes out, measured over its run: PV is compared with what the model says PV would do under the power that reached the oven with
-  // the fan off (hold and the heater are known); the shortfall is the fan's loss, kAir x fanW x run time. Two readings of PV (the start and the end of the
-  // run) and a model are all it needs, and the correction is a part of the difference so that one noisy run cannot spoil it.
-  void measureFan() {
-    const uint16_t delay = static_cast<uint16_t>(tau_ + 0.5f);
-    if (fanSched_ && histCount_ > static_cast<uint16_t>(delay + 2U)) {
-      if (!fanRun_) { fanRun_ = true; fanPv0_ = pv_; fanAcc_ = 0.0f; fanT_ = 0.0f; }
-      fanAcc_ += kAir_ * (uAge(delay) - hold_ - fanW_);
-      fanT_ += 1.0f;
-    } else if (fanRun_) {
-      fanRun_ = false;
-      if (fanT_ >= 30.0f && !door_ && !doorLatch_) {
-        const float miss = (pv_ - fanPv0_) - fanAcc_;                       // negative: the fan took more than fanW says
-        fanW_ = std::max(0.0f, std::min(0.4f * cap_, fanW_ - FAN_LEARN_GAIN * miss / (kAir_ * fanT_)));
-      }
-    }
+  // A stall: PV is under (or over) SV, would need more than STALL_CLOSE_S to close the gap at the speed it has, and has stayed so for one transit time.
+  // The heat the model says is "in flight" has then not shown up in PV for a whole transit time: the model is wrong about this oven (a wrong heater
+  // gain, a load it does not know). It is not trusted until PV moves again - the loop answers the error itself (hold + a share of the error), and the
+  // observer sees the answer. Needs no heater gain, so a wrong gain cannot hide it.
+  void stallWatch(float e) {
+    if (liveS_ < 3.0f) quietS_ = std::fabs(e) < STALL_QUIET_C ? STALL_QUIET_S : 0.0f;       // a start close to SV has had no big error
+    if (std::fabs(e) > STALL_QUIET_C) quietS_ = 0.0f; else quietS_ += 1.0f;
+    const bool calm = !door_ && !doorLatch_ && !ventFan_ && quietS_ > STALL_QUIET_S;     // not while the oven is still recovering from a big error (eggs, trays: it climbs slowly by itself)
+    const float slope = lsSlope_;
+    const bool stalled = calm && std::fabs(e) > std::max(0.1f, 4.0f * sigma_) && std::fabs(e) < STALL_QUIET_C && liveS_ > 2.0f * tau_ &&
+                         (e > 0.0f ? slope < e / STALL_CLOSE_S : slope > e / STALL_CLOSE_S);
+    const bool moving = e > 0.0f ? slope > 2.0f * e / STALL_CLOSE_S : slope < 2.0f * e / STALL_CLOSE_S;   // clearly on its way: the boost ends at once
+    if (moving) { stallS_ = 0.0f; stallActive_ = false; return; }
+    if (stalled) stallS_ = std::min(2.0f * tau_, stallS_ + 1.0f);
+    else stallS_ = std::max(0.0f, stallS_ - 2.0f);                              // the slope is noisy: a few seconds of the other answer do not start the count again
+    if (!stallActive_ && stallS_ >= tau_) stallActive_ = true;
+    else if (stallActive_ && stallS_ < 0.5f * tau_) stallActive_ = false;
   }
   // kAir at every saturated climb: the heater has been at its ceiling for a whole transit time plus a part of one, PV is far under SV and climbing.
   void identifyGain(float e) {
@@ -313,13 +314,13 @@ class Controller {
       tau_ = std::max(TAU_PRIOR * TAU_LO, std::min(TAU_PRIOR * TAU_HI, swT_ * 1.05f)); tauMeasured_ = true; swOn_ = false;
     }
   }
+  bool fanPrev_ = false, stallActive_ = false;
+  float stallS_ = 0.0f, quietS_ = 0.0f;
   uint8_t state_ = StIdle;
   float pv_ = NAN, sp_ = 37.5f, cap_ = 100.0f;
   float kAir_ = KAIR_PRIOR, tau_ = TAU_PRIOR, hold_ = 12.0f;
   float epMax_ = 0.0f; bool epFresh_ = true; float latchT_ = 0.0f; bool doorLatch_ = false, nearSeen_ = false; float pm_ = NAN, rate_ = 0.0f;
-  bool ventFan_ = false, fanSched_ = false, fanSchedPrev_ = false, fanRun_ = false;
-  float fanPv0_ = 0.0f, fanAcc_ = 0.0f, fanT_ = 0.0f;
-  float fanW_ = 0.0f;                       // what the scheduled fan takes out of the oven [% of the heater]: learned while it runs, fed forward one transit time ahead
+  bool ventFan_ = false;
   bool identified_ = false, tauMeasured_ = false, door_ = false, wasLive_ = false;
   float lead_ = 0.0f, slope_ = 0.0f, lsSlope_ = 0.0f, lsSigma_ = 0.0f, sigma_ = 0.02f;
   float inflightMax_ = 1.0f, farBand_ = 0.5f, nearBand_ = 0.15f, kn_ = 30.0f;
@@ -327,7 +328,6 @@ class Controller {
   bool swOn_ = false; float swPv0_ = 0.0f, swT_ = 0.0f;
   float pvHist_[HIST_LEN] = {};
   float uHist_[HIST_LEN] = {};
-  float ffHist_[HIST_LEN] = {};
   uint16_t histHead_ = 0U, histCount_ = 0U;
 };
 

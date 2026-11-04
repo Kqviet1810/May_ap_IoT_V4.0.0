@@ -72,10 +72,8 @@ static Res run(uint32_t seed) {
   return r;
 }
 
-int main(int argc, char **argv) {
-  const bool gate = argc > 1 && !std::strcmp(argv[1], "--gate");
-  if (gate) { setenv("KAIR", "9.4e-5", 1); setenv("MIN", "120", 1); setenv("SEEDS", "10", 1); }          // the gate: the oven's numbers were kept across the restart
-  const int n = getenv("SEEDS") ? atoi(getenv("SEEDS")) : 10;
+struct Agg { double reach = -1, late = 0, over = 0, dip4 = 9, dip1 = 0; int reached = 0, n = 0; };
+static Agg collect(int n) {
   Res a; int reached = 0; std::vector<double> dsum;
   for (int s = 1; s <= n; ++s) {
     Res r = run((uint32_t)s);
@@ -87,11 +85,25 @@ int main(int argc, char **argv) {
   std::printf("seeds %d | time to within 0.05 of SV: %.1f min (%d/%d reached) | true error min10-25 %+.3f, last %+.3f (sd %.3f) | fan dip 1st %.3f 2nd %.3f degC | mean |dPV|/s %.4f | request sd %.2f %% | max over SV %+.3f\n",
               n, reached ? a.tReach / reached / 60.0 : -1.0, reached, n, a.errMid / n, a.errLate / n, a.sdLate / n, a.fanDip / n, a.fanDip2 / n, a.spike / n, a.reqSd / n, a.over);
   std::printf("  dip per fan run:"); for (double d : dsum) std::printf(" %.3f", d / n); std::printf("\n");
-  if (gate) {                                                                // what 2.9.1 promises on the oven of the field log (2.9.0: 20 min, a dip of 0.12 every run)
-    const double reach = reached ? a.tReach / reached / 60.0 : 99.0, dip4 = dsum.size() > 3 ? dsum[3] / n : 9.0, late = a.errLate / n;
-    const bool ok = reached == n && reach <= 15.0 && dip4 <= 0.03 && a.over <= 0.08 && std::fabs(late) <= 0.05;
-    std::printf("log-oven gate: reach %.1f min (<= 15), 4th fan dip %.3f (<= 0.03), over SV %+.3f (<= 0.08), late error %+.3f (|.| <= 0.05): %s\n", reach, dip4, a.over, late, ok ? "OK" : "FAIL");
-    return ok ? 0 : 1;
-  }
-  return 0;
+  Agg g; g.reached = reached; g.n = n; g.reach = reached ? a.tReach / reached / 60.0 : 99.0; g.late = a.errLate / n; g.over = a.over; g.dip1 = a.fanDip / n; g.dip4 = dsum.size() > 3 ? dsum[3] / n : 9.0;
+  return g;
+}
+
+int main(int argc, char **argv) {
+  const bool gate = argc > 1 && !std::strcmp(argv[1], "--gate");
+  const int n = getenv("SEEDS") ? atoi(getenv("SEEDS")) : 10;
+  if (!gate) { collect(n); return 0; }
+  // The gate of 2.9.5: the oven of the field log of 03/11, a scheduled fan every 20 min. The exhaust fan is a disturbance now (it is not fed forward): it takes
+  // about 0.12 degC out of the oven in a run and the loop brings it back; what is promised is the start and the overshoot.
+  //   A. the numbers of the oven kept across a restart, 0.1 degC under SV: back within 0.05 degC in 15 min, no overshoot, the fan's dip no worse than 0.16 degC
+  //   B. nothing kept (a first start), 0.2 degC under SV: the stall of 2.9.1 (23.5 min, a loop 2.7 times too slow) answered: back within 0.05 degC in 21 min, over SV <= 0.12
+  setenv("KAIR", "9.4e-5", 1); setenv("MIN", "120", 1); setenv("SEEDS", "10", 1);
+  const Agg a = collect(10);
+  const bool okA = a.reached == a.n && a.reach <= 15.0 && a.over <= 0.08 && a.dip1 <= 0.16 && std::fabs(a.late) <= 0.10;
+  std::printf("log-oven gate A: reach %.1f min (<= 15), fan dip %.3f (<= 0.16), over SV %+.3f (<= 0.08), late error %+.3f (|.| <= 0.10): %s\n", a.reach, a.dip1, a.over, a.late, okA ? "OK" : "FAIL");
+  unsetenv("KAIR"); setenv("START", "37.30", 1); setenv("MIN", "60", 1);
+  const Agg b = collect(10);
+  const bool okB = b.reached == b.n && b.reach <= 21.0 && b.over <= 0.12;
+  std::printf("log-oven gate B: reach %.1f min (<= 21), over SV %+.3f (<= 0.12): %s\n", b.reach, b.over, okB ? "OK" : "FAIL");
+  return okA && okB ? 0 : 1;
 }

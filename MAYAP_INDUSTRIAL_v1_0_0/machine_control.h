@@ -5190,9 +5190,9 @@ class MachineController {
   void updateSoundPolicy(uint32_t now) {
     const alarmsound::LoudVoice::Params lp;
     const bool valid = std::isfinite(safetyTempLast_);
-    // Both over-temperature lines are LOUD at once and stop when the reading is 0.2 degC under the line (the protective actions keep their own hysteresis).
-    highLoud_.update(now, valid, safetyTempLast_, config_.highTempAlarm, highTemperatureActive_, lp);
-    emergencyLoud_.update(now, valid, safetyTempLast_, config_.emergencyTemp, emergencyActive_, lp);
+    // Both over-temperature lines are LOUD while their alarm is on and silent the moment it is off: the alarm itself is a plain comparison with the line.
+    highLoud_.update(now, valid, safetyTempLast_, highTemperatureActive_, lp);
+    emergencyLoud_.update(now, valid, safetyTempLast_, emergencyActive_, lp);
     const bool conflict = faults_.live(FaultCode::OutputConflict);
     if (!conflict) outputConflictMutedUntil_ = 0U;
     const bool conflictSiren = conflict && timeReached(now, outputConflictMutedUntil_);
@@ -5798,6 +5798,9 @@ class MachineController {
         ? (isfinite(temperature_) ? std::max(rawTemperature_, temperature_) : rawTemperature_)
         : temperature_;
     const bool validSafety = safetySampleValid_ && isfinite(safetyTemp);
+    // An alarm TRIPS on the higher of the raw and the filtered reading (the fast one), and is CLEARED on the filtered one alone: the raw reading flickers by a
+    // sensor step (0.1 degC) and a clear that needed every raw sample under the line never came while PV stood on it.
+    const float clearTemp = isfinite(temperature_) ? temperature_ : safetyTemp;
     safetyTempLast_ = validSafety ? safetyTemp : NAN;                        // for the PID log
     const bool wasHigh = highTemperatureActive_;
     const bool wasEmergency = emergencyActive_;
@@ -5816,8 +5819,7 @@ class MachineController {
       emergencyActive_ = true;
       emergencyClearTimer_.reset();
     } else if (emergencyActive_) {
-      const bool safeToClear = validSafety &&
-          safetyTemp <= config_.emergencyTemp - EMERGENCY_CLEAR_HYSTERESIS_C;
+      const bool safeToClear = validSafety && clearTemp < config_.emergencyTemp - EMERGENCY_CLEAR_HYSTERESIS_C;
       if (emergencyClearTimer_.update(now, safeToClear,
                                      EMERGENCY_CLEAR_CONFIRM_MS)) {
         emergencyActive_ = false;
@@ -5834,8 +5836,7 @@ class MachineController {
         highClearTimer_.reset();
       }
     } else if (!emergencyActive_) {
-      const bool safeToClear = validSafety &&
-          safetyTemp <= config_.highTempAlarm - HIGH_TEMP_CLEAR_HYSTERESIS_C;
+      const bool safeToClear = validSafety && clearTemp < config_.highTempAlarm - HIGH_TEMP_CLEAR_HYSTERESIS_C;
       if (highClearTimer_.update(now, safeToClear,
                                 HIGH_TEMP_CLEAR_CONFIRM_MS)) {
         highTemperatureActive_ = false;
@@ -5865,16 +5866,6 @@ class MachineController {
       ventTemperatureActive_ = ventLine_.update(now, validSafety, safetyTemp, config_.ventOnTemp, config_.ventOffTemp, vp, vc);
     }
 
-    // The heater is blocked only when the reading runs well past SV (a safety margin, not a fan rule): it comes back 0.1 degC lower. "Well past"
-    // scales with the sensor step so a coarse 0.1 sensor and a fine 0.01 one are treated alike.
-    {
-      const float dQ = thermalV3SensorStepC();
-      const float blockAt = std::max(config_.ventOnTemp, config_.targetTemp + std::max(VENT_HEATER_BLOCK_MIN_C, VENT_HEATER_BLOCK_STEPS * dQ));
-      if (!validSafety) ventHeaterBlock_ = false;
-      else if (!ventHeaterBlock_ && safetyTemp >= blockAt) ventHeaterBlock_ = true;
-      else if (ventHeaterBlock_ && safetyTemp <= blockAt - VENT_HEATER_BLOCK_RELEASE_C) ventHeaterBlock_ = false;
-    }
-
     if ((!wasHigh && highTemperatureActive_) ||
         (!wasEmergency && emergencyActive_)) {
       postCoolUntil_ = now + POST_COOL_MS;
@@ -5896,7 +5887,7 @@ class MachineController {
     const bool lowCondition = lowEligible && temperature_ <= config_.lowTempAlarm;
     lowTemperatureActive_ = lowTempTimer_.update(now, lowCondition,
                                                  LOW_TEMP_CONFIRM_MS);
-    if (lowTemperatureActive_ && temperature_ >= config_.lowTempAlarm + 0.2f) {
+    if (lowTemperatureActive_ && temperature_ > config_.lowTempAlarm) {
       lowTemperatureActive_ = false;
       lowTempTimer_.reset();
     }
@@ -6755,7 +6746,7 @@ class MachineController {
         batchAllowsHeat && sensorUsable_ && fanAllowsHeat &&
         timeReached(now, heatRestartNotBefore_);
     const bool normalSsrPermit = normalMasterPermit && heaterPidConditions &&
-        !faults_.ssrInhibited() && !ventHeaterBlock_;
+        !faults_.ssrInhibited();
     const bool actuatorReady = outputs_.heaterReady(now) && mayapBootOperationsReady() &&
         !mayapSystemTripLatched() && !mayapFirmwareMaintenanceActive();
 
@@ -6764,8 +6755,7 @@ class MachineController {
     // heater request in percent. Protection (High / Emergency / sensor / contactor / SSR inhibit) is decided above
     // and below it and never reads this value. The request is clamped to [0, cap] by the adapter and then goes through
     // the burst scheduler and the output arbiter like any other request.
-    const bool v3Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && ventHeaterBlock_ && actuatorReady;   // blocked ONLY by the heater block line
-    float commandedPower = thermalV3Command(now, normalSsrPermit && actuatorReady, v3Shadow);
+    float commandedPower = thermalV3Command(now, normalSsrPermit && actuatorReady, false);
     // ====================================================================================================
     newSensorSample_ = false;
 
@@ -8336,7 +8326,6 @@ class MachineController {
   VentLine ventLine_{};
   uint32_t lastWebVentCmdAt_ = 0U, lastWebCircCmdAt_ = 0U, lastWebHeaterCmdAt_ = 0U;   // spacing of repeated remote toggles (per kind)
   bool otaCheckpointDone_ = false;                   // the batch was checkpointed for the update that is downloading now
-  bool ventHeaterBlock_ = false;                     // the heater is held off well above SV (see updateAlarms); the fan has its own line
   uint8_t ventReason_ = 0U;
   alarmsound::LoudVoice highLoud_{}, emergencyLoud_{};
   alarmsound::Reminder chimeReminder_{};
