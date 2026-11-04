@@ -176,6 +176,11 @@ jobs:
           g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-stall-log.cpp -o /tmp/mayap-thermal-stall-log
           /tmp/mayap-thermal-stall-log
 
+      - name: "The way out of E111 / E112 (clear_mean.h): the mean of the window under the level, no sample over level + 0.15 - a reading that flickers between two sensor steps no longer keeps the alarm up"
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror tests/clear-mean.cpp -o /tmp/mayap-clear-mean
+          /tmp/mayap-clear-mean
+
       - name: "Fine temperature from a 0.1 degC sensor (sensor_fine.h): sliding least-squares value and slope, follows a fall, restarts after a gap, bounded on hostile input"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/sensor-fine.cpp -o /tmp/mayap-sensor-fine
@@ -184,7 +189,7 @@ jobs:
       - name: "Fleet bench builds (210 random ovens x 10 situations with the real vent line and the restored state)"
         run: g++ -O2 -std=c++17 -Wall -Wextra -Werror tools/thermal-research/fleet-bench.cpp -o /tmp/mayap-fleet-bench
 
-      - name: "The oven of the field log of 03/11 (tools/thermal-research/log-oven.cpp): started 0.1 degC under SV with its numbers kept across the restart, a scheduled fan every 20 min - back within 0.05 degC in 15 min, the fan's dip learned away by the 4th run, no overshoot"
+      - name: "The oven of the field logs of 03/11 and 04/11 (tools/thermal-research/log-oven.cpp): started 0.1 degC under SV, a scheduled fan every 20 min - with its numbers kept, and never measured on four plants (td+tl 60 .. 190 s): back within 0.05 degC in 10 min, the fan's dip learned down, no overshoot above +0.08 (+0.16 on the 190 s plant)"
         run: |
           g++ -O2 -std=c++11 -Wall -Wextra -Werror -I MAYAP_INDUSTRIAL_v1_0_0 -I tests tools/thermal-research/log-oven.cpp -o /tmp/mayap-log-oven
           /tmp/mayap-log-oven --gate

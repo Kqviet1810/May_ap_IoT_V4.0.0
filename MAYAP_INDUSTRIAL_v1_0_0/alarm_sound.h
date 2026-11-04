@@ -11,8 +11,8 @@
 //
 //   The over-temperature lines (High, Emergency) are not loud at once: crossing a line starts a grace time (the exhaust fan is forced on by the line and
 //   normally brings the reading back, e.g. the overshoot of a first climb). The siren sounds only if the reading is STILL at or over the line when the
-//   grace time ends, or at once when it is far over (panicC). It stops as soon as the reading is under the line (2 s to confirm), so the battery is not
-//   spent on a siren that has nothing left to say. The protective actions (heater cut, forced fans) never wait for this: only the noise does.
+//   grace time ends, or at once when it is far over (panicC). It stops when the reading is clearly under the line (more than one sensor step, 10 s to confirm: 2.9.2), so the battery is not
+//   spent on a siren that has nothing left to say, and a flicker at the line cannot restart the grace time. The protective actions (heater cut, forced fans) never wait for this: only the noise does.
 #include <cmath>
 #include <cstdint>
 
@@ -24,9 +24,11 @@ class LoudVoice {
     uint32_t steadyMs = 300000UL;         // the siren is continuous this long, then pulsed (a reading stuck over the line for hours must not be a wall of noise)
     uint32_t onMs = 5000UL, offMs = 25000UL;
     uint32_t graceMs = 180000UL;          // the siren waits this long after the line is crossed (the fan has had its time to bring the reading down) ...
-    float panicC = 0.5f;                  // ... unless the reading is this far over the line: then it sounds at once
-    float offBelowC = 0.0f;               // sound ends when the reading is this far under the line ...
-    uint32_t offConfirmMs = 2000UL;       // ... for this long (the lock of the heater has its own, longer, hysteresis)
+    // 2.9.2: panicC 0.5 -> 0.3; offBelowC 0 -> 0.15 and offConfirmMs 2 s -> 10 s. The reading is a 0.1 degC staircase that flickers between two steps at the line: a single
+    // dip under it for 2 s forgot the crossing, the 180 s grace time started again, and a reading that stood over the line for an hour never sounded (field, 04/11).
+    float panicC = 0.3f;                  // ... unless the reading is this far over the line: then it sounds at once
+    float offBelowC = 0.15f;              // the crossing is forgotten (silence, new grace time) when the reading is this far under the line (more than one sensor step) ...
+    uint32_t offConfirmMs = 10000UL;      // ... for this long (the lock of the heater has its own, longer, hysteresis)
     float ackRiseC = 0.2f;                // ACK mutes; the siren is back when the reading rose this much since the ACK ...
     uint32_t ackCheckMs = 120000UL;       // ... or when, at every check of this length, it has not fallen by ackFallC ...
     float ackFallC = 0.1f;

@@ -134,7 +134,10 @@ void testEnergyInFlightLowerBound() {
   // With physical lower bound (pv - 0.20C = 37.20C), error is at most 0.30C -> command must NOT surge above 40%!
   // The physical bound is what the load can cool the air in one transit time with nothing in the pipe: kAir x hold x tau (about 0.3 degC for the priors).
   assert(ctl.predicted() >= in.pv - ctl.kAir() * ctl.pHold() * ctl.tauTransit() - 0.01f);
-  assert(out.powerPct < 40.0f);
+  // 2.9.2: 60 %, was 40 %. The 40 % belonged to the old priors (gain 1.6e-4, delay 150 s: a braking distance of 1 degC); with the priors of this machine (9e-5, 100 s) the same
+  // 0.2 degC of predicted error sits inside the landing band (0.12 .. 0.4 degC) and asks for about 45 %. What the test is about stays: the empty pipe must not be read as a
+  // 1 degC deficit (that was 80 % and more).
+  assert(out.powerPct < 60.0f);
   printf("  -> Pass: Predicted PV = %.2f C (bounded >= %.2f C), Command = %.1f%% (no panic surge)\n",
          ctl.predicted(), in.pv - 0.20f, out.powerPct);
 }
@@ -264,8 +267,8 @@ void testRestartNextToSetpointKeepsPriors() {
     ctl.step(in);
   }
   assert(!ctl.identified());
-  // A start next to SV has no climb to measure kAir on: it begins at the middle of the fleet (KAIR_WARM) and must never move off that by "identification".
-  assert(ctl.kAir() == kPrior || ctl.kAir() == thermalv3::KAIR_WARM);
+  // A start next to SV has no climb to measure kAir on: it begins at the prior of this machine (2.9.2: one prior, no separate "warm" one) and must never move off it by "identification".
+  assert(ctl.kAir() == kPrior);
   assert(ctl.tauTransit() == tauPrior);
   printf("  -> Pass: identified=%d kAir=%.5f tau=%.0f s\n", ctl.identified() ? 1 : 0, ctl.kAir(), ctl.tauTransit());
 }
@@ -284,7 +287,7 @@ void testStartIdentifiesTheOven() {
   const double trueK = plant.Pmax / 100.0 / plant.Cf;                    // degC/s per % of the heater
   printf("  -> identified=%d tau=%.0f s kAir=%.5f (true %.5f)\n", ctl.identified() ? 1 : 0, ctl.tauTransit(), ctl.kAir(), trueK);
   assert(ctl.identified());
-  assert(ctl.tauTransit() >= 90.0f && ctl.tauTransit() <= 220.0f);
+  assert(ctl.tauTransit() >= thermalv3::TAU_PRIOR * thermalv3::TAU_LO && ctl.tauTransit() <= thermalv3::TAU_PRIOR * thermalv3::TAU_HI);   // 2.9.2: 45 .. 225 s (was 90 .. 225)
   assert(ctl.kAir() > 0.5 * trueK && ctl.kAir() < 1.3 * trueK);
 }
 
@@ -319,8 +322,9 @@ void testStartAfterAPause() {
       if (identifiedAt < 0) continue;
       const int len = static_cast<int>(thermalv3::PIPE_K * tauBefore);   // the window of power counted as still in flight
       if (s < identifiedAt + len + 2) continue;                            // until the ring holds only commands that were really sent
-      float sum = 0.0f;
-      for (int k = s - len; k < s; ++k) sum += sent[static_cast<size_t>(k)];
+      float sum = 0.0f, uLo = 100.0f, uHi = 0.0f;
+      for (int k = s - len; k < s; ++k) { sum += sent[static_cast<size_t>(k)]; uLo = std::min(uLo, sent[static_cast<size_t>(k)]); uHi = std::max(uHi, sent[static_cast<size_t>(k)]); }
+      if (uHi - uLo <= thermalv3::STEADY_PIPE_FRAC * 100.0f) continue;       // 2.9.2: a steady pipe is capped by the measured slope (testFieldFixes292)
       const float raw = kAirBefore * thermalv3::LEAD_GAIN * (sum - static_cast<float>(len) * holdBefore);
       const float lo = -kAirBefore * holdBefore * tauBefore;                // nothing in the pipe: the load cools the air for one transit time
       const float inflightMax = kAirBefore * (100.0f - holdBefore) * tauBefore;
@@ -426,6 +430,61 @@ void testKeptOvenNumbersAndFanFeedForward() {
   printf("  -> Pass\n");
 }
 
+// 2.9.2: the priors are the machine's own; the lead of the fan feed-forward; the steady pipe caps the heat on its way; the vent line's fan lets the hold come down; a coast is not a door.
+void testFieldFixes292() {
+  printf("Test: 2.9.2 field fixes (priors, feed-forward lead, steady pipe, one-sided observer)\n");
+  {
+    thermalv3::Controller c;
+    assert(std::fabs(c.kAir() - 9.0e-5f) < 1e-9f && std::fabs(c.tauTransit() - 100.0f) < 1e-3f);
+  }
+  {   // The feed-forward leads the fan by 0.85 x the prior while the transit time was never measured, by the whole transit time once it was.
+    auto share = [](bool trusted, float onIn) {
+      thermalv3::Controller c;
+      c.restore(9.0e-5f, trusted ? 100.0f : 0.0f, 7.0f);
+      thermalv3::Input in; in.pv = 37.5f; in.sp = 37.5f; in.dtS = 1.0f; in.permit = true; in.fanOnInS = onIn; in.fanOffInS = onIn + 300.0f;
+      float last = 0.0f;
+      for (int i = 0; i < 400; ++i) last = c.step(in).powerPct;
+      return last - c.pHold();
+    };
+    assert(share(false, 80.0f) > 6.0f);       // inside 85 s
+    assert(share(false, 95.0f) < 0.3f);       // 95 s ahead is still too early for a prior
+    assert(share(true, 95.0f) > 6.0f);        // ... but not for a measured 100 s
+  }
+  {   // ... and the feed-forward is cancelled when PV already shows the heat before the fan.
+    thermalv3::Controller c;
+    c.restore(9.0e-5f, 100.0f, 7.0f);
+    thermalv3::Input in; in.pv = 37.5f; in.sp = 37.5f; in.dtS = 1.0f; in.permit = true; in.fanOnInS = 60.0f; in.fanOffInS = 360.0f;
+    for (int i = 0; i < 200; ++i) c.step(in);
+    const float with = c.step(in).powerPct - c.pHold();
+    in.pv = 37.58f;                                                       // 0.08 over SV with the fan still to start
+    const float early = c.step(in).powerPct;
+    assert(with > 6.0f && early < c.pHold() + 0.5f);
+  }
+  {   // A command steady over the whole pipe under a PV that stands still: the heat "on its way" is what PV says (nothing), whatever gain the model believes.
+    thermalv3::Controller c;
+    c.restore(2.5e-4f, 0.0f, 0.0f);                                       // the 2.9.1 prior for a start near SV: 2.7 x the gain of this machine
+    thermalv3::Input in; in.pv = 37.5f; in.sp = 37.5f; in.dtS = 1.0f; in.permit = true;
+    for (int i = 0; i < 900; ++i) c.step(in);
+    in.pv = 37.35f;                                                       // 0.15 under SV and flat; the command moves by a few percent only
+    float lead = 0.0f;
+    for (int i = 0; i < 500; ++i) { c.step(in); lead = c.predicted() - in.pv; }
+    assert(lead < 0.02f);                                                 // without the cap the model's own 0.043 stood there
+  }
+  {   // The fan of the vent line lets the hold come DOWN (PV over SV) and never UP.
+    thermalv3::Controller c;
+    thermalv3::Input in; in.pv = 37.5f; in.sp = 37.5f; in.dtS = 1.0f; in.permit = true;
+    for (int i = 0; i < 1200; ++i) c.step(in);
+    const float h0 = c.pHold();
+    in.ventFan = true; in.pv = 37.65f;
+    for (int i = 0; i < 900; ++i) c.step(in);
+    const float h1 = c.pHold();
+    assert(h1 < h0 - 1.0f);
+    in.pv = 37.2f;
+    for (int i = 0; i < 900; ++i) { c.step(in); assert(c.pHold() <= h1 + 1e-4f); }
+  }
+  printf("  -> Pass\n");
+}
+
 int main() {
   printf("=========================================\n");
   printf("RUNNING THERMAL V3 CONTROLLER UNIT TESTS\n");
@@ -443,6 +502,7 @@ int main() {
   testResumeAfterHold();
   testSensorFallback();
   testKeptOvenNumbersAndFanFeedForward();
+  testFieldFixes292();
   printf("=========================================\n");
   printf("ALL THERMAL V3 TESTS PASSED SUCCESSFULLY!\n");
   printf("=========================================\n");

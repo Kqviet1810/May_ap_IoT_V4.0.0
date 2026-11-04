@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.9.1";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.9.2";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -588,10 +588,12 @@ constexpr uint32_t SENSOR_STARTUP_GRACE_MS = 20000UL; // chua bao coi trong 20 s
 // nhieu/troi nen it khi giu nguyen tuyet doi lau nhu vay).
 constexpr float SENSOR_FROZEN_EPSILON_C = 0.01f;
 constexpr uint32_t SENSOR_FROZEN_TIMEOUT_MS = 1200000UL; // 20 phut
-// Warm-up: profile / scheduled ventilation waits while PV is more than this far below SP (the fan takes heat away while the oven climbs);
+// Warm-up: profile / scheduled ventilation waits while PV is below SP (the fan takes heat away while the oven closes the gap);
 // released at the second threshold or after the maximum. Forced vents (High, sensor fault) are untouched.
-constexpr float WARMUP_VENT_HOLD_ERR_C = 1.0f;
-constexpr float WARMUP_VENT_RELEASE_ERR_C = 0.5f;
+// 2.9.2: 0.05 degC, was 1.0 / 0.5. A batch that started 0.2 degC under SP (field log of 03/11) was not held, the first block of the day profile began at once
+// (the cycle starts with its fan block) and took PV from 37.3 to 37.12.
+constexpr float WARMUP_VENT_HOLD_ERR_C = 0.05f;
+constexpr float WARMUP_VENT_RELEASE_ERR_C = 0.05f;
 constexpr uint32_t WARMUP_VENT_HOLD_MAX_MS = 1800000UL;   // 30 phut
 // Vent line (the exhaust fans of the overheat, a last resort; see vent_line.h and updateAlarms). The fans never cut the heater.
 constexpr uint32_t VENT_LINE_CONFIRM_MS = 20000UL;        // a decisive overshoot (FAST / PRED) must stand this long
@@ -625,6 +627,7 @@ constexpr uint32_t LOW_TEMP_WARMUP_MAX_MS = 7200000UL;   // 120 phut
 constexpr uint32_t HIGH_TEMP_CONFIRM_MS = 1000UL;
 constexpr float HIGH_TEMP_CLEAR_HYSTERESIS_C = 0.2f;
 constexpr uint32_t HIGH_TEMP_CLEAR_CONFIRM_MS = 10000UL;
+constexpr float CLEAR_MEAN_GUARD_C = 0.15f;            // 2.9.2: the way out of E111 / E112 is the mean of the window under the level (clear_mean.h); the newest sample may be one sensor step over it
 constexpr float EMERGENCY_CLEAR_HYSTERESIS_C = 0.3f;
 constexpr uint32_t EMERGENCY_CLEAR_CONFIRM_MS = 30000UL;
 // Tam tat coi khan cap khi ACK. Truoc la 5 phut - qua dai cho muc "khan cap"
