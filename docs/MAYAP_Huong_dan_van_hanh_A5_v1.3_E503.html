@@ -48,7 +48,7 @@ tr:target td:first-child strong{color:#8a5a00}
 @media screen { body { background:#e9efef; } .sheet { box-shadow:0 4px 18px rgba(0,0,0,.12); min-height:210mm; } }
 </style></head><body><div class="toolbar"><a class="tb" href="../">&larr; Quay lại MAYAP</a><a class="tb" href="#danh-sach-ma-loi">Danh sách mã lỗi</a><a class="tb" href="./MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.pdf">Mở PDF</a><button onclick="window.print()">In / Lưu PDF</button></div><main class="sheet"><h1>MÁY ẤP TRỨNG MAYAP - HƯỚNG DẪN VẬN HÀNH VÀ MÃ LỖI</h1>
 <p><strong>Phiên bản tài liệu:</strong> v1.4 (tên file giữ nguyên để các liên kết cũ vẫn mở được)<br />
-<strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - bản <strong>2.9.6</strong> (Web 1.1.29)<br />
+<strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - bản <strong>2.9.7</strong> (Web 1.1.29)<br />
 <strong>Ngày cập nhật:</strong> 03/11/2026<br />
 <strong>Nguồn chuẩn mã lỗi:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0/machine_control.h</code></p>
 <blockquote>
@@ -567,4 +567,14 @@ tr:target td:first-child strong{color:#8a5a00}
 <li>Trên Web: chỉ khi máy đang bật <strong>Chế độ nhà phát triển</strong>, nút <em>Quay lại phần mềm trước đó</em> trong Cài đặt gửi lệnh sau khi bạn xác nhận. Cả hai cách yêu cầu đã dừng mẻ, công tắc nhiệt tắt và còn bản cũ trong máy (chỉ lùi được một bậc).</li>
 </ul>
 <hr />
-<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 2.9.6</strong></p></main></body></html>
+<h1>11. Hệ số heater của lò (Nâng cao)</h1>
+<p>Từ 2.9.7 máy nhớ <strong>hệ số heater</strong> (độ nóng lên của lò trên mỗi 1% công suất) và thời gian trễ mà nó đo được ở lần lên nhiệt hết ga gần nhất. Hai số này được lưu trong bộ nhớ EEPROM ngoài (hai bản có kiểm tra CRC, mất điện giữa lúc ghi vẫn còn một bản đọc được), và được nạp lại sau mỗi lần khởi động. Nhờ đó khi khởi động lại gần nhiệt độ đặt rồi mở cửa, lò lên lại nhanh và không dao động như khi máy phải đoán số này.</p>
+<ul>
+<li>Máy chưa từng có lần lên nhiệt nguội nào (mới nạp phần mềm, hoặc vừa xóa học nhiệt) dùng số mặc định cho đến lần lên nhiệt nguội đầu tiên.</li>
+<li>Ghi tối đa một lần trong 10 phút và chỉ khi số đo đổi hơn 3%: vài lần mỗi ngày là cùng, trên chip chịu một triệu lần ghi.</li>
+<li><strong>Nhập tay:</strong> Cài đặt chung → Hệ thống → Nâng cao (cần mã kỹ thuật) → <em>Gia nhiet</em> → <em>He so heater</em>. Mặc định <em>TU DONG</em>; hoặc chọn một trong 7 mức 0,6 / 0,8 / 1,0 / 1,4 / 2,0 / 3,0 / 5,0 (×10<sup>-4</sup> °C/giây cho mỗi 1% công suất). Lò chậm, nhiều xe đầy trứng: mức thấp (lò của chủ máy đo được khoảng 1,0); lò nhỏ, nhanh: mức cao.</li>
+<li>Giá trị nhập tay là giá trị bắt đầu: lần lên nhiệt hết ga kế tiếp đo lại và thay thế nó. Chọn lại <em>TU DONG</em> thì máy dùng lại số đã nhớ.</li>
+<li><em>Xoa du lieu hoc nhiet</em> (Nâng cao) xóa cả số đã nhớ trong EEPROM; mức nhập tay là một cài đặt nên được giữ.</li>
+</ul>
+<hr />
+<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 2.9.7</strong></p></main></body></html>

@@ -16,6 +16,7 @@
 #include "advanced_history.h"
 #include "tech_request.h"
 #include "thermal_v3_adapter.h"
+#include "thermal_gain_record.h"
 #include "sensor_fine.h"
 #include "heater_response_watch.h"
 #include "vent_line.h"
@@ -1483,6 +1484,7 @@ inline void sanitizeMachineConfig(MachineConfig &cfg) {
       static_cast<int>(cfg.humidifierHysteresisRh), 1, 10));
   if (!cfg.humidifierInstalled) cfg.humidifierEnabled = false;
   if (cfg.sensorResolutionMode > 2U) cfg.sensorResolutionMode = 0U;
+  if (cfg.ovenGainMode >= thermalgain::MANUAL_LEVELS) cfg.ovenGainMode = 0U;
 
   cfg.ventScheduleCount = static_cast<uint8_t>(constrain(
       static_cast<int>(cfg.ventScheduleCount), 1, VENT_SCHEDULE_MAX_RUNS));
@@ -1915,7 +1917,7 @@ inline PackedMachineConfigV1 packConfig(const MachineConfig &c) {
   p.ventScheduleHour6 = c.ventScheduleHour6;
   p.adaptiveThermalBalanceEnabled = static_cast<uint8_t>((c.adaptiveThermalBalanceEnabled ? 1U : 0U) |
       ((c.sensorResolutionMode <= 2U ? c.sensorResolutionMode : 0U) << 1U) | (c.smartThermalEnabled ? 8U : 0U) |
-      (c.predictiveThermalEnabled ? 0U : 16U));
+      (c.predictiveThermalEnabled ? 0U : 16U) | ((c.ovenGainMode < thermalgain::MANUAL_LEVELS ? c.ovenGainMode : 0U) << 5U));
   p.ventAutoEnabled = c.ventAutoEnabled ? 1U : 0U;
   p.ventProfileLevel = c.ventProfileLevel;
   p.ventCycleMinutes = c.ventCycleMinutes;
@@ -1987,6 +1989,7 @@ inline MachineConfig unpackConfig(const PackedMachineConfigV1 &p) {
   { const uint8_t mode = static_cast<uint8_t>((p.adaptiveThermalBalanceEnabled >> 1U) & 3U); c.sensorResolutionMode = mode <= 2U ? mode : 0U; }
   c.smartThermalEnabled = (p.adaptiveThermalBalanceEnabled & 8U) != 0U;
   c.predictiveThermalEnabled = (p.adaptiveThermalBalanceEnabled & 16U) == 0U;
+  c.ovenGainMode = static_cast<uint8_t>((p.adaptiveThermalBalanceEnabled >> 5U) & 7U);
   c.ventAutoEnabled = p.ventAutoEnabled != 0U;
   c.ventProfileLevel = p.ventProfileLevel;
   c.ventCycleMinutes = p.ventCycleMinutes;
@@ -2212,6 +2215,14 @@ static_assert(EEPROM_ADDR_TECH_AUTH_A + sizeof(TechAccess::AuthRecord) <= EEPROM
 static_assert(EEPROM_ADDR_TECH_AUTH_B + sizeof(TechAccess::AuthRecord) <= EEPROM_ADDR_ADV_HISTORY, "auth B overlaps the advanced history");
 static_assert(sizeof(AdvancedHistory::Record) <= EEPROM_ADV_HISTORY_SLOT_BYTES, "advanced history record does not fit its slot");
 static_assert(EEPROM_ADDR_ADV_HISTORY + AdvancedHistory::Slots * EEPROM_ADV_HISTORY_SLOT_BYTES <= EEPROM_CAPACITY_BYTES, "advanced history beyond the chip");
+// What the thermal controller measured about this oven (heater gain, transit time): two CRC slots, see thermal_gain_record.h.
+constexpr uint16_t EEPROM_ADDR_THERMAL_GAIN_A = 0x3200U;
+constexpr uint16_t EEPROM_ADDR_THERMAL_GAIN_B = 0x3240U;
+constexpr uint16_t EEPROM_THERMAL_GAIN_SLOT_BYTES = 0x0040U;
+static_assert(EEPROM_ADDR_THERMAL_GAIN_A >= EEPROM_ADDR_ADV_HISTORY + AdvancedHistory::Slots * EEPROM_ADV_HISTORY_SLOT_BYTES, "thermal gain A overlaps the advanced history");
+static_assert(EEPROM_ADDR_THERMAL_GAIN_A + EEPROM_THERMAL_GAIN_SLOT_BYTES <= EEPROM_ADDR_THERMAL_GAIN_B, "thermal gain A overlaps B");
+static_assert(sizeof(thermalgain::Record) <= EEPROM_THERMAL_GAIN_SLOT_BYTES, "thermal gain record does not fit its slot");
+static_assert(EEPROM_ADDR_THERMAL_GAIN_B + EEPROM_THERMAL_GAIN_SLOT_BYTES <= EEPROM_CAPACITY_BYTES, "thermal gain beyond the chip");
 
 class PersistentStore {
  public:
@@ -2328,6 +2339,30 @@ class PersistentStore {
     if (!writeRecord(target, rec)) return false;
     TechAccess::AuthRecord verify{};
     return readRecord(target, verify) && TechAccess::recordValid(verify) && memcmp(&verify, &rec, sizeof(rec)) == 0;
+  }
+  // ---- thermal gain record (kAir, transit time of this oven): two alternating slots with sequence + CRC ---------------------
+  // Returns true when a valid record was found (the newest of the two).
+  bool loadThermalGain(thermalgain::Record &best) {
+    if (!ready_) return false;
+    thermalgain::Record a{}, b{};
+    const bool readA = readRecord(EEPROM_ADDR_THERMAL_GAIN_A, a), readB = readRecord(EEPROM_ADDR_THERMAL_GAIN_B, b);
+    return thermalgain::pick(a, readA, b, readB, best) != 0U;
+  }
+  bool saveThermalGain(float kAir, float tau) {
+    if (!ready_) return false;
+    thermalgain::Record a{}, b{};
+    const bool readA = readRecord(EEPROM_ADDR_THERMAL_GAIN_A, a), readB = readRecord(EEPROM_ADDR_THERMAL_GAIN_B, b);
+    bool toA = true;
+    const thermalgain::Record rec = thermalgain::nextToWrite(a, readA, b, readB, kAir, tau, toA);
+    const uint16_t target = toA ? EEPROM_ADDR_THERMAL_GAIN_A : EEPROM_ADDR_THERMAL_GAIN_B;   // the slot that does NOT hold the newest record
+    if (!thermalgain::valid(rec) || !writeRecord(target, rec)) return false;
+    thermalgain::Record verify{};
+    return readRecord(target, verify) && memcmp(&verify, &rec, sizeof(rec)) == 0;
+  }
+  bool eraseThermalGain() {
+    if (!ready_) return false;
+    const thermalgain::Record blank{};                                    // magic 0: never valid
+    return writeRecord(EEPROM_ADDR_THERMAL_GAIN_A, blank) && writeRecord(EEPROM_ADDR_THERMAL_GAIN_B, blank);
   }
   // ---- advanced-config history slots ------------------------------------------------------------------------------------
   bool readAdvHistory(uint8_t slot, AdvancedHistory::Record &out) const {
@@ -5214,10 +5249,51 @@ class MachineController {
     return ok;
   }
   bool clearThermalLearning() {
-    const bool ok = eraseLearnedBlob();
+    bool ok = eraseLearnedBlob();
+    if (store_.ready() && !store_.eraseThermalGain()) ok = false;
+    gainHave_ = false;
+    gainAppliedMode_ = 0xFFU;                                           // the manual value (a setting, not learned) is applied again
+    gainLastSaveMs_ = millis();
     thermalV3_.reset();
     return ok;
   }
+
+  // ---- The numbers of the OVEN (heater gain, transit time) ----
+  // Read once from the EEPROM when it is ready, handed to the controller; written back after a climb has MEASURED them and they moved (thermal_gain_record.h:
+  // at most once in 10 minutes, a few times a day at the very most). A value typed on the HMI (NANG CAO > GIA NHIET) is applied on top, and wins until the
+  // next measured climb. Called from the thermal slot, before the controller runs.
+  void serviceThermalGain(uint32_t now) {
+    if (!store_.ready()) return;
+    if (!gainLoaded_) {
+      gainLoaded_ = true;
+      thermalgain::Record r{};
+      if (store_.loadThermalGain(r)) {
+        thermalV3_.controller().restore(r.kAir, r.tau);
+        gainSaved_ = r; gainHave_ = true;
+      }
+      gainLastSaveMs_ = now;
+    }
+    const uint8_t mode = config_.ovenGainMode;
+    if (mode != gainAppliedMode_) {                                     // at start, or when the owner changed the setting
+      const bool first = gainAppliedMode_ == 0xFFU;
+      gainAppliedMode_ = mode;
+      if (mode != 0U) thermalV3_.controller().restore(thermalgain::manualKAir(mode), 0.0f);
+      else if (!first && gainHave_) thermalV3_.controller().restore(gainSaved_.kAir, gainSaved_.tau);   // back to automatic: what was kept
+    }
+    if (elapsedMs(now, gainLastSaveMs_) < thermalgain::GAIN_SAVE_MIN_MS) return;
+    const thermalv3::Controller &c = thermalV3_.controller();
+    const float tau = c.tauMeasured() ? c.tauTransit() : (gainHave_ ? gainSaved_.tau : 0.0f);
+    if (!thermalgain::wanted(c.kAirMeasured(), gainHave_, gainSaved_.kAir, gainSaved_.tau, c.kAir(), tau, elapsedMs(now, gainLastSaveMs_))) return;
+    gainLastSaveMs_ = now;
+    if (store_.saveThermalGain(c.kAir(), tau)) {
+      gainSaved_ = thermalgain::make(gainSaved_.sequence + 1UL, c.kAir(), tau); gainHave_ = true;
+      mayapSerialPrintf(false, "[THERMAL] kept kAir=%.2e tau=%.0f s\n", static_cast<double>(c.kAir()), static_cast<double>(tau));
+    }
+  }
+  bool gainLoaded_ = false, gainHave_ = false;
+  thermalgain::Record gainSaved_{};
+  uint8_t gainAppliedMode_ = 0xFFU;
+  uint32_t gainLastSaveMs_ = 0U;
 
   // ---- Thermal V3 slot glue ----
   float thermalV3SensorStepC() const {                          // the step of the value the controller sees: the locked sensor format decides, an unlocked one is treated as the coarse 0.1
@@ -5276,6 +5352,7 @@ class MachineController {
     return si;
   }
   float thermalV3Command(uint32_t now, bool permit, bool shadow) {
+    serviceThermalGain(now);
     const uint32_t t0 = static_cast<uint32_t>(esp_timer_get_time());
     const float u = thermalV3_.step(buildThermalV3SlotIn(now, permit, shadow));
     slotLastUs_ = static_cast<uint32_t>(esp_timer_get_time()) - t0;

@@ -189,6 +189,11 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/heater-response-watch.cpp -o /tmp/mayap-heater-response-watch
           /tmp/mayap-heater-response-watch
 
+      - name: "Thermal gain record (kAir and transit time kept in the EEPROM): CRC, two alternating slots, every cut of a write, when a write is wanted, manual levels, restore() limits"
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-gain-record.cpp -o /tmp/mayap-thermal-gain-record
+          /tmp/mayap-thermal-gain-record
+
       - name: "Thermal V3 closed loop: the real controller and the real E115 rule on simulated ovens (first climb also after an idle start, door, cold tray, vent, set-point step, reboot, a day of ordinary operation, dead heater), next to the 2.3.4 pair, and on the oven fitted to the 29/10 batch"
         run: |
           g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-closed-loop.cpp -o /tmp/mayap-thermal-closed-loop
