@@ -125,12 +125,7 @@ class Controller {
 
     // --- power: hold plus a saturating function of the PREDICTED error (the heat on its way is counted before it arrives)
     updateInflight();
-    float effLead = lead_;
-    if (e > 0.0f && e < nearBand_) {
-      const float ratio = e / std::max(1.0e-6f, nearBand_);
-      effLead *= (0.4f + 0.6f * ratio);
-    }
-    float el = e - effLead;
+    float el = e - lead_;
     if (e <= 0.0f && el > 0.0f) el = e;
 
     const float span = std::max(1.0f, cap_ - hold_);
@@ -145,7 +140,7 @@ class Controller {
 
     if (!door_ && !doorLatch_ && std::fabs(e) <= nearBand_ && in.permit && !in.shadow) {
       narrowI_ += e * dt * 0.015f;
-      narrowI_ = std::max(-3.0f, std::min(5.0f, narrowI_));
+      narrowI_ = std::max(-2.0f, std::min(2.0f, narrowI_));
     } else if (door_ || doorLatch_ || std::fabs(e) > 2.0f * nearBand_) {
       narrowI_ *= 0.96f;
     }
