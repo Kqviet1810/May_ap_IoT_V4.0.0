@@ -110,3 +110,44 @@ The request now moves by +-7 % for the 160 s of a fan feed-forward pulse (that i
 
 Limits: the first start of a machine that has never measured its gain is as slow as before (the stored number is what makes it fast); the fan's share is learned in units of the gain the
 controller believes, so it takes about five runs to converge there instead of three. A 0.1 degC sensor cannot show 37.50 against 37.46.
+
+## 2.9.2 (field logs of 03/11 and 04/11, firmware 2.9.0 / 2.9.1)
+
+The owner listed ten faults seen on the machine. Eight of them have one root: **the controller believed numbers that are not this oven's** (the gain 2.7 x too high, the
+delay 1.5 x too long), and several of its rules then read the model's opinion where the measurement was available. What was changed, per fault, and what was measured.
+Everything below is simulation (the rig of `tests/thermal-sim.h`, the fleet bench of `tools/thermal-research`) and the two real logs replayed; **no run on the machine yet**.
+
+| # | Fault | Cause found in the code | Change | Measured (2.9.1 -> 2.9.2) |
+|---|---|---|---|---|
+| 1 | Stuck 0.3 degC under SV after a start next to SV (log 03/11): command only hold + 1.5 % | `KAIR_WARM` 2.5e-4 on an oven of 9e-5: `kn` and the cut above SV 2.7 x too weak; `lead_` believed 0.15 degC of heat on its way under a flat PV | Priors of THIS machine: kAir 9e-5, tau 100 s, one prior (no `KAIR_WARM`/`KAIR_START`). The heat on its way is capped by the measured slope when the command has been steady for the whole pipe (`STEADY_PIPE_FRAC`) | `log-oven`, 0.1 degC under SV, no stored numbers: back within 0.05 degC in 20.1 -> 5.5 .. 6.2 min on ovens of td+tl 60 .. 190 s |
+| 2 | Scheduled fan ran at the start of a batch 0.2 degC under SV: PV 37.3 -> 37.12 | `WARMUP_VENT_HOLD_ERR_C` = 1.0: the hold applied only more than 1 degC under SV, and the cycle of the day profile starts with its fan block | `WARMUP_VENT_HOLD_ERR_C` = `WARMUP_VENT_RELEASE_ERR_C` = 0.05 degC | by the code: a batch more than 0.05 degC under SV waits (released at 0.05, or after 30 min) |
+| 3 | Feed-forward of the fan raised PV +0.1 degC before the fan, 5 of 5 runs; the overheat fan followed | The feed-forward led the fan by the prior tau (150 s) while the oven answers in 50 .. 130 s; the learned fan loss grew run after run (dips 0.10 -> 0.23 on a 40 s oven) | Prior tau 100 s; while the transit time was never measured the lead is 0.85 x tau; the feed-forward is cancelled when PV is 0.05 degC over SV before the fan has started (`FF_BUMP_C`) | td+tl 60 .. 130 s: dip of the fan 0.11 -> 0.02 .. 0.04 by the 5th run, largest overshoot +0.03 .. +0.05 (2.9.1 on a 40 s oven: +0.23) |
+| 4 | The machine never measured its oven (`identified = 0`, `learn_saved = 0` on every line) | Measured only on a saturated climb of 1.4 tau; a full oven that starts near SV has none. And the log column `learn` was hard-wired to 0 | Not solved by a new estimator: with the priors of the machine the missing measurement no longer costs minutes (see 1, 3). `learn` in the PID log now reports where the numbers came from (0 priors, 1 gain measured, 2 gain and tau, bit 2: a record is in NVS) | the Web columns `learn_src` / `learn_saved` are real from this version |
+| 5 | Load falling 22 -> 6 % in 4 hours: PV over SV 29 % of the time, peak +0.18 | The load estimate was frozen for the whole run of EVERY fan, also the fan of the vent line, which runs exactly while the oven is too hot | While a fan of the vent line runs the estimate may only come DOWN; the scheduled fan still freezes it | fleet, the room warms up 7 degC in 2 h: 95 -> 100 % of the ovens pass; contactor starts of the vent line 4 -> 2 (median) |
+| 6 | Hang after a door: command 19 - 21 % under a PV 0.5 - 1.3 degC low for 20+ min | (a) `lead_` trusted a wrong gain; (b) a fall that the model itself expects after an early cut (coasting at kAir x hold) was taken for a door, and the load estimate was frozen for 6 tau | (a) as 1; (b) `door_` also requires the fall to be faster than `kAir x (delayed command - hold)` by half the hold | fleet, door 3 min: 94 -> 100 %; door + cold tray (tray as large as the eggs): 16 -> 68 % |
+| 7 | PV 37.68, command 30 % cut only to 23 % | `3 kn` above SV with a `kn` 2.7 x too small | as 1: `kn` 9.9 -> 41 % per degC | first-climb peak over SV: median +0.32 -> +0.16, p90 +0.55 -> +0.23 |
+| 8 | High line 37.7 touched by a +0.2 overshoot (lines 0.3 degC apart) | The ladder is the owner's setting (not changed). It is hit less: see 3, 7 | - | peak p90 above |
+| 9 | E112 stays up with PV at 37.5, heater blocked | The way out was `every sample <= emergency - 0.3` for 30 s; with the lines set so the level is SV and a 0.1 degC reading flickers 37.5 / 37.6, one 37.6 restarted the 30 s | `clear_mean.h` (`MeanClear`): the MEAN of the window under the level and no sample over level + 0.15; the level is never below SV + 0.05 nor closer than 0.1 to the line. Same for E111 (10 s). The way IN is untouched | `tests/clear-mean.cpp`: a 37.5 / 37.6 flicker clears after 29 s (the old rule never) |
+| 10 | Heavy case: door + cold tray 26 %, room warming 87 %, first climb 32.7 min (p90 58.6), peak +0.6 (p90) | 1, 6, 7 | as above | fleet, 62 realistic ovens, true temperature: mean pass 82.9 -> 95.5 %; first climb median 32.1 -> 32.1 min, p90 55.4 -> 54.0; room warms 95 -> 100 % |
+
+### Limits (read before the field)
+
+* **The heavy case is not solved**: a tray as large as the eggs, cold, after a door passes 68 % of the bench ovens (was 16 %), not 100 %.
+* **The fan feed-forward helps only an oven whose transit time (td + tl) is 60 .. 130 s**. On a 190 s oven (the 29/10 fit) with the prior tau the dip stays 0.10 and the overshoot is +0.125
+  (2.9.1: dip 0.04 .. 0.12, +0.04 .. +0.14 depending on the stored tau). Once a climb has measured the oven the feed-forward uses the measured tau.
+* **The stopwatch overestimates the delay** (reads 90 / 102 / 188 / 222 s on ovens of 60 / 90 / 130 / 190 s) and a 222 s belief closes the 0.1 degC gap in 17 min where 100 s does it in 6.
+  A factor 0.75 instead of 1.05 passes the fleet bench (96.7 %) but fails the closed-loop suite (E115 trips a healthy oven, overshoot of the empty oven), so it was NOT changed.
+* The priors are the machine's. A bench oven with a heater gain (Pmax / Cf) above 4e-4 degC/s per % - more than 4 x this product - overshoots badly on a start that has no stored numbers
+  (it still measures itself on a cold climb) and is left out of the figures above: 27 of the 210 (`11,15,25,34,47,48,53,60,65,71,83,85,89,95,96,98,107,115,122,125,129,132,136,138,139,140,141`;
+  `EXCLUDE=` of `fleet-summary.py`). With them: mean pass 81.0 -> 91.4 %. The first start of a machine with another heater would need its own priors.
+* Faults 5, 8 and 9 were reproduced only as far as the rig allows; the log of 04/11 itself is not in the repository (the bench ovens are not the machine).
+
+### Tests changed (listed because no limit is loosened silently)
+
+* `tests/thermal-v3.cpp`: the energy-in-flight bound 40 -> 60 % (it was tied to the old priors); the transit time range of a real start 90 .. 220 -> 45 .. 225 s; the A-to-B comparison of the prediction skips a steady pipe
+  (capped by the measured slope, tested on its own); `KAIR_WARM` removed; new `testFieldFixes292`.
+* `tests/thermal-scenarios.h`: after a simulated reboot the controller reads back the three numbers of the oven (as the machine does since 2.9.1).
+* `tests/thermal-stall-log.cpp`: largest command 25 -> 75 % (an open-loop replay; the closed-loop equivalent is the `log-oven` gate).
+* `tools/thermal-research/fleet-bench.cpp`: situations 5 and 8 restore the stored numbers (`NORESTORE=1` for a machine that never saved them); `log-oven.cpp`: plant `TD`/`TL`, and the gate now also runs
+  the never-measured oven on four plants. `fleet-summary.py`: `EXCLUDE=` leaves ovens out.
+* New: `tests/clear-mean.cpp`.

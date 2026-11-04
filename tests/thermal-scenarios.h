@@ -60,6 +60,10 @@ class RigT {
   template <class I> static auto setSlope(I &i, float s, int) -> decltype(i.slopeFine, void()) { i.slopeFine = s; }
   template <class I> static void setSlope(I &, float, long) {}
   static constexpr bool fineInput = std::is_same<Ctl, thermalv3::Controller>::value;
+  template <class C> static auto keepOvenNumbers(const C &old, C &fresh, int) -> decltype(fresh.restore(0.0f, 0.0f, 0.0f), void()) {
+    if (old.identified()) fresh.restore(old.kAir(), old.tauMeasured() ? old.tauTransit() : 0.0f, old.fanLoss());
+  }
+  template <class C> static void keepOvenNumbers(const C &, C &, long) {}
  public:
   RigT(const PlantParams &p, double airC, double eggC, double sensorStepC = 0.1) : plant(p, airC, eggC), chain(sensorStepC) {
     for (int i = 0; i < 8; ++i) chain.sample(plant.sensor());
@@ -87,8 +91,9 @@ class RigT {
   double tripTime() const { return tripT_; }
   float setpoint() const { return in.sp; }
   void setSetpoint(double sp) { in.sp = static_cast<float>(sp); }
-  // A reboot (an update, a power blip): everything the controller and the E115 rule had learned or counted is gone.
-  void restartControllers() { ctl = Ctl(); watch = Watch(); }
+  // A reboot (an update, a power blip): everything the controller and the E115 rule had learned or counted is gone, except the three numbers of the OVEN that the
+  // machine keeps in NVS since 2.9.1 (heater gain, transit time, fan loss; written only after a climb has measured them) and reads back after the restart.
+  void restartControllers() { Ctl fresh; keepOvenNumbers(ctl, fresh, 0); ctl = fresh; watch = Watch(); }
   // The controller runs from power-up but the batch starts later: until `seconds` the permit is off (the controller pushes zeros into its
   // ring and the heater is not asked for anything), which is how every first start of a power cycle reaches the controller on the machine.
   void startAt(double seconds) { startS_ = seconds; }

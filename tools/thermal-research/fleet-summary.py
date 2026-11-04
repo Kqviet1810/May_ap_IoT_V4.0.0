@@ -8,6 +8,7 @@ overshoot and the reboots must also keep the reading above 36.5 degC). The two l
 pass when the reading never falls under 37.2 degC, never goes over 37.8 degC and stands at/over SP+0.1 for less than 30 minutes in all.
 """
 import csv
+import os
 import statistics as st
 import sys
 
@@ -42,7 +43,8 @@ def q(a, p):
 
 def main():
     A, B = load(sys.argv[1]), load(sys.argv[2])
-    ks = sorted({k for k, _ in A} & {k for k, _ in B})
+    skip = {int(x) for x in os.environ.get("EXCLUDE", "").split(",") if x.strip()}   # EXCLUDE=132,138: ovens to leave out (e.g. the ones far faster than this product)
+    ks = sorted({k for k, _ in A} & {k for k, _ in B} - skip)
     scs = sorted({s for _, s in A} & {s for _, s in B})
     n = len(ks)
     print(f"{n} ovens")

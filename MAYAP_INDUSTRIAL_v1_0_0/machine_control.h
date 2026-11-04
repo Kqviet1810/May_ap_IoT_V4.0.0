@@ -19,6 +19,7 @@
 #include "sensor_fine.h"
 #include "heater_response_watch.h"
 #include "vent_line.h"
+#include "clear_mean.h"
 #include "alarm_sound.h"
 #include "pid_log.h"
 #include <esp_system.h>
@@ -5181,7 +5182,9 @@ class MachineController {
         s.ctl = static_cast<uint8_t>((v3.doorDetected() ? MayapPidLog::CtlDoor : 0U) | (v3.identified() ? MayapPidLog::CtlIdentified : 0U) |
             static_cast<uint8_t>(tokens << 2) | static_cast<uint8_t>((ventReason_ & 0x0FU) << 4));
       }
-      s.learn = 0U;                                                          // nothing is kept across a restart any more (field kept for the frame layout)
+      // 2.9.2: bits0-1 where the controller's numbers come from (0 the priors, 1 a climb measured the gain, 2 the gain and the transit time), bit2 a record of the oven is in NVS.
+      // It stayed 0 on every line of the logs of 03/11 and 04/11, so "learn_saved = 0" said nothing; now it does.
+      s.learn = static_cast<uint8_t>((v3.identified() ? (v3.tauMeasured() ? 2U : 1U) : 0U) | (physHave_ ? 4U : 0U));
       MayapPidLog::ring().push(s);
     }
   }
@@ -5816,10 +5819,11 @@ class MachineController {
       emergencyActive_ = true;
       emergencyClearTimer_.reset();
     } else if (emergencyActive_) {
-      const bool safeToClear = validSafety &&
-          safetyTemp <= config_.emergencyTemp - EMERGENCY_CLEAR_HYSTERESIS_C;
-      if (emergencyClearTimer_.update(now, safeToClear,
-                                     EMERGENCY_CLEAR_CONFIRM_MS)) {
+      // 2.9.2: the mean of the last EMERGENCY_CLEAR_CONFIRM_MS under the level (clear_mean.h), not every sample: a reading that flickers between two 0.1 degC steps kept
+      // E112 up with PV at SV (field photos of 04/11, lines set 0.3 degC apart).
+      if (emergencyClearTimer_.update(now, validSafety, safetyTemp,
+                                     MeanClear::level(config_.emergencyTemp, EMERGENCY_CLEAR_HYSTERESIS_C, config_.targetTemp),
+                                     EMERGENCY_CLEAR_CONFIRM_MS, CLEAR_MEAN_GUARD_C)) {
         emergencyActive_ = false;
         emergencyClearTimer_.reset();
       }
@@ -5834,10 +5838,9 @@ class MachineController {
         highClearTimer_.reset();
       }
     } else if (!emergencyActive_) {
-      const bool safeToClear = validSafety &&
-          safetyTemp <= config_.highTempAlarm - HIGH_TEMP_CLEAR_HYSTERESIS_C;
-      if (highClearTimer_.update(now, safeToClear,
-                                HIGH_TEMP_CLEAR_CONFIRM_MS)) {
+      if (highClearTimer_.update(now, validSafety, safetyTemp,
+                                MeanClear::level(config_.highTempAlarm, HIGH_TEMP_CLEAR_HYSTERESIS_C, config_.targetTemp),
+                                HIGH_TEMP_CLEAR_CONFIRM_MS, CLEAR_MEAN_GUARD_C)) {
         highTemperatureActive_ = false;
         highTripTimer_.reset();
         highClearTimer_.reset();
@@ -8329,8 +8332,8 @@ class MachineController {
 
   ConditionTimer lowTempTimer_{};
   ConditionTimer highTripTimer_{};
-  ConditionTimer highClearTimer_{};
-  ConditionTimer emergencyClearTimer_{};
+  MeanClear highClearTimer_{};
+  MeanClear emergencyClearTimer_{};
   ConditionTimer humidityTimer_{};
   bool ventTemperatureActive_ = false;
   VentLine ventLine_{};

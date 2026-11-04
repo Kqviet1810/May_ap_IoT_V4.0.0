@@ -6,7 +6,7 @@
 // event, hold %, delay s, minutes over SP+0.1 (total, longest run), minutes to settle within +-0.2, fan minutes, fan starts, lowest hold level.
 // Situations: 0 climb and hold, 1 scheduled fan, 2 one step over SP, 3 door 3 min, 4 door 4.5 min + cold tray, 5 reboot (45 s without power),
 //   6 the room warms up 7 degC in 2 h (the hold the oven needs falls to a few percent), 7 the day profile of the last week (28 of every 40 min the fans run),
-//   8 reboot (45 s), second run (2.8.0 keeps nothing across a restart: the same as 5),
+//   8 reboot (45 s), second run (the same as 5: both read the numbers back from NVS as the machine does since 2.9.1; NORESTORE=1 = a machine that never saved them),
 //   9 the batch is cancelled for 2 min and started again at once (the controller keeps what it learned).
 #ifndef HDR
 #define HDR "../../MAYAP_INDUSTRIAL_v1_0_0/thermal_v3.h"
@@ -107,10 +107,11 @@ static Res run(const PlantParams &p0, int scen) {
     bool fan = vline || sched || hc;
     bool door = (scen == 3 && t >= tEv && t < tEv + 180) || (scen == 4 && t >= tEv && t < tEv + 270);
     if (scen == 4 && !inserted && t >= tEv + 270) { pl.insertColdMass(1.1, 22.0); inserted = true; }
-    if (scen == 8 && !snap.have && t >= tEv - 3600) { snap.kAir = c.kAir(); snap.tau = c.tauTransit(); snap.hold = c.pHold(); snap.pipe = c.pipeLen(); snap.have = true; }
+    if ((scen == 8 || scen == 5) && !snap.have && t >= tEv - 3600) { snap.kAir = c.kAir(); snap.tau = c.tauMeasured() ? c.tauTransit() : 0.0f; snap.hold = c.fanLoss(); snap.pipe = c.pipeLen(); snap.have = true; }   // what serviceThermalPhysics() keeps in NVS: kAir, tau (0 = never measured), fan loss
     bool down = ((scen == 5 || scen == 8) && t >= tEv && t < tEv + 45);
     if ((scen == 5 || scen == 8) && !rebooted && t >= tEv + 45) {
       c.reset();
+      if (snap.have && !getenv("NORESTORE")) c.restore(snap.kAir, snap.tau, snap.hold);   // 2.9.1: the machine reads its numbers back from NVS (NORESTORE=1: a machine that has never saved them)
       rebooted = true;
     }
     const bool paused = scen == 9 && t >= tEv && t < tEv + 120;                  // batch cancelled, started again at once: the controller is frozen, not reset
