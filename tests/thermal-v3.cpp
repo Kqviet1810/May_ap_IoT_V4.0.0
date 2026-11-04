@@ -426,6 +426,26 @@ void testKeptOvenNumbersAndFanFeedForward() {
   printf("  -> Pass\n");
 }
 
+// 2.9.2: strictly 0% power above setpoint (no pumping at 37.6 C)
+void testZeroPowerAboveSetpoint() {
+  printf("Test: strictly zero power above setpoint (37.6 C clamp)...\n");
+  thermalv3::Controller c;
+  c.restore(9.4e-5f, 150.0f, 7.0f);
+  thermalv3::Input in;
+  in.sp = 37.5f;
+  in.pv = 37.6f;
+  in.permit = true;
+  in.capPct = 100.0f;
+  in.dtS = 1.0f;
+  in.fanOnInS = 60.0f;
+  in.fanOffInS = 240.0f;
+  for (int i = 0; i < 60; ++i) {
+    const thermalv3::Output out = c.step(in);
+    assert(out.powerPct == 0.0f);
+  }
+  printf("  -> Pass\n");
+}
+
 int main() {
   printf("=========================================\n");
   printf("RUNNING THERMAL V3 CONTROLLER UNIT TESTS\n");
@@ -443,6 +463,7 @@ int main() {
   testResumeAfterHold();
   testSensorFallback();
   testKeptOvenNumbersAndFanFeedForward();
+  testZeroPowerAboveSetpoint();
   printf("=========================================\n");
   printf("ALL THERMAL V3 TESTS PASSED SUCCESSFULLY!\n");
   printf("=========================================\n");

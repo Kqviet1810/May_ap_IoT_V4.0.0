@@ -38,7 +38,7 @@ constexpr float OBS_POLE_TAU = 1.5f, OBS_LEAK_TAU = 8.0f;   // disturbance obser
 constexpr float PIPE_K = 1.3f;             // heat in flight: the last 1.3 transit times of power (the delay and the tail of the first-order lag behind it)
 constexpr float LEAD_GAIN = 1.4f;          // ... at kAir x 1.4: the climb slope is what the eggs and walls leave of the air's own rate (A7 of the rig: 3.9e-4 against Pmax/Cf = 5.3e-4), and the heat in flight raises the air at that rate (closed-loop rig, door 2 min: overshoot 0.48 -> <= 0.30)
 constexpr float KAIR_START = 1.6e-4f;      // kAir before any climb has been measured: between the slowest oven of the fleet and the middle (higher starts overshoot, lower ones undershoot)
-constexpr float DOOR_LATCH_TAU = 6.0f;      // a door is "open" for the load estimate for at most 6 transit times
+constexpr float DOOR_LATCH_TAU = 2.5f;      // a door is "open" for the load estimate for at most 2.5 transit times
 constexpr float DOOR_LOAD = 0.1f;           // ... and only when the fall is worth a load of 10 % of the headroom (a real door is 5-10 times that; the dip of a landing is not)
 constexpr float HOLD_PRIOR_OF_CAP = 0.12f;
 constexpr float FAN_LEARN_GAIN = 0.7f;      // the share of the measured shortfall of a fan run that is taken into the fan's loss
@@ -79,7 +79,7 @@ class Controller {
     state_ = StIdle; pv_ = NAN; sp_ = 37.5f; cap_ = 100.0f;
     kAir_ = KAIR_START; tau_ = TAU_PRIOR; hold_ = HOLD_PRIOR_OF_CAP * 100.0f;
     identified_ = tauMeasured_ = door_ = wasLive_ = doorLatch_ = nearSeen_ = false; latchT_ = 0.0f;
-    lead_ = slope_ = lsSlope_ = lsSigma_ = 0.0f; sigma_ = 0.02f;
+    lead_ = slope_ = lsSlope_ = lsSigma_ = 0.0f; sigma_ = 0.02f; narrowI_ = 0.0f;
     histHead_ = histCount_ = 0U; liveS_ = secAcc_ = lastCmd_ = 0.0f;
     swOn_ = false; swPv0_ = swT_ = 0.0f;
     pm_ = NAN; rate_ = 0.0f; fanW_ = 0.0f; fanSched_ = fanSchedPrev_ = fanRun_ = false;
@@ -121,20 +121,44 @@ class Controller {
     fanSched_ = in.ventFan && haveSched && in.fanOnInS <= 0.5f;
     if (fanSched_ != fanSchedPrev_) { rate_ = 0.0f; fanSchedPrev_ = fanSched_; }
     float ff = 0.0f;
-    if (haveSched && !in.shadow && fanW_ > 0.0f && in.fanOnInS <= tau_ && in.fanOffInS > tau_) ff = std::min(fanW_, 0.4f * cap_);
+    if (haveSched && !in.shadow && fanW_ > 0.0f && in.fanOnInS <= tau_ && in.fanOffInS > tau_ && in.pv <= in.sp + 0.02f) ff = std::min(fanW_, 0.4f * cap_);
 
     // --- power: hold plus a saturating function of the PREDICTED error (the heat on its way is counted before it arrives)
     updateInflight();
-    const float el = e - lead_;
+    float effLead = lead_;
+    if (e > 0.0f && e < nearBand_) {
+      const float ratio = e / std::max(1.0e-6f, nearBand_);
+      effLead *= (0.4f + 0.6f * ratio);
+    }
+    float el = e - effLead;
+    if (e <= 0.0f && el > 0.0f) el = e;
+
     const float span = std::max(1.0f, cap_ - hold_);
     float d;
     if (el >= farBand_) d = span;
     else if (el >= nearBand_) d = kn_ * nearBand_ + (span - kn_ * nearBand_) * (el - nearBand_) / std::max(1.0e-6f, farBand_ - nearBand_);
     else if (el >= 0.0f) d = kn_ * el;
-    else d = std::max(-hold_, 3.0f * kn_ * el);                           // above SV: three times the gain
-    float cmd = hold_ + ff + d;
+    else {
+      const float brakeGain = (e < 0.0f) ? 3.0f : 1.0f;
+      d = std::max(-hold_, brakeGain * kn_ * el);
+    }
+
+    if (!door_ && !doorLatch_ && std::fabs(e) <= nearBand_ && in.permit && !in.shadow) {
+      narrowI_ += e * dt * 0.015f;
+      narrowI_ = std::max(-3.0f, std::min(5.0f, narrowI_));
+    } else if (door_ || doorLatch_ || std::fabs(e) > 2.0f * nearBand_) {
+      narrowI_ *= 0.96f;
+    }
+
+    float cmd = hold_ + ff + d + narrowI_;
     if (in.shadow) cmd = 0.0f;
     cmd = std::max(0.0f, std::min(cap_, cmd));
+    if (pv_ >= sp_ + 0.08f) {
+      cmd = 0.0f;
+    } else if (pv_ > sp_) {
+      const float overFrac = (pv_ - sp_) / 0.08f;
+      cmd = std::min(cmd, hold_ * (1.0f - overFrac));
+    }
 
     // --- hold's correction by the predicted error (inside the landing band only; the balance below is the other, slower, writer)
 
@@ -145,7 +169,10 @@ class Controller {
     // shut (closed-loop rig, door 5 min: overshoot 1.04 -> 0.20 degC; 10 min: 2.39 -> 0.11).
     if (e < 2.0f * farBand_) nearSeen_ = true;                       // a door opens on an oven that has been running near SV, not on a cold start
     if (door_ && latchT_ <= 0.0f && nearSeen_ && -lsSlope_ / kAir_ > DOOR_LOAD * std::max(1.0f, cap_ - hold_)) latchT_ = 1.0e-3f;
-    if (latchT_ > 0.0f) { latchT_ += dt; if (e <= nearBand_) latchT_ = 0.0f; }
+    if (latchT_ > 0.0f) {
+      latchT_ += dt;
+      if (e <= nearBand_ || (latchT_ > 60.0f && lsSlope_ > 0.001f)) latchT_ = 0.0f;
+    }
     doorLatch_ = latchT_ > 0.0f && latchT_ <= DOOR_LATCH_TAU * tau_;
     state_ = in.shadow ? StFrozen : (door_ ? StDoor : (e > farBand_ && slope_ >= 0.0f ? StClimb : StTrack));
 
@@ -192,7 +219,7 @@ class Controller {
   float dNow() const { return hold_; }
   float haPct() const { return 0.0f; }
   float sigmaPred() const { return sigma_; }
-  float integral() const { return 0.0f; }
+  float integral() const { return narrowI_; }
   float slopeMks() const { return slope_ * 1000.0f; }
   bool doorDetected() const { return door_; }
 
@@ -321,7 +348,7 @@ class Controller {
   float fanPv0_ = 0.0f, fanAcc_ = 0.0f, fanT_ = 0.0f;
   float fanW_ = 0.0f;                       // what the scheduled fan takes out of the oven [% of the heater]: learned while it runs, fed forward one transit time ahead
   bool identified_ = false, tauMeasured_ = false, door_ = false, wasLive_ = false;
-  float lead_ = 0.0f, slope_ = 0.0f, lsSlope_ = 0.0f, lsSigma_ = 0.0f, sigma_ = 0.02f;
+  float lead_ = 0.0f, slope_ = 0.0f, lsSlope_ = 0.0f, lsSigma_ = 0.0f, sigma_ = 0.02f, narrowI_ = 0.0f;
   float inflightMax_ = 1.0f, farBand_ = 0.5f, nearBand_ = 0.15f, kn_ = 30.0f;
   float liveS_ = 0.0f, secAcc_ = 0.0f, lastCmd_ = 0.0f;
   bool swOn_ = false; float swPv0_ = 0.0f, swT_ = 0.0f;
