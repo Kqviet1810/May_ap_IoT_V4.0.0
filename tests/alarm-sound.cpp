@@ -39,20 +39,20 @@ int main() {
     Rig r;
     r.at(0, 37.8f, 37.7f);
     r.at(60, 37.75f, 37.7f);
-    r.at(100, 37.69f, 37.7f); r.at(103, 37.69f, 37.7f);                        // under the line for 2 s: forgotten
+    r.at(100, 37.5f, 37.7f); r.at(111, 37.5f, 37.7f);                          // clearly under the line (0.2) for 10 s: forgotten
     assert(!r.v.sounding());
-    r.at(110, 37.72f, 37.7f);                                                  // over again: a new grace time from here
+    r.at(112, 37.72f, 37.7f);                                                  // over again: a new grace time from here
     r.at(250, 37.72f, 37.7f);
-    assert(!r.v.audible());                                                    // 140 s since the new crossing
-    r.at(291, 37.72f, 37.7f);
+    assert(!r.v.audible());                                                    // 138 s since the new crossing
+    r.at(293, 37.72f, 37.7f);
     assert(r.v.audible());
   }
-  // 3. Far over the line (panicC 0.5): at once, whatever the grace time says.
+  // 3. Far over the line (panicC 0.3): at once, whatever the grace time says.
   {
     Rig r;
-    r.at(0, 38.15f, 37.7f);
+    r.at(0, 37.95f, 37.7f);
     assert(!r.v.audible());
-    r.at(1, 38.2f, 37.7f);
+    r.at(1, 38.05f, 37.7f);
     assert(r.v.audible() && r.v.siren(r.ms(1), r.p));
   }
   // 4. Once loud, it stops as soon as the reading is under the line (2 s to confirm) and stays silent until a new crossing has lived through its grace time.
@@ -60,14 +60,16 @@ int main() {
     Rig r;
     r.at(0, 37.9f, 37.7f); r.at(181, 37.9f, 37.7f);
     assert(r.v.audible());
-    r.at(200, 37.69f, 37.7f);
+    r.at(200, 37.69f, 37.7f); r.at(215, 37.69f, 37.7f);
+    assert(r.v.audible());                                                     // 0.01 under the line is not under it: it keeps sounding
+    r.at(220, 37.5f, 37.7f);
     assert(r.v.audible());                                                     // confirm time not passed
-    r.at(202, 37.69f, 37.7f);
-    assert(!r.v.audible() && !r.v.sounding() && !r.v.siren(r.ms(202), r.p));
-    r.at(210, 37.7f, 37.7f);                                                   // back at the line: grace starts, silent
+    r.at(230, 37.5f, 37.7f);
+    assert(!r.v.audible() && !r.v.sounding() && !r.v.siren(r.ms(230), r.p));
+    r.at(231, 37.7f, 37.7f);                                                   // back at the line: grace starts, silent
     assert(!r.v.audible());
     // the line itself clearing resets everything at once
-    r.at(211, 37.7f, 37.7f, false);
+    r.at(232, 37.7f, 37.7f, false);
     assert(!r.v.audible() && !r.v.sounding());
   }
   // 5. Continuous for 5 minutes after it starts, then pulsed 5 s on / 25 s off.
@@ -112,17 +114,17 @@ int main() {
     r.v.update(r.ms(182), false, NAN, 37.7f, true, r.p);
     assert(!r.v.audible());
   }
-  // 8. The Emergency line is the same voice (default lines 38.2 / 39.0): grace time, panic at 39.5, quiet under the line.
+  // 8. The Emergency line is the same voice (default lines 38.2 / 39.0): grace time, panic at 39.3, quiet under the line.
   {
     Rig r;
     r.at(0, 39.0f, 39.0f);
     assert(!r.v.audible());
     r.at(181, 39.0f, 39.0f);
     assert(r.v.siren(r.ms(181), r.p));
-    r.at(190, 38.99f, 39.0f); r.at(193, 38.99f, 39.0f);
+    r.at(190, 38.8f, 39.0f); r.at(201, 38.8f, 39.0f);
     assert(!r.v.audible());
     Rig q;
-    q.at(0, 39.5f, 39.0f);
+    q.at(0, 39.35f, 39.0f);
     assert(q.v.audible());
   }
   // 8b. The 32-bit clock wraps.
@@ -132,8 +134,28 @@ int main() {
     assert(!r.v.audible());
     r.at(181, 37.8f, 37.7f);
     assert(r.v.siren(r.ms(181 + 100), r.p) && !r.v.siren(r.ms(181 + 310), r.p));
-    r.at(500, 37.45f, 37.7f); r.at(503, 37.45f, 37.7f);
+    r.at(500, 37.45f, 37.7f); r.at(511, 37.45f, 37.7f);
     assert(!r.v.audible());
+  }
+  // 8c. 2.9.2, the field fault of 04/11: a reading that flickers one sensor step around the line (37.6 / 37.8 in stretches of 3 s, line 37.7) for 10 minutes. The old voice forgot the crossing at every
+  //     dip, restarted its 180 s grace time and never sounded; now it sounds after the grace time and keeps sounding through the flicker.
+  {
+    Rig r;
+    bool sounded = false;
+    int firstAt = -1;
+    for (int sec = 0; sec < 600; ++sec) {
+      r.at(sec, ((sec / 3) % 2) ? 37.8f : 37.6f, 37.7f);          // 3 s on one step, 3 s on the other
+      if (r.v.audible() && !sounded) { sounded = true; firstAt = sec; }
+      if (sounded) assert(r.v.audible());
+    }
+    assert(sounded && firstAt >= 180 && firstAt <= 183);
+    // ... and a reading that stays a whole step under the line for 10 s still silences it.
+    r.at(601, 37.5f, 37.7f); r.at(612, 37.5f, 37.7f);
+    assert(!r.v.audible());
+    // 0.5 over for less than the grace time (a vot of +0.4 that falls back inside 3 minutes): silent, as the owner asked in 2.8.1; 0.3 over: at once.
+    Rig q;
+    q.at(0, 38.0f, 37.7f); q.at(60, 38.05f, 37.7f);
+    assert(q.v.audible());
   }
 
   // 9. The Chime class: a chime for every code that appears, a thin reminder (here 30 minutes) while one lasts, silent when none is left.

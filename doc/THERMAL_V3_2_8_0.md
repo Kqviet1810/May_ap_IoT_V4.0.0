@@ -151,3 +151,12 @@ Everything below is simulation (the rig of `tests/thermal-sim.h`, the fleet benc
 * `tools/thermal-research/fleet-bench.cpp`: situations 5 and 8 restore the stored numbers (`NORESTORE=1` for a machine that never saved them); `log-oven.cpp`: plant `TD`/`TL`, and the gate now also runs
   the never-measured oven on four plants. `fleet-summary.py`: `EXCLUDE=` leaves ovens out.
 * New: `tests/clear-mean.cpp`.
+
+### 2.9.2, the siren of the over-temperature lines (`alarm_sound.h`)
+
+Reported: the siren of E111 / E112 "never sounds, even when PV overshoots a lot". Found: the crossing was forgotten after the reading stood under the line for 2 s, and every
+forgetting started the 180 s grace time again. The reading is a 0.1 degC staircase that stays 3 - 5 s on one step and then on the other, so a PV that hovered over a line for an hour
+(37.6 / 37.8 around 37.7) never lived through one grace time. Changes: the crossing is forgotten only when the reading is 0.15 degC (more than one sensor step) under the line for 10 s
+(`offBelowC` 0 -> 0.15, `offConfirmMs` 2 s -> 10 s), and the siren sounds at once when 0.3 degC over the line (`panicC` 0.5 -> 0.3). The 180 s grace time for an overshoot that falls
+back (the first climb) is kept as asked in 2.8.1. Cost: a siren that is already sounding stops a little later (a full step under the line, 10 s). The protective actions are untouched.
+`tests/alarm-sound.cpp` section 8c reproduces the flicker (the 2.9.1 voice fails it) and the other sections follow the new numbers (2 s -> 10 s, 0.5 -> 0.3, 0.2 -> 0.15 degC).
