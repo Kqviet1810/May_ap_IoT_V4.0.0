@@ -19,7 +19,6 @@
 #include "sensor_fine.h"
 #include "heater_response_watch.h"
 #include "vent_line.h"
-#include "clear_mean.h"
 #include "alarm_sound.h"
 #include "pid_log.h"
 #include <esp_system.h>
@@ -5182,9 +5181,7 @@ class MachineController {
         s.ctl = static_cast<uint8_t>((v3.doorDetected() ? MayapPidLog::CtlDoor : 0U) | (v3.identified() ? MayapPidLog::CtlIdentified : 0U) |
             static_cast<uint8_t>(tokens << 2) | static_cast<uint8_t>((ventReason_ & 0x0FU) << 4));
       }
-      // 2.9.2: bits0-1 where the controller's numbers come from (0 the priors, 1 a climb measured the gain, 2 the gain and the transit time), bit2 a record of the oven is in NVS.
-      // It stayed 0 on every line of the logs of 03/11 and 04/11, so "learn_saved = 0" said nothing; now it does.
-      s.learn = static_cast<uint8_t>((v3.identified() ? (v3.tauMeasured() ? 2U : 1U) : 0U) | (physHave_ ? 4U : 0U));
+      s.learn = 0U;                                                          // nothing is kept across a restart any more (field kept for the frame layout)
       MayapPidLog::ring().push(s);
     }
   }
@@ -5193,9 +5190,9 @@ class MachineController {
   void updateSoundPolicy(uint32_t now) {
     const alarmsound::LoudVoice::Params lp;
     const bool valid = std::isfinite(safetyTempLast_);
-    // Both over-temperature lines are LOUD at once and stop when the reading is 0.2 degC under the line (the protective actions keep their own hysteresis).
-    highLoud_.update(now, valid, safetyTempLast_, config_.highTempAlarm, highTemperatureActive_, lp);
-    emergencyLoud_.update(now, valid, safetyTempLast_, config_.emergencyTemp, emergencyActive_, lp);
+    // Both over-temperature lines are LOUD while their alarm is on and silent the moment it is off: the alarm itself is a plain comparison with the line.
+    highLoud_.update(now, valid, safetyTempLast_, highTemperatureActive_, lp);
+    emergencyLoud_.update(now, valid, safetyTempLast_, emergencyActive_, lp);
     const bool conflict = faults_.live(FaultCode::OutputConflict);
     if (!conflict) outputConflictMutedUntil_ = 0U;
     const bool conflictSiren = conflict && timeReached(now, outputConflictMutedUntil_);
@@ -5209,55 +5206,6 @@ class MachineController {
 
   // ---- Thermal learning: 2.8.0 keeps nothing across a restart (the controller reads the oven again in a transit time or two) ----
   // A record written by an older version may still sit in NVS; "clear thermal learning" erases it and restarts the controller from its priors.
-  // ---- The numbers of the oven (2.9.1): heater gain, transit time, fan loss. Written when a climb or a fan run has changed them, read once after a restart ----
-  struct ThermalPhysRecord { uint16_t version; uint16_t crc; float kAir; float tau; float fanW; };
-  static uint16_t thermalPhysCrc(const ThermalPhysRecord &r) {
-    const uint8_t *b = reinterpret_cast<const uint8_t *>(&r) + 4U;
-    uint16_t crc = 0xFFFFU;
-    for (size_t i = 0U; i < sizeof(ThermalPhysRecord) - 4U; ++i) {
-      crc = static_cast<uint16_t>(crc ^ (static_cast<uint16_t>(b[i]) << 8U));
-      for (uint8_t k = 0U; k < 8U; ++k) crc = static_cast<uint16_t>((crc & 0x8000U) ? ((crc << 1U) ^ 0x1021U) : (crc << 1U));
-    }
-    return crc;
-  }
-  void serviceThermalPhysics(uint32_t now) {
-    if (!physLoaded_) {
-      physLoaded_ = true;
-      Preferences p;
-      ThermalPhysRecord r{};
-      if (p.begin(THERMAL_LEARN_NVS_NAMESPACE, true)) {
-        const size_t n = p.getBytes(THERMAL_PHYS_NVS_KEY, &r, sizeof(r));
-        p.end();
-        if (n == sizeof(r) && r.version == 1U && r.crc == thermalPhysCrc(r)) {
-          thermalV3_.controller().restore(r.kAir, r.tau, r.fanW);
-          physSaved_ = r; physHave_ = true;
-        }
-      }
-      physLastSaveMs_ = now;
-      return;
-    }
-    if (elapsedMs(now, physLastSaveMs_) < 600000UL) return;                 // at most one write every 10 minutes
-    const thermalv3::Controller &c = thermalV3_.controller();
-    if (!c.identified()) return;
-    const float tau = c.tauMeasured() ? c.tauTransit() : (physHave_ ? physSaved_.tau : 0.0f);
-    const bool changed = !physHave_ || fabsf(c.kAir() - physSaved_.kAir) > 0.03f * physSaved_.kAir ||
-                         fabsf(tau - physSaved_.tau) > 5.0f || fabsf(c.fanLoss() - physSaved_.fanW) > 0.5f;
-    if (!changed) return;
-    physLastSaveMs_ = now;
-    ThermalPhysRecord r{};
-    r.version = 1U; r.kAir = c.kAir(); r.tau = tau; r.fanW = c.fanLoss(); r.crc = thermalPhysCrc(r);
-    Preferences p;
-    if (p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) {
-      if (p.putBytes(THERMAL_PHYS_NVS_KEY, &r, sizeof(r)) == sizeof(r)) {
-        physSaved_ = r; physHave_ = true;
-        mayapSerialPrintf(false, "[THERMAL] kept kAir=%.2e tau=%.0f s fan=%.1f %%\n", static_cast<double>(r.kAir), static_cast<double>(r.tau), static_cast<double>(r.fanW));
-      }
-      p.end();
-    }
-  }
-  bool physLoaded_ = false, physHave_ = false;
-  ThermalPhysRecord physSaved_{};
-  uint32_t physLastSaveMs_ = 0U;
   bool eraseLearnedBlob() {
     Preferences p;
     if (!p.begin(THERMAL_LEARN_NVS_NAMESPACE, false)) return false;
@@ -5268,7 +5216,6 @@ class MachineController {
   bool clearThermalLearning() {
     const bool ok = eraseLearnedBlob();
     thermalV3_.reset();
-    physHave_ = false;
     return ok;
   }
 
@@ -5326,12 +5273,9 @@ class MachineController {
     si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterWatch_.accumOnMs()) / stuckLimitMs : 0.0f;
     si.dQ = thermalV3SensorStepC();
     si.ventFan = st.ventFan;                                                // the fan that really runs
-    float onIn = NAN, offIn = NAN;
-    if (ventProfileTiming(now, onIn, offIn)) { si.fanOnInS = onIn; si.fanOffInS = offIn; }   // the day profile of the fan is known ahead
     return si;
   }
   float thermalV3Command(uint32_t now, bool permit, bool shadow) {
-    serviceThermalPhysics(now);
     const uint32_t t0 = static_cast<uint32_t>(esp_timer_get_time());
     const float u = thermalV3_.step(buildThermalV3SlotIn(now, permit, shadow));
     slotLastUs_ = static_cast<uint32_t>(esp_timer_get_time()) - t0;
@@ -5796,11 +5740,30 @@ class MachineController {
   }
 
   // ----------------------------- Alarm ---------------------------------------
+  // Mean of the last 5 s of the safety reading (five 1 s buckets). Empty or invalid input restarts it, so a stale mean never trips an alarm.
+  float highMean5s(uint32_t now, bool valid, float v) {
+    if (!valid) { for (uint8_t i = 0U; i < 5U; ++i) hmCnt_[i] = 0U; return NAN; }
+    const uint32_t sec = now / 1000UL;
+    uint8_t slot = static_cast<uint8_t>(sec % 5UL);
+    if (hmSec_[slot] != sec) { hmSec_[slot] = sec; hmSum_[slot] = 0.0f; hmCnt_[slot] = 0U; }
+    hmSum_[slot] += v; ++hmCnt_[slot];
+    float sum = 0.0f; uint32_t n = 0U;
+    for (uint8_t i = 0U; i < 5U; ++i) {
+      if (hmCnt_[i] != 0U && sec - hmSec_[i] < 5UL) { sum += hmSum_[i]; n += hmCnt_[i]; }
+    }
+    return n ? sum / static_cast<float>(n) : NAN;
+  }
+  float hmSum_[5] = {0, 0, 0, 0, 0};
+  uint32_t hmSec_[5] = {0, 0, 0, 0, 0};
+  uint16_t hmCnt_[5] = {0, 0, 0, 0, 0};
   void updateAlarms(uint32_t now) {
     const float safetyTemp = isfinite(rawTemperature_)
         ? (isfinite(temperature_) ? std::max(rawTemperature_, temperature_) : rawTemperature_)
         : temperature_;
     const bool validSafety = safetySampleValid_ && isfinite(safetyTemp);
+    // An alarm TRIPS on the higher of the raw and the filtered reading (the fast one), and is CLEARED on the filtered one alone: the raw reading flickers by a
+    // sensor step (0.1 degC) and a clear that needed every raw sample under the line never came while PV stood on it.
+    const float clearTemp = isfinite(temperature_) ? temperature_ : safetyTemp;
     safetyTempLast_ = validSafety ? safetyTemp : NAN;                        // for the PID log
     const bool wasHigh = highTemperatureActive_;
     const bool wasEmergency = emergencyActive_;
@@ -5819,11 +5782,9 @@ class MachineController {
       emergencyActive_ = true;
       emergencyClearTimer_.reset();
     } else if (emergencyActive_) {
-      // 2.9.2: the mean of the last EMERGENCY_CLEAR_CONFIRM_MS under the level (clear_mean.h), not every sample: a reading that flickers between two 0.1 degC steps kept
-      // E112 up with PV at SV (field photos of 04/11, lines set 0.3 degC apart).
-      if (emergencyClearTimer_.update(now, validSafety, safetyTemp,
-                                     MeanClear::level(config_.emergencyTemp, EMERGENCY_CLEAR_HYSTERESIS_C, config_.targetTemp),
-                                     EMERGENCY_CLEAR_CONFIRM_MS, CLEAR_MEAN_GUARD_C)) {
+      const bool safeToClear = validSafety && clearTemp < config_.emergencyTemp - EMERGENCY_CLEAR_HYSTERESIS_C;
+      if (emergencyClearTimer_.update(now, safeToClear,
+                                     EMERGENCY_CLEAR_CONFIRM_MS)) {
         emergencyActive_ = false;
         emergencyClearTimer_.reset();
       }
@@ -5831,16 +5792,19 @@ class MachineController {
 
     // Cap 2 co xac nhan vao va xac nhan thoat rieng, khong chap chon contactor.
     if (!highTemperatureActive_) {
-      const bool highTrip = tempAlarmEligible && validSafety &&
-                            safetyTemp >= config_.highTempAlarm;
+      // E111 trips on the 5 s mean of the reading, not on one sample: a single raw sample that touches the line while the screen (filtered) shows less
+      // is a sensor step, not an overheat. E112 keeps its immediate trip on the higher of raw and filtered.
+      const float highMean = highMean5s(now, validSafety, safetyTemp);
+      const bool highTrip = tempAlarmEligible && validSafety && isfinite(highMean) &&
+                            highMean >= config_.highTempAlarm;
       if (highTripTimer_.update(now, highTrip, HIGH_TEMP_CONFIRM_MS)) {
         highTemperatureActive_ = true;
         highClearTimer_.reset();
       }
     } else if (!emergencyActive_) {
-      if (highClearTimer_.update(now, validSafety, safetyTemp,
-                                MeanClear::level(config_.highTempAlarm, HIGH_TEMP_CLEAR_HYSTERESIS_C, config_.targetTemp),
-                                HIGH_TEMP_CLEAR_CONFIRM_MS, CLEAR_MEAN_GUARD_C)) {
+      const bool safeToClear = validSafety && clearTemp < config_.highTempAlarm - HIGH_TEMP_CLEAR_HYSTERESIS_C;
+      if (highClearTimer_.update(now, safeToClear,
+                                HIGH_TEMP_CLEAR_CONFIRM_MS)) {
         highTemperatureActive_ = false;
         highTripTimer_.reset();
         highClearTimer_.reset();
@@ -5899,7 +5863,7 @@ class MachineController {
     const bool lowCondition = lowEligible && temperature_ <= config_.lowTempAlarm;
     lowTemperatureActive_ = lowTempTimer_.update(now, lowCondition,
                                                  LOW_TEMP_CONFIRM_MS);
-    if (lowTemperatureActive_ && temperature_ >= config_.lowTempAlarm + 0.2f) {
+    if (lowTemperatureActive_ && temperature_ > config_.lowTempAlarm) {
       lowTemperatureActive_ = false;
       lowTempTimer_.reset();
     }
@@ -8332,8 +8296,8 @@ class MachineController {
 
   ConditionTimer lowTempTimer_{};
   ConditionTimer highTripTimer_{};
-  MeanClear highClearTimer_{};
-  MeanClear emergencyClearTimer_{};
+  ConditionTimer highClearTimer_{};
+  ConditionTimer emergencyClearTimer_{};
   ConditionTimer humidityTimer_{};
   bool ventTemperatureActive_ = false;
   VentLine ventLine_{};

@@ -29,7 +29,7 @@ struct Sample {
   int8_t integ4 = 0;                            // integral term, percent * 4
   uint8_t vent = 0;                             // vent line: bits0-2 why (VentLine::Why), bits3-7 its state bits (VentLine::Bit*)
   uint8_t ctl = 0;
-  uint8_t learn = 0;                            // bits0-1 where the controller's numbers came from (0 the priors, 1 a climb measured the gain, 2 the gain and the transit time: 2.9.2), bit2 a record of the oven is in NVS, bits3-7 stable minutes / 4 (0..31)
+  uint8_t learn = 0;                            // bits0-1 where the controller's numbers came from (0 priors, 1 oven restored, 2 oven + hold restored), bit2 a snapshot is stored, bits3-7 stable minutes / 4 (0..31)
 };
 
 inline uint16_t toC100(float v) {

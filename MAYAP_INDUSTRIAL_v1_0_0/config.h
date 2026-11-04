@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.9.2";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.9.6";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -588,12 +588,10 @@ constexpr uint32_t SENSOR_STARTUP_GRACE_MS = 20000UL; // chua bao coi trong 20 s
 // nhieu/troi nen it khi giu nguyen tuyet doi lau nhu vay).
 constexpr float SENSOR_FROZEN_EPSILON_C = 0.01f;
 constexpr uint32_t SENSOR_FROZEN_TIMEOUT_MS = 1200000UL; // 20 phut
-// Warm-up: profile / scheduled ventilation waits while PV is below SP (the fan takes heat away while the oven closes the gap);
+// Warm-up: profile / scheduled ventilation waits while PV is more than this far below SP (the fan takes heat away while the oven climbs);
 // released at the second threshold or after the maximum. Forced vents (High, sensor fault) are untouched.
-// 2.9.2: 0.05 degC, was 1.0 / 0.5. A batch that started 0.2 degC under SP (field log of 03/11) was not held, the first block of the day profile began at once
-// (the cycle starts with its fan block) and took PV from 37.3 to 37.12.
-constexpr float WARMUP_VENT_HOLD_ERR_C = 0.05f;
-constexpr float WARMUP_VENT_RELEASE_ERR_C = 0.05f;
+constexpr float WARMUP_VENT_HOLD_ERR_C = 1.0f;
+constexpr float WARMUP_VENT_RELEASE_ERR_C = 0.5f;
 constexpr uint32_t WARMUP_VENT_HOLD_MAX_MS = 1800000UL;   // 30 phut
 // Vent line (the exhaust fans of the overheat, a last resort; see vent_line.h and updateAlarms). The fans never cut the heater.
 constexpr uint32_t VENT_LINE_CONFIRM_MS = 20000UL;        // a decisive overshoot (FAST / PRED) must stand this long
@@ -618,18 +616,17 @@ constexpr float VENT_LINE_EPS_C = 0.005f;
 constexpr float VENT_HEATER_BLOCK_MIN_C = 0.3f;
 constexpr float VENT_HEATER_BLOCK_STEPS = 3.0f;
 constexpr float VENT_HEATER_BLOCK_RELEASE_C = 0.1f;
-constexpr uint32_t LOW_TEMP_STARTUP_GRACE_MS = 300000UL; // 5 phut
-constexpr uint32_t LOW_TEMP_CONFIRM_MS = 300000UL;       // thap lien tuc 5 phut
+constexpr uint32_t LOW_TEMP_STARTUP_GRACE_MS = 60000UL;  // 1 phut
+constexpr uint32_t LOW_TEMP_CONFIRM_MS = 120000UL;       // thap lien tuc 2 phut
 // Lan len nhiet dau cua me: nhiet thap la DUONG DI (khong phai su co) nen E110 chua duoc xet. "Da len nhiet" khi PV cham
 // SV - LOW_TEMP_WARMUP_DONE_ERR_C; neu qua LOW_TEMP_WARMUP_MAX_MS ma chua toi thi E110 duoc xet nhu cu (lo khong len nhiet duoc).
 constexpr float LOW_TEMP_WARMUP_DONE_ERR_C = 0.3f;
 constexpr uint32_t LOW_TEMP_WARMUP_MAX_MS = 7200000UL;   // 120 phut
 constexpr uint32_t HIGH_TEMP_CONFIRM_MS = 1000UL;
-constexpr float HIGH_TEMP_CLEAR_HYSTERESIS_C = 0.2f;
-constexpr uint32_t HIGH_TEMP_CLEAR_CONFIRM_MS = 10000UL;
-constexpr float CLEAR_MEAN_GUARD_C = 0.15f;            // 2.9.2: the way out of E111 / E112 is the mean of the window under the level (clear_mean.h); the newest sample may be one sensor step over it
-constexpr float EMERGENCY_CLEAR_HYSTERESIS_C = 0.3f;
-constexpr uint32_t EMERGENCY_CLEAR_CONFIRM_MS = 30000UL;
+constexpr float HIGH_TEMP_CLEAR_HYSTERESIS_C = 0.0f;
+constexpr uint32_t HIGH_TEMP_CLEAR_CONFIRM_MS = 5000UL;
+constexpr float EMERGENCY_CLEAR_HYSTERESIS_C = 0.0f;
+constexpr uint32_t EMERGENCY_CLEAR_CONFIRM_MS = 5000UL;
 // Tam tat coi khan cap khi ACK. Truoc la 5 phut - qua dai cho muc "khan cap"
 // neu khong co ai o gan may luc do; rut xuong 1 phut, coi se tu keu lai neu
 // dieu kien qua nhiet khan cap van con (khong lien quan viec cat nhiet - cat
@@ -679,7 +676,6 @@ constexpr char SAFETY_NVS_RESET_KEY[] = "reset_count";
 // NVS record of the thermal controller written by versions before 2.8.0 (nothing is written or read any more); "clear thermal learning" erases it.
 constexpr char THERMAL_LEARN_NVS_NAMESPACE[] = "mayap_thm";
 constexpr char THERMAL_LEARN_NVS_KEY[] = "snap";
-constexpr char THERMAL_PHYS_NVS_KEY[] = "phys";            // 2.9.1: the three numbers of the OVEN (heater gain, transit time, what the scheduled fan takes out), 16 bytes with a CRC
 // F-07 (audit truoc phat hanh v3.7.1): truoc day turnMechanicalCheckRequired_/
 // turnFaultStreak_ (khoa dao vi nghi ngo hong co khi, xem latchTurnFault()
 // trong machine_control.h) chi la bien RAM - mat dien/watchdog/OTA restart

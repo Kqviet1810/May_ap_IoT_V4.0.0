@@ -1,5 +1,6 @@
 // Unit tests of what makes a noise and when it stops (MAYAP_INDUSTRIAL_v1_0_0/alarm_sound.h), the code MachineController runs every cycle.
-// The over-temperature lines wait a 180 s grace time (the fan brings the reading down), sound only if the reading is still over the line, at once when 0.5 degC over, and stop as soon as the reading is under the line.
+// 2.9.5: the over-temperature lines have ONE rule - the siren sounds while the alarm is on and is silent the moment it is off. (Versions before waited 180 s
+// and started the wait again at every dip, so a reading that flickered around the line never made a sound.)
 #include "../MAYAP_INDUSTRIAL_v1_0_0/alarm_sound.h"
 #include <cassert>
 #include <cmath>
@@ -14,148 +15,89 @@ struct Rig {
   uint32_t t0;
   explicit Rig(uint32_t start = 1000U) : t0(start) {}
   uint32_t ms(int s) const { return t0 + static_cast<uint32_t>(s) * 1000UL; }
-  void at(int s, float pv, float line, bool active = true) { v.update(ms(s), true, pv, line, active, p); }
+  void at(int s, float pv, bool active = true) { v.update(ms(s), true, pv, active, p); }
 };
 
 int main() {
-  // Helper: hold the reading over the line from second 0 to `to` so the 180 s grace time passes, then the siren sounds.
-  // 1. A line crossed does NOT sound at once (the first-climb overshoot is brought down by the fan): silent during the grace time, loud after it if the
-  //    reading is still at or over the line.
+  // 1. The alarm on: the siren sounds at once, continuously at first.
   {
     Rig r;
-    r.at(0, 37.6f, 37.7f, false);
-    assert(!r.v.sounding());
-    r.at(1, 37.7f, 37.7f);
-    assert(!r.v.sounding() && !r.v.audible() && !r.v.siren(r.ms(1), r.p));
-    for (int s = 2; s < 181; s += 5) r.at(s, 37.75f, 37.7f);                  // 3 minutes over the line, fan running, not under yet
-    assert(!r.v.audible());                                                    // 180 s after the crossing (second 1) is second 181
-    r.at(181, 37.75f, 37.7f);
-    assert(r.v.sounding() && r.v.audible() && r.v.siren(r.ms(181), r.p));
-    assert(r.v.siren(r.ms(300), r.p));                                         // continuous at first
-    std::printf("line crossed: grace, then siren\n");
+    r.at(0, 37.6f, false);
+    assert(!r.v.sounding() && !r.v.siren(r.ms(0), r.p));
+    r.at(1, 37.7f);
+    assert(r.v.sounding() && r.v.audible() && r.v.siren(r.ms(1), r.p));
+    assert(r.v.siren(r.ms(250), r.p));
+    std::printf("alarm on: siren at once\n");
   }
-  // 2. A false alarm: the reading falls under the line inside the grace time: no sound at all, and the grace time starts again at the next crossing.
+  // 2. The alarm off: silent at once, and a new alarm sounds at once again (nothing is remembered, nothing waits).
   {
     Rig r;
-    r.at(0, 37.8f, 37.7f);
-    r.at(60, 37.75f, 37.7f);
-    r.at(100, 37.5f, 37.7f); r.at(111, 37.5f, 37.7f);                          // clearly under the line (0.2) for 10 s: forgotten
-    assert(!r.v.sounding());
-    r.at(112, 37.72f, 37.7f);                                                  // over again: a new grace time from here
-    r.at(250, 37.72f, 37.7f);
-    assert(!r.v.audible());                                                    // 138 s since the new crossing
-    r.at(293, 37.72f, 37.7f);
+    r.at(0, 37.8f); r.at(10, 37.8f);
     assert(r.v.audible());
+    r.at(11, 37.69f, false);
+    assert(!r.v.audible() && !r.v.sounding() && !r.v.siren(r.ms(11), r.p));
+    r.at(20, 37.75f);
+    assert(r.v.audible() && r.v.siren(r.ms(20), r.p));
   }
-  // 3. Far over the line (panicC 0.3): at once, whatever the grace time says.
+  // 3. A reading that flickers around the line: whenever the alarm is on the siren is on (it does not start a wait at every dip).
   {
     Rig r;
-    r.at(0, 37.95f, 37.7f);
-    assert(!r.v.audible());
-    r.at(1, 38.05f, 37.7f);
-    assert(r.v.audible() && r.v.siren(r.ms(1), r.p));
+    for (int s = 0; s < 120; s += 2) {
+      const bool on = (s / 2) % 3 != 2;                                        // on, on, off ...
+      r.at(s, on ? 37.72f : 37.68f, on);
+      assert(r.v.audible() == on);
+    }
   }
-  // 4. Once loud, it stops as soon as the reading is under the line (2 s to confirm) and stays silent until a new crossing has lived through its grace time.
+  // 4. Continuous for 5 minutes after it starts, then pulsed 5 s on / 25 s off.
   {
     Rig r;
-    r.at(0, 37.9f, 37.7f); r.at(181, 37.9f, 37.7f);
-    assert(r.v.audible());
-    r.at(200, 37.69f, 37.7f); r.at(215, 37.69f, 37.7f);
-    assert(r.v.audible());                                                     // 0.01 under the line is not under it: it keeps sounding
-    r.at(220, 37.5f, 37.7f);
-    assert(r.v.audible());                                                     // confirm time not passed
-    r.at(230, 37.5f, 37.7f);
-    assert(!r.v.audible() && !r.v.sounding() && !r.v.siren(r.ms(230), r.p));
-    r.at(231, 37.7f, 37.7f);                                                   // back at the line: grace starts, silent
-    assert(!r.v.audible());
-    // the line itself clearing resets everything at once
-    r.at(232, 37.7f, 37.7f, false);
-    assert(!r.v.audible() && !r.v.sounding());
-  }
-  // 5. Continuous for 5 minutes after it starts, then pulsed 5 s on / 25 s off.
-  {
-    Rig r;
-    r.at(0, 37.8f, 37.7f); r.at(180, 37.8f, 37.7f);
+    r.at(0, 37.8f); r.at(1, 37.8f);
     assert(r.v.sounding());
-    assert(r.v.siren(r.ms(180 + 299), r.p));
-    assert(r.v.siren(r.ms(180 + 301), r.p) && r.v.siren(r.ms(180 + 304), r.p));
-    assert(!r.v.siren(r.ms(180 + 306), r.p) && !r.v.siren(r.ms(180 + 329), r.p));
-    assert(r.v.siren(r.ms(180 + 330), r.p) && r.v.siren(r.ms(180 + 334), r.p) && !r.v.siren(r.ms(180 + 335), r.p));
+    assert(r.v.siren(r.ms(299), r.p));
+    assert(r.v.siren(r.ms(301), r.p) && r.v.siren(r.ms(304), r.p));
+    assert(!r.v.siren(r.ms(306), r.p) && !r.v.siren(r.ms(329), r.p));
+    assert(r.v.siren(r.ms(330), r.p) && r.v.siren(r.ms(334), r.p) && !r.v.siren(r.ms(335), r.p));
   }
-  // 6. ACK at the machine mutes; a falling reading keeps it quiet, a reading that stands comes back after 2 minutes, one that rises comes back at once,
+  // 5. ACK at the machine mutes; a falling reading keeps it quiet, a reading that stands comes back after 2 minutes, one that rises comes back at once,
   //    and 10 minutes is the longest silence.
   {
     Rig r;
-    r.at(0, 37.9f, 37.7f); r.at(181, 37.9f, 37.7f);
+    r.at(0, 37.9f); r.at(10, 37.9f);
     r.v.ack(r.ms(190), 37.9f);
     assert(r.v.muted() && !r.v.audible() && !r.v.siren(r.ms(190), r.p));
-    r.at(240, 37.88f, 37.7f);
+    r.at(240, 37.88f);
     assert(r.v.muted());
-    r.at(311, 37.79f, 37.7f);                                                  // fell 0.11 over the check: quiet, look again later
+    r.at(311, 37.79f);                                                         // fell 0.11 over the check: quiet, look again later
     assert(r.v.muted());
-    r.at(432, 37.78f, 37.7f);                                                  // did not fall another 0.1 over the next 2 minutes: back
+    r.at(432, 37.78f);                                                         // did not fall another 0.1 over the next 2 minutes: back
     assert(!r.v.muted() && r.v.audible());
     Rig s;
-    s.at(0, 37.9f, 37.7f); s.at(181, 37.9f, 37.7f);
+    s.at(0, 37.9f); s.at(10, 37.9f);
     s.v.ack(s.ms(190), 37.9f);
-    s.at(210, 38.11f, 37.7f);
+    s.at(210, 38.11f);
     assert(!s.v.muted() && s.v.audible());                                     // rose 0.2
     Rig u;
-    u.at(0, 37.95f, 37.7f); u.at(181, 37.95f, 37.7f);
+    u.at(0, 37.95f); u.at(10, 37.95f);
     u.v.ack(u.ms(190), 37.95f);
-    for (int sec = 191; sec < 900; sec += 10) u.at(sec, 37.95f - 0.0003f * static_cast<float>(sec - 190), 37.7f);   // falls slowly, never unmuted by the check
+    for (int sec = 191; sec < 900; sec += 10) u.at(sec, 37.95f - 0.0003f * static_cast<float>(sec - 190));   // falls slowly, never unmuted by the check
     assert(!u.v.muted());                                                      // ... but the 10-minute limit always ends it
   }
-  // 7. The sensor lost: silence now (the sensor faults have their own voice).
+  // 6. The sensor lost: silence now (the sensor faults have their own voice).
   {
     Rig r;
-    r.at(0, 37.9f, 37.7f); r.at(181, 37.9f, 37.7f);
+    r.at(0, 37.9f); r.at(10, 37.9f);
     assert(r.v.audible());
-    r.v.update(r.ms(182), false, NAN, 37.7f, true, r.p);
+    r.v.update(r.ms(11), false, NAN, true, r.p);
     assert(!r.v.audible());
   }
-  // 8. The Emergency line is the same voice (default lines 38.2 / 39.0): grace time, panic at 39.3, quiet under the line.
-  {
-    Rig r;
-    r.at(0, 39.0f, 39.0f);
-    assert(!r.v.audible());
-    r.at(181, 39.0f, 39.0f);
-    assert(r.v.siren(r.ms(181), r.p));
-    r.at(190, 38.8f, 39.0f); r.at(201, 38.8f, 39.0f);
-    assert(!r.v.audible());
-    Rig q;
-    q.at(0, 39.35f, 39.0f);
-    assert(q.v.audible());
-  }
-  // 8b. The 32-bit clock wraps.
+  // 7. The 32-bit clock wraps.
   {
     Rig r(0xFFFFFFFFUL - 100000UL);
-    r.at(0, 37.8f, 37.7f); r.at(100, 37.8f, 37.7f);
+    r.at(0, 37.8f); r.at(100, 37.8f);
+    assert(r.v.siren(r.ms(100), r.p));
+    assert(r.v.siren(r.ms(100 + 200), r.p) && !r.v.siren(r.ms(100 + 310), r.p));
+    r.at(500, 37.45f, false);
     assert(!r.v.audible());
-    r.at(181, 37.8f, 37.7f);
-    assert(r.v.siren(r.ms(181 + 100), r.p) && !r.v.siren(r.ms(181 + 310), r.p));
-    r.at(500, 37.45f, 37.7f); r.at(511, 37.45f, 37.7f);
-    assert(!r.v.audible());
-  }
-  // 8c. 2.9.2, the field fault of 04/11: a reading that flickers one sensor step around the line (37.6 / 37.8 in stretches of 3 s, line 37.7) for 10 minutes. The old voice forgot the crossing at every
-  //     dip, restarted its 180 s grace time and never sounded; now it sounds after the grace time and keeps sounding through the flicker.
-  {
-    Rig r;
-    bool sounded = false;
-    int firstAt = -1;
-    for (int sec = 0; sec < 600; ++sec) {
-      r.at(sec, ((sec / 3) % 2) ? 37.8f : 37.6f, 37.7f);          // 3 s on one step, 3 s on the other
-      if (r.v.audible() && !sounded) { sounded = true; firstAt = sec; }
-      if (sounded) assert(r.v.audible());
-    }
-    assert(sounded && firstAt >= 180 && firstAt <= 183);
-    // ... and a reading that stays a whole step under the line for 10 s still silences it.
-    r.at(601, 37.5f, 37.7f); r.at(612, 37.5f, 37.7f);
-    assert(!r.v.audible());
-    // 0.5 over for less than the grace time (a vot of +0.4 that falls back inside 3 minutes): silent, as the owner asked in 2.8.1; 0.3 over: at once.
-    Rig q;
-    q.at(0, 38.0f, 37.7f); q.at(60, 38.05f, 37.7f);
-    assert(q.v.audible());
   }
 
   // 9. The Chime class: a chime for every code that appears, a thin reminder (here 30 minutes) while one lasts, silent when none is left.

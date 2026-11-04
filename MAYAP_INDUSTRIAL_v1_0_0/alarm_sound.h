@@ -9,10 +9,11 @@
 //     Silent - shown on the HMI / Web / push only: diagnostics
 //   Every sound follows the LIVE condition, never the stored record: a latched fault that is gone is silent at once (the record stays for ACK).
 //
-//   The over-temperature lines (High, Emergency) are not loud at once: crossing a line starts a grace time (the exhaust fan is forced on by the line and
-//   normally brings the reading back, e.g. the overshoot of a first climb). The siren sounds only if the reading is STILL at or over the line when the
-//   grace time ends, or at once when it is far over (panicC). It stops when the reading is clearly under the line (more than one sensor step, 10 s to confirm: 2.9.2), so the battery is not
-//   spent on a siren that has nothing left to say, and a flicker at the line cannot restart the grace time. The protective actions (heater cut, forced fans) never wait for this: only the noise does.
+//   The over-temperature lines (High, Emergency) have ONE rule: the siren sounds as long as the alarm is on and is silent the moment it is off. The
+//   alarm itself is a plain comparison of the temperature with its line (machine_control.h, updateAlarms): on when the reading is at/over the line, off
+//   when the filtered reading is under it for a few seconds. Nothing waits, nothing is latched, nothing is reset by a dip (versions before 2.9.5 waited
+//   180 s and started the wait again at every dip: the siren never sounded on a reading that flickered around the line).
+//   A continuous siren for five minutes, then 5 s on / 25 s off, so that a reading stuck over the line for hours does not drain the battery.
 #include <cmath>
 #include <cstdint>
 
@@ -21,41 +22,19 @@ namespace alarmsound {
 class LoudVoice {
  public:
   struct Params {
-    uint32_t steadyMs = 300000UL;         // the siren is continuous this long, then pulsed (a reading stuck over the line for hours must not be a wall of noise)
+    uint32_t steadyMs = 300000UL;         // the siren is continuous this long, then pulsed
     uint32_t onMs = 5000UL, offMs = 25000UL;
-    uint32_t graceMs = 180000UL;          // the siren waits this long after the line is crossed (the fan has had its time to bring the reading down) ...
-    // 2.9.2: panicC 0.5 -> 0.3; offBelowC 0 -> 0.15 and offConfirmMs 2 s -> 10 s. The reading is a 0.1 degC staircase that flickers between two steps at the line: a single
-    // dip under it for 2 s forgot the crossing, the 180 s grace time started again, and a reading that stood over the line for an hour never sounded (field, 04/11).
-    float panicC = 0.3f;                  // ... unless the reading is this far over the line: then it sounds at once
-    float offBelowC = 0.15f;              // the crossing is forgotten (silence, new grace time) when the reading is this far under the line (more than one sensor step) ...
-    uint32_t offConfirmMs = 10000UL;      // ... for this long (the lock of the heater has its own, longer, hysteresis)
     float ackRiseC = 0.2f;                // ACK mutes; the siren is back when the reading rose this much since the ACK ...
     uint32_t ackCheckMs = 120000UL;       // ... or when, at every check of this length, it has not fallen by ackFallC ...
     float ackFallC = 0.1f;
     uint32_t ackMaxMs = 600000UL;         // ... and in any case after this long
   };
 
-  void reset() { sounding_ = false; armed_ = false; muted_ = false; offOn_ = false; }
-  // Every cycle. `active` = the line itself (High: highTemperatureActive_; Emergency: emergencyActive_); `line` = its threshold.
-  void update(uint32_t now, bool valid, float pv, float line, bool active, const Params &p) {
+  void reset() { sounding_ = false; muted_ = false; }
+  // Every cycle. `active` = the alarm itself (High: highTemperatureActive_; Emergency: emergencyActive_).
+  void update(uint32_t now, bool valid, float pv, bool active, const Params &p) {
     if (!valid || !std::isfinite(pv) || !active) { reset(); return; }
-    if (pv < line - p.offBelowC) {
-      if (!offOn_) { offOn_ = true; offSince_ = now; }
-    } else {
-      offOn_ = false;
-    }
-    if (offOn_ && static_cast<uint32_t>(now - offSince_) >= p.offConfirmMs) {      // fell under the line: silence now, grace time starts again next crossing
-      sounding_ = false; armed_ = false; muted_ = false; offOn_ = false;
-      return;
-    }
-    if (!armed_) {
-      if (pv < line) return;                                                         // not over the line yet
-      armed_ = true; overSince_ = now;                                               // the grace time starts when the line is crossed
-    }
-    if (!sounding_) {
-      if (pv >= line + p.panicC || static_cast<uint32_t>(now - overSince_) >= p.graceMs) { sounding_ = true; muted_ = false; soundAt_ = now; }
-      return;
-    }
+    if (!sounding_) { sounding_ = true; muted_ = false; soundAt_ = now; return; }
     if (muted_) {
       if (pv >= ackPv_ + p.ackRiseC) {
         muted_ = false;
@@ -85,8 +64,8 @@ class LoudVoice {
   }
 
  private:
-  bool sounding_ = false, armed_ = false, muted_ = false, offOn_ = false;
-  uint32_t soundAt_ = 0U, overSince_ = 0U, offSince_ = 0U, muteStart_ = 0U, ackAt_ = 0U;
+  bool sounding_ = false, muted_ = false;
+  uint32_t soundAt_ = 0U, muteStart_ = 0U, ackAt_ = 0U;
   float ackPv_ = 0.0f;
 };
 

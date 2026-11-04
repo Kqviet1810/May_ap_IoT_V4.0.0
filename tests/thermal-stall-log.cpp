@@ -37,10 +37,7 @@ int main() {
   }
   std::printf("night log, 28 min under SV: hold %.1f -> %.1f %% (logged 2.5.8: %.1f -> %.1f), largest command %.1f %%\n", all[0].hold, c.pHold(), all[0].hold, all[169].hold, maxCmd);
   assert(c.pHold() >= all[0].hold + 3.5f);      // the stall is answered (2.5.8 and 2.7.0 gained 2 %)
-  // 2.9.2: 75 %, was 25 %. This is an OPEN-LOOP replay: the recorded PV does not answer the commands, so a controller with the real gain of this oven (9e-5, not the 2.9.1 prior
-  // that was 2.7 x too high) winds its hold up for the whole 28 minutes (9.5 -> 47 %, command 61 %), where in the closed loop the same gap closes in 6 minutes and the command never
-  // goes above hold + 8 % (tools/thermal-research/log-oven.cpp --gate: reach <= 10 min, no overshoot). Full power is still not the answer to a 0.1 degC gap.
-  assert(maxCmd <= 75.0f);
+  assert(maxCmd <= 25.0f);                      // and not by a jump: a hold of 10 % stays a small number
   std::printf("thermal-stall-log: ok\n");
   return 0;
 }
