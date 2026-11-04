@@ -447,6 +447,33 @@ void testStallIsAnswered() {
   printf("  -> Pass\n");
 }
 
+// 2.9.5, the owner's rule of 04/11: prevention, not cure. A stay a few tenths UNDER SV costs the eggs nothing, a stay over SV is hard to undo.
+void testPreventionNotCure() {
+  printf("Test: over SV the heater is pulled down hard; a slow fall is let go a few tenths; a flat stay under SV is pumped\n");
+  auto settle = [](thermalv3::Controller &c, thermalv3::Input &in) {
+    in.sp = 37.5f; in.dtS = 1.0f; in.permit = true;
+    for (int i = 0; i < 400; ++i) { in.pv = 37.5f; c.step(in); }
+  };
+  {
+    thermalv3::Controller flat, over;
+    thermalv3::Input a, b; settle(flat, a); settle(over, b);
+    float cFlat = 0.0f, cOver = 0.0f;
+    for (int i = 0; i < 30; ++i) { a.pv = 37.5f; b.pv = 37.6f; cFlat = flat.step(a).powerPct; cOver = over.step(b).powerPct; }
+    printf("  at SV: %.1f %%, 0.1 over SV: %.1f %%\n", static_cast<double>(cFlat), static_cast<double>(cOver));
+    assert(cOver < cFlat - 4.0f);                                            // six times the gain: a tenth over takes more than 4 % off
+  }
+  {
+    thermalv3::Controller falling, flat;
+    thermalv3::Input a, b; settle(falling, a); settle(flat, b);
+    float cFall = 0.0f, cFlat = 0.0f;
+    for (int i = 0; i < 400; ++i) { a.pv = 37.5f - 0.00025f * static_cast<float>(i); b.pv = a.pv; cFall = falling.step(a).powerPct; }   // 0.1 degC under SV after 400 s, falling slowly
+    for (int i = 0; i < 400; ++i) { b.pv = 37.4f; cFlat = flat.step(b).powerPct; }                                                      // 0.1 degC under SV, not moving
+    printf("  falling slowly 0.1 under SV: %.1f %%, flat 0.1 under SV: %.1f %%\n", static_cast<double>(cFall), static_cast<double>(cFlat));
+    assert(cFall < cFlat);                                                   // the fall is let go, the stand-still is pumped
+  }
+  printf("  -> Pass\n");
+}
+
 int main() {
   printf("=========================================\n");
   printf("RUNNING THERMAL V3 CONTROLLER UNIT TESTS\n");
@@ -465,6 +492,7 @@ int main() {
   testSensorFallback();
   testKeptOvenNumbersAndNoFanFeedForward();
   testStallIsAnswered();
+  testPreventionNotCure();
   printf("=========================================\n");
   printf("ALL THERMAL V3 TESTS PASSED SUCCESSFULLY!\n");
   printf("=========================================\n");

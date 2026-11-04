@@ -133,6 +133,13 @@ What the logs and the list showed, and what was done. The principle: fix what wa
   (`tau_s` = 150 in every row of both logs) the power came 150 s before the fan and PV rose 0.1 degC ahead of 5 of 5 runs (log of 04/11), after which the vent line ran its own fan 11 times. The dip of a run is
   about 0.12 degC and the loop brings it back.
 
+**Prevention, not cure (the owner's rule of 04/11)** - `thermal_v3.h`. A stay of a few tenths UNDER SV costs the eggs nothing; a stay over SV is hard to undo, and every pump above SV is paid for later.
+* The credit for a predicted FALL is limited to 0.25 degC (`LEAD_DOWN_MAX_C`): the loop no longer pumps against a fall the model expects before it shows.
+* A slow fall (a door ajar, the room cooling: PV falling clearly, under 0.3 degC under SV) is let go until PV is 0.15 degC under SV (`UNDER_TOL_C`). A flat stay under SV is still pumped.
+* Above SV the gain next to SV is six times higher (`OVER_GAIN`, was three): a tenth over SV takes about 5.5 % off the command (test `testPreventionNotCure`).
+* Measured and not shipped: a hard cut (u = 0) at SV + 0.05 / + 0.1 makes the first climb hunt on the families of `tests/thermal-closed-loop.cpp` (overshoot 1.0 against 0.5): the observer learns a hold that is too low and the loop
+  pumps again. A gain of ten or sixteen times has the same effect (overshoot 0.64).
+
 **Stall** - `stallWatch` in `thermal_v3.h` (see its header). Measured on the oven of the 03/11 log (`tools/thermal-research/log-oven.cpp`, no numbers kept): back within 0.05 degC from 0.2 degC under SV in
   17.9 min (2.9.1: 23.5), from 0.5 degC under in 18.9 min (26.6), over SV <= +0.10; the real night log of 02/11 is answered with hold 9.5 -> 18.9 % (2.9.1: 18.0) and a largest command of 22.4 %.
 
