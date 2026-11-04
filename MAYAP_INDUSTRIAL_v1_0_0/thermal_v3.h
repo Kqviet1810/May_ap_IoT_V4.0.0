@@ -121,7 +121,7 @@ class Controller {
     fanSched_ = in.ventFan && haveSched && in.fanOnInS <= 0.5f;
     if (fanSched_ != fanSchedPrev_) { rate_ = 0.0f; fanSchedPrev_ = fanSched_; }
     float ff = 0.0f;
-    if (haveSched && !in.shadow && fanW_ > 0.0f && in.fanOnInS <= tau_ && in.fanOffInS > tau_ && in.pv <= in.sp + 0.02f) ff = std::min(fanW_, 0.4f * cap_);
+    if (haveSched && !in.shadow && fanW_ > 0.0f && in.fanOnInS <= tau_ && in.fanOffInS > tau_) ff = std::min(fanW_, 0.4f * cap_);
 
     // --- power: hold plus a saturating function of the PREDICTED error (the heat on its way is counted before it arrives)
     updateInflight();
@@ -150,9 +150,6 @@ class Controller {
     cmd = std::max(0.0f, std::min(cap_, cmd));
     if (pv_ >= sp_ + 0.08f) {
       cmd = 0.0f;
-    } else if (pv_ > sp_) {
-      const float overFrac = (pv_ - sp_) / 0.08f;
-      cmd = std::min(cmd, hold_ * (1.0f - overFrac));
     }
 
     // --- hold's correction by the predicted error (inside the landing band only; the balance below is the other, slower, writer)
