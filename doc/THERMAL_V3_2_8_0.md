@@ -123,8 +123,10 @@ What the logs and the list showed, and what was done. The principle: fix what wa
 * E110 (Low): 2 min under the line (was 5), 1 min after the start (was 5), clears as soon as PV is above the line (was +0.2).
 * The restart lock after an Emergency is 10 s (was 30 s).
 
-**Heater block line removed** - `ventHeaterBlock_` (the heater held off at SV + 0.3 / the vent threshold) is gone from `machine_control.h` and `config.h`. High and Emergency stop the heater already; a third line with its
-  own thresholds was one more thing that stayed on after PV was back.
+**Heater block line kept** - the line of `machine_control.h` that holds the heater off at SV + 0.3 (or the vent threshold) was removed in a first version of 2.9.5 and the bench said no: the reboot
+  situation (the controller restarts 45 s into a run) fell from 92 to 82 % of the ovens back within +-0.1 degC in 40 minutes, because the overshoot after a restart was no longer cut. Putting the cut inside the
+  controller (u = 0 at SV + 0.3) brought the bench back (192 of 210) but broke the first-climb limits of `tests/thermal-closed-loop.cpp` (overshoot 1.0 against 0.5). The line stays as it was; what changed is that
+  E111 / E112 now clear on the live reading (above), so no protection stays on after PV is back.
 
 **Scheduled fan** - the warm-up hold of the day profile now starts when the batch begins more than 0.1 degC under SV (was 1.0) and ends at SV - 0.05 (was 0.5): a start 0.2 degC under SV no longer
   dipped to 37.12 because the first run began 100 s after the start (log of 03/11). The feed-forward of the fan (2.9.1) and its learning (`measureFan`, `fanW_`) are removed: with the transit time unmeasured
@@ -135,6 +137,10 @@ What the logs and the list showed, and what was done. The principle: fix what wa
   17.9 min (2.9.1: 23.5), from 0.5 degC under in 18.9 min (26.6), over SV <= +0.10; the real night log of 02/11 is answered with hold 9.5 -> 18.9 % (2.9.1: 18.0) and a largest command of 22.4 %.
 
 ### Measured and not done (so that they are not tried again)
+* Full power while a door holds PV down (the owner's report of 04/11: "the door is open, 100 % is needed and it drips"). In 2.9.1 the command at 2.7 degC under SV after a 4 min door is 20-45 %: the model credits
+  the heat it has sent and the open door eats. Giving full power while the latch is on or PV is falling does recover the oven of the field log in 61 min instead of 72 (and identifies the heater gain), but on
+  the families of the closed-loop test the overshoot after a door of 2 min is 3.1-3.5 degC (limit 0.3): the power given during the fall arrives after the door has shut. Not shipped. The door needs the transit
+  time and the gain to say how long full power may last - both are measured only on a saturated climb.
 * A measured, running heater-gain estimate near SV (a regression of the PV slope on the power one transit time ago): the signal is a percent of power against 0.1 degC of sensor, the gain moved 1-3 minutes of 25. Dropped.
 * A check of the heat "in flight" against the PV that followed: too slow (the door latch blocks it for 15 min) and it lowered the gain too far. Dropped.
 * A higher gain near SV for every oven (x2 ... x6): faster on the slow ovens, worse on the fleet (mean pass 88.8 -> 80.0 % at x3). Only a stalled oven gets it.

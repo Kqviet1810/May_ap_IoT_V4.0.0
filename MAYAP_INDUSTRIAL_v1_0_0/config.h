@@ -612,6 +612,9 @@ constexpr uint8_t VENT_LINE_BUCKET_CAP = 3U;              // ... and start at mo
 constexpr uint32_t VENT_LINE_BUCKET_REFILL_MS = 1800000UL;
 constexpr uint32_t VENT_LINE_COALESCE_MS = 300000UL;      // a day-profile block due within this time is waited for (unless the overshoot is decisive)
 constexpr float VENT_LINE_EPS_C = 0.005f;
+constexpr float VENT_HEATER_BLOCK_MIN_C = 0.3f;
+constexpr float VENT_HEATER_BLOCK_STEPS = 3.0f;
+constexpr float VENT_HEATER_BLOCK_RELEASE_C = 0.1f;
 // Heater block line: max(vent ON, SV + max(MIN, STEPS * sensor step)); released RELEASE degC lower.
 constexpr uint32_t LOW_TEMP_STARTUP_GRACE_MS = 60000UL;  // 1 phut
 constexpr uint32_t LOW_TEMP_CONFIRM_MS = 120000UL;       // thap lien tuc 2 phut

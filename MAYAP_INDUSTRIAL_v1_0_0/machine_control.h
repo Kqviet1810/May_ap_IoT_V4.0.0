@@ -5866,6 +5866,16 @@ class MachineController {
       ventTemperatureActive_ = ventLine_.update(now, validSafety, safetyTemp, config_.ventOnTemp, config_.ventOffTemp, vp, vc);
     }
 
+    // The heater is blocked only when the reading runs well past SV (a safety margin, not a fan rule): it comes back 0.1 degC lower. "Well past"
+    // scales with the sensor step so a coarse 0.1 sensor and a fine 0.01 one are treated alike.
+    {
+      const float dQ = thermalV3SensorStepC();
+      const float blockAt = std::max(config_.ventOnTemp, config_.targetTemp + std::max(VENT_HEATER_BLOCK_MIN_C, VENT_HEATER_BLOCK_STEPS * dQ));
+      if (!validSafety) ventHeaterBlock_ = false;
+      else if (!ventHeaterBlock_ && safetyTemp >= blockAt) ventHeaterBlock_ = true;
+      else if (ventHeaterBlock_ && safetyTemp <= blockAt - VENT_HEATER_BLOCK_RELEASE_C) ventHeaterBlock_ = false;
+    }
+
     if ((!wasHigh && highTemperatureActive_) ||
         (!wasEmergency && emergencyActive_)) {
       postCoolUntil_ = now + POST_COOL_MS;
@@ -6746,7 +6756,7 @@ class MachineController {
         batchAllowsHeat && sensorUsable_ && fanAllowsHeat &&
         timeReached(now, heatRestartNotBefore_);
     const bool normalSsrPermit = normalMasterPermit && heaterPidConditions &&
-        !faults_.ssrInhibited();
+        !faults_.ssrInhibited() && !ventHeaterBlock_;
     const bool actuatorReady = outputs_.heaterReady(now) && mayapBootOperationsReady() &&
         !mayapSystemTripLatched() && !mayapFirmwareMaintenanceActive();
 
@@ -6755,7 +6765,8 @@ class MachineController {
     // heater request in percent. Protection (High / Emergency / sensor / contactor / SSR inhibit) is decided above
     // and below it and never reads this value. The request is clamped to [0, cap] by the adapter and then goes through
     // the burst scheduler and the output arbiter like any other request.
-    float commandedPower = thermalV3Command(now, normalSsrPermit && actuatorReady, false);
+    const bool v3Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && ventHeaterBlock_ && actuatorReady;   // blocked ONLY by the heater block line
+    float commandedPower = thermalV3Command(now, normalSsrPermit && actuatorReady, v3Shadow);
     // ====================================================================================================
     newSensorSample_ = false;
 
@@ -8322,6 +8333,7 @@ class MachineController {
   ConditionTimer highClearTimer_{};
   ConditionTimer emergencyClearTimer_{};
   ConditionTimer humidityTimer_{};
+  bool ventHeaterBlock_ = false;                     // the heater is held off well above SV (see updateAlarms); the fan has its own line
   bool ventTemperatureActive_ = false;
   VentLine ventLine_{};
   uint32_t lastWebVentCmdAt_ = 0U, lastWebCircCmdAt_ = 0U, lastWebHeaterCmdAt_ = 0U;   // spacing of repeated remote toggles (per kind)
