@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.9.2";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.9.3";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -624,6 +624,10 @@ constexpr uint32_t LOW_TEMP_CONFIRM_MS = 300000UL;       // thap lien tuc 5 phut
 // SV - LOW_TEMP_WARMUP_DONE_ERR_C; neu qua LOW_TEMP_WARMUP_MAX_MS ma chua toi thi E110 duoc xet nhu cu (lo khong len nhiet duoc).
 constexpr float LOW_TEMP_WARMUP_DONE_ERR_C = 0.3f;
 constexpr uint32_t LOW_TEMP_WARMUP_MAX_MS = 7200000UL;   // 120 phut
+constexpr uint32_t HIGH_TRIP_WINDOW_MS = 5000UL;           // 2.9.2: E111 trips on the mean of this window (clear_mean.h, MeanTrip) ...
+constexpr float HIGH_TRIP_TOLERANCE_C = 0.05f;            // ... at/over the line minus this (half a sensor step), with no sample more than HIGH_TRIP_GUARD_C under that ...
+constexpr float HIGH_TRIP_GUARD_C = 0.15f;
+constexpr float HIGH_TRIP_IMMEDIATE_C = 0.15f;            // ... or at once when a reading is this far over the line
 constexpr uint32_t HIGH_TEMP_CONFIRM_MS = 1000UL;
 constexpr float HIGH_TEMP_CLEAR_HYSTERESIS_C = 0.2f;
 constexpr uint32_t HIGH_TEMP_CLEAR_CONFIRM_MS = 10000UL;

@@ -70,6 +70,34 @@ int main() {
     const int t = firstClear(m, [](int s) { return (s % 2) ? 38.0f : 37.9f; }, 60, lv, 10000UL);
     assert(t >= 9 && t <= 11);
   }
+  // 6. The way IN to High (MeanTrip): the screen shows 37.6 and the line is 37.7. The raw 0.1 step flickers onto the line now and then (mean 37.63): the 2.9.1 rule (one reading for
+  //    1 s) tripped; this one does not. A temperature really at the line (mean 37.67) trips after the window; 0.15 over trips at once; an invalid reading starts again.
+  {
+    MeanTrip u; u.reset();
+    int firstOver = -1, trips = 0;
+    for (int sec = 0; sec < 600; ++sec) {
+      const bool oneRaw = (sec % 3 == 0);                                       // 37.7 for one second in three: what the old rule tripped on
+      if (oneRaw && firstOver < 0) firstOver = sec;
+      if (u.update(static_cast<uint32_t>(sec) * 1000UL, true, oneRaw ? 37.7f : 37.6f, 37.7f, 5000UL, 0.05f, 0.15f, 0.15f)) ++trips;
+    }
+    assert(firstOver == 0 && trips == 0);
+    MeanTrip w; w.reset();
+    int at = -1;
+    for (int sec = 0; sec < 60 && at < 0; ++sec) if (w.update(static_cast<uint32_t>(sec) * 1000UL, true, (sec % 3 == 2) ? 37.6f : 37.7f, 37.7f, 5000UL, 0.05f, 0.15f, 0.15f)) at = sec;
+    assert(at >= 4 && at <= 6);                                                 // mean 37.67 at the line: after the 5 s window
+    MeanTrip x; x.reset();
+    assert(!x.update(0UL, true, 37.84f, 37.7f, 5000UL, 0.05f, 0.15f, 0.15f));
+    assert(x.update(1000UL, true, 37.9f, 37.7f, 5000UL, 0.05f, 0.15f, 0.15f));  // 0.2 over: at once
+    assert(!x.update(2000UL, false, 37.9f, 37.7f, 5000UL, 0.05f, 0.15f, 0.15f));
+    MeanTrip y; y.reset();                                                      // a sample 0.3 under the line inside the window refuses the trip
+    bool trip2 = false;
+    for (int sec = 0; sec < 20; ++sec) trip2 = trip2 || y.update(static_cast<uint32_t>(sec) * 1000UL, true, (sec == 10) ? 37.4f : 37.75f, 37.7f, 5000UL, 0.05f, 0.15f, 0.15f);
+    assert(trip2);                                                              // it trips on the clean seconds around the dip ...
+    MeanTrip z; z.reset();
+    bool trip3 = false;
+    for (int sec = 0; sec < 5; ++sec) trip3 = trip3 || z.update(static_cast<uint32_t>(sec) * 1000UL, true, (sec == 2) ? 37.4f : 37.75f, 37.7f, 5000UL, 0.05f, 0.15f, 0.15f);
+    assert(!trip3);                                                             // ... but not while the dip is in the window
+  }
   std::printf("clear-mean: OK\n");
   return 0;
 }

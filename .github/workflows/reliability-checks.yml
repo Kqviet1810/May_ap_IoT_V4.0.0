@@ -194,6 +194,16 @@ jobs:
           g++ -O2 -std=c++11 -Wall -Wextra -Werror -I MAYAP_INDUSTRIAL_v1_0_0 -I tests tools/thermal-research/log-oven.cpp -o /tmp/mayap-log-oven
           /tmp/mayap-log-oven --gate
 
+      - name: "The LOADED oven of the field log of 04/11 (tools/thermal-research/loaded-oven.cpp): heater gain 4 x lower than an empty oven's, three plants - the controller learns its numbers and after 100 min the air stays within 0.25 degC and the command no longer swings between 0 and 100 %"
+        run: |
+          g++ -O2 -std=c++11 -Wall -Wextra -Werror -I MAYAP_INDUSTRIAL_v1_0_0 -I tests tools/thermal-research/loaded-oven.cpp -o /tmp/mayap-loaded-oven
+          /tmp/mayap-loaded-oven --gate
+
+      - name: "The real log of 04/11 fed to the PlantLearner: it finds the heater gain and the delay of the loaded oven (2.2e-5, 90 s) from the oscillation itself"
+        run: |
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-learner-log.cpp -o /tmp/mayap-learner-log
+          /tmp/mayap-learner-log
+
       - name: "E115 evidence (heater_response_watch.h): unit tests of the rule MachineController runs"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/heater-response-watch.cpp -o /tmp/mayap-heater-response-watch

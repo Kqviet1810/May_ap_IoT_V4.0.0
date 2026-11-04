@@ -52,3 +52,37 @@ class MeanClear {
   uint8_t n_ = 0U, head_ = 0U;
   uint32_t lastAt_ = 0U;
 };
+
+// The way IN to High (E111), on the same principle: the sensor gives 0.1 degC steps, so a temperature a little under the line flickers onto it for a second now and then, and a
+// trip on "one raw reading at/over the line for 1 s" (2.9.1) reported E111 with the screen showing 37.6 and the line set at 37.7. It trips when the MEAN of the last `windowMs` is
+// at/over `line - toleranceC` (the true temperature is at the line) with no sample more than `guardC` under it, or at once when a reading is `immediateC` or more over the line.
+class MeanTrip {
+ public:
+  static constexpr uint8_t RING = 16U;
+  void reset() { n_ = 0U; head_ = 0U; lastAt_ = 0U; }
+  bool update(uint32_t now, bool valid, float value, float line, uint32_t windowMs, float toleranceC, float guardC, float immediateC) {
+    if (!valid || !std::isfinite(value)) { reset(); return false; }
+    if (value >= line + immediateC) return true;
+    if (n_ == 0U || static_cast<uint32_t>(now - lastAt_) >= 1000UL) {
+      ring_[head_] = value;
+      head_ = static_cast<uint8_t>((head_ + 1U) % RING);
+      if (n_ < RING) ++n_;
+      lastAt_ = now;
+    }
+    uint32_t need = windowMs / 1000UL;
+    if (need < 1U) need = 1U;
+    if (need > RING) need = RING;
+    if (n_ < need) return false;
+    float sum = 0.0f, low = ring_[(head_ + RING - 1U) % RING];
+    for (uint32_t i = 0U; i < need; ++i) {
+      const float v = ring_[(head_ + RING - 1U - i) % RING];
+      sum += v;
+      if (v < low) low = v;
+    }
+    return sum / static_cast<float>(need) >= line - toleranceC && low >= line - toleranceC - guardC;
+  }
+ private:
+  float ring_[RING] = {};
+  uint8_t n_ = 0U, head_ = 0U;
+  uint32_t lastAt_ = 0U;
+};

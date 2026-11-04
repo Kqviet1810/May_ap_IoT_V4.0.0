@@ -160,3 +160,31 @@ forgetting started the 180 s grace time again. The reading is a 0.1 degC stairca
 (`offBelowC` 0 -> 0.15, `offConfirmMs` 2 s -> 10 s), and the siren sounds at once when 0.3 degC over the line (`panicC` 0.5 -> 0.3). The 180 s grace time for an overshoot that falls
 back (the first climb) is kept as asked in 2.8.1. Cost: a siren that is already sounding stops a little later (a full step under the line, 10 s). The protective actions are untouched.
 `tests/alarm-sound.cpp` section 8c reproduces the flicker (the 2.9.1 voice fails it) and the other sections follow the new numbers (2 s -> 10 s, 0.5 -> 0.3, 0.2 -> 0.15 degC).
+
+## 2.9.3 (field log of 04/11 12:11, firmware 2.9.2: a loaded oven swings the command between 0 and 100 %)
+
+`tests/fixtures/real-logs/mayap-20261104-loaded-oscillation.csv`: the oven full of eggs, started at 35.6 degC. PV barely moved while the request went 0 -> 100 -> 0 every 8 minutes and the
+predicted PV (purple dotted line of the PID Monitor) swung by 0.8 degC. A least-squares fit of that very log: **heater gain 2.2e-5 degC/s per %, delay 90 s, hold 17 %**. The controller of
+2.9.2 believed a gain of 3e-5 (right: the floor of its range) but a transit time of **211 s** (the stopwatch reads the time PV needs to rise by 8 sigma, and a slow climb makes that long), so
+it counted the heat on its way over 274 s instead of 90 s, predicted PV swings of +-0.8 degC that never came, and followed them. **The "priors of this machine" of 2.9.2 were wrong**: the
+heater gain of one machine is 9e-5 empty and 2.2e-5 loaded. The numbers of an oven are not constants and not a property of the machine; they are learned, all the time.
+
+* `PlantLearner` (thermal_v3.h): every 30 s, over the last 10 minutes, it fits `dPV/dt = kAir x u(t - delay) - hold x kAir` for delays of 45 .. 225 s and takes the delay with the best fit; a fit
+  that passes its gates (the command moved by >= 8 % rms, R^2 >= 0.35, at least 40 usable points) moves kAir and tau by 20 % of the way. It learns from whatever the controller does - a climb, a
+  landing, a swing of the command - and nothing else: seconds with a fan running, the heater off, or more than 0.6 degC from SV are left out. The numbers kept in NVS and the priors are
+  only where it starts. Fed the log above it finds **2.75e-5 and 90 s** (`tests/thermal-learner-log.cpp`).
+* The range of kAir is 1.8e-5 .. 9e-4 (was 3e-5 .. 9e-4: the loaded oven was below the floor).
+* `tools/thermal-research/loaded-oven.cpp --gate`: three loaded ovens (delay + lag 190 / 190 / 100 s): after 100 minutes the air stays within 0.01 - 0.05 degC and the mean |du| is 0.12 - 0.17 %/s
+  (2.9.2: 0.37 degC and 0.72 %/s on the third; the first two settled in both).
+* E111, the way IN (`clear_mean.h`, `MeanTrip`): the line is crossed when the MEAN of the last 5 s is at/over the line - 0.05 degC (half a sensor step) with no sample more than 0.15 under that, or at
+  once when a reading is 0.15 over. Before, one raw reading at the line for 1 s tripped, while the screen (the filtered value) showed 37.6 and the line was 37.7: the raw 0.1 degC step flickers onto
+  the line. E112 (Emergency) is untouched and still trips at once.
+
+Fleet bench, 30 realistic ovens, true temperature, 2.9.1 -> 2.9.3 (2.9.2 was 96.3 %): mean pass 84.7 -> 94.0 %; door + cold tray 17 -> 73 %; first-climb peak p90 +0.63 -> +0.22 degC.
+
+What was tried and left out: weighting the predicted PV down (a weight of 0.5 or 0.25 overshoots every first climb to 40 degC: the prediction is what brakes a climb; it must not DOMINATE near SV,
+which is what the learner fixes by making it right); a cap of the prediction near SV (no effect); back-extrapolating the delay of a climb (noisy: 64 .. 139 s on one climb); removing the stopwatch
+(27 closed-loop failures). A learner that also reads the seconds with a door detected is used: the detector fires falsely in a swinging oven and then no clean window existed.
+
+Limits: it learns slowly (the first fit needs 10 minutes within 0.6 degC of SV; the swings of the first 40 minutes of that oven remain until then); a first climb of a loaded oven is still
+planned with the prior and the stopwatch; the 2.9.2 figure for door + tray (68 %) is now 73 %, the first-climb median 32.1 -> 30.8 min; two bench ovens lost a pass each (climb + hold 100 -> 97 %).

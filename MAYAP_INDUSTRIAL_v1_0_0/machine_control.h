@@ -5831,9 +5831,11 @@ class MachineController {
 
     // Cap 2 co xac nhan vao va xac nhan thoat rieng, khong chap chon contactor.
     if (!highTemperatureActive_) {
-      const bool highTrip = tempAlarmEligible && validSafety &&
-                            safetyTemp >= config_.highTempAlarm;
-      if (highTripTimer_.update(now, highTrip, HIGH_TEMP_CONFIRM_MS)) {
+      // 2.9.2: the mean of the last HIGH_TRIP_WINDOW_MS (clear_mean.h, MeanTrip), not one raw reading for 1 s: E111 was reported with the screen at 37.6 and the line at 37.7
+      // because the raw 0.1 degC step flickers onto the line for a second. A reading HIGH_TRIP_IMMEDIATE_C over the line still trips at once; E112 is untouched.
+      const bool highTrip = highTripTimer_.update(now, tempAlarmEligible && validSafety, safetyTemp, config_.highTempAlarm,
+                                                  HIGH_TRIP_WINDOW_MS, HIGH_TRIP_TOLERANCE_C, HIGH_TRIP_GUARD_C, HIGH_TRIP_IMMEDIATE_C);
+      if (highTrip) {
         highTemperatureActive_ = true;
         highClearTimer_.reset();
       }
@@ -8331,7 +8333,7 @@ class MachineController {
   bool autoModeFaultActive_ = false;
 
   ConditionTimer lowTempTimer_{};
-  ConditionTimer highTripTimer_{};
+  MeanTrip highTripTimer_{};
   MeanClear highClearTimer_{};
   MeanClear emergencyClearTimer_{};
   ConditionTimer humidityTimer_{};

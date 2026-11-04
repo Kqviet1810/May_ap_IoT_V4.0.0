@@ -40,7 +40,9 @@ namespace thermalv3 {
 // (96.7 % of the situations passed against 96.3 %) but the closed-loop suite (E115 on a healthy oven, overshoot of the empty oven) does not accept even 0.95: left at the 1.05 of 2.9.1.
 constexpr float SW_TAU_FACTOR = 1.05f;
 constexpr float STEADY_PIPE_FRAC = 0.1f;   // the command moved by less than this share of the ceiling over the pipe: the pipe is in steady state
-constexpr float KAIR_PRIOR = 9.0e-5f, KAIR_LO = 1.0f / 3.0f, KAIR_HI = 10.0f;
+constexpr float LEARN_STEP = 0.2f;          // the share of the way a passing fit of PlantLearner moves kAir and tau
+constexpr float LEARN_BAND_C = 0.6f;        // ... fitted on seconds within this distance of SV only
+constexpr float KAIR_PRIOR = 9.0e-5f, KAIR_LO = 0.2f, KAIR_HI = 10.0f;   // plausible gain 1.8e-5 .. 9e-4: a loaded oven of the field has 2.2e-5
 constexpr float TAU_PRIOR = 100.0f, TAU_LO = 0.45f, TAU_HI = 2.25f;   // plausible transit time 45..225 s
 constexpr float OBS_POLE_TAU = 1.5f, OBS_LEAK_TAU = 8.0f;   // disturbance observer: poles at 1/(1.5 tau); the rate of the load leaks away over 8 tau (measured on the fleet bench)
 constexpr float PIPE_K = 1.3f;             // heat in flight: the last 1.3 transit times of power (the delay and the tail of the first-order lag behind it)
@@ -53,6 +55,56 @@ constexpr float FF_BUMP_C = 0.05f;         // the feed-forward is cancelled when
 constexpr float FAN_LEARN_GAIN = 0.7f;      // the share of the measured shortfall of a fan run that is taken into the fan's loss
 constexpr float SIGMA_FLOOR = 0.004f;      // a reading of a 0.1 degC sensor cannot be quieter than this (degC)
 constexpr uint16_t HIST_LEN = 640U;        // seconds of history (memory, not tuning): 4 x the largest transit time
+
+// Continuous learning of the plant (2.9.2). The numbers of an oven are not constants: a loaded oven has a heater gain 4 x lower than an empty one (2.2e-5 against 9e-5 on the log
+// of 04/11) and nothing but the machine can know which one it has today. Every 30 s the learner fits, over the last 10 minutes, the slope of PV to the command that reached the oven
+// `delay` seconds earlier:  dPV/dt = kAir x u(t - delay) - c  (the intercept c is the hold, free), for delays of 45 .. 225 s, and takes the delay with the best fit. It learns from
+// whatever the controller does - a climb, a landing, a swing of the command - and learns nothing (returns false) when the command did not move enough or the fit is poor. Seconds with
+// a door, a fan or the heater off are left out. Fed once per second by the controller; also fed directly by the tests from a logged run.
+class PlantLearner {
+ public:
+  static constexpr uint16_t N = 600U;            // seconds kept
+  static constexpr uint16_t HALF = 15U;          // half of the smoothing window of the slope and of the command [s]
+  void reset() { head_ = 0U; count_ = 0U; }
+  void push(float pv, float u, bool clean) {
+    pv_[head_] = pv; u_[head_] = u; ok_[head_] = clean; head_ = static_cast<uint16_t>((head_ + 1U) % N);
+    if (count_ < N) ++count_;
+  }
+  // true when a trustworthy fit exists; kAir [degC/s per %], delay [s], r2 the share of the variance of the slope that the command explains
+  bool fit(float &kAir, float &delay, float &r2out) const {
+    if (count_ < N - 2U) return false;
+    static const uint16_t MAXD = 225U;
+    const uint16_t last = static_cast<uint16_t>(N - 1U - HALF);                    // newest second with a full smoothing window after it
+    float bestR2 = -1.0f, bestK = 0.0f, bestD = 0.0f;
+    for (uint16_t d = 45U; d <= MAXD; d = static_cast<uint16_t>(d + 15U)) {
+      double sx = 0, sy = 0, sxx = 0, sxy = 0, syy = 0; uint16_t n = 0U;
+      for (uint16_t i = static_cast<uint16_t>(d + HALF); i <= last; i = static_cast<uint16_t>(i + 5U)) {   // age-ordered from the oldest
+        bool good = true; double ux = 0.0;
+        for (uint16_t k = 0U; k <= 2U * HALF && good; k = static_cast<uint16_t>(k + 5U)) {
+          const uint16_t a = static_cast<uint16_t>(i - d - HALF + k);               // command window, delay seconds earlier
+          if (!ok_[at(a)]) good = false;
+          ux += u_[at(a)];
+        }
+        if (!good || !ok_[at(i)] || !ok_[at(static_cast<uint16_t>(i - HALF))] || !ok_[at(static_cast<uint16_t>(i + HALF))]) continue;
+        const double x = ux / 7.0, y = (pv_[at(static_cast<uint16_t>(i + HALF))] - pv_[at(static_cast<uint16_t>(i - HALF))]) / (2.0 * HALF);
+        sx += x; sy += y; sxx += x * x; sxy += x * y; syy += y * y; ++n;
+      }
+      if (n < 40U) continue;
+      const double vx = sxx / n - (sx / n) * (sx / n), vy = syy / n - (sy / n) * (sy / n), cxy = sxy / n - (sx / n) * (sy / n);
+      if (vx < 64.0 || vy <= 0.0) continue;                                            // the command moved by less than 8 % (rms): nothing to learn from
+      const double a = cxy / vx, r2 = (cxy * cxy) / (vx * vy);
+      if (a > 0.0 && r2 > bestR2) { bestR2 = static_cast<float>(r2); bestK = static_cast<float>(a); bestD = static_cast<float>(d); }
+    }
+    if (bestR2 < 0.35f) return false;
+    kAir = bestK; delay = bestD; r2out = bestR2;
+    return true;
+  }
+ private:
+  uint16_t at(uint16_t age_from_oldest) const { return static_cast<uint16_t>((head_ + N - count_ + age_from_oldest) % N); }
+  float pv_[N] = {}, u_[N] = {};
+  bool ok_[N] = {};
+  uint16_t head_ = 0U, count_ = 0U;
+};
 
 enum State : uint8_t { StIdle = 0, StClimb = 1, StTrack = 2, StDoor = 3, StFrozen = 4 };
 
@@ -89,7 +141,7 @@ class Controller {
     kAir_ = KAIR_PRIOR; tau_ = TAU_PRIOR; hold_ = HOLD_PRIOR_OF_CAP * 100.0f;
     identified_ = tauMeasured_ = tauTrusted_ = door_ = wasLive_ = doorLatch_ = nearSeen_ = false; latchT_ = 0.0f;
     lead_ = slope_ = lsSlope_ = lsSigma_ = 0.0f; sigma_ = 0.02f;
-    histHead_ = histCount_ = 0U; liveS_ = secAcc_ = lastCmd_ = 0.0f;
+    histHead_ = histCount_ = 0U; liveS_ = secAcc_ = lastCmd_ = 0.0f; learner_.reset(); learnS_ = 0U;
     swOn_ = false; swPv0_ = swT_ = 0.0f;
     pm_ = NAN; rate_ = 0.0f; fanW_ = 0.0f; fanSched_ = fanSchedPrev_ = fanRun_ = false;
     derive();
@@ -112,7 +164,7 @@ class Controller {
       }
       wasLive_ = false; liveS_ = lastCmd_ = 0.0f; swOn_ = false;
       secAcc_ += dt;
-      while (secAcc_ >= 1.0f) { secAcc_ -= 1.0f; pushHist(std::isfinite(pv_) ? pv_ : 0.0f, 0.0f, 0.0f); }
+      while (secAcc_ >= 1.0f) { secAcc_ -= 1.0f; pushHist(std::isfinite(pv_) ? pv_ : 0.0f, 0.0f, 0.0f); learner_.push(std::isfinite(pv_) ? pv_ : 0.0f, 0.0f, false); }
       return out;
     }
     wasLive_ = true; pv_ = in.pv; sp_ = in.sp;
@@ -172,6 +224,8 @@ class Controller {
       secAcc_ -= 1.0f;
       const float net = in.shadow ? 0.0f : cmd;
       pushHist(pv_, in.shadow ? 0.0f : net, in.shadow ? 0.0f : ff);
+      learner_.push(pv_, in.shadow ? 0.0f : net, in.permit && !in.shadow && !in.ventFan && std::fabs(e) <= LEARN_BAND_C);
+      if (++learnS_ >= 30U) { learnS_ = 0U; learnPlant(); }
       measureNoiseAndSlope();
       derive();
       if (in.permit && !in.shadow) { observe(); identifyGain(e); measureFan(); } else if (in.shadow) observe();
@@ -277,6 +331,17 @@ class Controller {
     if (std::isfinite(pv_) && sp_ - pv_ > 1.5f * farBand_) lead = std::max(lead, 0.8f * std::max(0.0f, slope_) * tau_);
     lead_ = std::max(-kAir_ * hold_ * tau_, std::min(1.2f * inflightMax_, lead));
   }
+  // 2.9.2: the continuous learning of kAir and the transit time (PlantLearner above): a fit that passes its gates moves the numbers by LEARN_STEP of the way, every 30 s. Only
+  // seconds within LEARN_BAND_C of SV are used: a climb has its own measurement, and the oven far from SV is not the oven that has to be held.
+  void learnPlant() {
+    float k = 0.0f, d = 0.0f, r2 = 0.0f;
+    if (!learner_.fit(k, d, r2)) return;
+    k = std::max(KAIR_PRIOR * KAIR_LO, std::min(KAIR_PRIOR * KAIR_HI, k));
+    d = std::max(TAU_PRIOR * TAU_LO, std::min(TAU_PRIOR * TAU_HI, d));
+    kAir_ += LEARN_STEP * (k - kAir_);
+    tau_ += LEARN_STEP * (d - tau_);
+    identified_ = tauMeasured_ = true;
+  }
   // THE writer of hold: a disturbance observer. A model of PV is driven by the power that has reached the oven (the command one transit time ago);
   // the error between the measured and the model PV corrects the model, the load (hold) and the load's rate of change. Three poles at 1/(1.5 tau)
   // (a ramp of load - cold eggs, the walls giving back heat - is followed without a standing error), the rate leaks away over 8 tau so that it does not
@@ -346,6 +411,8 @@ class Controller {
       tau_ = std::max(TAU_PRIOR * TAU_LO, std::min(TAU_PRIOR * TAU_HI, swT_ * SW_TAU_FACTOR)); tauMeasured_ = tauTrusted_ = true; swOn_ = false;
     }
   }
+  PlantLearner learner_;
+  uint16_t learnS_ = 0U;
   uint8_t state_ = StIdle;
   float pv_ = NAN, sp_ = 37.5f, cap_ = 100.0f;
   float kAir_ = KAIR_PRIOR, tau_ = TAU_PRIOR, hold_ = 12.0f;
