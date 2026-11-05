@@ -314,6 +314,21 @@ class Family {
       return evaluate(r, from);
     });
   }
+  // The controller restarted next to SP (an update, a power blip, a batch started in a warm oven) and then a door. `kept` = the machine gives it back what the
+  // last climb measured (kAir and the transit time, kept in the EEPROM: thermal_gain_record.h); otherwise it has only its priors, as before 2.9.7.
+  Stats restartedDoorOpen(double minutes, bool kept) const {
+    return each([minutes, kept](const Oven &, const R &settled) {
+      R r = settled;
+      const float kAir = r.ctl.kAir(), tau = r.ctl.tauTransit();
+      r.restartControllers();
+      if (kept) r.ctl.restore(kAir, tau);
+      r.advance(10 * 60.0);
+      const size_t from = r.air().size();
+      r.advance(minutes * 60.0, true, false);
+      r.advance(2.0 * 3600.0);
+      return evaluate(r, from);
+    });
+  }
   // Vent fan 5 minutes every 40 minutes: it takes 1.1 - 1.9 kW out of the oven.
   Stats ventFan() const {
     return each([](const Oven &, const R &settled) {
@@ -486,6 +501,20 @@ static void testFamily(bool everything) {
     st.print(name);
     reference(name, before.doorOpen(minutes[k]));
     expectHealthy(st, name, {doorOver[k], doorBand[k], 0.4, 31.0, true});
+  }
+
+  // Restarted next to SP, then a door. With the numbers the last climb measured (2.9.7) every oven of the sample must come back like a settled one. Without them
+  // (a machine that has never made a climb, or whose record was cleared) the controller has only its priors: three fast ovens of the sample then hunt around SP
+  // and are still 0.8 degC away an hour later - printed for the record, not a limit (it is what the stored numbers are there to prevent).
+  for (int k = 0; k < 3; ++k) {
+    std::snprintf(name, sizeof name, "restarted next to SP, numbers kept, door open %.0f min", minutes[k]);
+    const Stats st = now.restartedDoorOpen(minutes[k], true);
+    st.print(name);
+    expectHealthy(st, name, {doorOver[k] + 0.2, doorBand[k], 0.4, 31.0, true});
+  }
+  for (int k = 0; k < 3; ++k) {
+    std::snprintf(name, sizeof name, "restarted next to SP, priors only, door open %.0f min", minutes[k]);
+    now.restartedDoorOpen(minutes[k], false).print(name);
   }
 
   // Vent fan 5 minutes every 40 minutes: the dip must stay small and nothing may overshoot afterwards.

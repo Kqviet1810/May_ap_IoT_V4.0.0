@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.9.6";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.9.7";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -1035,6 +1035,9 @@ struct MachineConfig {
   // Sensor resolution (HMI NANG CAO): 0 = automatic format detection (default, as before), 1 = 0.1 C, 2 = 0.01 C. Stored in bits 1-2 of the
   // schema-13 adaptive byte, so records and old firmware stay compatible.
   uint8_t sensorResolutionMode = 0;
+  // Heater gain of the oven (HMI NANG CAO > GIA NHIET): 0 = automatic (what the last climb measured and the machine kept, else the prior), 1..7 = the value typed
+  // by hand (see thermal_gain_record.h manualKAir), used as the starting value. Stored in bits 5-7 of the same schema-13 byte (old records read automatic).
+  uint8_t ovenGainMode = 0;
   // Smart Thermal (HMI NANG CAO, default OFF): startup heat-in-flight brake + faster hold convergence. Only acts while the adaptive balance above is ON
   // and never changes during a batch. Stored in bit 3 of the same schema-13 byte (old records read OFF).
   bool smartThermalEnabled = false;

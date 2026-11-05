@@ -10,6 +10,7 @@
 using std::isfinite;
 int constrain(int v,int lo,int hi){return std::max(lo,std::min(hi,v));}
 float clampFloat(float v,float lo,float hi){return std::max(lo,std::min(hi,v));}
+#include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_gain_record.h"
 #include "actual-config.inc"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/heater_burst_scheduler.h"
 constexpr uint8_t HEATER_GROUP_COUNT=1;
@@ -72,6 +73,19 @@ int main(){
     assert(store.saveConfig(input,readback));
     assert(readback.sensorResolutionMode==mode && readback.adaptiveThermalBalanceEnabled==enabled);
   }
+  // Heater gain choice (bits 5-7): independent of every other bit of the byte; a record that never wrote it reads automatic; a wild value is sanitized.
+  for(uint8_t gain=0;gain<8;++gain) for(bool predictive:{false,true}) for(bool smart:{false,true}) for(bool adaptive:{false,true}) for(uint8_t mode:{0U,1U,2U}) {
+    ConfigStore store;MachineConfig input,readback;
+    input.ovenGainMode=gain;input.predictiveThermalEnabled=predictive;input.smartThermalEnabled=smart;input.adaptiveThermalBalanceEnabled=adaptive;input.sensorResolutionMode=mode;
+    assert(store.saveConfig(input,readback));
+    assert(readback.ovenGainMode==gain && readback.predictiveThermalEnabled==predictive && readback.smartThermalEnabled==smart &&
+           readback.adaptiveThermalBalanceEnabled==adaptive && readback.sensorResolutionMode==mode);
+    ConfigStore reboot;std::memcpy(reboot.bytes,store.bytes,sizeof(store.bytes));
+    assert(reboot.loadConfig(readback) && readback.ovenGainMode==gain);
+  }
+  { const MachineConfig d;assert(d.ovenGainMode==0U);                                          // the factory default is automatic
+    for(uint8_t old=0;old<32;++old){PackedMachineConfigV1 p=packConfig(d);p.adaptiveThermalBalanceEnabled=old;assert(unpackConfig(p).ovenGainMode==0U);}   // older records
+    MachineConfig wild;wild.ovenGainMode=9U;sanitizeMachineConfig(wild);assert(wild.ovenGainMode==0U); }
   // Smart Thermal switch (bit 3) is independent of the adaptive flag and the resolution choice.
   for(bool smart:{false,true}) for(bool adaptive:{false,true}) for(uint8_t mode:{0U,2U}) {
     ConfigStore store;MachineConfig input,readback;

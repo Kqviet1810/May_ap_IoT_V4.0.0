@@ -221,6 +221,41 @@ int main() {
     CHECK(!e.techGate_.webSessionActive(now + 5000));                      // a reboot never keeps a Web session
   }
 
+  // 6b. While a batch runs ONLY the two sensor offsets may change: the HMI "yes" is still needed, a step is limited, anything else (or a pending resume) stays locked.
+  { Ctl c; fresh(c, now); grantWeb(c, now);
+    c.batchRunning_ = true;
+    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_TEMP_OFFSET, 0.3}}, "off-1", c.config_));
+    CHECK(c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "PENDING_HMI");           // accepted for the HMI to decide, nothing applied yet
+    CHECK(c.store_.saves == 0 && c.config_.tempOffset == 0.0f);
+    CHECK(c.run(now + 1000, HmiCommandType::TechDecision, false, 1, m));                                // the HMI says yes while the batch runs
+    CHECK(c.store_.saves == 1 && fabsf(c.config_.tempOffset - 0.3f) < 1.0e-6f && c.runtime_.tech.resultState == TechResult::Applied);
+    // the humidity offset too, and both together
+    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_HUM_OFFSET, 3.0}, {AdvancedHistory::F_TEMP_OFFSET, 0.5}}, "off-2", c.config_));
+    CHECK(c.run(now + 2000, HmiCommandType::TechRequestSubmit, true, 0, m));
+    CHECK(c.run(now + 3000, HmiCommandType::TechDecision, false, 1, m));
+    CHECK(fabsf(c.config_.humidityOffset - 3.0f) < 1.0e-6f && fabsf(c.config_.tempOffset - 0.5f) < 1.0e-6f);
+    // a step over 0.5 degC (or 5 %RH) at once is refused at submit time, and nothing changes
+    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_TEMP_OFFSET, 1.2}}, "off-big", c.config_));
+    CHECK(!c.run(now + 4000, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "OFFSET_STEP");
+    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_HUM_OFFSET, 9.5}}, "off-big-h", c.config_));
+    CHECK(!c.run(now + 4100, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "OFFSET_STEP");
+    CHECK(fabsf(c.config_.tempOffset - 0.5f) < 1.0e-6f);
+    // an offset together with any other technical field is refused as a whole
+    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_TEMP_OFFSET, 0.6}, {AdvancedHistory::F_KP, 9.0}}, "off-mix", c.config_));
+    CHECK(!c.run(now + 5000, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "BATCH_LOCKED");
+    CHECK(c.config_.kp == 5.0f);
+    // a resume that is still pending locks the offsets too
+    c.batchRunning_ = false; c.resumePending_ = true;
+    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_TEMP_OFFSET, 0.6}}, "off-resume", c.config_));
+    CHECK(!c.run(now + 6000, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "BATCH_LOCKED");
+    // a decision made after a step-limit breach cannot slip through: the limit is checked again at "yes"
+    c.resumePending_ = false;
+    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_TEMP_OFFSET, 0.9}}, "off-late", c.config_));     // 0.4 from 0.5: allowed while no batch runs
+    CHECK(c.run(now + 7000, HmiCommandType::TechRequestSubmit, true, 0, m));
+    c.batchRunning_ = true; c.config_.tempOffset = 0.0f;                                                  // batch starts, the offset is 0.9 away from the request now
+    CHECK(!c.run(now + 8000, HmiCommandType::TechDecision, false, 1, m) && m == "BU QUA 0.5C/LAN");
+  }
+
   // 7. Safety conditions are checked AGAIN at "yes": a batch that started meanwhile blocks the apply (and at submit time too).
   { Ctl c; fresh(c, now); grantWeb(c, now);
     c.batchRunning_ = true;

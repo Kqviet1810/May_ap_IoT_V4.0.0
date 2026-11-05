@@ -6,7 +6,7 @@
 //   kAir [degC/s per %] heater gain, tau [s] transport delay, hold [%] the power that keeps PV flat (loss + eggs), fan [%] what the fan takes out.
 //
 // Rule of this file: a threshold is DERIVED where it can be. Everything below comes from five measured numbers:
-//   kAir, tau, hold  (identified while the controller runs; nothing is kept across a restart),  cap (the heater ceiling),  sigma (the noise of PV, measured).
+//   kAir, tau, hold  (identified while the controller runs; the machine keeps kAir and tau across a restart: restore(); hold is read again),  cap (the heater ceiling),  sigma (the noise of PV, measured).
 //   inflightMax = kAir * (cap - hold) * tau     the most heat that can be on its way: degC that full power puts into the pipe
 //   far         = inflightMax / 2               landing starts when the PREDICTED error is under this: the braking distance of THIS oven
 //   near        = 0.3 * far
@@ -75,7 +75,7 @@ class Controller {
   void reset() {
     state_ = StIdle; pv_ = NAN; sp_ = 37.5f; cap_ = 100.0f;
     kAir_ = KAIR_START; tau_ = TAU_PRIOR; hold_ = HOLD_PRIOR_OF_CAP * 100.0f;
-    identified_ = tauMeasured_ = door_ = wasLive_ = doorLatch_ = nearSeen_ = false; latchT_ = 0.0f;
+    identified_ = tauMeasured_ = door_ = wasLive_ = doorLatch_ = nearSeen_ = kAirMeasured_ = false; latchT_ = 0.0f;
     lead_ = slope_ = lsSlope_ = lsSigma_ = 0.0f; sigma_ = 0.02f;
     histHead_ = histCount_ = 0U; liveS_ = secAcc_ = lastCmd_ = 0.0f;
     swOn_ = false; swPv0_ = swT_ = 0.0f;
@@ -161,6 +161,17 @@ class Controller {
   uint8_t phase() const { return (state_ == StTrack || state_ == StDoor) ? 2U : (state_ == StClimb ? 1U : 0U); }
   bool responseSuspect() const { return false; }
   bool identified() const { return identified_; }
+  // kAir has been MEASURED by a climb since power-up (a number restored from the EEPROM or typed by hand does not count): only that is worth keeping.
+  bool kAirMeasured() const { return kAirMeasured_; }
+  bool tauMeasured() const { return tauMeasured_; }
+  // The numbers that belong to the OVEN, not to a batch: the machine keeps what a climb measured across a restart (and the owner may type a value), so that a
+  // start close to SV does not have to guess kAir (a guess 2.5 times off leaves the oven under SV for an hour). A value outside its plausible range is ignored;
+  // tau 0 = unknown (the transit time stays a prior that the next clean climb measures again).
+  void restore(float kAir, float tau) {
+    if (std::isfinite(kAir) && kAir >= KAIR_PRIOR * KAIR_LO && kAir <= KAIR_PRIOR * KAIR_HI) { kAir_ = kAir; identified_ = true; }
+    if (std::isfinite(tau) && tau >= TAU_PRIOR * TAU_LO && tau <= TAU_PRIOR * TAU_HI) tau_ = tau;
+    derive();
+  }
   uint8_t batchesDone() const { return identified_ ? 2U : 0U; }
   float kAir() const { return kAir_; }
   float tauTransit() const { return tau_; }
@@ -258,6 +269,7 @@ class Controller {
     kAir_ = identified_ && !epFresh_ ? kAir_ + 0.3f * (k - kAir_) : k;
     epFresh_ = false;
     identified_ = true;
+    kAirMeasured_ = true;
   }
   // (The stopwatch starts as soon as full power does: waiting 0.4 tau first measured the delay short by that wait and clamped slow ovens at the lower
   // limit - door recoveries overshot by 1.3 degC; fleet of the closed-loop rig, door 2 min: worst overshoot 1.27 -> 0.48.)
@@ -279,7 +291,7 @@ class Controller {
   float kAir_ = KAIR_PRIOR, tau_ = TAU_PRIOR, hold_ = 12.0f;
   float epMax_ = 0.0f; bool epFresh_ = true; float latchT_ = 0.0f; bool doorLatch_ = false, nearSeen_ = false; float pm_ = NAN, rate_ = 0.0f;
   bool ventFan_ = false;
-  bool identified_ = false, tauMeasured_ = false, door_ = false, wasLive_ = false;
+  bool identified_ = false, tauMeasured_ = false, door_ = false, wasLive_ = false, kAirMeasured_ = false;
   float lead_ = 0.0f, slope_ = 0.0f, lsSlope_ = 0.0f, lsSigma_ = 0.0f, sigma_ = 0.02f;
   float inflightMax_ = 1.0f, farBand_ = 0.5f, nearBand_ = 0.15f, kn_ = 30.0f;
   float liveS_ = 0.0f, secAcc_ = 0.0f, lastCmd_ = 0.0f;

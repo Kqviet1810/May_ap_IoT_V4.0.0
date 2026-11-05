@@ -467,6 +467,7 @@ const char *const OPT_OFFLINE_ONLINE[] = {"OFFLINE", "ONLINE"};
 const char *const OPT_ON_OFF_HOI[] = {"HOI XN", "TU DONG"};
 const char *const OPT_VENT_LEVEL[] = {"THAP", "TIEU CHUAN", "CAO"};
 const char *const OPT_SENSOR_RES[] = {"TU DONG", "0.1 C", "0.01 C"};
+const char *const OPT_OVEN_GAIN[] = {"TU DONG", "0.6e-4", "0.8e-4", "1.0e-4", "1.4e-4", "2.0e-4", "3.0e-4", "5.0e-4"};   // heater gain of the oven, degC/s per % (thermal_gain_record.h manualKAir)
 #define ITEM_FLOAT(lbl, member, mn, mx, st, dec, unitText) \
   {lbl, SettingType::Float, offsetof(MachineConfig, member), mn, mx, st, dec, unitText, nullptr, 0}
 #define ITEM_U8(lbl, member, mn, mx, st, unitText) \
@@ -587,11 +588,13 @@ const SettingItem SETTINGS[] = {
   // Smart Thermal (NANG CAO > PID/GIA NHIET): works only with "Tu can bang nhiet" ON; locked while a batch runs.
   ITEM_BOOL("Smart Thermal", smartThermalEnabled),                              // 54
   // Thermal Predictive V1 (NANG CAO > PID/GIA NHIET): default ON; read at the start of a batch; acts only with "Tu can bang nhiet" ON.
-  ITEM_BOOL("Nhiet du doan", predictiveThermalEnabled)                          // 55
+  ITEM_BOOL("Nhiet du doan", predictiveThermalEnabled),                         // 55
+  // Heater gain of the oven (NANG CAO > GIA NHIET): AUTO = what the last climb measured and the machine kept; a value = typed by hand, the starting value.
+  ITEM_U8_OPTIONS("He so heater", ovenGainMode, OPT_OVEN_GAIN, 8)               // 56
 };
 
 constexpr uint8_t SETTING_COUNT = sizeof(SETTINGS) / sizeof(SETTINGS[0]);
-static_assert(SETTING_COUNT == 56, "Bang SETTINGS phai co 56 thong so");
+static_assert(SETTING_COUNT == 57, "Bang SETTINGS phai co 57 thong so");
 
 // Thermal Control V2.0.0: the old controller's rows (Kp/Ki/Kd 15-17, tune 26-27, balance 51, Smart Thermal 54, Predictive 55) stay in
 // SETTINGS so every index and the stored config keep their meaning, but no menu group lists them.
@@ -600,7 +603,7 @@ const uint8_t GROUP_SETTING_INDEXES[] = {
   4,5,6,8,                             // Nhiet do (nguong van hanh; Bu nhiet do da chuyen sang HIEU CHUAN)
   11,12,13,28,                         // Dao trung
   14,                                  // He thong: Che do (online/offline)
-  19,                                  // GIA NHIET: tran cong suat (NANG CAO)
+  19, 56,                              // GIA NHIET: tran cong suat; he so heater (NANG CAO)
   20,21,22,23,24,25,                   // Bao ve nhiet      (NANG CAO)
   9,10,                                // Quat hut; Thong gio la menu con
   30,31,                               // Tao am
@@ -621,15 +624,15 @@ const SettingGroup GROUPS[] = {
   // la cai dat mang - gom ca ma QR, dat lai PIN, cap nhat firmware... nen
   // "He thong" mo ta dung hon la cai dat chung cua may.
   {"HE THONG", 12, 1},
-  {"GIA NHIET", 13, 1},
-  {"BAO VE NHIET", 14, 6},
-  {"QUAT HUT", 20, 2},
-  {"TAO AM", 22, 2},
-  {"HIEU CHUAN", 24, 4}
+  {"GIA NHIET", 13, 2},
+  {"BAO VE NHIET", 15, 6},
+  {"QUAT HUT", 21, 2},
+  {"TAO AM", 23, 2},
+  {"HIEU CHUAN", 25, 4}
 };
 constexpr uint8_t GROUP_COUNT = sizeof(GROUPS) / sizeof(GROUPS[0]);
 static_assert(GROUP_COUNT == 9, "Bang GROUPS phai co 9 nhom");
-static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) == 28U,
+static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) == 29U,
               "Sai so luong setting hien trong menu chinh");
 
 // Dong phu (khong phai setting gia tri) duoc gan them vao cuoi mot so nhom.
@@ -741,6 +744,7 @@ void sanitizeConfig(MachineConfig &cfg) {
   }
   if (!cfg.humidifierInstalled) cfg.humidifierEnabled = false;
   if (cfg.sensorResolutionMode > 2U) cfg.sensorResolutionMode = 0U;
+  if (cfg.ovenGainMode > 7U) cfg.ovenGainMode = 0U;
 
   if (!isfinite(cfg.tempHysteresis)) cfg.tempHysteresis = defaults.tempHysteresis;
   cfg.tempHysteresis = constrain(cfg.tempHysteresis, 0.1f, 1.0f);
@@ -1250,6 +1254,8 @@ const char *groupExtraLabelFor(GroupExtra extra) {
 bool settingLockedDuringBatch(uint8_t settingIndex) {
   if (!currentRuntime.batchRunning && !currentRuntime.resumeConfirmationRequired) return false;
   const uint16_t offset = SETTINGS[settingIndex].offset;
+  // The two sensor offsets are open while a batch RUNS (2.9.7; NANG CAO needs the technical PIN, a step is limited to 0.5 degC / 5 %RH in the firmware); not while a resume is pending.
+  if ((offset == offsetof(MachineConfig, tempOffset) || offset == offsetof(MachineConfig, humidityOffset)) && !currentRuntime.resumeConfirmationRequired) return false;
   // Mo dung nhom VAN HANH co the can chinh khi dang ap (gom ba nguong canh bao
   // nhiet, so ngay ap, tu ap lai). Calibration, PID/tuning, timeout co khi va
   // recovery/system settings bi khoa.
