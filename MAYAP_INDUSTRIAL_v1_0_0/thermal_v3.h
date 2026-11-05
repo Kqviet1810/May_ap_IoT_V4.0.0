@@ -317,7 +317,8 @@ class Controller {
   // with an integral time of LIFT_TI_OF_TAU transit times; it stops by itself as soon as the heat in flight closes the gap.
   void stallLift() {
     const float gate = std::max(LIFT_GATE_C, 3.0f * sigma_);
-    if (ventFan_ || door_ || doorLatch_ || (sp_ - pv_) <= gate || (sp_ - pv_) >= farBand_) return;
+    const float gap = sp_ - pv_;
+    if (ventFan_ || door_ || doorLatch_ || !std::isfinite(gap) || !(gap > gate && gap < farBand_)) return;
 #ifdef LIFT_SLOPE
     // measured response only: PV must close the gap in LIFT_CLOSE_TAU transit times; what is missing of that slope is paid into the hold with the gain of a slow oven
     const float want = (sp_ - pv_) / (LIFT_CLOSE_TAU * tau_);
@@ -325,7 +326,7 @@ class Controller {
     if (have >= want) return;
     hold_ = std::min(cap_, hold_ + (want - have) / (LIFT_KREF * LIFT_TI_OF_TAU * tau_));
 #else
-    hold_ = std::min(cap_, hold_ + kn_ * (elLast_ - gate) / (LIFT_TI_OF_TAU * tau_));
+    if (elLast_ > gate) hold_ = std::min(cap_, hold_ + kn_ * (elLast_ - gate) / (LIFT_TI_OF_TAU * tau_));
 #endif
   }
   // kAir at every saturated climb: the heater has been at its ceiling for a whole transit time plus a part of one, PV is far under SV and climbing.
