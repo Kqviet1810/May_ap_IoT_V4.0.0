@@ -212,6 +212,11 @@ class Controller {
     if (std::isfinite(hold) && hold >= 0.0f && hold <= 40.0f) hold_ = hold;
     derive();
   }
+  // The climb assist (thermal_climb.h) hands over the load it found: any level the heater can give, and the observer starts again from the PV that is there.
+  void adoptHold(float hold) {
+    if (std::isfinite(hold) && hold >= 0.0f) { hold_ = std::min(hold, cap_ > 0.0f ? cap_ : 100.0f); pm_ = pv_; rate_ = 0.0f; }
+    derive();
+  }
   bool hasRun() const { return wasLive_ || liveS_ > 0.0f; }
   // PV close to SV, no door, tracking: the hold estimate is worth keeping.
   bool settled() const { return wasLive_ && state_ == StTrack && !doorLatch_ && std::isfinite(pv_) && std::fabs(sp_ - pv_) <= nearBand_; }

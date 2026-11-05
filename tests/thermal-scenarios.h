@@ -59,7 +59,9 @@ class RigT {
   // (short window for the value the controller regulates, long window for the slope). The frozen 2.3.4 controller keeps the filtered chain.
   template <class I> static auto setSlope(I &i, float s, int) -> decltype(i.slopeFine, void()) { i.slopeFine = s; }
   template <class I> static void setSlope(I &, float, long) {}
-  static constexpr bool fineInput = std::is_same<Ctl, thermalv3::Controller>::value;
+  template <class C> static constexpr auto fineOf(int) -> decltype(C::kFineInput) { return C::kFineInput; }
+  template <class C> static constexpr bool fineOf(long) { return std::is_same<C, thermalv3::Controller>::value; }
+  static constexpr bool fineInput = fineOf<Ctl>(0);
  public:
   RigT(const PlantParams &p, double airC, double eggC, double sensorStepC = 0.1) : plant(p, airC, eggC), chain(sensorStepC) {
     for (int i = 0; i < 8; ++i) chain.sample(plant.sensor());
@@ -139,7 +141,14 @@ class RigT {
   std::vector<float> ta_, pv_, u_;
 };
 
+#ifdef THERMAL_DUAL
+}  // namespace thermalsim
+#include "thermal-dual.h"
+namespace thermalsim {
+using Rig = RigT<DualCtl, thermalv3::Input, HeaterResponseWatch>;
+#else
 using Rig = RigT<thermalv3::Controller, thermalv3::Input, HeaterResponseWatch>;
+#endif
 #ifdef THERMAL_SCENARIOS_WITH_LEGACY
 using LegacyRig = RigT<thermalv3_v234::Controller, thermalv3_v234::Input, LegacyHeaterWatch>;
 #endif
