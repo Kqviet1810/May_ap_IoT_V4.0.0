@@ -1,6 +1,6 @@
 {
-  "release": "2.9.8",
-  "firmware": "2.9.8",
+  "release": "2.9.9",
+  "firmware": "2.9.9",
   "hmi": "1.0.0",
   "web": "1.1.31",
   "web_storage_schema": 10,

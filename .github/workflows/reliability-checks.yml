@@ -194,6 +194,11 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-gain-record.cpp -o /tmp/mayap-thermal-gain-record
           /tmp/mayap-thermal-gain-record
 
+      - name: "Thermal hold record (the hold level kept in the EEPROM: CRC, two slots, every cut of a write, when to save, when a restart may use it)"
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-hold-record.cpp -o /tmp/mayap-thermal-hold-record
+          /tmp/mayap-thermal-hold-record
+
       - name: "Batch day (the day counter of a batch: start from day N, set the day of a running batch, the time of day stays)"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/batch-day.cpp -o /tmp/mayap-batch-day

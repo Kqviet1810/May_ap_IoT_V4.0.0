@@ -394,6 +394,61 @@ void testBoundsUnderHostileInput() {
   printf("  -> Pass\n");
 }
 
+// 2.9.9: the zero zone, the dead zone around SV and the vent fan that may only lower the hold.
+void testZeroZoneAndFan() {
+  printf("[TEST] Zero zone, dead zone, fan lowers the hold only...\n");
+  {   // low hold, PV a step over SV: the heater is off until PV is back under SV
+    thermalv3::Controller c; thermalv3::Input in;
+    in.sp = 37.5f; in.pv = 37.5f; in.permit = true; in.dtS = 0.1f;
+    c.restoreHold(2.0f);
+    in.pv = 37.56f;
+    thermalv3::Output o = c.step(in);
+    assert(c.zeroZone() && o.powerPct == 0.0f);
+    in.pv = 37.49f; o = c.step(in);                      // below SV - 0.02 is not yet reached: still off
+    assert(o.powerPct == 0.0f);
+    in.pv = 37.45f; o = c.step(in);                      // under SV - 0.02: the zone ends
+    assert(!c.zeroZone());
+  }
+  {   // a high hold never enters the zone
+    thermalv3::Controller c; thermalv3::Input in;
+    in.sp = 37.5f; in.pv = 37.56f; in.permit = true; in.dtS = 0.1f;
+    c.restoreHold(10.0f);
+    c.step(in);
+    assert(!c.zeroZone());
+  }
+  {   // the dead zone: two readings a hundredth apart, both inside it, give the same command
+    auto cmdAt = [](float pv) {
+      thermalv3::Controller c; thermalv3::Input in;
+      in.sp = 37.5f; in.pv = pv; in.permit = true; in.dtS = 0.1f;
+      c.restoreHold(8.0f);
+      float o = 0.0f;
+      for (int i = 0; i < 20; ++i) o = c.step(in).powerPct;
+      return o;
+    };
+    const float a = cmdAt(37.495f), b = cmdAt(37.505f);
+    assert(a > 4.0f);   // the restored hold is what the heater gets
+    assert(std::fabs(a - b) < 0.05f);
+  }
+  {   // the fan: the hold may go down, never up, while it runs
+    thermalv3::Controller c; thermalv3::Input in;
+    in.sp = 37.5f; in.pv = 37.3f; in.permit = true; in.dtS = 0.1f;
+    for (int i = 0; i < 6000; ++i) c.step(in);
+    const float h0 = c.pHold();
+    in.ventFan = true;
+    float hmax = h0;
+    for (int i = 0; i < 3000; ++i) { in.pv = 37.3f - 0.0005f * (i % 200); c.step(in); if (c.pHold() > hmax) hmax = c.pHold(); }
+    assert(hmax <= h0 + 1e-3f);
+  }
+  {   // restoreHold: finite values only, inside 0..40
+    thermalv3::Controller c;
+    c.restoreHold(NAN); c.restoreHold(-1.0f); c.restoreHold(99.0f);
+    assert(c.pHold() >= 0.0f && c.pHold() <= 40.0f);
+    c.restoreHold(5.0f);
+    assert(std::fabs(c.pHold() - 5.0f) < 0.01f);
+  }
+  printf("  -> Pass\n");
+}
+
 int main() {
   printf("=========================================\n");
   printf("RUNNING THERMAL V3 CONTROLLER UNIT TESTS\n");
@@ -410,6 +465,7 @@ int main() {
   testShadowHold();
   testResumeAfterHold();
   testSensorFallback();
+  testZeroZoneAndFan();
   printf("=========================================\n");
   printf("ALL THERMAL V3 TESTS PASSED SUCCESSFULLY!\n");
   printf("=========================================\n");

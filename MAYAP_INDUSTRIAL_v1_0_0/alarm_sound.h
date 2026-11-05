@@ -14,10 +14,48 @@
 //   when the filtered reading is under it for a few seconds. Nothing waits, nothing is latched, nothing is reset by a dip (versions before 2.9.5 waited
 //   180 s and started the wait again at every dip: the siren never sounded on a reading that flickered around the line).
 //   A continuous siren for five minutes, then 5 s on / 25 s off, so that a reading stuck over the line for hours does not drain the battery.
+//   2.9.9: the High siren goes through a SirenGate (time over the line is accumulated, a reading well over sounds at once, a dip of a few seconds does not start it all over) - the
+//   plain comparison above flipped on and off at every sensor step of a reading that stood on the line and each time began again with the continuous siren.
 #include <cmath>
 #include <cstdint>
 
 namespace alarmsound {
+
+// The gate between the High alarm (E111, a plain comparison that flips every time the reading touches the line and leaves it again: the sensor steps 0.1 degC) and the siren.
+// Time over the line is ACCUMULATED (a second over adds a second, a second under takes a quarter of one off), so a reading that flickers around the line adds up and the siren
+// starts ONCE after dwellMs; a reading that is clearly over (immediateC above the line) sounds at once. Once on, it stays on until the alarm has been off for releaseMs.
+// The protective actions of the alarm (heater, contactor, fans) do not go through this gate. Rig / log of 05/11: a High line of 37.7 with the reading stuck at the vent line sounded,
+// stopped and sounded again every few seconds, each time from the continuous siren.
+class SirenGate {
+ public:
+  struct Params {
+    uint32_t dwellMs = 60000UL;
+    float immediateC = 0.1f;
+    uint32_t releaseMs = 30000UL;
+  };
+  void reset() { accumMs_ = quietMs_ = 0U; on_ = false; last_ = 0U; haveLast_ = false; }
+  bool update(uint32_t now, bool valid, float pv, float line, bool active, const Params &p) {
+    if (!valid || !std::isfinite(pv) || !std::isfinite(line)) { reset(); return false; }
+    uint32_t dt = haveLast_ ? static_cast<uint32_t>(now - last_) : 0U;
+    if (dt > 2000U) dt = 2000U;                                          // a missed cycle counts for what a cycle is
+    last_ = now; haveLast_ = true;
+    if (active) {
+      accumMs_ += dt; quietMs_ = 0U;
+      if (pv >= line + p.immediateC) on_ = true;
+    } else {
+      quietMs_ += dt;
+      accumMs_ = accumMs_ > dt / 4U ? accumMs_ - dt / 4U : 0U;
+    }
+    if (!on_ && accumMs_ >= p.dwellMs) on_ = true;
+    if (on_ && !active && quietMs_ >= p.releaseMs) { on_ = false; accumMs_ = 0U; }
+    return on_;
+  }
+  bool on() const { return on_; }
+
+ private:
+  uint32_t accumMs_ = 0U, quietMs_ = 0U, last_ = 0U;
+  bool on_ = false, haveLast_ = false;
+};
 
 class LoudVoice {
  public:
@@ -32,7 +70,8 @@ class LoudVoice {
 
   void reset() { sounding_ = false; muted_ = false; }
   // Every cycle. `active` = the alarm itself (High: highTemperatureActive_; Emergency: emergencyActive_).
-  void update(uint32_t now, bool valid, float pv, bool active, const Params &p) {
+  // heaterOff: the machine has nothing left to cut (request 0): an ACK is then not asked to be followed by a fall of the reading (a hot day: it cannot fall).
+  void update(uint32_t now, bool valid, float pv, bool active, const Params &p, bool heaterOff = false) {
     if (!valid || !std::isfinite(pv) || !active) { reset(); return; }
     if (!sounding_) { sounding_ = true; muted_ = false; soundAt_ = now; return; }
     if (muted_) {
@@ -41,7 +80,8 @@ class LoudVoice {
       } else if (static_cast<uint32_t>(now - muteStart_) >= p.ackMaxMs) {
         muted_ = false;
       } else if (static_cast<uint32_t>(now - ackAt_) >= p.ackCheckMs) {
-        if (pv > ackPv_ - p.ackFallC) muted_ = false;                              // not falling: it speaks again
+        if (heaterOff) ackAt_ = now;                                               // nothing more to cut: stay quiet (the rise and the time limits above still apply)
+        else if (pv > ackPv_ - p.ackFallC) muted_ = false;                         // not falling: it speaks again
         else { ackPv_ = pv; ackAt_ = now; }                                        // falling: stay quiet, look again later
       }
     }
