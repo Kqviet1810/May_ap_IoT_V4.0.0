@@ -59,6 +59,13 @@ constexpr float LIFT_TI_OF_TAU = LIFT_TI_TAU;
 #define LIFT_GATE 0.2f
 #endif
 constexpr float LIFT_GATE_C = LIFT_GATE;
+#ifndef LIFT_CLOSE
+#define LIFT_CLOSE 2.0f
+#endif
+#ifndef LIFT_KREF_V
+#define LIFT_KREF_V 1.2e-4f
+#endif
+constexpr float LIFT_CLOSE_TAU = LIFT_CLOSE, LIFT_KREF = LIFT_KREF_V;
 constexpr float SIGMA_FLOOR = 0.004f;      // a reading of a 0.1 degC sensor cannot be quieter than this (degC)
 constexpr uint16_t HIST_LEN = 640U;        // seconds of history (memory, not tuning): 4 x the largest transit time
 
@@ -270,7 +277,14 @@ class Controller {
   void updateInflight() {
     const uint16_t n = static_cast<uint16_t>(std::min<float>(PIPE_K * tau_, static_cast<float>(histCount_)));
     float sum = 0.0f;
+#ifdef LEAD_REF_OLDER
+    // reference = what the air was getting BEFORE the window (when that history exists), else the hold estimate
+    float ref = hold_;
+    if (histCount_ >= static_cast<uint16_t>(3U * n) && n > 0U) { float a = 0.0f; for (uint16_t i = n; i < 3U * n; ++i) a += uAge(i); ref = a / static_cast<float>(2U * n); }
+    for (uint16_t i = 0U; i < n; ++i) sum += uAge(i) - ref;
+#else
     for (uint16_t i = 0U; i < n; ++i) sum += uAge(i) - hold_;
+#endif
     float lead = kAir_ * LEAD_GAIN * sum;
     // On a climb (far under SV) the measured slope is a floor for the heat in flight (a wrong kAir cannot hide it); near SV its noise must not count.
     if (std::isfinite(pv_) && sp_ - pv_ > 1.5f * farBand_) lead = std::max(lead, 0.8f * std::max(0.0f, slope_) * tau_);
@@ -303,8 +317,16 @@ class Controller {
   // with an integral time of LIFT_TI_OF_TAU transit times; it stops by itself as soon as the heat in flight closes the gap.
   void stallLift() {
     const float gate = std::max(LIFT_GATE_C, 3.0f * sigma_);
-    if (ventFan_ || door_ || doorLatch_ || elLast_ <= gate || elLast_ >= farBand_) return;
+    if (ventFan_ || door_ || doorLatch_ || (sp_ - pv_) <= gate || (sp_ - pv_) >= farBand_) return;
+#ifdef LIFT_SLOPE
+    // measured response only: PV must close the gap in LIFT_CLOSE_TAU transit times; what is missing of that slope is paid into the hold with the gain of a slow oven
+    const float want = (sp_ - pv_) / (LIFT_CLOSE_TAU * tau_);
+    const float have = std::max(0.0f, lsSlope_);
+    if (have >= want) return;
+    hold_ = std::min(cap_, hold_ + (want - have) / (LIFT_KREF * LIFT_TI_OF_TAU * tau_));
+#else
     hold_ = std::min(cap_, hold_ + kn_ * (elLast_ - gate) / (LIFT_TI_OF_TAU * tau_));
+#endif
   }
   // kAir at every saturated climb: the heater has been at its ceiling for a whole transit time plus a part of one, PV is far under SV and climbing.
   void identifyGain(float e) {
