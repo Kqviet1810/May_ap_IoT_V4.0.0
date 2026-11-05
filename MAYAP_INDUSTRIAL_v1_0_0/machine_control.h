@@ -17,6 +17,7 @@
 #include "tech_request.h"
 #include "thermal_v3_adapter.h"
 #include "thermal_gain_record.h"
+#include "batch_day.h"
 #include "sensor_fine.h"
 #include "heater_response_watch.h"
 #include "vent_line.h"
@@ -4645,9 +4646,11 @@ class MachineController {
       const char *message = "LENH KHONG HOP LE";
       switch (command.type) {
         case HmiCommandType::BatchStart:
-          ok = startBatch(now, message); break;
+          ok = startBatch(now, message, static_cast<uint8_t>(std::min<uint32_t>(command.alarmMask, 255U))); break;
         case HmiCommandType::BatchStop:
           ok = stopBatch(now, message); break;
+        case HmiCommandType::BatchSetDay:
+          ok = setBatchDay(now, command.alarmMask, message); break;
         case HmiCommandType::AlarmAck: {
           // F-12: chuoi bao tam dung coi truoc day hard-code "5 PHUT" trong
           // khi SIREN_TEMPORARY_MUTE_MS thuc te la 60000UL (1 phut) - nguoi
@@ -5466,9 +5469,12 @@ class MachineController {
     return false;
   }
 
-  bool startBatch(uint32_t now, const char *&message) {
+  // startDay: the day the batch starts from (0 or 1 = a new batch; N = the eggs have already been incubated N-1 days - a batch ended by mistake and started again).
+  bool startBatch(uint32_t now, const char *&message, uint8_t startDay = 1U) {
     if (!mayapBootOperationsReady()) { message = "DANG KHOI DONG"; return false; }
     if (mayapFirmwareMaintenanceActive()) { message = "DANG CAP NHAT FIRMWARE"; return false; }
+    if (startDay == 0U) startDay = 1U;
+    if (!batchday::valid(startDay, config_.totalIncubationDays)) { message = "NGAY AP > SO NGAY"; return false; }
     const InputState &in = inputs_.state();
     if (testModeActive_) { message = "HAY THOAT TEST TRUOC"; return false; }
     if (batchRunning_) { message = "ME DANG CHAY"; return false; }
@@ -5510,7 +5516,7 @@ class MachineController {
     batchPhase_ = BatchPhase::Prestart;
     batchStartedAt_ = now;
     phaseStartedAt_ = now;
-    elapsedBeforeStartSec_ = 0;
+    elapsedBeforeStartSec_ = batchday::startElapsed(startDay);   // a batch started from day N has already run N-1 whole days
     savedElapsedAtCheckpoint_ = 0U;
     lastCheckpointEpoch_ = 0U;
     resumeClockAdjusted_ = true;
@@ -5549,7 +5555,7 @@ class MachineController {
     message = "DA BAT DAU ME";
     eventLog_.push(now, EventType::BatchStart,
                    static_cast<uint16_t>(EventCode::BatchStart));
-    mayapSerialPrintf(false, "[BATCH] START\n");
+    mayapSerialPrintf(false, "[BATCH] START day=%u\n", static_cast<unsigned>(startDay));
     // Bao mat dien qua ATtiny13A: kiem tra con song (ping) truoc khi bat dau
     // me, theo dung yeu cau nguoi lap dat - KHONG chan viec bat dau me neu
     // khong phan hoi (mach dinh khong nen tri hoan ca me ap chi vi 1 mach
@@ -5559,6 +5565,27 @@ class MachineController {
     (void)mayapAttinyBusRequest(ATTINY_MSG_BATCH_START);
     (void)mayapAttinyBusRequest(ATTINY_MSG_STATUS_QUERY);
     attinyLastStatusQueryAt_ = now;
+    return true;
+  }
+
+  // Moves the day counter of the RUNNING batch to `day` (1 .. total days): whole days are replaced and the time of the day stays, so the turning schedule and the
+  // daily counters do not jump. It is written to the EEPROM at once (a power cut a second later still counts from the new day). The overdue confirmation of the old
+  // count is forgotten, like at a new batch: updateBatchOverdue() judges the new count.
+  bool setBatchDay(uint32_t now, uint32_t day, const char *&message) {
+    if (!batchRunning_) { message = "KHONG CO ME DANG CHAY"; return false; }
+    if (resumePending_) { message = "DANG CHO TIEP TUC ME"; return false; }
+    if (!batchday::valid(day, config_.totalIncubationDays)) { message = "NGAY AP > SO NGAY"; return false; }
+    const uint32_t before = elapsedBatchSec(now);
+    const uint32_t after = batchday::setElapsed(before, day);
+    if (after == before) { message = "NGAY AP KHONG DOI"; return true; }
+    elapsedBeforeStartSec_ = after;
+    batchStartedAt_ = now;                                   // elapsedBatchSec() = elapsedBeforeStartSec_ + time since batchStartedAt_
+    batchOverdueAcknowledged_ = false;
+    (void)safetyJournal_.setBatchOverdueAcknowledged(false);
+    lastTurnCounterDay_ = 0U;                                // updateBatchTime() takes the new day as its reference at the next tick
+    if (!saveBatchRecord()) { message = "LOI LUU NGAY AP"; return false; }
+    mayapSerialPrintf(false, "[BATCH] DAY SET %lu -> %lu\n", static_cast<unsigned long>(batchday::dayOf(before)), static_cast<unsigned long>(day));
+    message = "DA DOI NGAY AP";
     return true;
   }
 

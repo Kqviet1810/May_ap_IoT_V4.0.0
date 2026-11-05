@@ -973,11 +973,14 @@ View view = View::Home;
 uint8_t homePage = 1; // 0 = Cai dat me, 1 = Trang chu (default), 2 = Trang thai
 bool batchEditMode = false;
 bool batchValEditing = false;
-uint8_t batchParamIndex = 0; // 0=SP, 1=RH, 2=So Ngay, 3=Ap Lai
+uint8_t batchParamIndex = 0; // 0=SP, 1=RH, 2=So Ngay, 3=Ap Lai, 4=Ngay ap (dang chay: doi ngay cua me; chua chay: ngay bat dau)
 float editTargetTemp = 37.5f;
 float editTargetHumidity = 60.0f;
 uint8_t editTotalDays = 21;
 uint8_t editAutoResume = 0;
+uint8_t editBatchDay = 1;      // value being edited in param 4
+uint8_t batchStartDay = 1;     // the day the NEXT batch starts from (1 = a new batch); sent with BatchStart and then back to 1
+const uint8_t BATCH_PARAM_COUNT = 5;
 uint8_t mainIndex = 0;
 uint8_t chungIndex = 0;
 uint8_t chungTop = 0;
@@ -1431,8 +1434,8 @@ void armInputGuard(uint32_t durationMs = HMI_INPUT_GUARD_MS) {
 
 bool commandTypesConflict(HmiCommandType a, HmiCommandType b) {
   if (a == b) return true;
-  const bool aBatch = a == HmiCommandType::BatchStart || a == HmiCommandType::BatchStop;
-  const bool bBatch = b == HmiCommandType::BatchStart || b == HmiCommandType::BatchStop;
+  const bool aBatch = a == HmiCommandType::BatchStart || a == HmiCommandType::BatchStop || a == HmiCommandType::BatchSetDay;
+  const bool bBatch = b == HmiCommandType::BatchStart || b == HmiCommandType::BatchStop || b == HmiCommandType::BatchSetDay;
   if (aBatch && bBatch) return true;
   const bool aResume = a == HmiCommandType::ResumeYes || a == HmiCommandType::ResumeNo;
   const bool bResume = b == HmiCommandType::ResumeYes || b == HmiCommandType::ResumeNo;
@@ -1557,6 +1560,7 @@ void advBeginExit();
 void advOpenPin(PinPurpose purpose);
 void drawWifiChange();
 void saveBatchSetting(uint8_t param, float val);
+void saveBatchDay();
 
 void goBack() {
   switch (view) {
@@ -2514,9 +2518,11 @@ void executeConfirmation(bool accepted) {
 
   if (accepted) {
     if (action == ConfirmAction::BatchToggle) {
-      if (queueCommand(currentRuntime.batchRunning ?
-                       HmiCommandType::BatchStop : HmiCommandType::BatchStart)) {
+      const bool starting = !currentRuntime.batchRunning;
+      if (queueCommand(starting ? HmiCommandType::BatchStart : HmiCommandType::BatchStop, COMMAND_DEFAULT_VALID_MS, 0,
+                       starting ? static_cast<uint32_t>(batchStartDay) : AlarmNone)) {
         showToast("DANG KIEM TRA DIEU KIEN");
+        if (starting) batchStartDay = 1;                      // the next batch starts from day 1 again unless it is set
       }
       view = View::Home;
       homePage = 1;
@@ -3138,6 +3144,8 @@ void handleInput() {
                 editTotalDays = static_cast<uint8_t>(constrain(static_cast<int>(editTotalDays) + rotary.step, 1, 45));
               } else if (batchParamIndex == 3) {
                 editAutoResume = (editAutoResume == 0) ? 1 : 0;
+              } else if (batchParamIndex == 4) {
+                editBatchDay = static_cast<uint8_t>(constrain(static_cast<int>(editBatchDay) + rotary.step, 1, (currentConfig.totalIncubationDays > 1 ? static_cast<int>(currentConfig.totalIncubationDays) : 1)));
               }
               dirty = true;
             }
@@ -3146,14 +3154,15 @@ void handleInput() {
               else if (batchParamIndex == 1) saveBatchSetting(1, editTargetHumidity);
               else if (batchParamIndex == 2) saveBatchSetting(2, editTotalDays);
               else if (batchParamIndex == 3) saveBatchSetting(3, editAutoResume);
+              else if (batchParamIndex == 4) saveBatchDay();
               batchValEditing = false;
               dirty = true;
             }
           } else {
             if (rotary.step) {
               int q = static_cast<int>(batchParamIndex) + rotary.step;
-              if (q < 0) q = 3;
-              if (q > 3) q = 0;
+              if (q < 0) q = BATCH_PARAM_COUNT - 1;
+              if (q >= BATCH_PARAM_COUNT) q = 0;
               batchParamIndex = static_cast<uint8_t>(q);
               dirty = true;
             }
@@ -3163,6 +3172,7 @@ void handleInput() {
               editTargetHumidity = currentConfig.targetHumidity;
               editTotalDays = currentConfig.totalIncubationDays;
               editAutoResume = currentConfig.autoResumeOnPowerLoss ? 1 : 0;
+              editBatchDay = currentRuntime.batchRunning ? static_cast<uint8_t>(constrain(static_cast<int>(currentRuntime.currentDay), 1, 255)) : batchStartDay;
               dirty = true;
             }
           }
@@ -4143,8 +4153,33 @@ void saveBatchSetting(uint8_t quadrant, float value) {
   }
 }
 
+// Param 4 of the batch screen. A running batch: the machine moves its day counter to the chosen day (batch_day.h; kept in the EEPROM). No batch: the day the
+// next batch starts from, sent with the start command (a batch ended by mistake is started again from its day).
+void saveBatchDay() {
+  const uint8_t day = static_cast<uint8_t>(constrain(static_cast<int>(editBatchDay), 1, (currentConfig.totalIncubationDays > 1 ? static_cast<int>(currentConfig.totalIncubationDays) : 1)));
+  if (currentRuntime.batchRunning) {
+    if (day == currentRuntime.currentDay) { showToast("NGAY AP KHONG DOI"); return; }
+    if (queueCommand(HmiCommandType::BatchSetDay, COMMAND_DEFAULT_VALID_MS, 0, day)) showToast("DANG DOI NGAY AP");
+  } else {
+    batchStartDay = day;
+    showToast(day > 1 ? "SE BAT DAU TU NGAY NAY" : "BAT DAU TU NGAY 1");
+  }
+}
+
 void drawHomeBatch() {
   drawHeader("CAI DAT ME");
+  if (batchEditMode && batchParamIndex == 4) {                 // its own page: the value is a day of the batch, not a quadrant
+    const bool blinkNow = (millis() / 300) % 2 == 0;
+    lcd.setFont(u8g2_font_6x12_tf);
+    drawCenteredText(26, currentRuntime.batchRunning ? "NGAY AP HIEN TAI" : "BAT DAU TU NGAY");
+    char dayBuf[20];
+    const uint8_t shown = batchValEditing ? editBatchDay : (currentRuntime.batchRunning ? static_cast<uint8_t>(constrain(static_cast<int>(currentRuntime.currentDay), 1, 255)) : batchStartDay);
+    snprintf(dayBuf, sizeof(dayBuf), "%u / %u", shown, currentConfig.totalIncubationDays);
+    if (!batchValEditing || blinkNow) drawCenteredText(44, dayBuf);
+    lcd.setFont(u8g2_font_5x8_tf);
+    drawCenteredText(58, batchValEditing ? "XOAY: DOI   NHAN: LUU" : "NHAN: SUA");
+    return;
+  }
 
   // Dau + cach vien:
   // Duong ngang: y = 37, x = 6..121 (cach mep 6px)
@@ -5366,6 +5401,11 @@ void drawConfirmScreen() {
     line2 = fwVerLine;
   } else if (currentRuntime.batchRunning) {
     line1 = "DUNG ME DANG CHAY?";
+  } else if (batchStartDay > 1U) {
+    static char startDayLine[24];
+    snprintf(startDayLine, sizeof(startDayLine), "TU NGAY %u/%u", batchStartDay, currentConfig.totalIncubationDays);
+    line1 = "BAT DAU ME AP?";
+    line2 = startDayLine;
   } else {
     line1 = "BAT DAU ME AP MOI?";
   }

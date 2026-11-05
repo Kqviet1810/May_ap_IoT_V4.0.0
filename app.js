@@ -1668,6 +1668,7 @@
 
     $('batchPill').textContent = runtime.batchRunning ? `NGÀY ${runtime.currentDay || 1}` : 'CHƯA BẮT ĐẦU';
     $('batchPill').className = runtime.batchRunning ? 'pill online' : 'pill soft';
+    syncBatchDayFields(currentDevice());
 
     // The total number of days can be changed during a batch too (the machine and the HMI allow it).
     const totalDaysInput = $('totalDays');
@@ -1886,6 +1887,27 @@
     window.addEventListener('resize', cancel, { passive: true });
   }
 
+  // The day of the batch and its start date are one thing seen two ways (the machine counts the days, see batch_day.h): the start date is today minus the days
+  // already incubated. Editing either one moves the other.
+  function isoToDayNumber(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+    return m ? Math.floor(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86400000) : NaN;
+  }
+  function dayNumberToIso(n) { return new Date(n * 86400000).toISOString().slice(0, 10); }
+  function startIsoFromBatchDay(day) { return dayNumberToIso(isoToDayNumber(vnDateIso()) - (Number(day) - 1)); }
+  function batchDayFromStartIso(iso) { return isoToDayNumber(vnDateIso()) - isoToDayNumber(iso) + 1; }
+  // The day the form asks for (NaN when it is not a whole day).
+  function batchDayInput() { const v = Number($('batchDay')?.value); return Number.isInteger(v) ? v : NaN; }
+  // A running batch: the form shows the machine's own day and the date it implies (unless the user is editing the form).
+  function syncBatchDayFields(device) {
+    const runtime = device?.snapshot?.runtime;
+    if (!runtime || !$('batchDay') || hasDirtyForm('batchForm')) return;
+    if (runtime.batchRunning && Number(runtime.currentDay) >= 1) {
+      $('batchDay').value = String(Math.round(Number(runtime.currentDay)));
+      $('startDate').value = startIsoFromBatchDay(runtime.currentDay);
+    }
+  }
+
   function hasDirtyForm(formId) {
     return Boolean(state.formFlags.get(formId)?.dirty);
   }
@@ -1937,6 +1959,11 @@
     if (!hasDirtyForm('batchForm') || force) {
       $('batchName').value = device.batchMeta.name;
       $('startDate').value = device.batchMeta.startDate;
+      if (!device.snapshot?.runtime?.batchRunning) {
+        const day = batchDayFromStartIso(device.batchMeta.startDate);
+        $('batchDay').value = String(Number.isFinite(day) && day >= 1 ? day : 1);
+      }
+      syncBatchDayFields(device);
     }
 
     assign('temperatureForm', 'targetTemp', config.targetTemp);
@@ -2254,12 +2281,27 @@
       return;
     }
 
+    let daySent = false;
     if (group === 'batch') {
       device.batchMeta = {
         name: $('batchName').value.trim(),
         startDate: $('startDate').value
       };
       saveDeviceRuntime(device);
+      // A running batch: the day is the machine's own counter, so a changed day goes to the machine (kept in its EEPROM, shown on the HMI too).
+      const running = device.snapshot?.runtime;
+      const day = batchDayInput();
+      if (running?.batchRunning && Number.isInteger(day) && day !== Number(running.currentDay)) {
+        const ok = await confirmAction({
+          title: 'Đổi ngày ấp?',
+          message: `Máy đang ở ngày ${running.currentDay}. Máy sẽ đếm tiếp từ ngày ${day} (giờ trong ngày giữ nguyên) và lưu vào bộ nhớ máy.`,
+          accept: 'Đổi ngày ấp'
+        });
+        if (!ok) return;
+        daySent = await sendCommand('batch_set_day', { arg0: day });
+        if (!daySent) return;
+        setFormState(formId, 'pending', 'Đang gửi ngày ấp tới máy…');
+      }
     }
 
     const revision = nextRevision(device);
@@ -2269,8 +2311,9 @@
     if (!Object.keys(patch).length) {
       // Nothing the machine keeps changed (for the batch form: only the name or the start date, which live on the Web): say so and clear the "unsaved" mark
       // instead of leaving the button looking dead.
+      if (daySent) return;                                          // the answer of the machine to the day command closes the form state
       setFormState(formId, 'saved', 'Không có thay đổi');
-      toast(group === 'batch' ? 'Đã lưu tên mẻ và ngày trên Web · máy không lưu hai mục này' : 'Không có thay đổi để gửi tới máy');
+      toast(group === 'batch' ? 'Đã lưu tên mẻ trên Web · ngày bắt đầu sẽ gửi tới máy khi bấm Bắt đầu' : 'Không có thay đổi để gửi tới máy');
       return;
     }
     const payload = { v: Number(device.presence?.proto || 0) >= 2 ? 2 : PROTOCOL_VERSION,
@@ -2521,6 +2564,9 @@
         addBatchLog(device, message);
       } else if (device.id === state.selectedId) setFormError('batchForm', '');
     }
+    if (pending.action === 'batch_set_day' && device.id === state.selectedId) {
+      setFormState('batchForm', ok ? 'saved' : 'error', ok ? 'Máy đã đổi ngày ấp' : message);
+    }
     if (pending.action === 'light_toggle') {
       if (ok && device.snapshot?.runtime) {
         device.snapshot.runtime.lightOn = !device.snapshot.runtime.lightOn;
@@ -2628,6 +2674,11 @@
     'DA HUY ME CU': 'Đã hủy mẻ cũ',
     'DA HUY - CHO XOA BO NHO': 'Đã hủy - đang chờ xóa bộ nhớ',
     'DA DUNG ME': 'Đã dừng mẻ ấp',
+    'NGAY AP > SO NGAY': 'Ngày ấp lớn hơn tổng số ngày ấp của mẻ',
+    'DA DOI NGAY AP': 'Đã đổi ngày ấp trên máy',
+    'NGAY AP KHONG DOI': 'Ngày ấp không đổi',
+    'DANG CHO TIEP TUC ME': 'Máy đang chờ tiếp tục mẻ sau mất điện, hãy xác nhận trên máy trước',
+    'LOI LUU NGAY AP': 'Máy không lưu được ngày ấp vào bộ nhớ',
     'DA DUNG - CHO XOA BO NHO': 'Đã dừng - đang chờ xóa bộ nhớ',
     'LOI HE THONG CHUA XOA': 'Còn lỗi hệ thống chưa được xóa',
     // F-12 (audit truoc phat hanh v3.7.1): chuoi nay gio duoc firmware sinh
@@ -3904,6 +3955,9 @@
     if (!$('batchName').value.trim()) return invalidate('batchForm', 'batchName', 'Hãy nhập tên mẻ ấp.');
     if (!$('startDate').value) return invalidate('batchForm', 'startDate', 'Hãy chọn ngày bắt đầu.');
     const days = Number($('totalDays').value);
+    const day = batchDayInput();
+    if (!(day >= 1)) return invalidate('batchForm', $('startDate').value > vnDateIso() ? 'startDate' : 'batchDay', 'Ngày bắt đầu không được ở tương lai; ngày ấp phải từ 1.');
+    if (!(day <= days)) return invalidate('batchForm', 'batchDay', `Ngày ấp hiện tại không được lớn hơn tổng số ngày ấp (${days}).`);
     const temperature = Number($('batchTarget').value);
     const humidity = Number($('lowHumidityAlarm').value);
     if (!(days >= 1 && days <= 40)) return invalidate('batchForm', 'totalDays', 'Tổng số ngày ấp phải từ 1 đến 40 ngày.');
@@ -4352,6 +4406,15 @@
       await sendConfig('quickForm', 'quick');
     });
 
+    $('batchDay').addEventListener('input', () => {
+      const day = batchDayInput();
+      if (day >= 1) $('startDate').value = startIsoFromBatchDay(day);
+    });
+    $('startDate').addEventListener('input', () => {
+      const day = batchDayFromStartIso($('startDate').value);
+      if (Number.isFinite(day)) $('batchDay').value = String(day);
+    });
+
     $('batchForm').addEventListener('submit', async (event) => {
       event.preventDefault();
       if (!validateBatchForm()) return;
@@ -4369,7 +4432,8 @@
         if (!validateBatchForm()) return;
         const ok = await confirmAction({
           title: 'Bắt đầu mẻ ấp?',
-          message: `Máy sẽ bắt đầu mẻ “${$('batchName').value.trim()}” theo cấu hình đã được máy xác nhận.`,
+          message: `Máy sẽ bắt đầu mẻ “${$('batchName').value.trim()}” theo cấu hình đã được máy xác nhận` +
+            (batchDayInput() > 1 ? `, tính từ ngày ${batchDayInput()}/${$('totalDays').value} (đã ấp ${batchDayInput() - 1} ngày).` : '.'),
           accept: 'Bắt đầu mẻ'
         });
         if (!ok) return;
@@ -4383,7 +4447,7 @@
         }
         setFormError('batchForm', '');
         beginBatchActionPending(device, 'running');
-        if (!await sendCommand('batch_start')) {
+        if (!await sendCommand('batch_start', batchDayInput() > 1 ? { arg0: batchDayInput() } : {})) {
           clearBatchActionPending(device);
           renderBatchAction(device);
         }
