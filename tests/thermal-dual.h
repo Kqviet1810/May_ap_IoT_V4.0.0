@@ -14,7 +14,7 @@ struct DualCtl {
     const float dt = in.dtS;
     if (std::isfinite(in.slopeFine)) slopeF += (in.slopeFine - slopeF) * dt / (60.0f + dt);
     const bool blocked = in.ventFan || in.shadow || !in.permit || c.state() == thermalv3::StDoor || c.state() == thermalv3::StFrozen;
-    const thermalclimb::Out r = a.step(in.pv, in.sp, slopeF, o.powerPct, in.capPct, blocked, dt);
+    const thermalclimb::Out r = a.step(in.pv, in.sp, slopeF, o.powerPct, c.pHold(), in.capPct, blocked, dt);
     if (r.released) { if (getenv("DBGREL")) fprintf(stderr,"release hold %.1f (hold before %.1f) slopeF %g gap %.3f\n", r.releaseHold, c.pHold(), slopeF, in.sp-in.pv); if (r.releaseHold > 0.0f) c.adoptHold(r.releaseHold); }
     if (r.active && r.floorPct > o.powerPct) o.powerPct = r.floorPct;
     return o;

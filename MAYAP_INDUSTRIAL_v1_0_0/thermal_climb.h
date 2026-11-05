@@ -20,11 +20,15 @@ constexpr float STALL_S = 120.0f;          // ... and not closing for this long
 constexpr float STALL_SLOPE_FRAC = STALL_FRAC;       // "not closing" = under this fraction of the closing speed (a brake near SV is slower than 0.5 but not flat)
 constexpr float CLOSE_S = 300.0f;          // the gap should close in this time
 #ifndef QUIET_S_V
-#define QUIET_S_V 600.0f
+#define QUIET_S_V 0.0f
 #endif
 constexpr float QUIET_S = QUIET_S_V;          // nothing eventful (door, fan, set-point change, a fall or a quick recovery) for this long before a stall counts
 constexpr float BIG_MOVE_C = 0.12f;           // PV moving by more than this in CHECK_S is the hold law doing its work (a recovery) or a disturbance
 constexpr float CHECK_S = 120.0f;
+#ifndef EXCESS_V
+#define EXCESS_V 3.0f
+#endif
+constexpr float EXCESS_PCT = EXCESS_V;         // power over the hold level that is already being asked for
 constexpr float RELEASE_GAP_C = 0.08f;
 constexpr float ARRIVE_S = 240.0f;         // slope x this >= gap: PV is on its way, let go
 constexpr float REF_GAIN = 1.2e-4f;        // degC/s per percent: the gain of a slow oven (a faster oven only closes the gap sooner)
@@ -38,7 +42,7 @@ class Assist {
   void reset() { stallS_ = 0.0f; active_ = false; floor_ = 0.0f; }
   void quietReset() { quietS_ = 0.0f; stallS_ = 0.0f; }
   // Call every control step. `cmdPct` = what the hold law asks for now (the floor starts there). `slope` = measured PV slope [degC/s] (NaN: unknown).
-  Out step(float pv, float sp, float slope, float cmdPct, float capPct, bool blocked, float dtS) {
+  Out step(float pv, float sp, float slope, float cmdPct, float holdPct, float capPct, bool blocked, float dtS) {
     Out o;
     const float gap = sp - pv;
     if (blocked || !std::isfinite(gap) || !std::isfinite(slope)) { quietS_ = 0.0f; if (active_) { o.released = true; o.releaseHold = std::max(0.0f, floor_ - std::max(0.0f, std::isfinite(slope) ? slope : 0.0f) / REF_GAIN); } reset(); return o; }
@@ -50,7 +54,8 @@ class Assist {
     spPrev_ = sp;
     if (!active_) {
       if (quietS_ < QUIET_S) { stallS_ = 0.0f; return o; }
-      const bool stalled = gap > ARM_GAP_C && gap < MAX_GAP_C && s < STALL_SLOPE_FRAC * gap / CLOSE_S;
+      // the evidence: the hold law is already pushing EXCESS_PCT over its own hold level and PV does not move - the hold level is too low
+      const bool stalled = gap > ARM_GAP_C && gap < MAX_GAP_C && s < STALL_SLOPE_FRAC * gap / CLOSE_S && (cmdPct - holdPct) >= EXCESS_PCT;
       stallS_ = stalled ? stallS_ + dtS : 0.0f;
       if (stallS_ >= STALL_S) { active_ = true; floor_ = cmdPct; secAcc_ = 0.0f; }
       return o;
