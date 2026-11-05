@@ -756,6 +756,7 @@ inline HmiCommandType mapCommandAction(const char *action) {
   if (!action) return HmiCommandType::None;
   if (!strcmp(action, "batch_start")) return HmiCommandType::BatchStart;
   if (!strcmp(action, "batch_stop")) return HmiCommandType::BatchStop;
+  if (!strcmp(action, "batch_set_day")) return HmiCommandType::BatchSetDay;
   if (!strcmp(action, "resume_yes")) return HmiCommandType::ResumeYes;
   if (!strcmp(action, "resume_no")) return HmiCommandType::ResumeNo;
   // Technical access: the PIN is verified on the ESP32 (shared with the HMI); a request only PARKS values until the HMI answers Yes/No.
@@ -1052,6 +1053,14 @@ inline void handleCommandMessage(const JsonDocument &doc) {
       if (lease > 3000U) lease = 3000U;
       alarmMaskParam = dir | (lease << 8U);
     }
+  }
+  if (type == HmiCommandType::BatchStart || type == HmiCommandType::BatchSetDay) {
+    // The day the batch starts from (batch_start, 1 when absent) or is moved to (batch_set_day): arg0, 1 .. 255. The machine checks it against the
+    // total days again (batch_day.h valid()) before it moves anything.
+    const uint32_t day = static_cast<uint32_t>(doc["arg0"] | 0U);
+    if (type == HmiCommandType::BatchSetDay && (day < 1U || day > 255U)) { publishAck(requestId, "invalid", "DAY"); return; }
+    if (day > 255U) { publishAck(requestId, "invalid", "DAY"); return; }
+    alarmMaskParam = day;
   }
   if (type == HmiCommandType::AlarmAck) {
     portENTER_CRITICAL(&realtimeMux);

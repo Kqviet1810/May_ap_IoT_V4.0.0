@@ -194,6 +194,11 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-gain-record.cpp -o /tmp/mayap-thermal-gain-record
           /tmp/mayap-thermal-gain-record
 
+      - name: "Batch day (the day counter of a batch: start from day N, set the day of a running batch, the time of day stays)"
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror tests/batch-day.cpp -o /tmp/mayap-batch-day
+          /tmp/mayap-batch-day
+
       - name: "Thermal V3 closed loop: the real controller and the real E115 rule on simulated ovens (first climb also after an idle start, door, cold tray, vent, set-point step, reboot, a day of ordinary operation, dead heater), next to the 2.3.4 pair, and on the oven fitted to the 29/10 batch"
         run: |
           g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-closed-loop.cpp -o /tmp/mayap-thermal-closed-loop

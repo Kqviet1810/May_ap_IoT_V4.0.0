@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.9.7";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.9.8";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -1340,7 +1340,8 @@ enum class HmiCommandType : uint8_t {
   FactoryReset,       // Local only: khoi phuc cai dat goc (MachineConfig, NVS, EEPROM) va khoi dong lai
   DeveloperModeSet,   // Local only: alarmMask 1 = bat CD nha phat trien (full quyen tu xa), 0 = tat
   ClearThermalLearn,  // Local only: erase what the thermal controller learned (NVS) and start it from its priors; refused while a batch runs
-  TurnMechanicalCheck // Local only: the machine turns the tray to both sides to test the limit switches and the gear (E205); clears E205 when both sides are reached
+  TurnMechanicalCheck, // Local only: the machine turns the tray to both sides to test the limit switches and the gear (E205); clears E205 when both sides are reached
+  BatchSetDay         // Local or Remote: alarmMask = the day (1 .. total days) the RUNNING batch is on; the machine moves its day counter (batch_day.h) and keeps it in the EEPROM
 };
 // Permission bits of the Web output control (HMI Advanced). Heater, vent, circulation, light, siren, egg turning.
 enum : uint8_t { WebCtlHeater = 1, WebCtlVent = 2, WebCtlCirc = 4, WebCtlLight = 8, WebCtlSiren = 16, WebCtlTurn = 32, WebCtlAutoUpdate = 64, WebCtlAll = 127 };
