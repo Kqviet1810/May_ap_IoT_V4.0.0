@@ -52,9 +52,21 @@
   ]);
   const CONFIG_KEYS = Object.freeze([...REQUIRED_CONFIG_KEYS, ...VENT_PROFILE_KEYS, 'adaptiveThermalBalanceEnabled']);
 
+  // Vietnam time everywhere: the pages, the machine log and the exported log show the same wall clock whatever the time zone of the phone or the PC is.
+  const VN_TZ = 'Asia/Ho_Chi_Minh';
+  // The machine's clock (DS3231, set from NTP with the +7 offset) holds the Vietnam wall clock, and its epoch counts that wall clock as if it were UTC:
+  // a machine event of 14:00 in Vietnam arrives as 14:00 "UTC". Subtract the offset to get the real instant, then show it in Vietnam time.
+  const DEVICE_CLOCK_OFFSET_S = 7 * 3600;
+  const deviceEpochToMs = (epoch) => (Number(epoch) - DEVICE_CLOCK_OFFSET_S) * 1000;
+  const vnDateIso = (ms = Date.now()) => new Date(ms).toLocaleDateString('sv-SE', { timeZone: VN_TZ });      // YYYY-MM-DD
+  const vnDateTimeIso = (ms) => new Date(ms).toLocaleString('sv-SE', { timeZone: VN_TZ });                    // YYYY-MM-DD HH:mm:ss
+  const vnTime = (date, options) => date.toLocaleTimeString('vi-VN', { ...options, timeZone: VN_TZ });
+  const vnDate = (date, options) => date.toLocaleDateString('vi-VN', { ...options, timeZone: VN_TZ });
+  const vnDateTime = (date) => date.toLocaleString('vi-VN', { timeZone: VN_TZ });
+
   const DEFAULT_BATCH_META = Object.freeze({
     name: 'Mẻ ấp 01',
-    startDate: new Date().toISOString().slice(0, 10)
+    startDate: vnDateIso()
   });
 
   // Chu thich giu NGAN (~30 ky tu) de luon vua DUNG 1 DONG - CSS con chan
@@ -790,7 +802,7 @@
       ? epochOrDate
       : new Date(Number(epochOrDate) > 1000000000000 ? Number(epochOrDate) : Number(epochOrDate) * 1000);
     if (Number.isNaN(date.getTime())) return '--:--';
-    return date.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+    return vnTime(date, { hour: '2-digit', minute: '2-digit' });
   }
 
   function confirmAction({ title, message, accept = 'Xác nhận', danger = false }) {
@@ -1026,7 +1038,7 @@
       banner.append(line);
     }
     const note = document.createElement('small');
-    note.textContent = `Theo máy chủ lúc ${new Date(info.at).toLocaleTimeString('vi-VN')} · không phải dữ liệu realtime`;
+    note.textContent = `Theo máy chủ lúc ${vnTime(new Date(info.at))} · không phải dữ liệu realtime`;
     banner.append(note);
   }
 
@@ -1039,7 +1051,7 @@
 
   function freshnessText(device) {
     if (!device?.snapshotAt) return 'Đang chờ dữ liệu từ máy';
-    const time = new Date(device.snapshotAt).toLocaleString('vi-VN');
+    const time = vnDateTime(new Date(device.snapshotAt));
     if (device.dataSource === 'bootstrap' && !device.bootstrapTimeKnown)
       return `Bản lưu trên máy chủ · chưa biết tuổi dữ liệu · nhận lúc ${time}`;
     return connectionStatus(device) === 'online' ? `Dữ liệu live · ${time}` :
@@ -1049,10 +1061,10 @@
   function freshnessLabel(device) {
     if (!device?.snapshotAt) return '';
     const date = new Date(device.snapshotAt);
-    const clock = date.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const clock = vnTime(date, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     if (connectionStatus(device) === 'online') return `Live · ${clock}`;
     if (device.dataSource === 'bootstrap' && !device.bootstrapTimeKnown) return 'Máy chủ · tuổi chưa rõ';
-    const day = date.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: '2-digit' });
+    const day = vnDate(date, { day: '2-digit', month: '2-digit', year: '2-digit' });
     return `${device.dataSource === 'bootstrap' ? 'Máy chủ' : 'Lưu'} · ${day} ${clock.slice(0, 5)}`;
   }
 
@@ -2236,7 +2248,11 @@
     // gi ca - giong HMI (xem commitSetting() trong hmi.h). "batch" la hanh
     // dong BAT DAU ME (khong phai chi luu thong so) nen luon phai gui du
     // config trung, khong ap dung guard nay.
-    if (group !== 'batch' && configEquals(config, device.config)) return;
+    if (group !== 'batch' && configEquals(config, device.config)) {
+      setFormState(formId, 'saved', 'Không có thay đổi');
+      toast('Không có thay đổi để gửi tới máy');
+      return;
+    }
 
     if (group === 'batch') {
       device.batchMeta = {
@@ -2250,7 +2266,13 @@
     const id = requestId('cfg');
     const patch = Object.fromEntries(Object.entries(config).filter(([key, value]) =>
       CONFIG_KEYS.includes(key) && !Object.is(value, device.config?.[key])));
-    if (!Object.keys(patch).length) return;
+    if (!Object.keys(patch).length) {
+      // Nothing the machine keeps changed (for the batch form: only the name or the start date, which live on the Web): say so and clear the "unsaved" mark
+      // instead of leaving the button looking dead.
+      setFormState(formId, 'saved', 'Không có thay đổi');
+      toast(group === 'batch' ? 'Đã lưu tên mẻ và ngày trên Web · máy không lưu hai mục này' : 'Không có thay đổi để gửi tới máy');
+      return;
+    }
     const payload = { v: Number(device.presence?.proto || 0) >= 2 ? 2 : PROTOCOL_VERSION,
       revision, requestId: id, config: patch };
     setFormState(formId, 'pending', 'Đang gửi tới máy…');
@@ -2968,7 +2990,7 @@
   function handleLog(device, event) {
     const entry = {
       sequence: Number(event.sequence || 0),
-      time: Number(event.epoch || 0) > 1700000000 ? Number(event.epoch) * 1000 : Date.now(),
+      time: Number(event.epoch || 0) > 1700000000 ? deviceEpochToMs(event.epoch) : Date.now(),
       message: eventText(event),
       duration: ''
     };
@@ -3473,10 +3495,10 @@
     // why the overheat fan started, the state of that line, door guard, transit time measured, fan-budget tokens, ventReason, where the controller's
     // numbers came from [0 priors, 1 oven restored, 2 oven + hold restored], whether a snapshot is stored, stable minutes so far in steps of 4).
     const head = 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,trust_pct,source,' +
-      'safety_c,hold_pct,kair_e5,tau_s,integral_pct,vent_why,vent_line,door,identified,fan_tokens,vent_reason,learn_src,learn_saved,stable_min';
+      'safety_c,hold_pct,kair_e5,tau_s,integral_pct,vent_why,vent_line,door,identified,fan_tokens,vent_reason,learn_src,learn_saved,stable_min,time_vn';
     const cell = (v) => (typeof v === 'number' ? (Number.isFinite(v) ? String(v) : '') : String(v));
     return [`# mayap pid log device=${device?.id || ''} boot=${device?.bootId || ''} exported=${iso(Date.now())}`, head,
-      ...rows.map((r) => [iso(r[0]), ...r.slice(1)].map(cell).join(','))].join('\n') + '\n';
+      ...rows.map((r) => [iso(r[0]), ...r.slice(1), vnDateTimeIso(r[0])].map(cell).join(','))].join('\n') + '\n';
   }
 
   function pmDownload() {
