@@ -14,6 +14,10 @@ namespace thermalclimb {
 
 constexpr float ARM_GAP_C = 0.20f;         // under SV by more than this ...
 constexpr float STALL_S = 120.0f;          // ... and not closing for this long
+#ifndef STALL_FRAC
+#define STALL_FRAC 0.15f
+#endif
+constexpr float STALL_SLOPE_FRAC = STALL_FRAC;       // "not closing" = under this fraction of the closing speed (a brake near SV is slower than 0.5 but not flat)
 constexpr float CLOSE_S = 300.0f;          // the gap should close in this time
 constexpr float RELEASE_GAP_C = 0.08f;
 constexpr float ARRIVE_S = 240.0f;         // slope x this >= gap: PV is on its way, let go
@@ -33,7 +37,7 @@ class Assist {
     if (blocked || !std::isfinite(gap) || !std::isfinite(slope)) { if (active_) { o.released = true; o.releaseHold = std::max(0.0f, floor_ - std::max(0.0f, std::isfinite(slope) ? slope : 0.0f) / REF_GAIN); } reset(); return o; }
     const float s = std::max(0.0f, slope);
     if (!active_) {
-      const bool stalled = gap > ARM_GAP_C && gap < MAX_GAP_C && s < 0.5f * gap / CLOSE_S;
+      const bool stalled = gap > ARM_GAP_C && gap < MAX_GAP_C && s < STALL_SLOPE_FRAC * gap / CLOSE_S;
       stallS_ = stalled ? stallS_ + dtS : 0.0f;
       if (stallS_ >= STALL_S) { active_ = true; floor_ = cmdPct; secAcc_ = 0.0f; }
       return o;
