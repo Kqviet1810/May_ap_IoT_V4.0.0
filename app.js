@@ -2575,7 +2575,8 @@
     'BUSY_PENDING': 'Đang có một yêu cầu kỹ thuật chờ xác nhận trên máy',
     'TECH_BUSY': 'Đang có một yêu cầu kỹ thuật chờ xác nhận trên máy',
     'NO_NETWORK': 'Máy đang mất kết nối mạng',
-    'BATCH_LOCKED': 'Đang có mẻ ấp (hoặc đang chờ phục hồi mẻ) nên không đổi được thông số kỹ thuật',
+    'BATCH_LOCKED': 'Đang có mẻ ấp (hoặc đang chờ phục hồi mẻ): chỉ đổi được Bù nhiệt độ và Bù độ ẩm',
+    'OFFSET_STEP': 'Đang ấp: mỗi lần chỉ đổi Bù nhiệt độ tối đa 0,5 °C và Bù độ ẩm tối đa 5 %RH',
     'NO_CHANGE': 'Không có giá trị nào khác so với trên máy',
     'UNSUPPORTED': 'Firmware chưa hỗ trợ yêu cầu này',
     'INVALID_TECH_FIELD': 'Một thông số kỹ thuật nằm ngoài giới hạn cho phép',
@@ -3294,6 +3295,7 @@
     ['tempRateLimitC', 'advTempRateLimitC'], ['tempRateWindowSec', 'advTempRateWindowSec'],
     ['tempOscillationCrossLimit', 'advTempOscillationCrossLimit'], ['tempOscillationWindowSec', 'advTempOscillationWindowSec'],
     ['tempOffset', 'tempOffset'], ['humidityOffset', 'humidityOffset']]);
+  const TECH_OFFSET_KEYS = Object.freeze(['tempOffset', 'humidityOffset']);
   const techUi = { requestId: '' };
 
   // What the device allows the Web to do. Unknown / old firmware => nothing technical is offered.
@@ -3328,10 +3330,12 @@
     const runtime = device?.snapshot?.runtime;
     if (!techSession(runtime)) return toast('Cần mở khóa bằng mã kỹ thuật trước');
     if (runtime?.tech?.pending) return toast('Đang có yêu cầu chờ xác nhận trên máy');
-    if (runtime?.batchRunning) return toast('Đang có mẻ chạy · không đổi được thông số kỹ thuật');
     if (!validateAdvancedForm()) return;
     const fields = buildTechFields(device);
     if (!Object.keys(fields).length) { $('techRequestStatus').textContent = 'Không có giá trị nào khác so với trên máy.'; return; }
+    // While a batch runs only the two sensor offsets may change (the machine still shows old/new and waits for CÓ).
+    if (runtime?.batchRunning && Object.keys(fields).some((key) => !TECH_OFFSET_KEYS.includes(key)))
+      return toast('Đang ấp · chỉ đổi được Bù nhiệt độ và Bù độ ẩm');
     const ok = await confirmAction({
       title: 'Gửi yêu cầu đổi thông số?',
       message: `${Object.keys(fields).length} thông số sẽ được gửi. Máy hiện giá trị cũ/mới và chờ bạn bấm CÓ hoặc KHÔNG trong 60 giây.`,
@@ -3368,7 +3372,9 @@
     $('techLocked').hidden = !(gate.allowed && !gate.session);
     $('techActions').hidden = !gate.session;
     // the light tiles are the ones the Web may write: they open for editing only inside an unlocked technician session
-    for (const input of card.querySelectorAll('#advancedForm .advGrid:not(#advOverview) input')) input.disabled = !gate.session;
+    // while a batch runs only the two sensor offsets stay open
+    for (const input of card.querySelectorAll('#advancedForm .advGrid:not(#advOverview) input'))
+      input.disabled = !gate.session || (Boolean(runtime?.batchRunning) && !TECH_OFFSET_KEYS.includes(input.id));
     if (!gate.allowed) $('techPin').value = '';
     const mmss = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
     $('techSummary').textContent = !gate.allowed ? 'Mọi mục Nâng cao của máy'
@@ -3382,7 +3388,7 @@
     const mine = !techUi.requestId || tech.resultId === techUi.requestId;
     if (pending) $('techRequestStatus').textContent = `Đang chờ bạn bấm CÓ/KHÔNG trên màn hình máy · còn ${tech.pendingS || 0} giây`;
     else if (mine && TECH_RESULTS[Number(tech.result)] && techUi.requestId) $('techRequestStatus').textContent = TECH_RESULTS[Number(tech.result)];
-    $('techSendBtn').disabled = Boolean(pending) || !controlReady(device) || Boolean(runtime?.batchRunning);
+    $('techSendBtn').disabled = Boolean(pending) || !controlReady(device);
   }
 
   // Heater monitor: read-only. Only measured numbers; a missing value stays "—".

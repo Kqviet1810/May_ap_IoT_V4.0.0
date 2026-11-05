@@ -4573,17 +4573,20 @@ class MachineController {
       // Trong me/resume mo cac tham so VAN HANH: SV, ba nguong canh bao nhiet
       // (thu tu thap < SV < cao < khan cap do sanitizeMachineConfig giu), bao am,
       // nguong quat hut, so ngay ap, tu ap lai sau mat dien, chu ky/bat-tat dao,
-      // dao tay dong lich va cho phep ONLINE->OFFLINE. Calibration (offset),
-      // PID/tuning, timeout co khi, sensor/recovery va OFFLINE->ONLINE van bi
+      // dao tay dong lich va cho phep ONLINE->OFFLINE; tu 2.9.7 ca hai offset (nhiet, do am) trong buoc nho (HMI Nang cao da mo khoa). PID/tuning, timeout co khi, sensor/recovery va OFFLINE->ONLINE van bi
       // khoa o lop luu that su nay de web/Serial/HMI khong the di vong qua khoa giao dien.
       // Technical fields (PID, protection, calibration, tune relay) change only inside an unlocked HMI "Nang cao" session, or through a
       // Web request the HMI approved (that path saves directly, not through here). A Web config patch can never reach this far.
       const AdvancedHistory::Snapshot beforeAdvanced = AdvancedHistory::fromConfig(config_);
       const bool advancedChange = !AdvancedHistory::same(beforeAdvanced, AdvancedHistory::fromConfig(requested));
       const bool techLocked = advancedChange && !techGate_.hmiUnlocked(now);
-      const bool protectedBatchChange = (batchRunning_ || resumePending_) && (
-          requested.tempOffset != config_.tempOffset ||
-          requested.humidityOffset != config_.humidityOffset ||
+      // The sensor offsets are open while a batch runs (2.9.7), in steps of at most MidBatchOffsetStepC / MidBatchHumStepRh, and only with the unlocked HMI session
+      // (techLocked above); not while a resume is pending.
+      const bool offsetStepBlocked = batchRunning_ && (
+          fabsf(requested.tempOffset - config_.tempOffset) > AdvancedHistory::MidBatchOffsetStepC + 1.0e-4f ||
+          fabsf(requested.humidityOffset - config_.humidityOffset) > AdvancedHistory::MidBatchHumStepRh + 1.0e-4f);
+      const bool protectedBatchChange = offsetStepBlocked || (resumePending_ && (
+          requested.tempOffset != config_.tempOffset || requested.humidityOffset != config_.humidityOffset)) || ((batchRunning_ || resumePending_) && (
           requested.kp != config_.kp || requested.ki != config_.ki ||
           requested.kd != config_.kd ||
           requested.pidCycleSec != config_.pidCycleSec ||
@@ -4601,7 +4604,7 @@ class MachineController {
           requested.sensorTimeoutSec != config_.sensorTimeoutSec ||
           requested.allowHeatWithoutBatch != config_.allowHeatWithoutBatch ||
           (requested.connectivityMode == ConnectivityMode::Online &&
-           config_.connectivityMode != ConnectivityMode::Online));
+           config_.connectivityMode != ConnectivityMode::Online)));
       const MachineConfig previousConfig = config_;
       MachineConfig readback{};
       const bool safetySaveBlocked = batchClearPending_ || safetyJournalFaultLatched_;
@@ -4937,8 +4940,12 @@ class MachineController {
   // Every decision is taken HERE, on the ESP32. The Web can only ask: a request is parked (60 s) until the HMI answers Yes/No, and the
   // same safety conditions as a local change (no batch / resume, no storage or safety-journal fault, PID authority) are checked again at
   // the moment of execution. The PIN travels as a number in HmiCommand::alarmMask and is never stored or logged in clear.
-  bool techEditBlocked(const char *&message) const {
-    if (batchRunning_ || resumePending_) { message = "DANG AP - KHONG DOI PID"; return true; }
+  static bool offsetStepTooBig(const AdvancedHistory::Snapshot &from, const AdvancedHistory::Snapshot &to) {
+    return fabsf(to.tempOffset - from.tempOffset) > AdvancedHistory::MidBatchOffsetStepC + 1.0e-4f ||
+           fabsf(to.humidityOffset - from.humidityOffset) > AdvancedHistory::MidBatchHumStepRh + 1.0e-4f;
+  }
+  bool techEditBlocked(const char *&message, bool calibrationOnly = false) const {
+    if (resumePending_ || (batchRunning_ && !calibrationOnly)) { message = "DANG AP - KHONG DOI PID"; return true; }
     if (batchClearPending_ || safetyJournalFaultLatched_ || storageFaultLatched_ || storageDegraded_) { message = "LOI AN TOAN/BO NHO"; return true; }
     return false;
   }
@@ -5069,7 +5076,7 @@ class MachineController {
     if (!MayapTech::take(staged)) { message = "NO_REQUEST"; return false; }
     if (techPending_.kind != MayapTech::Kind::None) { message = "BUSY_PENDING"; return false; }
     if (!runtime_.networkConnected) { message = "NO_NETWORK"; return false; }
-    if (batchRunning_ || resumePending_) { message = "BATCH_LOCKED"; return false; }
+    if (resumePending_) { message = "BATCH_LOCKED"; return false; }
     TechPending next;
     next.kind = staged.kind;
     snprintf(next.requestId, sizeof(next.requestId), "%s", staged.requestId);
@@ -5080,6 +5087,11 @@ class MachineController {
       next.mask = AdvancedHistory::differingMask(current, wanted);     // only what really differs is shown to the HMI
       next.values = wanted;
       if (next.mask == 0U) { message = "NO_CHANGE"; return false; }
+      // While a batch runs only the two sensor offsets may change, in small steps (the HMI "yes" is still needed: they are protected fields).
+      if (batchRunning_) {
+        if ((next.mask & static_cast<uint16_t>(~AdvancedHistory::CalibrationMask)) != 0U) { message = "BATCH_LOCKED"; return false; }
+        if (offsetStepTooBig(current, wanted)) { message = "OFFSET_STEP"; return false; }
+      }
     } else {
       message = "UNSUPPORTED"; return false;
     }
@@ -5105,8 +5117,11 @@ class MachineController {
   }
   // Apply the technical fields of `target` to the live configuration: undo record first, one atomic A/B config save, then publish.
   bool applyAdvancedSnapshot(uint32_t now, const AdvancedHistory::Snapshot &target, const char *&message) {
-    if (techEditBlocked(message)) return false;
     const AdvancedHistory::Snapshot current = AdvancedHistory::fromConfig(config_);
+    const uint16_t diff = AdvancedHistory::differingMask(current, target);
+    const bool calibrationOnly = (diff & static_cast<uint16_t>(~AdvancedHistory::CalibrationMask)) == 0U;   // only the sensor offsets differ
+    if (techEditBlocked(message, calibrationOnly)) return false;
+    if (batchRunning_ && offsetStepTooBig(current, target)) { message = "BU QUA 0.5C/LAN"; return false; }
     if (AdvancedHistory::same(current, target)) { message = "KHONG DOI"; return true; }
     MachineConfig candidate = config_;
     AdvancedHistory::applyTo(candidate, target);

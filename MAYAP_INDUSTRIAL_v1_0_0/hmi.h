@@ -1254,6 +1254,8 @@ const char *groupExtraLabelFor(GroupExtra extra) {
 bool settingLockedDuringBatch(uint8_t settingIndex) {
   if (!currentRuntime.batchRunning && !currentRuntime.resumeConfirmationRequired) return false;
   const uint16_t offset = SETTINGS[settingIndex].offset;
+  // The two sensor offsets are open while a batch RUNS (2.9.7; NANG CAO needs the technical PIN, a step is limited to 0.5 degC / 5 %RH in the firmware); not while a resume is pending.
+  if ((offset == offsetof(MachineConfig, tempOffset) || offset == offsetof(MachineConfig, humidityOffset)) && !currentRuntime.resumeConfirmationRequired) return false;
   // Mo dung nhom VAN HANH co the can chinh khi dang ap (gom ba nguong canh bao
   // nhiet, so ngay ap, tu ap lai). Calibration, PID/tuning, timeout co khi va
   // recovery/system settings bi khoa.

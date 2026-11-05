@@ -344,3 +344,15 @@ test('He so heater (kAir): an option row in NANG CAO > GIA NHIET stored in bits 
   assert.match(mc, /float thermalV3Command\(uint32_t now, bool permit, bool shadow\) \{\s*serviceThermalGain\(now\);/);
   assert.match(mc, /bool clearThermalLearning\(\) \{[\s\S]*?eraseThermalGain\(\)/);
 });
+
+test('Bu nhiet do / Bu do am: open while a batch runs (technical PIN, step limit in the firmware), locked while a resume is pending; the Web offers only these two during a batch', () => {
+  assert.match(bodyOf('bool settingLockedDuringBatch('), /offsetof\(MachineConfig, tempOffset\) \|\| offset == offsetof\(MachineConfig, humidityOffset\)\) && !currentRuntime\.resumeConfirmationRequired\) return false;/);
+  const mc = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'machine_control.h'), 'utf8');
+  assert.match(mc, /bool techEditBlocked\(const char \*&message, bool calibrationOnly = false\) const \{\s*if \(resumePending_ \|\| \(batchRunning_ && !calibrationOnly\)\)/);
+  assert.match(mc, /message = "OFFSET_STEP"/);
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  assert.match(app, /const TECH_OFFSET_KEYS = Object\.freeze\(\['tempOffset', 'humidityOffset'\]\);/);
+  assert.match(app, /\$\('techSendBtn'\)\.disabled = Boolean\(pending\) \|\| !controlReady\(device\);/);
+  assert.ok(!/techSendBtn'\)\.disabled[^;]*batchRunning/.test(app), 'the send button must not be dead during a batch any more');
+  assert.match(app, /'OFFSET_STEP':/);
+});
