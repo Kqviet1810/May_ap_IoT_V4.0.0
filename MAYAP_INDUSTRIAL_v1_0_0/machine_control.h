@@ -17,6 +17,7 @@
 #include "tech_request.h"
 #include "thermal_v3_adapter.h"
 #include "thermal_gain_record.h"
+#include "thermal_hold_record.h"
 #include "batch_day.h"
 #include "sensor_fine.h"
 #include "heater_response_watch.h"
@@ -2224,6 +2225,14 @@ static_assert(EEPROM_ADDR_THERMAL_GAIN_A >= EEPROM_ADDR_ADV_HISTORY + AdvancedHi
 static_assert(EEPROM_ADDR_THERMAL_GAIN_A + EEPROM_THERMAL_GAIN_SLOT_BYTES <= EEPROM_ADDR_THERMAL_GAIN_B, "thermal gain A overlaps B");
 static_assert(sizeof(thermalgain::Record) <= EEPROM_THERMAL_GAIN_SLOT_BYTES, "thermal gain record does not fit its slot");
 static_assert(EEPROM_ADDR_THERMAL_GAIN_B + EEPROM_THERMAL_GAIN_SLOT_BYTES <= EEPROM_CAPACITY_BYTES, "thermal gain beyond the chip");
+// The hold level of the oven (thermal_hold_record.h), right after the gain record.
+constexpr uint16_t EEPROM_ADDR_THERMAL_HOLD_A = 0x3280U;
+constexpr uint16_t EEPROM_ADDR_THERMAL_HOLD_B = 0x32C0U;
+constexpr uint16_t EEPROM_THERMAL_HOLD_SLOT_BYTES = 0x0040U;
+static_assert(EEPROM_ADDR_THERMAL_HOLD_A >= EEPROM_ADDR_THERMAL_GAIN_B + EEPROM_THERMAL_GAIN_SLOT_BYTES, "thermal hold A overlaps the gain record");
+static_assert(EEPROM_ADDR_THERMAL_HOLD_A + EEPROM_THERMAL_HOLD_SLOT_BYTES <= EEPROM_ADDR_THERMAL_HOLD_B, "thermal hold A overlaps B");
+static_assert(sizeof(thermalhold::Record) <= EEPROM_THERMAL_HOLD_SLOT_BYTES, "thermal hold record does not fit its slot");
+static_assert(EEPROM_ADDR_THERMAL_HOLD_B + EEPROM_THERMAL_HOLD_SLOT_BYTES <= EEPROM_CAPACITY_BYTES, "thermal hold beyond the chip");
 
 class PersistentStore {
  public:
@@ -2364,6 +2373,29 @@ class PersistentStore {
     if (!ready_) return false;
     const thermalgain::Record blank{};                                    // magic 0: never valid
     return writeRecord(EEPROM_ADDR_THERMAL_GAIN_A, blank) && writeRecord(EEPROM_ADDR_THERMAL_GAIN_B, blank);
+  }
+  // ---- thermal hold record (the hold level of the oven): same two-slot scheme ------------------------------------------------
+  bool loadThermalHold(thermalhold::Record &best) {
+    if (!ready_) return false;
+    thermalhold::Record a{}, b{};
+    const bool readA = readRecord(EEPROM_ADDR_THERMAL_HOLD_A, a), readB = readRecord(EEPROM_ADDR_THERMAL_HOLD_B, b);
+    return thermalhold::pick(a, readA, b, readB, best) != 0U;
+  }
+  bool saveThermalHold(float hold, float pv, float sp, uint32_t epoch, uint32_t batchId) {
+    if (!ready_) return false;
+    thermalhold::Record a{}, b{};
+    const bool readA = readRecord(EEPROM_ADDR_THERMAL_HOLD_A, a), readB = readRecord(EEPROM_ADDR_THERMAL_HOLD_B, b);
+    bool toA = true;
+    const thermalhold::Record rec = thermalhold::nextToWrite(a, readA, b, readB, hold, pv, sp, epoch, batchId, toA);
+    const uint16_t target = toA ? EEPROM_ADDR_THERMAL_HOLD_A : EEPROM_ADDR_THERMAL_HOLD_B;   // the slot that does NOT hold the newest record
+    if (!thermalhold::valid(rec) || !writeRecord(target, rec)) return false;
+    thermalhold::Record verify{};
+    return readRecord(target, verify) && memcmp(&verify, &rec, sizeof(rec)) == 0;
+  }
+  bool eraseThermalHold() {
+    if (!ready_) return false;
+    const thermalhold::Record blank{};                                    // magic 0: never valid
+    return writeRecord(EEPROM_ADDR_THERMAL_HOLD_A, blank) && writeRecord(EEPROM_ADDR_THERMAL_HOLD_B, blank);
   }
   // ---- advanced-config history slots ------------------------------------------------------------------------------------
   bool readAdvHistory(uint8_t slot, AdvancedHistory::Record &out) const {
@@ -5244,8 +5276,11 @@ class MachineController {
     const alarmsound::LoudVoice::Params lp;
     const bool valid = std::isfinite(safetyTempLast_);
     // Both over-temperature lines are LOUD while their alarm is on and silent the moment it is off: the alarm itself is a plain comparison with the line.
-    highLoud_.update(now, valid, safetyTempLast_, highTemperatureActive_, lp);
-    emergencyLoud_.update(now, valid, safetyTempLast_, emergencyActive_, lp);
+    const bool heaterOff = runtime_.heaterPower <= 0.5f;                        // the request is 0: an ACK is not asked for a fall the oven cannot make
+    const alarmsound::SirenGate::Params gp;
+    const bool highSiren = highGate_.update(now, valid, safetyTempLast_, config_.highTempAlarm, highTemperatureActive_, gp);   // E111 itself (and what it cuts) is unchanged
+    highLoud_.update(now, valid, safetyTempLast_, highSiren, lp, heaterOff);
+    emergencyLoud_.update(now, valid, safetyTempLast_, emergencyActive_, lp, heaterOff);
     const bool conflict = faults_.live(FaultCode::OutputConflict);
     if (!conflict) outputConflictMutedUntil_ = 0U;
     const bool conflictSiren = conflict && timeReached(now, outputConflictMutedUntil_);
@@ -5269,6 +5304,8 @@ class MachineController {
   bool clearThermalLearning() {
     bool ok = eraseLearnedBlob();
     if (store_.ready() && !store_.eraseThermalGain()) ok = false;
+    if (store_.ready() && !store_.eraseThermalHold()) ok = false;
+    holdHave_ = false; holdSettledOn_ = false;
     gainHave_ = false;
     gainAppliedMode_ = 0xFFU;                                           // the manual value (a setting, not learned) is applied again
     gainLastSaveMs_ = millis();
@@ -5308,6 +5345,43 @@ class MachineController {
       mayapSerialPrintf(false, "[THERMAL] kept kAir=%.2e tau=%.0f s\n", static_cast<double>(c.kAir()), static_cast<double>(tau));
     }
   }
+  // ---- The hold level of the OVEN (thermal_hold_record.h) ----
+  // Read once from the EEPROM; given back to the controller ONCE, when the batch is running and the sensor has a value (a resumed batch after an update or a power cut:
+  // the same batch, a short stop, the oven where it was - otherwise the 12 % start as before); written while the oven is settled and the level moved (at most every 10 minutes).
+  void serviceThermalHold(uint32_t now) {
+    if (!store_.ready()) return;
+    thermalv3::Controller &c = thermalV3_.controller();
+    if (!holdLoaded_) {
+      holdLoaded_ = true;
+      thermalhold::Record r{};
+      if (store_.loadThermalHold(r)) { holdSaved_ = r; holdHave_ = true; }
+      holdLastSaveMs_ = now;
+    }
+    const uint32_t batchId = batchRunning_ ? batchStartEpoch_ : 0U;
+    if (batchId == 0U) { holdSettledOn_ = false; return; }
+    if (!holdRestoreDone_) {
+      if (!sensorUsable_ || !std::isfinite(temperature_)) return;
+      holdRestoreDone_ = true;
+      if (holdHave_ && !c.hasRun()) {
+        const float h = thermalhold::restored(holdSaved_, true, batchId, rtc_.valid(), rtc_.epoch(), temperature_, config_.targetTemp);
+        if (h >= 0.0f) {
+          c.restoreHold(h);
+          mayapSerialPrintf(false, "[THERMAL] hold %.1f %% given back (saved %.1f %%)\n", static_cast<double>(h), static_cast<double>(holdSaved_.hold));
+        }
+      }
+    }
+    if (c.settled()) { if (!holdSettledOn_) { holdSettledOn_ = true; holdSettledSinceMs_ = now; } } else holdSettledOn_ = false;
+    const uint32_t settledMs = holdSettledOn_ ? elapsedMs(now, holdSettledSinceMs_) : 0U;
+    if (!thermalhold::wanted(settledMs, elapsedMs(now, holdLastSaveMs_), holdHave_, holdSaved_.hold, holdSaved_.batchId, c.pHold(), batchId)) return;
+    holdLastSaveMs_ = now;
+    const uint32_t epoch = rtc_.valid() ? rtc_.epoch() : 0U;
+    if (store_.saveThermalHold(c.pHold(), temperature_, config_.targetTemp, epoch, batchId)) {
+      holdSaved_ = thermalhold::make(holdSaved_.sequence + 1UL, c.pHold(), temperature_, config_.targetTemp, epoch, batchId); holdHave_ = true;
+    }
+  }
+  bool holdLoaded_ = false, holdHave_ = false, holdRestoreDone_ = false, holdSettledOn_ = false;
+  thermalhold::Record holdSaved_{};
+  uint32_t holdLastSaveMs_ = 0U, holdSettledSinceMs_ = 0U;
   bool gainLoaded_ = false, gainHave_ = false;
   thermalgain::Record gainSaved_{};
   uint8_t gainAppliedMode_ = 0xFFU;
@@ -5371,6 +5445,7 @@ class MachineController {
   }
   float thermalV3Command(uint32_t now, bool permit, bool shadow) {
     serviceThermalGain(now);
+    serviceThermalHold(now);
     const uint32_t t0 = static_cast<uint32_t>(esp_timer_get_time());
     const float u = thermalV3_.step(buildThermalV3SlotIn(now, permit, shadow));
     slotLastUs_ = static_cast<uint32_t>(esp_timer_get_time()) - t0;
@@ -8425,6 +8500,7 @@ class MachineController {
   bool ventHeaterBlock_ = false;                     // the heater is held off well above SV (see updateAlarms); the fan has its own line
   uint8_t ventReason_ = 0U;
   alarmsound::LoudVoice highLoud_{}, emergencyLoud_{};
+  alarmsound::SirenGate highGate_{};
   alarmsound::Reminder chimeReminder_{};
   bool sirenWanted_ = false;                        // the siren (external + ATtiny mirror) is wanted now
   uint32_t audibleMask_ = AlarmNone, outputConflictMutedUntil_ = 0U;

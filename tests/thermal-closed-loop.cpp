@@ -388,6 +388,25 @@ class Family {
 
 // A day of ordinary operation: a vent run of 5 minutes every 40 minutes, a door opened for 2 minutes every 5 hours, a programme step down and up
 // again. Nothing here is a fault: E115 must stay far from its limit all day (the evidence is the seconds of full heater power counted without
+// 2.9.9, a hot noon: the room around a settled oven warms up (5 degC in two hours) and the hold level the oven needs falls toward nothing. The
+// zero zone and the dead zone must keep the air from drifting above SP by the step of the sensor; undershoot is limited too (the heater is not
+// to be switched off for good at 3 % of a hold that is still there).
+template <class R>
+static void hotNoon(const std::vector<Oven> &ovens, double rampC, double &worstOver, double &worstUnder) {
+  worstOver = worstUnder = 0.0;
+  for (const Oven &o : ovens) {
+    R r(o.p, 28.0, 28.0);
+    r.advance(6 * 3600.0, false, false, [](const R &g) { return g.plant.sensor() >= 36.4; });
+    r.advance(2 * 3600.0);
+    const double sp = SP_C;
+    for (double t = 0; t < 7200.0; t += 10.0) {
+      r.plant.setAmbient(o.p.Tamb + rampC * t / 7200.0);
+      r.advance(10.0, false, false);
+      if (t > 1800.0) { worstOver = std::max(worstOver, r.plant.air() - sp); worstUnder = std::max(worstUnder, sp - r.plant.air()); }
+    }
+  }
+}
+
 // an answer of the temperature).
 struct Soak {
   int n = 0, trips = 0;
@@ -555,6 +574,16 @@ static void testFamily(bool everything) {
     CHECK(st.trips == 0, "ordinary operation stopped %d of %d healthy ovens with E115", st.trips, st.n);
     CHECK(st.peakEvidenceS <= 0.65 * E115_ON_MS / 1000.0, "E115 evidence came within %.0f s of its limit of %.0f s in ordinary operation", st.peakEvidenceS, E115_ON_MS / 1000.0);
     if (strictLimits) CHECK(st.worstOver <= 0.60, "ordinary operation: the air went %.2f degC over SP", st.worstOver);
+  }
+
+  {
+    double over = 0, under = 0;
+    hotNoon<Rig>(ovens, 5.0, over, under);
+    std::printf("  hot noon (+5 degC of room in 2 h): highest %+.2f over SP, lowest %.2f under SP\n", over, under);
+    if (strictLimits) {
+      CHECK(over < 0.15, "hot noon: the air rose %.2f over SP (limit 0.15)", over);
+      CHECK(under < 0.10, "hot noon: the air fell %.2f under SP (limit 0.10)", under);
+    }
   }
 
   // A heater that really is dead (SSR open, element gone) must still stop the batch, and not later than the 2.3.4 rule did.

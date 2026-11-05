@@ -48,7 +48,7 @@ tr:target td:first-child strong{color:#8a5a00}
 @media screen { body { background:#e9efef; } .sheet { box-shadow:0 4px 18px rgba(0,0,0,.12); min-height:210mm; } }
 </style></head><body><div class="toolbar"><a class="tb" href="../">&larr; Quay lại MAYAP</a><a class="tb" href="#danh-sach-ma-loi">Danh sách mã lỗi</a><a class="tb" href="./MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.pdf">Mở PDF</a><button onclick="window.print()">In / Lưu PDF</button></div><main class="sheet"><h1>MÁY ẤP TRỨNG MAYAP - HƯỚNG DẪN VẬN HÀNH VÀ MÃ LỖI</h1>
 <p><strong>Phiên bản tài liệu:</strong> v1.4 (tên file giữ nguyên để các liên kết cũ vẫn mở được)<br />
-<strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - bản <strong>2.9.8</strong> (Web 1.1.31)<br />
+<strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - bản <strong>2.9.9</strong> (Web 1.1.31)<br />
 <strong>Ngày cập nhật:</strong> 03/11/2026<br />
 <strong>Nguồn chuẩn mã lỗi:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0/machine_control.h</code></p>
 <blockquote>
@@ -586,4 +586,14 @@ tr:target td:first-child strong{color:#8a5a00}
 <li>Trên Web, <em>Ngày bắt đầu</em> chỉ là cách hiển thị khác của ngày ấp (hôm nay trừ số ngày đã ấp), tính theo giờ Việt Nam; khi mẻ đang chạy nó luôn theo số ngày của máy.</li>
 </ul>
 <hr />
-<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 2.9.8</strong></p></main></body></html>
+<h1>13. Trưa nóng: cắt về 0, nhớ mức giữ nhiệt, còi báo cao (2.9.9)</h1>
+<ul>
+<li><strong>Cắt về 0 khi lò tự đủ nhiệt:</strong> khi mức giữ nhiệt máy ước lượng dưới 3 % (trưa nắng, trứng tự sinh nhiệt) và nhiệt độ vượt SV 0,05 °C, thanh nhiệt tắt hẳn cho tới khi nhiệt độ xuống dưới SV 0,02 °C. 1–3 % công suất không làm đổi nhiệt độ mà chỉ giữ nhiệt độ ở phía trên SV.</li>
+<li><strong>Quạt hút không làm mức giữ nhiệt tăng:</strong> khi quạt hút chạy, mức giữ nhiệt chỉ được giảm, không tăng (trước đây máy đứng yên và giữ 5 % suốt đợt quạt).</li>
+<li><strong>Vùng chết 0,03 °C quanh SV:</strong> sai lệch dưới 0,03 °C không làm công suất nhấp nhả.</li>
+<li><strong>Nhớ mức giữ nhiệt qua khởi động lại:</strong> khi lò đã ổn định, máy lưu mức giữ nhiệt vào EEPROM (hai ô luân phiên, có CRC). Sau cập nhật phần mềm hay mất điện ngắn (dưới 30 phút, nhiệt độ và SV gần như cũ, cùng một mẻ) máy bật lại đúng mức đã nhớ (90 %) thay vì mức mặc định 12 %. Quá lâu, khác mẻ, hay nhiệt độ lệch thì bỏ qua. <em>Xoa du lieu hoc nhiet</em> xóa cả mức này.</li>
+<li><strong>Còi báo cao:</strong> nhiệt độ chạm rồi hạ rồi chạm lại quanh ngưỡng không còn làm còi bật tắt liên tục: còi kêu khi tổng thời gian vượt ngưỡng đủ 60 giây (vượt từ 0,1 °C thì kêu ngay) và chỉ tắt khi đã yên 30 giây. Việc cắt thanh nhiệt và contactor khi quá nhiệt không đổi.</li>
+<li><strong>Tắt tiếng (ACK) khi thanh nhiệt đã về 0:</strong> máy không thể hạ nhiệt thêm nên còi không kêu lại sau 2 phút; còi chỉ kêu lại nếu nhiệt độ tăng thêm 0,2 °C hoặc sau 10 phút.</li>
+</ul>
+<hr />
+<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 2.9.9</strong></p></main></body></html>
