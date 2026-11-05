@@ -19,6 +19,12 @@ constexpr float STALL_S = 120.0f;          // ... and not closing for this long
 #endif
 constexpr float STALL_SLOPE_FRAC = STALL_FRAC;       // "not closing" = under this fraction of the closing speed (a brake near SV is slower than 0.5 but not flat)
 constexpr float CLOSE_S = 300.0f;          // the gap should close in this time
+#ifndef QUIET_S_V
+#define QUIET_S_V 600.0f
+#endif
+constexpr float QUIET_S = QUIET_S_V;          // nothing eventful (door, fan, set-point change, a fall or a quick recovery) for this long before a stall counts
+constexpr float BIG_MOVE_C = 0.12f;           // PV moving by more than this in CHECK_S is the hold law doing its work (a recovery) or a disturbance
+constexpr float CHECK_S = 120.0f;
 constexpr float RELEASE_GAP_C = 0.08f;
 constexpr float ARRIVE_S = 240.0f;         // slope x this >= gap: PV is on its way, let go
 constexpr float REF_GAIN = 1.2e-4f;        // degC/s per percent: the gain of a slow oven (a faster oven only closes the gap sooner)
@@ -30,13 +36,20 @@ struct Out { bool active = false; float floorPct = 0.0f; bool released = false; 
 class Assist {
  public:
   void reset() { stallS_ = 0.0f; active_ = false; floor_ = 0.0f; }
+  void quietReset() { quietS_ = 0.0f; stallS_ = 0.0f; }
   // Call every control step. `cmdPct` = what the hold law asks for now (the floor starts there). `slope` = measured PV slope [degC/s] (NaN: unknown).
   Out step(float pv, float sp, float slope, float cmdPct, float capPct, bool blocked, float dtS) {
     Out o;
     const float gap = sp - pv;
-    if (blocked || !std::isfinite(gap) || !std::isfinite(slope)) { if (active_) { o.released = true; o.releaseHold = std::max(0.0f, floor_ - std::max(0.0f, std::isfinite(slope) ? slope : 0.0f) / REF_GAIN); } reset(); return o; }
+    if (blocked || !std::isfinite(gap) || !std::isfinite(slope)) { quietS_ = 0.0f; if (active_) { o.released = true; o.releaseHold = std::max(0.0f, floor_ - std::max(0.0f, std::isfinite(slope) ? slope : 0.0f) / REF_GAIN); } reset(); return o; }
     const float s = std::max(0.0f, slope);
+    quietS_ += dtS;
+    chkS_ += dtS;
+    if (std::fabs(sp - spPrev_) > 0.01f) quietS_ = 0.0f;
+    if (chkS_ >= CHECK_S) { if (std::fabs(pv - pvChk_) > BIG_MOVE_C) quietS_ = 0.0f; pvChk_ = pv; chkS_ = 0.0f; }
+    spPrev_ = sp;
     if (!active_) {
+      if (quietS_ < QUIET_S) { stallS_ = 0.0f; return o; }
       const bool stalled = gap > ARM_GAP_C && gap < MAX_GAP_C && s < STALL_SLOPE_FRAC * gap / CLOSE_S;
       stallS_ = stalled ? stallS_ + dtS : 0.0f;
       if (stallS_ >= STALL_S) { active_ = true; floor_ = cmdPct; secAcc_ = 0.0f; }
@@ -57,7 +70,7 @@ class Assist {
   }
   bool active() const { return active_; }
  private:
-  float stallS_ = 0.0f, floor_ = 0.0f, secAcc_ = 0.0f;
+  float stallS_ = 0.0f, floor_ = 0.0f, secAcc_ = 0.0f, quietS_ = 0.0f, spPrev_ = 0.0f, pvChk_ = 0.0f, chkS_ = 0.0f;
   bool active_ = false;
 };
 
