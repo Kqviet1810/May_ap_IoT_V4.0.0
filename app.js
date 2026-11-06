@@ -3588,19 +3588,390 @@
     $('pmSummary').textContent = runtime?.pidMon?.valid
       ? `PV ${numberVi(values.pv, 2)}°C · SP ${numberVi(values.sp, 2)}°C · yêu cầu ${numberVi(values.req, 0)}%`
       : 'Chưa có số liệu (cảm biến chưa sẵn sàng hoặc firmware cũ)';
+
+    if (pmReplay.active) {
+      pmReplay.renderStep();
+      return;
+    }
+
     const now = Date.now();
     if (runtime?.pidMon?.valid && now - pidMon.lastAt >= PM_SAMPLE_MS) {
       pidMon.lastAt = now;
-      pidMon.series.push({ t: now, pv: values.pv, sp: values.sp, req: values.req, act: values.act, vent: runtime.ventFanOn ? 1 : 0 });
+      const sPt = { t: now, pv: values.pv, sp: values.sp, req: values.req, act: values.act, vent: runtime.ventFanOn ? 1 : 0, ventWhy: (Number(runtime?.pidMon?.stt || 0) & 15), pred: values.pred };
+      pidMon.series.push(sPt);
       if (pidMon.series.length > PM_MAX_POINTS) pidMon.series.shift();
+      if (pmRecorder.active) pmRecorder.ingest(sPt);
     }
     if (!pidMon.raf && typeof requestAnimationFrame === 'function') {
       pidMon.raf = requestAnimationFrame(() => { pidMon.raf = 0; drawPidMonitorCharts(); });
     }
   }
 
-  function drawPmChart(canvas, series, layers, range) {
+  // --- Independent Zoom/Pan State for Charts ---
+  const pmCharts = {
+    temp: { zLo: 0, zHi: 1, isDrag: false, dragX: 0, dragLo: 0, dragHi: 1, hoverX: -1 },
+    power: { zLo: 0, zHi: 1, isDrag: false, dragX: 0, dragLo: 0, dragHi: 1, hoverX: -1 }
+  };
+
+  // --- 5-Slot Storage Manager (FIFO) ---
+  const PM_STORAGE_KEY = 'mayap.pid_records.v1';
+  const PM_MAX_SAVED = 5;
+  const pmStorage = {
+    list(deviceId) {
+      try {
+        const all = JSON.parse(localStorage.getItem(PM_STORAGE_KEY) || '[]');
+        return Array.isArray(all) ? (deviceId ? all.filter((r) => r.deviceId === deviceId) : all) : [];
+      } catch (_) { return []; }
+    },
+    get(id) {
+      return this.list().find((r) => r.id === id) || null;
+    },
+    save(record) {
+      try {
+        let list = this.list();
+        list = list.filter((r) => r.id !== record.id);
+        while (list.length >= PM_MAX_SAVED) list.shift();
+        list.push(record);
+        localStorage.setItem(PM_STORAGE_KEY, JSON.stringify(list));
+        pmUpdateRecordCount();
+        return true;
+      } catch (_) {
+        toast('Bộ nhớ lưu trữ trình duyệt đầy, vui lòng dọn bớt bản ghi');
+        return false;
+      }
+    },
+    delete(id) {
+      try {
+        let list = this.list().filter((r) => r.id !== id);
+        localStorage.setItem(PM_STORAGE_KEY, JSON.stringify(list));
+        pmUpdateRecordCount();
+      } catch (_) {}
+    },
+    clearAll(deviceId) {
+      try {
+        let list = deviceId ? this.list().filter((r) => r.deviceId !== deviceId) : [];
+        localStorage.setItem(PM_STORAGE_KEY, JSON.stringify(list));
+        pmUpdateRecordCount();
+      } catch (_) {}
+    }
+  };
+
+  function pmUpdateRecordCount() {
+    const el = $('pmRecordCount');
+    if (el) el.textContent = String(pmStorage.list(currentDevice()?.id).length);
+  }
+
+  // --- 24-Hour Recorder Controller ---
+  const PM_REC_KEY = 'mayap.pid_rec_active';
+  const PM_MAX_REC_SAMPLES = 8640; // 24 hours @ 10s
+  const pmRecorder = {
+    active: false,
+    deviceId: '',
+    startedAt: 0,
+    samples: [],
+    timer: null,
+    init() {
+      try {
+        const raw = localStorage.getItem(PM_REC_KEY);
+        if (raw) {
+          const st = JSON.parse(raw);
+          if (st && st.active && st.deviceId) {
+            this.active = true;
+            this.deviceId = st.deviceId;
+            this.startedAt = Number(st.startedAt || Date.now());
+            this.samples = Array.isArray(st.samples) ? st.samples : [];
+            this.startTimer();
+          }
+        }
+      } catch (_) {}
+      this.updateBtn();
+    },
+    start(device) {
+      if (!device) { toast('Chưa chọn máy để ghi'); return; }
+      this.active = true;
+      this.deviceId = device.id;
+      this.startedAt = Date.now();
+      this.samples = [];
+      this.saveState();
+      this.startTimer();
+      toast('Đã bắt đầu ghi log 24h. Hệ thống lưu tự động.');
+    },
+    startTimer() {
+      if (this.timer) clearInterval(this.timer);
+      this.timer = setInterval(() => this.tick(), 1000);
+      this.updateBtn();
+    },
+    tick() {
+      if (!this.active) return;
+      const elapsed = Date.now() - this.startedAt;
+      if (elapsed >= 24 * 3600 * 1000 || this.samples.length >= PM_MAX_REC_SAMPLES) {
+        this.stop(true);
+        toast('Đã ghi đủ 24h dữ liệu! Bản ghi đã được lưu an toàn.');
+        return;
+      }
+      this.updateBtn();
+    },
+    ingest(s) {
+      if (!this.active || !s) return;
+      this.samples.push(s);
+      if (this.samples.length % 6 === 0) this.saveState();
+      if (this.samples.length >= PM_MAX_REC_SAMPLES) this.stop(true);
+    },
+    saveState() {
+      try {
+        localStorage.setItem(PM_REC_KEY, JSON.stringify({
+          active: this.active,
+          deviceId: this.deviceId,
+          startedAt: this.startedAt,
+          samples: this.samples
+        }));
+      } catch (_) {}
+    },
+    stop(auto = false) {
+      if (!this.active) return;
+      if (this.timer) { clearInterval(this.timer); this.timer = null; }
+      const duration = Date.now() - this.startedAt;
+      const startStr = `${vnTime(new Date(this.startedAt), { hour: '2-digit', minute: '2-digit' })} ${vnDate(new Date(this.startedAt))}`;
+      if (this.samples.length > 0) {
+        const record = {
+          id: 'rec_' + Date.now(),
+          name: `Bản ghi ${startStr} (${this.samples.length} mẫu)`,
+          deviceId: this.deviceId,
+          startedAt: this.startedAt,
+          endedAt: Date.now(),
+          sampleCount: this.samples.length,
+          durationMs: duration,
+          samples: [...this.samples]
+        };
+        pmStorage.save(record);
+        if (!auto) toast(`Đã lưu bản ghi: ${this.samples.length} mẫu`);
+      } else if (!auto) {
+        toast('Bản ghi rỗng, không lưu');
+      }
+      this.active = false;
+      this.samples = [];
+      try { localStorage.removeItem(PM_REC_KEY); } catch (_) {}
+      this.updateBtn();
+    },
+    updateBtn() {
+      const btn = $('pmRecordBtn'), text = $('pmRecordBtnText');
+      if (!btn || !text) return;
+      if (this.active) {
+        btn.classList.add('isRecording');
+        const elapsedSec = Math.floor((Date.now() - this.startedAt) / 1000);
+        const h = String(Math.floor(elapsedSec / 3600)).padStart(2, '0');
+        const m = String(Math.floor((elapsedSec % 3600) / 60)).padStart(2, '0');
+        const s = String(elapsedSec % 60).padStart(2, '0');
+        text.textContent = `⏹ Dừng & Lưu (${h}:${m}:${s} | ${this.samples.length} mẫu)`;
+      } else {
+        btn.classList.remove('isRecording');
+        text.textContent = 'Bắt đầu ghi 24h';
+      }
+    }
+  };
+
+  // --- Replay Mode Controller (Auto-return 5 minutes) ---
+  const pmReplay = {
+    active: false,
+    record: null,
+    cursor: 0,
+    speed: 1,
+    timer: null,
+    timeoutTimer: null,
+    timeoutSec: 300, // strictly 5 minutes
+    start(record) {
+      if (!record || !Array.isArray(record.samples) || record.samples.length === 0) {
+        toast('Bản ghi không có số liệu');
+        return;
+      }
+      this.active = true;
+      this.record = record;
+      this.cursor = 0;
+      this.speed = 1;
+      this.timeoutSec = 300;
+      const banner = $('pmReplayBanner');
+      if (banner) banner.hidden = false;
+      if ($('pmReplayTitle')) $('pmReplayTitle').textContent = record.name;
+      this.updateTimerDisplay();
+
+      pmCharts.temp.zLo = 0; pmCharts.temp.zHi = 1;
+      pmCharts.power.zLo = 0; pmCharts.power.zHi = 1;
+
+      if (this.timeoutTimer) clearInterval(this.timeoutTimer);
+      this.timeoutTimer = setInterval(() => {
+        this.timeoutSec--;
+        this.updateTimerDisplay();
+        if (this.timeoutSec <= 0) {
+          this.stop();
+          toast('Hết thời gian phát lại (5 phút), đã tự động trở về thời gian thực');
+        }
+      }, 1000);
+
+      this.startPlayback();
+      toast('Đang phát lại bản ghi. Bấm "Thoát về hiện tại" để dừng.');
+    },
+    updateTimerDisplay() {
+      const el = $('pmReplayTimer');
+      if (!el) return;
+      const m = String(Math.floor(this.timeoutSec / 60)).padStart(2, '0');
+      const s = String(this.timeoutSec % 60).padStart(2, '0');
+      el.textContent = `${m}:${s}`;
+    },
+    startPlayback() {
+      if (this.timer) clearInterval(this.timer);
+      const intervalMs = Math.max(50, Math.floor(1000 / this.speed));
+      this.timer = setInterval(() => {
+        if (!this.active || !this.record) return;
+        if (this.cursor < this.record.samples.length - 1) {
+          this.cursor++;
+          this.renderStep();
+        } else {
+          this.pause();
+        }
+      }, intervalMs);
+      if ($('pmReplayPlayBtn')) $('pmReplayPlayBtn').textContent = '⏸ Tạm dừng';
+    },
+    pause() {
+      if (this.timer) { clearInterval(this.timer); this.timer = null; }
+      if ($('pmReplayPlayBtn')) $('pmReplayPlayBtn').textContent = '▶ Tiếp tục';
+    },
+    togglePlay() {
+      if (this.timer) this.pause();
+      else this.startPlayback();
+    },
+    seek(ratio) {
+      if (!this.active || !this.record) return;
+      const len = this.record.samples.length;
+      this.cursor = Math.max(0, Math.min(len - 1, Math.floor(ratio * (len - 1))));
+      this.renderStep();
+    },
+    setSpeed(spd) {
+      this.speed = spd;
+      document.querySelectorAll('.pmSpeedBtn').forEach((b) => {
+        b.classList.toggle('active', Number(b.dataset.speed) === spd);
+      });
+      if (this.timer) this.startPlayback();
+    },
+    renderStep() {
+      if (!this.active || !this.record) return;
+      const s = this.record.samples[this.cursor];
+      if (!s) return;
+      const scrubber = $('pmReplayScrubber');
+      const len = this.record.samples.length;
+      if (scrubber && len > 1) {
+        scrubber.value = ((this.cursor / (len - 1)) * 100).toFixed(1);
+      }
+      if ($('pmReplayCurrentTime') && s.t) {
+        $('pmReplayCurrentTime').textContent = vnTime(new Date(s.t));
+      }
+      if ($('pmReplayTotalTime') && this.record.samples[len - 1]?.t) {
+        $('pmReplayTotalTime').textContent = vnTime(new Date(this.record.samples[len - 1].t));
+      }
+      if (pidMon.cells) {
+        if (pidMon.cells.pv) pidMon.cells.pv.textContent = numberVi(s.pv, 2);
+        if (pidMon.cells.sp) pidMon.cells.sp.textContent = numberVi(s.sp, 2);
+        if (pidMon.cells.err) pidMon.cells.err.textContent = numberVi(s.err != null ? s.err : (s.sp - s.pv), 2);
+        if (pidMon.cells.req) pidMon.cells.req.textContent = numberVi(s.req, 1);
+        if (pidMon.cells.act) pidMon.cells.act.textContent = numberVi(s.act, 1);
+        if (pidMon.cells.pred) pidMon.cells.pred.textContent = numberVi(s.pred != null ? s.pred : s.pv, 2);
+        if (pidMon.cells.phase) pidMon.cells.phase.textContent = s.phase || 'Phát lại';
+        if (pidMon.cells.fmt) pidMon.cells.fmt.textContent = s.fmt || '0,1 °C';
+        if (pidMon.cells.slot) pidMon.cells.slot.textContent = s.slot != null ? String(s.slot) : '392';
+      }
+      if ($('pmSummary')) {
+        $('pmSummary').textContent = `[PHÁT LẠI] PV ${numberVi(s.pv, 2)}°C · SP ${numberVi(s.sp, 2)}°C · yêu cầu ${numberVi(s.req, 0)}%`;
+      }
+      drawPidMonitorCharts();
+    },
+    stop() {
+      if (this.timer) { clearInterval(this.timer); this.timer = null; }
+      if (this.timeoutTimer) { clearInterval(this.timeoutTimer); this.timeoutTimer = null; }
+      this.active = false;
+      this.record = null;
+      const banner = $('pmReplayBanner');
+      if (banner) banner.hidden = true;
+      renderPidMonitor(currentDevice());
+    }
+  };
+
+  function pmReplayLatest() {
+    const list = pmStorage.list(currentDevice()?.id);
+    if (!list || list.length === 0) {
+      toast('Chưa có bản ghi nào để phát lại. Bấm "Bắt đầu ghi 24h" để tạo bản ghi.');
+      return;
+    }
+    pmReplay.start(list[list.length - 1]);
+  }
+
+  function pmDownloadRecordCsv(record) {
+    if (!record || !record.samples || record.samples.length === 0) {
+      toast('Bản ghi không có số liệu');
+      return;
+    }
+    const iso = (t) => new Date(t).toISOString();
+    const head = 'time_utc,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,vent_fan,vent_why,time_vn';
+    const rows = record.samples.map((s) => [
+      iso(s.t), s.pv, s.sp, s.pred != null ? s.pred : '', s.req, s.act, s.vent ? 1 : 0, s.ventWhy || 0, vnDateTimeIso(s.t)
+    ].join(','));
+    const content = `# mayap pid 24h log device=${record.deviceId || ''} name="${record.name}"\n${head}\n${rows.join('\n')}\n`;
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `mayap-log-24h-${record.deviceId || 'device'}-${new Date(record.startedAt).toISOString().replace(/[-:]/g, '').slice(0, 15)}.csv`;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+
+  function pmOpenHistoryDialog() {
+    const dialog = $('pmHistoryDialog'), listEl = $('pmHistoryList');
+    if (!dialog || !listEl) return;
+    const records = pmStorage.list(currentDevice()?.id);
+    listEl.innerHTML = '';
+    if (records.length === 0) {
+      listEl.innerHTML = '<div class="pmHistoryEmpty">Chưa có bản ghi nào. Bấm "Bắt đầu ghi 24h" để tạo bản ghi.</div>';
+    } else {
+      records.slice().reverse().forEach((r) => {
+        const card = document.createElement('div');
+        card.className = 'pmHistoryCard';
+        const durMins = Math.max(1, Math.round((r.durationMs || 0) / 60000));
+        const hours = Math.floor(durMins / 60), mins = durMins % 60;
+        const durText = hours > 0 ? `${hours}h ${mins}m` : `${mins} phút`;
+        card.innerHTML = `
+          <div class="pmHistoryCardInfo">
+            <strong>${r.name}</strong>
+            <small>Thời lượng: ${durText} · ${r.sampleCount || 0} mẫu</small>
+          </div>
+          <div class="pmHistoryCardActions">
+            <button class="ghost small pmHistReplayBtn" type="button">▶ Phát</button>
+            <button class="ghost small pmHistCsvBtn" type="button">📥 CSV</button>
+            <button class="ghost small danger pmHistDelBtn" type="button">🗑</button>
+          </div>
+        `;
+        card.querySelector('.pmHistReplayBtn')?.addEventListener('click', () => {
+          dialog.close();
+          pmReplay.start(r);
+        });
+        card.querySelector('.pmHistCsvBtn')?.addEventListener('click', () => {
+          pmDownloadRecordCsv(r);
+        });
+        card.querySelector('.pmHistDelBtn')?.addEventListener('click', () => {
+          if (confirm(`Xóa "${r.name}"?`)) {
+            pmStorage.delete(r.id);
+            pmOpenHistoryDialog();
+          }
+        });
+        listEl.appendChild(card);
+      });
+    }
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    else dialog.setAttribute('open', '');
+  }
+
+  function drawPmChart(canvas, series, layers, range, chartKey) {
     if (!canvas) return;
+    const key = chartKey || (canvas.id === 'pmPowerChart' ? 'power' : 'temp');
+    const cState = pmCharts[key] || { zLo: 0, zHi: 1, hoverX: -1 };
     const wrap = canvas.parentElement;
     const w = Math.max(1, Math.floor(wrap?.clientWidth || 300)), h = 150;
     const dpr = Math.max(1, Math.min(2, Number(window.devicePixelRatio) || 1));
@@ -3613,45 +3984,238 @@
     const left = 34, right = 6, top = 6, bottom = 16;
     const color = getComputedStyle(canvas).color || '#888';
     ctx.font = '10px system-ui, sans-serif'; ctx.fillStyle = color; ctx.strokeStyle = color; ctx.globalAlpha = 1;
-    if (series.length < 2) { ctx.fillText('Đang thu thập số liệu từ máy…', left, h / 2); return; }
+    if (!series || series.length < 2) { ctx.fillText('Đang thu thập số liệu từ máy…', left, h / 2); return; }
+
     const t0 = series[0].t, t1 = series[series.length - 1].t;
-    const x = (t) => left + (w - left - right) * ((t - t0) / Math.max(1, t1 - t0));
+    const totalSpan = Math.max(1, t1 - t0);
+    const tStart = t0 + totalSpan * (cState.zLo || 0);
+    const tEnd = t0 + totalSpan * (cState.zHi == null ? 1 : cState.zHi);
+    const visibleSpan = Math.max(1, tEnd - tStart);
+
+    const visible = [];
+    for (let i = 0; i < series.length; ++i) {
+      const p = series[i];
+      if (p.t >= tStart && p.t <= tEnd) {
+        if (visible.length === 0 && i > 0) visible.push(series[i - 1]);
+        visible.push(p);
+      } else if (p.t > tEnd) {
+        visible.push(p);
+        break;
+      }
+    }
+    if (visible.length < 2) {
+      visible.length = 0;
+      visible.push(series[0], series[series.length - 1]);
+    }
+
+    const x = (t) => left + (w - left - right) * ((t - tStart) / visibleSpan);
     let lo = range.lo, hi = range.hi;
     if (range.auto) {
-      const vals = layers.flatMap((l) => series.map((p) => p[l.key])).filter(Number.isFinite);
-      lo = Math.min(...vals) - 0.1; hi = Math.max(...vals) + 0.1;
+      const vals = layers.flatMap((l) => visible.map((p) => p[l.key])).filter(Number.isFinite);
+      lo = vals.length > 0 ? Math.min(...vals) - 0.1 : 36.5;
+      hi = vals.length > 0 ? Math.max(...vals) + 0.1 : 38.5;
       if (hi - lo < 0.6) { const mid = (hi + lo) / 2; lo = mid - 0.3; hi = mid + 0.3; }
     }
     const y = (v) => top + (h - top - bottom) * (1 - (v - lo) / Math.max(1e-6, hi - lo));
+
     ctx.globalAlpha = 0.25; ctx.beginPath();
     for (let i = 0; i <= 3; i += 1) { const gy = top + (h - top - bottom) * i / 3; ctx.moveTo(left, gy); ctx.lineTo(w - right, gy); }
     ctx.stroke(); ctx.globalAlpha = 1;
     for (let i = 0; i <= 3; i += 1) ctx.fillText((hi - (hi - lo) * i / 3).toFixed(range.auto ? 1 : 0), 2, top + (h - top - bottom) * i / 3 + 3);
+
     if (range.vent) {
       ctx.fillStyle = 'rgba(128,128,128,0.28)';
       let start = null;
-      for (const p of series) {
+      for (const p of visible) {
         if (p.vent && start === null) start = p.t;
-        if ((!p.vent || p === series[series.length - 1]) && start !== null) { ctx.fillRect(x(start), top, Math.max(1, x(p.t) - x(start)), h - top - bottom); start = null; }
+        if ((!p.vent || p === visible[visible.length - 1]) && start !== null) {
+          const x0 = Math.max(left, x(start)), x1 = Math.min(w - right, x(p.t));
+          if (x1 > x0) ctx.fillRect(x0, top, x1 - x0, h - top - bottom);
+          start = null;
+        }
       }
     }
+
     for (const layer of layers) {
       ctx.strokeStyle = layer.color; ctx.lineWidth = 1.6; ctx.setLineDash(layer.dash || []); ctx.beginPath();
       let moved = false;
-      for (const p of series) { const v = p[layer.key]; if (!Number.isFinite(v)) { moved = false; continue; }
-        if (moved) ctx.lineTo(x(p.t), y(v)); else { ctx.moveTo(x(p.t), y(v)); moved = true; } }
+      for (const p of visible) {
+        const v = p[layer.key];
+        if (!Number.isFinite(v)) { moved = false; continue; }
+        const px = Math.max(left, Math.min(w - right, x(p.t)));
+        if (moved) ctx.lineTo(px, y(v));
+        else { ctx.moveTo(px, y(v)); moved = true; }
+      }
       ctx.stroke();
     }
     ctx.setLineDash([]); ctx.fillStyle = color;
-    const minutes = Math.max(1, Math.round((t1 - t0) / 60000));
-    ctx.fillText(`${minutes} phút gần nhất`, left, h - 3);
+
+    // Replay cursor indicator
+    if (pmReplay.active && pmReplay.record?.samples) {
+      const s = pmReplay.record.samples[pmReplay.cursor];
+      if (s && s.t >= tStart && s.t <= tEnd) {
+        const rx = x(s.t);
+        ctx.strokeStyle = '#f6c343'; ctx.lineWidth = 2; ctx.beginPath();
+        ctx.moveTo(rx, top); ctx.lineTo(rx, h - bottom); ctx.stroke();
+        ctx.fillStyle = '#f6c343'; ctx.beginPath();
+        ctx.arc(rx, top + 4, 3, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
+    // Hover tooltip & Crosshair
+    if (cState.hoverX != null && cState.hoverX >= left && cState.hoverX <= w - right) {
+      const hoverTime = tStart + visibleSpan * ((cState.hoverX - left) / (w - left - right));
+      let closestPt = null, minDt = Infinity;
+      for (const p of visible) {
+        const dt = Math.abs(p.t - hoverTime);
+        if (dt < minDt) { minDt = dt; closestPt = p; }
+      }
+
+      if (closestPt) {
+        const cx = Math.max(left, Math.min(w - right, x(closestPt.t)));
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 1; ctx.setLineDash([2, 2]);
+        ctx.beginPath(); ctx.moveTo(cx, top); ctx.lineTo(cx, h - bottom); ctx.stroke();
+        ctx.setLineDash([]);
+
+        const lines = [`${vnTime(new Date(closestPt.t))} ${vnDate(new Date(closestPt.t))}`];
+        if (key === 'temp') {
+          lines.push(`PV: ${numberVi(closestPt.pv, 2)}°C  SP: ${numberVi(closestPt.sp, 2)}°C`);
+          if (Number.isFinite(closestPt.pred)) lines.push(`Dự đoán: ${numberVi(closestPt.pred, 2)}°C  Lệch: ${numberVi(closestPt.sp - closestPt.pv, 2)}°C`);
+        } else {
+          lines.push(`Yêu cầu: ${numberVi(closestPt.req, 1)}%  SSR TB: ${numberVi(closestPt.act, 1)}%`);
+          if (closestPt.vent) {
+            const whyText = PM_VENT_WHY[closestPt.ventWhy & 7] || '';
+            const ventLabel = whyText === 'stuck' ? 'Quá nhiệt: Đứng nhiệt' :
+              whyText === 'fast' ? 'Quá nhiệt: Tăng tốc' :
+              whyText === 'floor' ? 'Quá nhiệt: Sưởi sàn min' :
+              whyText === 'predicted' ? 'Quá nhiệt: Dự đoán vọt' : 'Quạt hút hoạt động';
+            lines.push(`Quạt hút: ${ventLabel}`);
+          }
+        }
+
+        const boxW = 168, boxH = 14 + lines.length * 13;
+        const boxX = cx + 8 + boxW > w - right ? cx - 8 - boxW : cx + 8;
+        const boxY = top + 4;
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+        ctx.fillRect(boxX, boxY, boxW, boxH);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+        ctx.strokeRect(boxX, boxY, boxW, boxH);
+        ctx.font = '9px system-ui, sans-serif';
+        for (let li = 0; li < lines.length; ++li) {
+          ctx.fillStyle = li === 0 ? '#94a3b8' : (li === lines.length - 1 && lines[li].startsWith('Quạt hút') ? '#f6c343' : '#f8fafc');
+          ctx.fillText(lines[li], boxX + 6, boxY + 12 + li * 13);
+        }
+      }
+    }
+
+    const minutes = Math.max(1, Math.round(visibleSpan / 60000));
+    ctx.font = '10px system-ui, sans-serif'; ctx.fillStyle = color;
+    const isZoomed = (cState.zLo || 0) > 0 || (cState.zHi == null ? 1 : cState.zHi) < 1;
+    ctx.fillText(isZoomed ? `${minutes} phút đang xem (cuộn để zoom, kéo trượt)` : `${minutes} phút gần nhất`, left, h - 3);
+  }
+
+  function bindPmChartCanvas(canvas, chartKey) {
+    if (!canvas || canvas._pmBound) return;
+    canvas._pmBound = true;
+    const cState = pmCharts[chartKey];
+
+    canvas.addEventListener?.('wheel', (e) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const xRatio = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+      const factor = e.deltaY < 0 ? 0.75 : 1.33;
+      const span = (cState.zHi || 1) - (cState.zLo || 0);
+      const newSpan = Math.max(0.01, Math.min(1, span * factor));
+      const center = (cState.zLo || 0) + span * xRatio;
+      cState.zLo = Math.max(0, center - newSpan * xRatio);
+      cState.zHi = Math.min(1, cState.zLo + newSpan);
+      if (cState.zHi === 1) cState.zLo = Math.max(0, 1 - newSpan);
+      drawPidMonitorCharts();
+    }, { passive: false });
+
+    canvas.addEventListener?.('pointerdown', (e) => {
+      cState.isDrag = true;
+      cState.dragX = e.clientX;
+      cState.dragLo = cState.zLo || 0;
+      cState.dragHi = cState.zHi == null ? 1 : cState.zHi;
+      try { canvas.setPointerCapture?.(e.pointerId); } catch (_) {}
+    });
+
+    canvas.addEventListener?.('pointermove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      cState.hoverX = e.clientX - rect.left;
+      if (cState.isDrag) {
+        const dx = (e.clientX - cState.dragX) / Math.max(1, rect.width);
+        const span = cState.dragHi - cState.dragLo;
+        cState.zLo = Math.max(0, Math.min(1 - span, cState.dragLo - dx));
+        cState.zHi = cState.zLo + span;
+      }
+      drawPidMonitorCharts();
+    });
+
+    const endDrag = () => { cState.isDrag = false; };
+    canvas.addEventListener?.('pointerup', endDrag);
+    canvas.addEventListener?.('pointercancel', endDrag);
+    canvas.addEventListener?.('mouseleave', () => {
+      cState.isDrag = false;
+      cState.hoverX = -1;
+      drawPidMonitorCharts();
+    });
+
+    canvas.addEventListener?.('dblclick', () => {
+      cState.zLo = 0; cState.zHi = 1;
+      drawPidMonitorCharts();
+    });
+  }
+
+  function bindPmChartToolbars() {
+    document.querySelectorAll?.('.pmChartToolbar button')?.forEach((btn) => {
+      btn.addEventListener?.('click', () => {
+        const toolbar = btn.closest('.pmChartToolbar');
+        const chartKey = toolbar?.dataset.chart;
+        if (!chartKey || !pmCharts[chartKey]) return;
+        const cState = pmCharts[chartKey];
+        const action = btn.dataset.action;
+        const series = pmReplay.active && pmReplay.record?.samples ? pmReplay.record.samples : pidMon.series;
+        if (!series || series.length < 2) return;
+        const t0 = series[0].t, t1 = series[series.length - 1].t;
+        const totalSpan = Math.max(1, t1 - t0);
+
+        if (action === 'in') {
+          const span = (cState.zHi - cState.zLo) * 0.7;
+          const mid = (cState.zLo + cState.zHi) / 2;
+          cState.zLo = Math.max(0, mid - span / 2);
+          cState.zHi = Math.min(1, cState.zLo + span);
+        } else if (action === 'out') {
+          const span = Math.min(1, (cState.zHi - cState.zLo) * 1.4);
+          const mid = (cState.zLo + cState.zHi) / 2;
+          cState.zLo = Math.max(0, mid - span / 2);
+          cState.zHi = Math.min(1, cState.zLo + span);
+        } else if (action === 'reset') {
+          cState.zLo = 0; cState.zHi = 1;
+        } else if (action === '1h') {
+          const target = Math.min(1, (3600 * 1000) / totalSpan);
+          cState.zLo = Math.max(0, 1 - target); cState.zHi = 1;
+        } else if (action === '6h') {
+          const target = Math.min(1, (6 * 3600 * 1000) / totalSpan);
+          cState.zLo = Math.max(0, 1 - target); cState.zHi = 1;
+        } else if (action === '24h') {
+          const target = Math.min(1, (24 * 3600 * 1000) / totalSpan);
+          cState.zLo = Math.max(0, 1 - target); cState.zHi = 1;
+        }
+        drawPidMonitorCharts();
+      });
+    });
   }
 
   function drawPidMonitorCharts() {
     if (!pidMon.open) return;
-    drawPmChart($('pmTempChart'), pidMon.series, [{ key: 'pv', color: '#d9534f' }, { key: 'sp', color: '#2f80ed' }], { auto: true });
-    drawPmChart($('pmPowerChart'), pidMon.series, [{ key: 'req', color: '#f2994a' }, { key: 'act', color: '#9b51e0', dash: [4, 3] }],
-      { lo: 0, hi: 100, vent: true });
+    const series = pmReplay.active && pmReplay.record?.samples?.length > 1
+      ? pmReplay.record.samples
+      : pidMon.series;
+    drawPmChart($('pmTempChart'), series, [{ key: 'pv', color: '#d9534f' }, { key: 'sp', color: '#2f80ed' }], { auto: true }, 'temp');
+    drawPmChart($('pmPowerChart'), series, [{ key: 'req', color: '#f2994a' }, { key: 'act', color: '#9b51e0', dash: [4, 3] }],
+      { lo: 0, hi: 100, vent: true }, 'power');
   }
 
   function sendSession(deviceId, active = true, sync = false) {
@@ -4548,6 +5112,32 @@
     $('techUnlockForm').addEventListener('submit', (event) => { event.preventDefault(); submitTechUnlock(); });
     $('techLockBtn').addEventListener('click', () => { sendCommand('tech_lock'); });
     $('pmDownload')?.addEventListener('click', pmDownload);
+    $('pmRecordBtn')?.addEventListener('click', () => {
+      if (pmRecorder.active) pmRecorder.stop();
+      else pmRecorder.start(currentDevice());
+    });
+    $('pmReplayBtn')?.addEventListener('click', pmReplayLatest);
+    $('pmHistoryBtn')?.addEventListener('click', pmOpenHistoryDialog);
+    $('pmHistoryClose')?.addEventListener('click', () => $('pmHistoryDialog')?.close());
+    $('pmHistoryCloseBtn')?.addEventListener('click', () => $('pmHistoryDialog')?.close());
+    $('pmHistoryClearAll')?.addEventListener('click', () => {
+      if (confirm('Xóa toàn bộ các bản ghi đã lưu của máy này?')) {
+        pmStorage.clearAll(currentDevice()?.id);
+        pmOpenHistoryDialog();
+      }
+    });
+    $('pmReplayPlayBtn')?.addEventListener('click', () => pmReplay.togglePlay());
+    $('pmReplayExitBtn')?.addEventListener('click', () => pmReplay.stop());
+    $('pmReplayScrubber')?.addEventListener('input', (e) => {
+      pmReplay.seek(Number(e.target.value) / 100);
+    });
+
+    bindPmChartCanvas($('pmTempChart'), 'temp');
+    bindPmChartCanvas($('pmPowerChart'), 'power');
+    bindPmChartToolbars();
+    pmRecorder.init();
+    pmUpdateRecordCount();
+
     $('pidMonitorCard').addEventListener('toggle', () => {
       pidMon.open = $('pidMonitorCard').open;
       if (state.selectedId) sendSession(state.selectedId, true, pidMon.open);
