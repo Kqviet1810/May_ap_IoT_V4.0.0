@@ -124,6 +124,27 @@ static void testControllerRestart() {
   std::printf("  -> Pass\n");
 }
 
+// A NEW batch (another set of eggs) or a restart after a long stop: a share of the level the oven needed last time, only within a day of the save, only for the same
+// set-point, never under the 12 % start, never above the heater's limit.
+static void testNewBatch() {
+  std::printf("[TEST] New batch: a share of the last level, within a day, same set-point, never under the 12 %% start...\n");
+  const uint32_t t0 = 1700000000UL;
+  const Record r = make(1U, 34.0f, 37.5f, 37.5f, t0, 5U);
+  const float h = restoredNewBatch(r, true, true, t0 + 3600UL, 37.5f);
+  assert(std::fabs(h - 34.0f * NEWBATCH_SHARE) < 1.0e-3f);                                  // a share of the saved level
+  assert(restoredNewBatch(r, true, true, t0 + NEWBATCH_MAX_AGE, 37.5f) > 0.0f);             // a day: still
+  assert(restoredNewBatch(r, true, true, t0 + NEWBATCH_MAX_AGE + 1UL, 37.5f) < 0.0f);      // older: the weather of another day
+  assert(restoredNewBatch(r, true, true, t0 - 1UL, 37.5f) < 0.0f);                          // a clock that went back: refused
+  assert(restoredNewBatch(r, true, false, t0 + 60UL, 37.5f) < 0.0f);                        // no usable clock: no age, no restore
+  assert(restoredNewBatch(make(1U, 34.0f, 37.5f, 37.5f, 0UL, 5U), true, true, t0, 37.5f) < 0.0f);   // the record has no epoch
+  assert(restoredNewBatch(r, true, true, t0 + 60UL, 38.0f) < 0.0f);                         // another set-point
+  assert(restoredNewBatch(r, false, true, t0 + 60UL, 37.5f) < 0.0f);                        // an invalid record
+  assert(restoredNewBatch(make(1U, 12.0f, 37.5f, 37.5f, t0, 5U), true, true, t0 + 60UL, 37.5f) < 0.0f);   // 0.9 x 12 = 10.8: under the 12 % start, which stays
+  assert(restoredNewBatch(make(1U, 40.0f, 37.5f, 37.5f, t0, 5U), true, true, t0 + 60UL, 37.5f) <= HOLD_MAX_PCT);
+  assert(restoredNewBatch(r, true, true, t0 + 60UL, NAN) < 0.0f);
+  std::printf("  -> Pass\n");
+}
+
 int main() {
   std::printf("=== Thermal hold record ===\n");
   testRecord();
@@ -131,6 +152,7 @@ int main() {
   testWhenToWrite();
   testRestore();
   testControllerRestart();
+  testNewBatch();
   std::printf("THERMAL HOLD RECORD: ALL PASSED\n");
   return 0;
 }

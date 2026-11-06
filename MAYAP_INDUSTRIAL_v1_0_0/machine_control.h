@@ -5371,6 +5371,12 @@ class MachineController {
         if (h >= 0.0f) {
           c.restoreHold(h);
           mayapSerialPrintf(false, "[THERMAL] hold %.1f %% given back (saved %.1f %%)\n", static_cast<double>(h), static_cast<double>(holdSaved_.hold));
+        } else {                                                           // another batch or a long stop: a share of what the oven needed last time (a day at most)
+          const float n = thermalhold::restoredNewBatch(holdSaved_, true, rtc_.valid(), rtc_.epoch(), config_.targetTemp);
+          if (n >= 0.0f) {
+            c.restoreHold(n);
+            mayapSerialPrintf(false, "[THERMAL] new batch starts at %.1f %% (saved %.1f %%)\n", static_cast<double>(n), static_cast<double>(holdSaved_.hold));
+          }
         }
       }
     }
