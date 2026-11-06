@@ -68,6 +68,18 @@ constexpr float PROP_DEADBAND_C = 0.03f;
 #endif
 constexpr float TRIM_BAND_C = TRIM_BAND_V, TRIM_DEAD_C = TRIM_DEAD_V, TRIM_QUIET_S = TRIM_QUIET_V;
 constexpr float LIFT_TI_OF_TAU = LIFT_TI_TAU;
+#ifndef LIFT_START_S
+#define LIFT_START_S 1800.0f
+#endif
+#ifndef LIFT_FAST_CLOSE
+#define LIFT_FAST_CLOSE 3.0f
+#endif
+#ifndef LIFT_FAST_TI
+#define LIFT_FAST_TI 1.0f
+#endif
+#ifndef LIFT_FAST_WAIT
+#define LIFT_FAST_WAIT 1.0f
+#endif
 #ifndef LIFT_WAIT
 #define LIFT_WAIT 2.0f
 #endif
@@ -117,7 +129,7 @@ class Controller {
     state_ = StIdle; pv_ = NAN; sp_ = 37.5f; cap_ = 100.0f;
     kAir_ = KAIR_START; tau_ = TAU_PRIOR; hold_ = HOLD_PRIOR_OF_CAP * 100.0f;
     identified_ = tauMeasured_ = door_ = wasLive_ = doorLatch_ = nearSeen_ = kAirMeasured_ = false; latchT_ = 0.0f;
-    lead_ = slope_ = lsSlope_ = lsSigma_ = 0.0f; sigma_ = 0.02f; stallS_ = lifted_ = 0.0f; lifting_ = false;
+    lead_ = slope_ = lsSlope_ = lsSigma_ = 0.0f; sigma_ = 0.02f; stallS_ = lifted_ = 0.0f; lifting_ = false; arrived_ = false;
     histHead_ = histCount_ = 0U; liveS_ = secAcc_ = lastCmd_ = 0.0f;
     swOn_ = false; swPv0_ = swT_ = 0.0f;
     pm_ = NAN; rate_ = 0.0f; zz_ = false;
@@ -149,6 +161,7 @@ class Controller {
     wasLive_ = true; pv_ = in.pv; sp_ = in.sp;
     slope_ = std::isfinite(in.slopeFine) ? in.slopeFine : lsSlope_;
     const float e = sp_ - pv_;
+    if (e <= LIFT_GATE_C) arrived_ = true;                                // PV has been within the lift gate of SV once since power-up: the start is over
 
     // The exhaust fan needs no rule of its own: it is a load like any other and the observer below sees it (a separate fan model counted it twice).
 
@@ -374,15 +387,17 @@ class Controller {
     const float gap = sp_ - pv_;
     if (ventFan_ || door_ || doorLatch_ || !std::isfinite(gap) || !(gap > gate && gap < farBand_)) { stallS_ = 0.0f; return; }
 #ifdef LIFT_SLOPE
-    // measured response only: PV must close the gap in LIFT_CLOSE_TAU transit times; what is missing of that slope is paid into the hold with the gain of a slow oven
-    const float want = (sp_ - pv_) / (LIFT_CLOSE_TAU * tau_);
+    // measured response only: PV must close the gap in LIFT_CLOSE_TAU transit times; what is missing of that slope is paid into the hold with the gain of a slow oven.
+    // The first minutes of a start that has not reached SV yet (cold eggs, a heavy load that nobody has measured) use a faster law; once PV has been at SV, or after
+    // LIFT_START_S, a stall is more likely a door, a tray or the fan (a temporary load), and the slow law applies.
+    const bool start = !arrived_ && liveS_ < LIFT_START_S;
+    const float closeTau = start ? LIFT_FAST_CLOSE : LIFT_CLOSE_TAU, tiTau = start ? LIFT_FAST_TI : LIFT_TI_OF_TAU, waitTau = start ? LIFT_FAST_WAIT : LIFT_WAIT;
+    const float want = (sp_ - pv_) / (closeTau * tau_);
     const float have = std::max(0.0f, lsSlope_);
-    if (have >= want) return;
-    // STALL GATE: pay only when the shortfall has lasted LIFT_WAIT_TAU transit times in a row (a climb that is merely slow is left to the base law)
     if (have >= want) { stallS_ = 0.0f; return; }
     stallS_ += 1.0f;
-    if (stallS_ < LIFT_WAIT * tau_) return;
-    const float pay = std::min(cap_ - hold_, (want - have) / (LIFT_KREF * LIFT_TI_OF_TAU * tau_));
+    if (stallS_ < waitTau * tau_) return;
+    const float pay = std::min(cap_ - hold_, (want - have) / (LIFT_KREF * tiTau * tau_));
     hold_ += pay; lifted_ += pay; lifting_ = pay > 0.0f;
 #else
     if (elLast_ > gate) hold_ = std::min(cap_, hold_ + kn_ * (elLast_ - gate) / (LIFT_TI_OF_TAU * tau_));
@@ -425,7 +440,7 @@ class Controller {
   bool ventFan_ = false, zz_ = false;
   float elLast_ = 0.0f, spTrim_ = NAN, quietTrimS_ = 0.0f;
   bool identified_ = false, tauMeasured_ = false, door_ = false, wasLive_ = false, kAirMeasured_ = false;
-  bool lifting_ = false; float stallS_ = 0.0f, lifted_ = 0.0f; float lead_ = 0.0f, slope_ = 0.0f, lsSlope_ = 0.0f, lsSigma_ = 0.0f, sigma_ = 0.02f;
+  bool arrived_ = false; bool lifting_ = false; float stallS_ = 0.0f, lifted_ = 0.0f; float lead_ = 0.0f, slope_ = 0.0f, lsSlope_ = 0.0f, lsSigma_ = 0.0f, sigma_ = 0.02f;
   float inflightMax_ = 1.0f, farBand_ = 0.5f, nearBand_ = 0.15f, kn_ = 30.0f;
   float liveS_ = 0.0f, secAcc_ = 0.0f, lastCmd_ = 0.0f;
   bool swOn_ = false; float swPv0_ = 0.0f, swT_ = 0.0f;

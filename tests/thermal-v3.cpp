@@ -449,8 +449,8 @@ void testZeroZoneAndFan() {
   printf("  -> Pass\n");
 }
 
-// The stall lift (stallLift) and what the log shows of it: PV stands still under SV, the rise is short, and only after LIFT_WAIT transit times does it pay into the hold;
-// when PV then passes SV the surplus is given back. Nothing is paid while the oven is where it should be.
+// The stall lift (stallLift) and what the log shows of it: PV stands still under SV, the rise is short, and only after the wait (one transit time in the first minutes of a
+// start that has not reached SV, two otherwise; a drop after SV is a door and is left alone) does it pay into the hold; when PV then passes SV the surplus is given back. Nothing is paid while the oven is where it should be.
 void testStallLiftAndItsLog() {
   printf("[TEST] The stall lift pays after the wait, shows in the log fields, and gives back on overshoot...\n");
   thermalv3::Controller c;
@@ -462,10 +462,10 @@ void testStallLiftAndItsLog() {
     c.step(in);
     lifting = lifting || c.lifting();
     stallMax = std::max(stallMax, c.stallSeconds());
-    if (i == 1500) paidAt150 = c.lifted();                                    // 150 s: the wait (two transit times) has not passed
+    if (i == 600) paidAt150 = c.lifted();                                     // 60 s: the wait (a transit time) has not passed
   }
   assert(paidAt150 == 0.0f);
-  assert(lifting && stallMax >= 2.0f * c.tauTransit());
+  assert(lifting && stallMax >= c.tauTransit());
   assert(c.lifted() > 5.0f && c.pHold() > holdStart + 5.0f);
   const float paid = c.lifted();
   in.pv = 37.6f;                                                             // PV passes SV: the surplus comes back

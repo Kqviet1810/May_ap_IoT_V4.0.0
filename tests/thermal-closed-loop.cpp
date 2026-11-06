@@ -604,22 +604,28 @@ static void testFamily(bool everything) {
     }
   }
 
-  // 2.9.10, the slow batch start of 05/11 14:37: the oven fitted to that log (a heater that delivers a quarter of its power, UA 100), restarted 0.3 degC under SP.
-  // The request rose 0.6 %/min while PV stood flat; the stall lift (thermal_v3.h, stallLift) pays the missing rise into the hold: 2.9.9 reached SP - 0.1 after 51 minutes.
+  // 2.9.10, slow batch starts: the oven fitted to the log of 05/11 14:37 (a heater that delivers a quarter of its power, UA 100, restarted 0.3 degC under SP) and
+  // three more loads under SP. The request rose 0.6 %/min while PV stood flat; the stall lift (thermal_v3.h, stallLift) pays the missing rise into the hold, faster
+  // in the first minutes of a start that has not reached SV yet. 2.9.9 reached SP - 0.1 after 51 / 45 / 40 / 24 minutes.
   {
-    PlantParams wp = u29Oven(); wp.Pmax *= 0.25; wp.UA = 100.0;
-    Rig r(wp, 37.2, 37.0); r.plant.settleAt(37.2);
-    double reachMin = -1.0, over = 0.0;
-    for (int m = 1; m <= 90; ++m) {
-      r.advance(60.0);
-      const double a = r.plant.air();
-      if (reachMin < 0.0 && a >= SP_C - 0.1) reachMin = m;
-      if (reachMin >= 0.0) over = std::max(over, a - SP_C);
+    struct Weak { const char *name; double health, start, limitMin, limitOver; };
+    const Weak cases[4] = {{"05/11 fit (25 % heater, 37.2 start)", 0.25, 37.2, 30.0, 0.20}, {"25 % heater from 36.9", 0.25, 36.9, 32.0, 0.30},
+                           {"35 % heater from 36.5", 0.35, 36.5, 26.0, 0.40}, {"50 % heater from 36.9", 0.50, 36.9, 22.0, 0.25}};
+    for (const Weak &w : cases) {
+      PlantParams wp = u29Oven(); wp.Pmax *= w.health; wp.UA = 100.0;
+      Rig r(wp, w.start, 37.0); r.plant.settleAt(w.start);
+      double reachMin = -1.0, over = 0.0;
+      for (int m = 1; m <= 90; ++m) {
+        r.advance(60.0);
+        const double a = r.plant.air();
+        if (reachMin < 0.0 && a >= SP_C - 0.1) reachMin = m;
+        if (reachMin >= 0.0) over = std::max(over, a - SP_C);
+      }
+      std::printf("  slow start, %s: SP - 0.1 reached after %.0f min, highest %+.2f over SP, E115 %s\n", w.name, reachMin, over, r.tripped() ? "TRIPPED" : "no");
+      CHECK(!r.tripped(), "slow start (%s): E115 tripped on a weak heater that was still climbing", w.name);
+      CHECK(reachMin > 0.0 && reachMin <= w.limitMin, "slow start (%s): SP - 0.1 reached after %.0f min (limit %.0f)", w.name, reachMin, w.limitMin);
+      CHECK(over < w.limitOver, "slow start (%s): the air rose %.2f over SP (limit %.2f)", w.name, over, w.limitOver);
     }
-    std::printf("  slow start of 05/11 (weak heater): SP - 0.1 reached after %.0f min, highest %+.2f over SP, E115 %s\n", reachMin, over, r.tripped() ? "TRIPPED" : "no");
-    CHECK(!r.tripped(), "slow start of 05/11: E115 tripped on a weak heater that was still climbing%s", "");
-    CHECK(reachMin > 0.0 && reachMin <= 40.0, "slow start of 05/11: SP - 0.1 reached after %.0f min (limit 40; 2.9.9 took 51)", reachMin);
-    CHECK(over < 0.20, "slow start of 05/11: the air rose %.2f over SP (limit 0.20)", over);
   }
 
   {
