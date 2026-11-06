@@ -52,7 +52,10 @@ constexpr float ZERO_ZONE_HOLD_PCT = 3.0f, ZERO_ZONE_RELEASE_HOLD_PCT = 4.5f, ZE
 // first climb and 127 s slower set-point step on the closed-loop family; the zone without a shift costs neither.
 constexpr float PROP_DEADBAND_C = 0.03f;
 #ifndef LIFT_TI_TAU
-#define LIFT_TI_TAU 1.0e9f   // EXPERIMENT, off by default: the stall lift is still being tuned (see stallLift)
+#define LIFT_TI_TAU 1.0f     // stall lift (see stallLift): the shortfall of the measured rise is paid into the hold with an integral time of one transit time
+#endif
+#if !defined(LIFT_SLOPE) && !defined(LIFT_NO_SLOPE)
+#define LIFT_SLOPE           // the slope form: only the measured rise counts (the older form read the gap minus the heat in flight and could not see a stall)
 #endif
 #ifndef TRIM_BAND_V
 #define TRIM_BAND_V 0.15f
@@ -65,12 +68,15 @@ constexpr float PROP_DEADBAND_C = 0.03f;
 #endif
 constexpr float TRIM_BAND_C = TRIM_BAND_V, TRIM_DEAD_C = TRIM_DEAD_V, TRIM_QUIET_S = TRIM_QUIET_V;
 constexpr float LIFT_TI_OF_TAU = LIFT_TI_TAU;
+#ifndef LIFT_WAIT
+#define LIFT_WAIT 2.0f
+#endif
 #ifndef LIFT_GATE
 #define LIFT_GATE 0.2f
 #endif
 constexpr float LIFT_GATE_C = LIFT_GATE;
 #ifndef LIFT_CLOSE
-#define LIFT_CLOSE 2.0f
+#define LIFT_CLOSE 4.0f
 #endif
 #ifndef LIFT_KREF_V
 #define LIFT_KREF_V 1.2e-4f
@@ -111,7 +117,7 @@ class Controller {
     state_ = StIdle; pv_ = NAN; sp_ = 37.5f; cap_ = 100.0f;
     kAir_ = KAIR_START; tau_ = TAU_PRIOR; hold_ = HOLD_PRIOR_OF_CAP * 100.0f;
     identified_ = tauMeasured_ = door_ = wasLive_ = doorLatch_ = nearSeen_ = kAirMeasured_ = false; latchT_ = 0.0f;
-    lead_ = slope_ = lsSlope_ = lsSigma_ = 0.0f; sigma_ = 0.02f;
+    lead_ = slope_ = lsSlope_ = lsSigma_ = 0.0f; sigma_ = 0.02f; stallS_ = lifted_ = 0.0f;
     histHead_ = histCount_ = 0U; liveS_ = secAcc_ = lastCmd_ = 0.0f;
     swOn_ = false; swPv0_ = swT_ = 0.0f;
     pm_ = NAN; rate_ = 0.0f; zz_ = false;
@@ -353,15 +359,26 @@ class Controller {
 #endif
   }
   void stallLift() {
+    // GIVE-BACK: what was paid in is returned when PV passes SV (the overshoot is that surplus), over about one transit time; the rest is forgotten slowly
+    if (lifted_ > 0.0f) {
+      const float over = pv_ - sp_;
+      if (over > 0.03f) { const float g = std::min(lifted_, std::max(lifted_ / tau_, 0.0f)); hold_ = std::max(0.0f, hold_ - g); lifted_ -= g; }
+      else lifted_ *= (1.0f - 1.0f / (10.0f * tau_));
+    }
     const float gate = std::max(LIFT_GATE_C, 3.0f * sigma_);
     const float gap = sp_ - pv_;
-    if (ventFan_ || door_ || doorLatch_ || !std::isfinite(gap) || !(gap > gate && gap < farBand_)) return;
+    if (ventFan_ || door_ || doorLatch_ || !std::isfinite(gap) || !(gap > gate && gap < farBand_)) { stallS_ = 0.0f; return; }
 #ifdef LIFT_SLOPE
     // measured response only: PV must close the gap in LIFT_CLOSE_TAU transit times; what is missing of that slope is paid into the hold with the gain of a slow oven
     const float want = (sp_ - pv_) / (LIFT_CLOSE_TAU * tau_);
     const float have = std::max(0.0f, lsSlope_);
     if (have >= want) return;
-    hold_ = std::min(cap_, hold_ + (want - have) / (LIFT_KREF * LIFT_TI_OF_TAU * tau_));
+    // STALL GATE: pay only when the shortfall has lasted LIFT_WAIT_TAU transit times in a row (a climb that is merely slow is left to the base law)
+    if (have >= want) { stallS_ = 0.0f; return; }
+    stallS_ += 1.0f;
+    if (stallS_ < LIFT_WAIT * tau_) return;
+    const float pay = std::min(cap_ - hold_, (want - have) / (LIFT_KREF * LIFT_TI_OF_TAU * tau_));
+    hold_ += pay; lifted_ += pay;
 #else
     if (elLast_ > gate) hold_ = std::min(cap_, hold_ + kn_ * (elLast_ - gate) / (LIFT_TI_OF_TAU * tau_));
 #endif
@@ -403,7 +420,7 @@ class Controller {
   bool ventFan_ = false, zz_ = false;
   float elLast_ = 0.0f, spTrim_ = NAN, quietTrimS_ = 0.0f;
   bool identified_ = false, tauMeasured_ = false, door_ = false, wasLive_ = false, kAirMeasured_ = false;
-  float lead_ = 0.0f, slope_ = 0.0f, lsSlope_ = 0.0f, lsSigma_ = 0.0f, sigma_ = 0.02f;
+  float stallS_ = 0.0f, lifted_ = 0.0f; float lead_ = 0.0f, slope_ = 0.0f, lsSlope_ = 0.0f, lsSigma_ = 0.0f, sigma_ = 0.02f;
   float inflightMax_ = 1.0f, farBand_ = 0.5f, nearBand_ = 0.15f, kn_ = 30.0f;
   float liveS_ = 0.0f, secAcc_ = 0.0f, lastCmd_ = 0.0f;
   bool swOn_ = false; float swPv0_ = 0.0f, swT_ = 0.0f;
