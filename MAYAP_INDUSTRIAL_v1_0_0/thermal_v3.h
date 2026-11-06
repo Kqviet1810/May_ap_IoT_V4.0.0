@@ -60,7 +60,10 @@ constexpr float PROP_DEADBAND_C = 0.03f;
 #ifndef TRIM_DEAD_V
 #define TRIM_DEAD_V 0.02f
 #endif
-constexpr float TRIM_BAND_C = TRIM_BAND_V, TRIM_DEAD_C = TRIM_DEAD_V;
+#ifndef TRIM_QUIET_V
+#define TRIM_QUIET_V 1800.0f
+#endif
+constexpr float TRIM_BAND_C = TRIM_BAND_V, TRIM_DEAD_C = TRIM_DEAD_V, TRIM_QUIET_S = TRIM_QUIET_V;
 constexpr float LIFT_TI_OF_TAU = LIFT_TI_TAU;
 #ifndef LIFT_GATE
 #define LIFT_GATE 0.2f
@@ -331,10 +334,14 @@ class Controller {
   // read on the fine PV, is paid into the hold with a long integral time (TRIM_TI_S) in BOTH directions; it needs no oven model.
   void trim() {
 #ifdef TRIM_TI_S
+    // quiet time after a change of the set-point: the climb to the new level is the hold law's job
+    if (!std::isfinite(spTrim_) || std::fabs(sp_ - spTrim_) > 0.01f) { spTrim_ = sp_; quietTrimS_ = 0.0f; } else quietTrimS_ += 1.0f;
+    if (quietTrimS_ < TRIM_QUIET_S) return;
     if (ventFan_ || door_ || doorLatch_) return;
     const float e = sp_ - pv_;
-    if (!std::isfinite(e) || std::fabs(e) > TRIM_BAND_C || std::fabs(e) < TRIM_DEAD_C) return;
-    hold_ = std::max(0.0f, std::min(cap_, hold_ + kn_ * (e > 0.0f ? e - TRIM_DEAD_C : e + TRIM_DEAD_C) / static_cast<float>(TRIM_TI_S)));
+    // only UNDER SV: a load that grows is followed faster, a load that falls (a hot noon) is left to the observer, which must not be pulled down by the sensor step
+    if (!std::isfinite(e) || e > TRIM_BAND_C || e <= TRIM_DEAD_C) return;
+    hold_ = std::min(cap_, hold_ + kn_ * (e - TRIM_DEAD_C) / static_cast<float>(TRIM_TI_S));
 #endif
   }
   void stallLift() {
@@ -386,7 +393,7 @@ class Controller {
   float kAir_ = KAIR_PRIOR, tau_ = TAU_PRIOR, hold_ = 12.0f;
   float epMax_ = 0.0f; bool epFresh_ = true; float latchT_ = 0.0f; bool doorLatch_ = false, nearSeen_ = false; float pm_ = NAN, rate_ = 0.0f;
   bool ventFan_ = false, zz_ = false;
-  float elLast_ = 0.0f;
+  float elLast_ = 0.0f, spTrim_ = NAN, quietTrimS_ = 0.0f;
   bool identified_ = false, tauMeasured_ = false, door_ = false, wasLive_ = false, kAirMeasured_ = false;
   float lead_ = 0.0f, slope_ = 0.0f, lsSlope_ = 0.0f, lsSigma_ = 0.0f, sigma_ = 0.02f;
   float inflightMax_ = 1.0f, farBand_ = 0.5f, nearBand_ = 0.15f, kn_ = 30.0f;
