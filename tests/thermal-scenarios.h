@@ -152,13 +152,20 @@ class RigT {
 #include "thermal-advised.h"
 namespace thermalsim {
 #endif
+#ifdef THERMAL_RAMP
+}  // namespace thermalsim
+#include "thermal-ramp-rig.h"
+namespace thermalsim {
+#endif
 #ifdef THERMAL_DUAL
 }  // namespace thermalsim
 #include "thermal-dual.h"
 namespace thermalsim {
 using Rig = RigT<DualCtl, thermalv3::Input, HeaterResponseWatch>;
 #else
-#ifdef THERMAL_ADVISED
+#ifdef THERMAL_RAMP
+using Rig = RigT<RampCtl, thermalv3::Input, HeaterResponseWatch>;
+#elif defined(THERMAL_ADVISED)
 using Rig = RigT<AdvisedCtl, thermalv3::Input, HeaterResponseWatch>;
 #else
 using Rig = RigT<thermalv3::Controller, thermalv3::Input, HeaterResponseWatch>;
