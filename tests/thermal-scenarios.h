@@ -4,6 +4,9 @@
 //
 // The same rig can also drive the controller and the E115 rule of firmware 2.3.4 (kept frozen in tests/fixtures/thermal-v3-2.3.4/): the
 // 29/10 failure is reproduced on the old code and shown fixed on the new one on the SAME simulated oven.
+#ifndef THERMAL_SENSOR_NOISE_K
+#define THERMAL_SENSOR_NOISE_K 0.0   // gaussian noise on the physical reading [degC]; 0 keeps the repository tests exactly as they were
+#endif
 #include "thermal-sim.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/sensor_fine.h"
 #include <type_traits>
@@ -115,8 +118,9 @@ class RigT {
  private:
   void one(bool door, bool vent) {
     if (tick_ % 20 == 0) {
-      chain.sample(plant.sensor());
-      const float q = static_cast<float>(std::lround(plant.sensor() * 10.0) / 10.0);
+      const double nz = THERMAL_SENSOR_NOISE_K > 0.0 ? THERMAL_SENSOR_NOISE_K * gauss() : 0.0;   // real sensor: about 0.02-0.04 K (tools/thermal-research/calib-noon.cpp)
+      chain.sample(plant.sensor() + nz);
+      const float q = static_cast<float>(std::lround((plant.sensor() + nz) * 10.0) / 10.0);
       pvEst_.update(q, static_cast<float>(t_), 0.1f, pvPar_); slopeEst_.update(q, static_cast<float>(t_), 0.1f, slopePar_); lastSample_ = t_;
     }
     in.pv = chain.value();
@@ -141,6 +145,8 @@ class RigT {
   }
   static sensorfine::Params shortPar() { sensorfine::Params p; p.minWindowS = 10.0f; p.maxWindowS = 30.0f; return p; }
   sensorfine::Estimator pvEst_, slopeEst_; sensorfine::Params pvPar_ = shortPar(), slopePar_; double lastSample_ = 0.0;
+  uint32_t rng_ = 12345u;
+  double gauss() { auto u = [&]() { rng_ ^= rng_ << 13; rng_ ^= rng_ >> 17; rng_ ^= rng_ << 5; return (rng_ + 1.0) / 4294967297.0; }; return std::sqrt(-2.0 * std::log(u())) * std::cos(6.283185307179586 * u()); }
   long tick_ = 0;
   double t_ = 0.0, t0_ = 0.0, duty_ = 0.0, lastU_ = 0.0, tripT_ = -1.0, startS_ = 0.0;
   bool tripped_ = false;
