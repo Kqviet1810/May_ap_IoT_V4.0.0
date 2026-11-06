@@ -9,7 +9,7 @@ struct RampCtl {
   thermalv3::Output step(const thermalv3::Input &in) {
     thermalv3::Output o = c.step(in);
     const bool blocked = in.ventFan || in.shadow || !in.permit || c.state() == thermalv3::StDoor || c.state() == thermalv3::StFrozen;
-    const thermalramp::Out r = g.step(in.pv, in.sp, in.slopeFine, o.powerPct, in.capPct, c.tauTransit(), c.kAir(), blocked, in.dtS);
+    const thermalramp::Out r = g.step(in.pv, in.sp, in.slopeFine, o.powerPct, c.pHold(), in.capPct, c.tauTransit(), c.kAir(), blocked, in.dtS);
     if (r.released && r.releaseHold > 0.0f) c.adoptHold(r.releaseHold, true);
     if (r.active) o.powerPct = r.powerPct;
     return o;
