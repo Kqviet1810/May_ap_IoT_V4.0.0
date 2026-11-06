@@ -54,6 +54,13 @@ constexpr float PROP_DEADBAND_C = 0.03f;
 #ifndef LIFT_TI_TAU
 #define LIFT_TI_TAU 1.0e9f   // EXPERIMENT, off by default: the stall lift is still being tuned (see stallLift)
 #endif
+#ifndef TRIM_BAND_V
+#define TRIM_BAND_V 0.15f
+#endif
+#ifndef TRIM_DEAD_V
+#define TRIM_DEAD_V 0.02f
+#endif
+constexpr float TRIM_BAND_C = TRIM_BAND_V, TRIM_DEAD_C = TRIM_DEAD_V;
 constexpr float LIFT_TI_OF_TAU = LIFT_TI_TAU;
 #ifndef LIFT_GATE
 #define LIFT_GATE 0.2f
@@ -180,7 +187,7 @@ class Controller {
       pushHist(pv_, in.shadow ? 0.0f : net);
       measureNoiseAndSlope();
       derive();
-      if (in.permit && !in.shadow) { observe(); stallLift(); identifyGain(e); } else if (in.shadow) observe();
+      if (in.permit && !in.shadow) { observe(); stallLift(); trim(); identifyGain(e); } else if (in.shadow) observe();
       stopwatch(e, in.permit && !in.shadow);
     }
     lastCmd_ = in.shadow ? 0.0f : cmd;
@@ -320,6 +327,16 @@ class Controller {
   // PV stands under SV and the heat already on its way does not close the gap: the hold estimate is too low and the observer needs minutes to find it out
   // (a load of three times the usual hold took 50 minutes to climb 0.5 degC). The gap, as the proportional law sees it, is also paid into the hold
   // with an integral time of LIFT_TI_OF_TAU transit times; it stops by itself as soon as the heat in flight closes the gap.
+  // Trim: near SV the observer follows a slowly changing load with a small standing error (an evening cooling: 0.04 degC under SV for half an hour). The error itself,
+  // read on the fine PV, is paid into the hold with a long integral time (TRIM_TI_S) in BOTH directions; it needs no oven model.
+  void trim() {
+#ifdef TRIM_TI_S
+    if (ventFan_ || door_ || doorLatch_) return;
+    const float e = sp_ - pv_;
+    if (!std::isfinite(e) || std::fabs(e) > TRIM_BAND_C || std::fabs(e) < TRIM_DEAD_C) return;
+    hold_ = std::max(0.0f, std::min(cap_, hold_ + kn_ * (e > 0.0f ? e - TRIM_DEAD_C : e + TRIM_DEAD_C) / static_cast<float>(TRIM_TI_S)));
+#endif
+  }
   void stallLift() {
     const float gate = std::max(LIFT_GATE_C, 3.0f * sigma_);
     const float gap = sp_ - pv_;
