@@ -12,8 +12,12 @@ struct AdvisedCtl {
   bool asked = false;
   double liveS = 0.0;
 #ifndef ADOPT_AFTER
-#define ADOPT_AFTER 400.0
+#define ADOPT_AFTER 0.0
 #endif
+#ifndef SEED_HISTORY_V
+#define SEED_HISTORY_V true
+#endif
+  static constexpr bool SEED_HISTORY = SEED_HISTORY_V;
   static constexpr double ADOPT_AFTER_S = ADOPT_AFTER;
   bool useAdvice = true;
   float lastAdviceHold = -1.0f, lastConfidence = 0.0f;
@@ -27,8 +31,8 @@ struct AdvisedCtl {
       asked = true;
       const thermalload::Advice a = led.advise(static_cast<uint32_t>(clockS), in.sp);
       if (useAdvice && a.valid && std::fabs(in.sp - in.pv) < 0.5f) {
-        const float start = thermalload::Ledger::blend(c.pHold(), a);
-        c.adoptHold(start);
+        const float start = thermalload::Ledger::blend(thermalv3::HOLD_PRIOR_OF_CAP * 100.0f, a);
+        c.adoptHold(start, SEED_HISTORY);
         lastAdviceHold = a.holdPct; lastConfidence = a.confidence;
       }
     }

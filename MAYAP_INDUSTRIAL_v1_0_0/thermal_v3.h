@@ -223,8 +223,16 @@ class Controller {
     derive();
   }
   // The climb assist (thermal_climb.h) hands over the load it found: any level the heater can give, and the observer starts again from the PV that is there.
-  void adoptHold(float hold) {
-    if (std::isfinite(hold) && hold >= 0.0f) { hold_ = std::min(hold, cap_ > 0.0f ? cap_ : 100.0f); pm_ = pv_; rate_ = 0.0f; }
+  void adoptHold(float hold, bool seedHistory = false) {
+    if (std::isfinite(hold) && hold >= 0.0f) {
+      hold_ = std::min(hold, cap_ > 0.0f ? cap_ : 100.0f); pm_ = pv_; rate_ = 0.0f;
+      // The observer reads the power of one transit time ago. Right after a start that history is empty (zero power), and a hold level that was just given looks far too high
+      // to it. Seeding says what the oven was getting: the power that holds SV (= the hold level) for the whole history, and a PV that has stood still.
+      if (seedHistory && std::isfinite(pv_)) {
+        for (uint16_t i = 0U; i < HIST_LEN; ++i) { uHist_[i] = std::max(0.0f, std::min(100.0f, hold_)); pvHist_[i] = pv_; }
+        histCount_ = HIST_LEN;
+      }
+    }
     derive();
   }
   bool hasRun() const { return wasLive_ || liveS_ > 0.0f; }

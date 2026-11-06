@@ -338,7 +338,9 @@ class Family {
         for (int m = 0; m < 40; ++m) { r.plant.setAmbient(o.p.Tamb + driftC * (m + 1) / 40.0); r.advance(60.0); }
       }
       const size_t from = r.air().size();
+      const float kAir = r.ctl.kAir(), tau = r.ctl.tauTransit();
       r.restartControllers();
+      r.ctl.restore(kAir, tau);                            // what the machine gives back from the EEPROM since 2.9.7 (thermal_gain_record.h)
       r.skipClock(45.0);
       r.startAt(r.now() + 45.0);
       r.advance(2 * 3600.0);
