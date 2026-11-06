@@ -56,7 +56,7 @@ function loadBrowserEnv(overrides = {}, initialStorage = {}) {
   return { ...window.hooks, elements, storage, timers, elapse(ms) { wall += ms; now += ms; } };
 }
 
-test('UI elements for 24h recording, replay, zoom toolbar and history modal exist in index.html', () => {
+test('UI elements for 24h recording, replay, 4-button action bar and history modal exist in index.html', () => {
   const html = fs.readFileSync(require.resolve('../index.html'), 'utf8');
   for (const id of [
     'pmRecordBtn', 'pmRecordBtnText', 'pmRecDot',
@@ -69,12 +69,9 @@ test('UI elements for 24h recording, replay, zoom toolbar and history modal exis
     assert.match(html, new RegExp(`id="${id}"`), `Missing required element id="${id}"`);
   }
 
-  // Zoom toolbars for both charts exist
-  assert.match(html, /data-chart="temp"/);
-  assert.match(html, /data-chart="power"/);
-  for (const action of ['in', 'out', '1h', '6h', '24h', 'reset']) {
-    assert.match(html, new RegExp(`data-action="${action}"`));
-  }
+  // 4 action buttons are structured uniformly in the actions bar
+  assert.match(html, /class="[^"]*pmActionsRow[^"]*"/);
+  assert.match(html, /class="[^"]*pmActionBtn[^"]*"/);
 });
 
 test('styles.css contains styling for chart toolbar, replay banner, recording dot and history list', () => {

@@ -476,42 +476,40 @@ input:disabled,select:disabled,textarea:disabled,.customSelectTrigger:disabled{o
 
 .pmChartContainer{display:grid;gap:6px;margin:8px 0}
 .pmChartHeader{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px}
-.pmChartTitle{font-size:var(--fs-xs);color:var(--label);font-weight:600}
 .pmChartToolbar{display:flex;align-items:center;gap:4px}
-.pmChartToolbar button{min-height:26px;padding:0 8px;font-size:var(--fs-2xs);font-weight:600;border-radius:var(--radius-xs);line-height:1}
-.pmChartToolbar button.active{background:var(--primary);color:#fff;border-color:var(--primary)}
-
-.pmChartWrap{position:relative;width:100%;min-width:0;color:var(--muted);border:1px solid var(--lineSoft);border-radius:var(--radius-sm);background:var(--surface);overflow:hidden;touch-action:none;cursor:crosshair}
+.pmChartWrap{position:relative;width:100%;min-width:0;color:var(--muted);border:1px solid var(--lineSoft);border-radius:var(--radius-sm);background:var(--surface);overflow:hidden;touch-action:none;cursor:crosshair;margin:8px 0}
 .pmChartWrap canvas{display:block;width:100%;height:150px}
 
-.pmDownloadRow{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin:12px 0 6px}
-.pmActionsLeft{display:flex;flex-wrap:wrap;align-items:center;gap:8px;flex:1 1 auto}
-.pmActionsRight{display:flex;align-items:center;gap:8px;margin-left:auto}
-.pmDownloadRow .settingFootnote{margin:0;width:100%}
+.pmActionsRow,.pmDownloadRow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0 6px;width:100%}
+@media(max-width:680px){.pmActionsRow,.pmDownloadRow{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.pmActionBtn{min-height:40px;padding:0 8px;font-size:var(--fs-xs);font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;border-radius:var(--radius-sm);border:1px solid var(--lineSoft);background:var(--tile);color:var(--ink);cursor:pointer;transition:background var(--ease),border-color var(--ease),color var(--ease)}
+.pmActionBtn:hover:not(:disabled){background:var(--wash);border-color:var(--ring);color:var(--primary2)}
+.pmActionBtn:disabled{opacity:.55;cursor:not-allowed}
 
-.pmRecordBtn{display:inline-flex;align-items:center;gap:8px;font-weight:600;min-height:38px;padding:0 16px;white-space:nowrap}
-.pmRecordBtn.isRecording{background:#d9534f !important;border-color:#d9534f !important;color:#fff !important}
-.pmRecDot{width:9px;height:9px;border-radius:50%;background:#e53e3e;display:inline-block}
-.pmRecordBtn.isRecording .pmRecDot{background:#fff;animation:pmBlink 1s infinite}
+.pmRecordBtn{display:inline-flex;align-items:center;gap:6px;font-weight:700}
+.pmRecordBtn.isRecording{border-color:#d9534f !important;color:#d9534f !important;background:var(--tile) !important}
+.pmRecDot{width:8px;height:8px;border-radius:50%;background:#d9534f;display:inline-block;flex-shrink:0}
+.pmRecordBtn.isRecording .pmRecDot{animation:pmBlink 1s infinite}
 @keyframes pmBlink{0%,100%{opacity:1}50%{opacity:.2}}
 
-.pmReplayBanner{display:grid;gap:8px;padding:12px;border-radius:var(--radius-sm);background:#fff8e6;border:1px solid #f6c343;color:#855d00;margin-bottom:10px}
-html[data-theme="dark"] .pmReplayBanner{background:#2a2008;border-color:#7c5806;color:#fce183}
+.pmReplayBanner{display:grid;gap:8px;padding:10px 12px;border-radius:var(--radius-sm);background:var(--tile);border:1px solid var(--lineSoft);color:var(--ink);margin-bottom:10px}
 .pmReplayHead{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
 .pmReplayBadgeWrap{display:flex;align-items:center;gap:8px}
-.pmReplayBadge{padding:2px 8px;border-radius:var(--radius-xs);background:#f6c343;color:#452f00;font-size:var(--fs-2xs);font-weight:700;letter-spacing:.3px}
-.pmReplayTitle{font-weight:700;font-size:var(--fs-sm)}
-.pmReplayCountdown{font-size:var(--fs-xs);display:flex;align-items:center;gap:6px}
+.pmReplayBadge{padding:2px 8px;border-radius:var(--radius-xs);background:var(--wash);border:1px solid var(--lineSoft);color:var(--primary2);font-size:var(--fs-2xs);font-weight:700;letter-spacing:.3px}
+.pmReplayTitle{font-weight:700;font-size:var(--fs-xs);color:var(--ink)}
+.pmReplayCountdown{font-size:var(--fs-xs);color:var(--muted);display:flex;align-items:center;gap:6px}
 .pmTimerText{font-variant-numeric:tabular-nums;color:#d9534f;font-weight:700}
-.pmExitBtn{color:#d9534f !important;border-color:#d9534f !important}
+.pmExitBtn{min-height:28px !important;padding:0 8px !important;font-size:var(--fs-2xs) !important;border-color:var(--lineSoft) !important;color:var(--muted) !important}
+.pmExitBtn:hover{color:#d9534f !important;border-color:#d9534f !important}
 .pmReplayScrubberWrap{display:flex;align-items:center;gap:8px}
-.pmTimeLabel{font-size:var(--fs-2xs);font-variant-numeric:tabular-nums;font-weight:600;min-width:54px}
-.pmSlider{flex:1 1 auto;-webkit-appearance:none;appearance:none;height:6px;border-radius:3px;background:var(--lineSoft);outline:none;cursor:pointer}
-.pmSlider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:16px;border-radius:50%;background:var(--primary);cursor:pointer}
-.pmSlider::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:var(--primary);cursor:pointer;border:none}
+.pmTimeLabel{font-size:var(--fs-2xs);font-variant-numeric:tabular-nums;font-weight:600;min-width:50px;color:var(--muted)}
+.pmSlider{flex:1 1 auto;-webkit-appearance:none;appearance:none;height:4px;border-radius:2px;background:var(--lineSoft);outline:none;cursor:pointer}
+.pmSlider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:var(--primary);cursor:pointer}
+.pmSlider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:var(--primary);cursor:pointer;border:none}
 .pmReplayControls{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:var(--fs-xs)}
-.pmSpeedWrap{display:flex;align-items:center;gap:4px}
-.pmSpeedBtn.active{background:var(--primary) !important;color:#fff !important}
+.pmReplayControls button{min-height:28px;padding:0 8px;font-size:var(--fs-2xs);border-radius:var(--radius-xs)}
+.pmSpeedWrap{display:flex;align-items:center;gap:4px;font-size:var(--fs-2xs);color:var(--muted)}
+.pmSpeedBtn.active{background:var(--primary) !important;color:#fff !important;border-color:var(--primary) !important}
 
 .pmHistoryList{display:grid;gap:8px;max-height:360px;overflow-y:auto;padding-right:4px}
 .pmHistoryCard{display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px;padding:10px 12px;border-radius:var(--radius-sm);background:var(--tile);border:1px solid var(--lineSoft)}

@@ -247,18 +247,17 @@
 <details class="settingCard" id="pidMonitorCard">
 <summary><span class="settingIcon"><svg fill="none" height="22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="22"><polyline points="3 17 9 11 13 15 21 6"/><polyline points="15 6 21 6 21 12"/></svg></span><span class="settingSummary"><strong>PID Monitor</strong><small id="pmSummary">Chỉ xem · số liệu thật từ bộ điều khiển</small></span><span aria-hidden="true" class="disclosure"></span></summary>
 <div class="settingBody">
-<p class="settingFootnote">Chỉ đọc. Không thể chỉnh PID tại đây. Số liệu được máy gửi khi mục này đang mở, không giả lập.</p>
 <div class="pmReplayBanner" id="pmReplayBanner" hidden>
   <div class="pmReplayHead">
     <div class="pmReplayBadgeWrap">
-      <span class="pmReplayBadge">⚠️ CHẾ ĐỘ PHÁT LẠI</span>
-      <span class="pmReplayTitle" id="pmReplayTitle">Bản ghi gần nhất</span>
+      <span class="pmReplayBadge">Phát lại</span>
+      <strong class="pmReplayTitle" id="pmReplayTitle">Bản ghi gần nhất</strong>
     </div>
     <div class="pmReplayCountdown">
-      <span>Tự quay lại sau:</span>
+      <span>Tự quay lại:</span>
       <b class="pmTimerText" id="pmReplayTimer">05:00</b>
     </div>
-    <button class="ghost small pmExitBtn" id="pmReplayExitBtn" type="button">✕ Thoát về hiện tại</button>
+    <button class="ghost small pmExitBtn" id="pmReplayExitBtn" type="button">✕ Thoát</button>
   </div>
   <div class="pmReplayScrubberWrap">
     <span class="pmTimeLabel" id="pmReplayCurrentTime">00:00:00</span>
@@ -277,48 +276,18 @@
   </div>
 </div>
 <div class="pmGrid" id="pmGrid"></div>
-<div class="pmChartContainer">
-  <div class="pmChartHeader">
-    <div class="pmChartTitle"><strong>Nhiệt độ &amp; Giá trị đặt</strong></div>
-    <div class="pmChartToolbar" data-chart="temp">
-      <button class="ghost small pmZoomBtn" data-action="in" title="Phóng to" type="button">+</button>
-      <button class="ghost small pmZoomBtn" data-action="out" title="Thu nhỏ" type="button">−</button>
-      <button class="ghost small pmZoomBtn" data-action="1h" type="button">1h</button>
-      <button class="ghost small pmZoomBtn" data-action="6h" type="button">6h</button>
-      <button class="ghost small pmZoomBtn" data-action="24h" type="button">24h</button>
-      <button class="ghost small pmZoomBtn" data-action="reset" title="Xem tất cả" type="button">Toàn bộ</button>
-    </div>
-  </div>
-  <div class="pmChartWrap"><canvas aria-label="Nhiệt độ và giá trị đặt" height="150" id="pmTempChart"></canvas></div>
+<div class="pmChartWrap"><canvas aria-label="Nhiệt độ và giá trị đặt" height="150" id="pmTempChart"></canvas></div>
+<div class="pmChartWrap"><canvas aria-label="Công suất gia nhiệt và sự kiện quạt hút" height="150" id="pmPowerChart"></canvas></div>
+<div class="pmActionsRow pmDownloadRow">
+  <button class="ghost pmActionBtn pmRecordBtn" id="pmRecordBtn" type="button">
+    <span class="pmRecDot" id="pmRecDot"></span>
+    <span id="pmRecordBtnText">Bắt đầu ghi 24h</span>
+  </button>
+  <button class="ghost pmActionBtn" id="pmReplayBtn" type="button">▶ Phát lại gần nhất</button>
+  <button class="ghost pmActionBtn" id="pmHistoryBtn" type="button">📁 Bản ghi (<span id="pmRecordCount">0</span>/5)</button>
+  <button class="ghost pmActionBtn" disabled="" id="pmDownload" type="button">📥 Tải log CSV</button>
 </div>
-<div class="pmChartContainer">
-  <div class="pmChartHeader">
-    <div class="pmChartTitle"><strong>Công suất gia nhiệt &amp; Sự kiện quạt hút</strong></div>
-    <div class="pmChartToolbar" data-chart="power">
-      <button class="ghost small pmZoomBtn" data-action="in" title="Phóng to" type="button">+</button>
-      <button class="ghost small pmZoomBtn" data-action="out" title="Thu nhỏ" type="button">−</button>
-      <button class="ghost small pmZoomBtn" data-action="1h" type="button">1h</button>
-      <button class="ghost small pmZoomBtn" data-action="6h" type="button">6h</button>
-      <button class="ghost small pmZoomBtn" data-action="24h" type="button">24h</button>
-      <button class="ghost small pmZoomBtn" data-action="reset" title="Xem tất cả" type="button">Toàn bộ</button>
-    </div>
-  </div>
-  <div class="pmChartWrap"><canvas aria-label="Công suất gia nhiệt và sự kiện quạt hút" height="150" id="pmPowerChart"></canvas></div>
-</div>
-<div class="pmDownloadRow">
-  <div class="pmActionsLeft">
-    <button class="ghost" disabled="" id="pmDownload" type="button">Tải log CSV</button>
-    <button class="ghost" id="pmReplayBtn" type="button">▶ Phát lại gần nhất</button>
-    <button class="ghost" id="pmHistoryBtn" type="button">📁 Bản ghi (<span id="pmRecordCount">0</span>/5)</button>
-    <span class="settingFootnote" id="pmLogInfo">Giữ mục này mở vài phút để nhận đủ 30 phút log từ máy.</span>
-  </div>
-  <div class="pmActionsRight">
-    <button class="primary pmRecordBtn" id="pmRecordBtn" type="button">
-      <span class="pmRecDot" id="pmRecDot"></span>
-      <span id="pmRecordBtnText">Bắt đầu ghi 24h</span>
-    </button>
-  </div>
-</div>
+<span class="settingFootnote" id="pmLogInfo">Giữ mục này mở vài phút để nhận đủ 30 phút log từ máy.</span>
 <p class="settingFootnote" id="pmLegend">Đỏ: nhiệt độ · xanh: giá trị đặt · cam: công suất yêu cầu · tím nét đứt: SSR thực tế (TB 60 s) · dải xám: quạt hút chạy</p>
 </div>
 </details>
