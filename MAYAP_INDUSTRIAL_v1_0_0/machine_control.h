@@ -5259,14 +5259,18 @@ class MachineController {
       s.hold2 = MayapPidLog::toPct2(v3.pHold());
       s.kair = MayapPidLog::toU8(v3.kAir() * 1.0e5f);
       s.tau = MayapPidLog::toU8(v3.tauTransit());
-      s.integ4 = MayapPidLog::toI8x4(v3.integral());
+      s.lift2 = MayapPidLog::toI8x2(v3.lifted());
       s.vent = static_cast<uint8_t>((ventLine_.why() & 0x07U) | static_cast<uint8_t>(ventLine_.bits() << 3));
       {
         const uint8_t tokens = static_cast<uint8_t>(std::min(3.0f, ventLine_.tokens()));
         s.ctl = static_cast<uint8_t>((v3.doorDetected() ? MayapPidLog::CtlDoor : 0U) | (v3.identified() ? MayapPidLog::CtlIdentified : 0U) |
             static_cast<uint8_t>(tokens << 2) | static_cast<uint8_t>((ventReason_ & 0x0FU) << 4));
       }
-      s.learn = 0U;                                                          // nothing is kept across a restart any more (field kept for the frame layout)
+      {
+        const uint8_t src = v3.kAirMeasured() ? 2U : (v3.identified() ? 1U : 0U);
+        const float stall = std::min(v3.stallSeconds(), 31.0f * 15.0f);
+        s.learn = static_cast<uint8_t>(src | (v3.lifting() ? 0x04U : 0U) | (static_cast<uint8_t>(stall / 15.0f) << 3));
+      }
       MayapPidLog::ring().push(s);
     }
   }

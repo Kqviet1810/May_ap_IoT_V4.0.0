@@ -26,10 +26,10 @@ struct Sample {
   uint8_t hold2 = 0;                            // learned hold level, percent * 2
   uint8_t kair = 0;                             // heater gain, 1e-5 degC/s per %
   uint8_t tau = 0;                              // transit time [s]
-  int8_t integ4 = 0;                            // integral term, percent * 4
+  int8_t lift2 = 0;                             // what the stall lift has paid into the hold and not given back, percent * 2 (the controller has no integral term; this byte was its)
   uint8_t vent = 0;                             // vent line: bits0-2 why (VentLine::Why), bits3-7 its state bits (VentLine::Bit*)
   uint8_t ctl = 0;
-  uint8_t learn = 0;                            // bits0-1 where the controller's numbers came from (0 priors, 1 oven restored, 2 oven + hold restored), bit2 a snapshot is stored, bits3-7 stable minutes / 4 (0..31)
+  uint8_t learn = 0;                            // bits0-1 where kAir came from (0 prior, 1 restored from the EEPROM or typed, 2 measured since power-up), bit2 the stall lift paid this second, bits3-7 seconds the rise has been short / 15 (0..31)
 };
 
 inline uint16_t toC100(float v) {
@@ -45,6 +45,12 @@ inline uint8_t toU8(float v) {
 inline int8_t toI8x4(float v) {
   if (!isfinite(v)) return 0;
   float x = v * 4.0f;
+  x += x >= 0.0f ? 0.5f : -0.5f;
+  return x >= 127.0f ? static_cast<int8_t>(127) : (x <= -127.0f ? static_cast<int8_t>(-127) : static_cast<int8_t>(x));
+}
+inline int8_t toI8x2(float v) {
+  if (!isfinite(v)) return 0;
+  float x = v * 2.0f;
   x += x >= 0.0f ? 0.5f : -0.5f;
   return x >= 127.0f ? static_cast<int8_t>(127) : (x <= -127.0f ? static_cast<int8_t>(-127) : static_cast<int8_t>(x));
 }

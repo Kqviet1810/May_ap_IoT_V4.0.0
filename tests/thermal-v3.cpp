@@ -449,6 +449,35 @@ void testZeroZoneAndFan() {
   printf("  -> Pass\n");
 }
 
+// The stall lift (stallLift) and what the log shows of it: PV stands still under SV, the rise is short, and only after LIFT_WAIT transit times does it pay into the hold;
+// when PV then passes SV the surplus is given back. Nothing is paid while the oven is where it should be.
+void testStallLiftAndItsLog() {
+  printf("[TEST] The stall lift pays after the wait, shows in the log fields, and gives back on overshoot...\n");
+  thermalv3::Controller c;
+  thermalv3::Input in;
+  in.sp = 37.5f; in.pv = 37.0f; in.dQ = 0.1f; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f;
+  const float holdStart = c.pHold();
+  bool lifting = false; float stallMax = 0.0f, paidAt150 = -1.0f;
+  for (long i = 0; i < 12000; ++i) {                                         // 20 minutes of a flat PV half a degree under SV
+    c.step(in);
+    lifting = lifting || c.lifting();
+    stallMax = std::max(stallMax, c.stallSeconds());
+    if (i == 1500) paidAt150 = c.lifted();                                    // 150 s: the wait (two transit times) has not passed
+  }
+  assert(paidAt150 == 0.0f);
+  assert(lifting && stallMax >= 2.0f * c.tauTransit());
+  assert(c.lifted() > 5.0f && c.pHold() > holdStart + 5.0f);
+  const float paid = c.lifted();
+  in.pv = 37.6f;                                                             // PV passes SV: the surplus comes back
+  for (long i = 0; i < 6000; ++i) c.step(in);
+  assert(c.lifted() < 0.5f * paid);
+  thermalv3::Controller d;                                                    // an oven that sits at SV is never lifted
+  in.pv = 37.5f;
+  for (long i = 0; i < 12000; ++i) d.step(in);
+  assert(d.lifted() == 0.0f && !d.lifting());
+  printf("  -> Pass: %.1f %% paid after 20 min flat, %.1f %% left 10 min after passing SV\n", paid, c.lifted());
+}
+
 int main() {
   printf("=========================================\n");
   printf("RUNNING THERMAL V3 CONTROLLER UNIT TESTS\n");
@@ -466,6 +495,7 @@ int main() {
   testResumeAfterHold();
   testSensorFallback();
   testZeroZoneAndFan();
+  testStallLiftAndItsLog();
   printf("=========================================\n");
   printf("ALL THERMAL V3 TESTS PASSED SUCCESSFULLY!\n");
   printf("=========================================\n");

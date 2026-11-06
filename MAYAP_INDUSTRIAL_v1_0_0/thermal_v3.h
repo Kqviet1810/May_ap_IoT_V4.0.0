@@ -117,7 +117,7 @@ class Controller {
     state_ = StIdle; pv_ = NAN; sp_ = 37.5f; cap_ = 100.0f;
     kAir_ = KAIR_START; tau_ = TAU_PRIOR; hold_ = HOLD_PRIOR_OF_CAP * 100.0f;
     identified_ = tauMeasured_ = door_ = wasLive_ = doorLatch_ = nearSeen_ = kAirMeasured_ = false; latchT_ = 0.0f;
-    lead_ = slope_ = lsSlope_ = lsSigma_ = 0.0f; sigma_ = 0.02f; stallS_ = lifted_ = 0.0f;
+    lead_ = slope_ = lsSlope_ = lsSigma_ = 0.0f; sigma_ = 0.02f; stallS_ = lifted_ = 0.0f; lifting_ = false;
     histHead_ = histCount_ = 0U; liveS_ = secAcc_ = lastCmd_ = 0.0f;
     swOn_ = false; swPv0_ = swT_ = 0.0f;
     pm_ = NAN; rate_ = 0.0f; zz_ = false;
@@ -253,6 +253,10 @@ class Controller {
   float tauHat() const { return hold_; }
   float pHold() const { return hold_; }
   float dNow() const { return hold_; }
+  // The stall lift (stallLift), for the log: what it has paid into the hold and not given back [percent], how long the rise has been short [s], and whether it paid this second.
+  float lifted() const { return lifted_; }
+  float stallSeconds() const { return stallS_; }
+  bool lifting() const { return lifting_; }
   float haPct() const { return 0.0f; }
   float sigmaPred() const { return sigma_; }
   float integral() const { return 0.0f; }
@@ -359,6 +363,7 @@ class Controller {
 #endif
   }
   void stallLift() {
+    lifting_ = false;
     // GIVE-BACK: what was paid in is returned when PV passes SV (the overshoot is that surplus), over about one transit time; the rest is forgotten slowly
     if (lifted_ > 0.0f) {
       const float over = pv_ - sp_;
@@ -378,7 +383,7 @@ class Controller {
     stallS_ += 1.0f;
     if (stallS_ < LIFT_WAIT * tau_) return;
     const float pay = std::min(cap_ - hold_, (want - have) / (LIFT_KREF * LIFT_TI_OF_TAU * tau_));
-    hold_ += pay; lifted_ += pay;
+    hold_ += pay; lifted_ += pay; lifting_ = pay > 0.0f;
 #else
     if (elLast_ > gate) hold_ = std::min(cap_, hold_ + kn_ * (elLast_ - gate) / (LIFT_TI_OF_TAU * tau_));
 #endif
@@ -420,7 +425,7 @@ class Controller {
   bool ventFan_ = false, zz_ = false;
   float elLast_ = 0.0f, spTrim_ = NAN, quietTrimS_ = 0.0f;
   bool identified_ = false, tauMeasured_ = false, door_ = false, wasLive_ = false, kAirMeasured_ = false;
-  float stallS_ = 0.0f, lifted_ = 0.0f; float lead_ = 0.0f, slope_ = 0.0f, lsSlope_ = 0.0f, lsSigma_ = 0.0f, sigma_ = 0.02f;
+  bool lifting_ = false; float stallS_ = 0.0f, lifted_ = 0.0f; float lead_ = 0.0f, slope_ = 0.0f, lsSlope_ = 0.0f, lsSigma_ = 0.0f, sigma_ = 0.02f;
   float inflightMax_ = 1.0f, farBand_ = 0.5f, nearBand_ = 0.15f, kn_ = 30.0f;
   float liveS_ = 0.0f, secAcc_ = 0.0f, lastCmd_ = 0.0f;
   bool swOn_ = false; float swPv0_ = 0.0f, swT_ = 0.0f;
