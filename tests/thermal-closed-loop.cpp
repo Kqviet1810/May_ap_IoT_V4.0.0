@@ -329,6 +329,22 @@ class Family {
       return evaluate(r, from);
     });
   }
+  // The controller restarted in a settled oven (an update, a power blip: the machine is off for 45 s, the heater with it). With the load ledger the controller starts
+  // from the level the oven needed 30 minutes ago; without it, from 12 %. `driftC` = the room changed by this much over the 40 minutes before (the load moved with it).
+  Stats restartSettled(double driftC) const {
+    return each([driftC](const Oven &o, const R &settled) {
+      R r = settled;
+      if (driftC != 0.0) {
+        for (int m = 0; m < 40; ++m) { r.plant.setAmbient(o.p.Tamb + driftC * (m + 1) / 40.0); r.advance(60.0); }
+      }
+      const size_t from = r.air().size();
+      r.restartControllers();
+      r.skipClock(45.0);
+      r.startAt(r.now() + 45.0);
+      r.advance(2 * 3600.0);
+      return evaluate(r, from);
+    });
+  }
   // Vent fan 5 minutes every 40 minutes: it takes 1.1 - 1.9 kW out of the oven.
   Stats ventFan() const {
     return each([](const Oven &, const R &settled) {
@@ -584,6 +600,14 @@ static void testFamily(bool everything) {
       CHECK(over < 0.15, "hot noon: the air rose %.2f over SP (limit 0.15)", over);
       CHECK(under < 0.10, "hot noon: the air fell %.2f under SP (limit 0.10)", under);
     }
+  }
+
+  {
+    const Stats a = now.restartSettled(0.0), b = now.restartSettled(-2.0), c = now.restartSettled(2.0);
+    a.print("restart in a settled oven");
+    b.print("restart, room 2 degC colder over 40 min");
+    c.print("restart, room 2 degC warmer over 40 min");
+    expectHealthy(a, "restart in a settled oven", {0.80, 0.12, 0.50, 0.0, false});
   }
 
   // A heater that really is dead (SSR open, element gone) must still stop the batch, and not later than the 2.3.4 rule did.

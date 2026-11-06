@@ -62,6 +62,10 @@ class RigT {
   template <class C> static constexpr auto fineOf(int) -> decltype(C::kFineInput) { return C::kFineInput; }
   template <class C> static constexpr bool fineOf(long) { return std::is_same<C, thermalv3::Controller>::value; }
   static constexpr bool fineInput = fineOf<Ctl>(0);
+  template <class C> static auto carry(C &fresh, const C &old, int) -> decltype(C::carryOver(fresh, old), void()) { C::carryOver(fresh, old); }
+  template <class C> static void carry(C &, const C &, long) {}
+  template <class C> static auto skip(C &c, double s, int) -> decltype(c.skipClock(s), void()) { c.skipClock(s); }
+  template <class C> static void skip(C &, double, long) {}
  public:
   RigT(const PlantParams &p, double airC, double eggC, double sensorStepC = 0.1) : plant(p, airC, eggC), chain(sensorStepC) {
     for (int i = 0; i < 8; ++i) chain.sample(plant.sensor());
@@ -90,7 +94,9 @@ class RigT {
   float setpoint() const { return in.sp; }
   void setSetpoint(double sp) { in.sp = static_cast<float>(sp); }
   // A reboot (an update, a power blip): everything the controller and the E115 rule had learned or counted is gone.
-  void restartControllers() { ctl = Ctl(); watch = Watch(); }
+  void restartControllers() { Ctl old = ctl; ctl = Ctl(); carry(ctl, old, 0); watch = Watch(); }
+  // seconds the machine was off (the clock of the ledger keeps counting through them)
+  void skipClock(double s) { skip(ctl, s, 0); }
   // The controller runs from power-up but the batch starts later: until `seconds` the permit is off (the controller pushes zeros into its
   // ring and the heater is not asked for anything), which is how every first start of a power cycle reaches the controller on the machine.
   void startAt(double seconds) { startS_ = seconds; }
@@ -141,13 +147,22 @@ class RigT {
   std::vector<float> ta_, pv_, u_;
 };
 
+#ifdef THERMAL_ADVISED
+}  // namespace thermalsim
+#include "thermal-advised.h"
+namespace thermalsim {
+#endif
 #ifdef THERMAL_DUAL
 }  // namespace thermalsim
 #include "thermal-dual.h"
 namespace thermalsim {
 using Rig = RigT<DualCtl, thermalv3::Input, HeaterResponseWatch>;
 #else
+#ifdef THERMAL_ADVISED
+using Rig = RigT<AdvisedCtl, thermalv3::Input, HeaterResponseWatch>;
+#else
 using Rig = RigT<thermalv3::Controller, thermalv3::Input, HeaterResponseWatch>;
+#endif
 #endif
 #ifdef THERMAL_SCENARIOS_WITH_LEGACY
 using LegacyRig = RigT<thermalv3_v234::Controller, thermalv3_v234::Input, LegacyHeaterWatch>;
