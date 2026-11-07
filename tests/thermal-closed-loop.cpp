@@ -13,6 +13,7 @@
 // Simulation catches STRUCTURAL faults of the control law. It does not prove the real oven behaves: the real logs do (thermal-replay.cpp).
 #define THERMAL_SCENARIOS_WITH_LEGACY
 #include "thermal-scenarios.h"
+#include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_hold_record.h"
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -329,6 +330,24 @@ class Family {
       return evaluate(r, from);
     });
   }
+  // The controller restarted in a settled oven (an update, a power blip: the machine is off for 45 s, the heater with it). With the load ledger the controller starts
+  // from the level the oven needed 30 minutes ago; without it, from 12 %. `driftC` = the room changed by this much over the 40 minutes before (the load moved with it).
+  Stats restartSettled(double driftC) const {
+    return each([driftC](const Oven &o, const R &settled) {
+      R r = settled;
+      if (driftC != 0.0) {
+        for (int m = 0; m < 40; ++m) { r.plant.setAmbient(o.p.Tamb + driftC * (m + 1) / 40.0); r.advance(60.0); }
+      }
+      const size_t from = r.air().size();
+      const float kAir = r.ctl.kAir(), tau = r.ctl.tauTransit();
+      r.restartControllers();
+      r.ctl.restore(kAir, tau);                            // what the machine gives back from the EEPROM since 2.9.7 (thermal_gain_record.h)
+      r.skipClock(45.0);
+      r.startAt(r.now() + 45.0);
+      r.advance(2 * 3600.0);
+      return evaluate(r, from);
+    });
+  }
   // Vent fan 5 minutes every 40 minutes: it takes 1.1 - 1.9 kW out of the oven.
   Stats ventFan() const {
     return each([](const Oven &, const R &settled) {
@@ -445,6 +464,12 @@ static void reference(const char *name, const Stats &st) {
   std::snprintf(line, sizeof line, "2.3.4: %s", name);
   st.print(line);
 }
+
+// Pins of the cold-room block: measured on the fixed sample of 35 ovens, plus a margin (set from the first run, see the numbers printed by the test).
+static const size_t COLD_CAPABLE_MIN = 21;                           // of the 35 (the others have a heater that cannot take the oven to SP at 10 degC)
+static const int COLD_CLIMB_TRIPS_MAX = 4;                           // E115 stops 4 of 35 ovens on a first climb from 20 degC at 10 degC (heater too weak for the room): pinned, not hidden
+static const double COLD_DOOR3_OVER = 1.10, COLD_DOOR5_OVER = 1.10, COLD_TRAY_OVER = 0.50, COLD_RESTART_OVER = 0.45, COLD_BAND = 0.40, COLD_PP = 0.30, NEWBATCH_MORE_OVER = 0.30,                  // 0.30: the level stored in a cold room used on a warmer day (+0.24 on the worst oven, known and pinned)
+                       NEWBATCH_MIN_AIR = 25.0;
 
 static void testFamily(bool everything) {
   strictLimits = !everything;
@@ -584,6 +609,126 @@ static void testFamily(bool everything) {
       CHECK(over < 0.15, "hot noon: the air rose %.2f over SP (limit 0.15)", over);
       CHECK(under < 0.10, "hot noon: the air fell %.2f under SP (limit 0.10)", under);
     }
+  }
+
+  // 2.9.10, slow batch starts: the oven fitted to the log of 05/11 14:37 (a heater that delivers a quarter of its power, UA 100, restarted 0.3 degC under SP) and
+  // three more loads under SP. The request rose 0.6 %/min while PV stood flat; the stall lift (thermal_v3.h, stallLift) pays the missing rise into the hold, faster
+  // in the first minutes of a start that has not reached SV yet, but only while PV is more than the gate of 0.5 degC under SV: nearer than that it made a new batch of cold eggs
+  // overshoot (up to 1.19 degC against 0.66 of 2.9.9). 2.9.9 reached SP - 0.1 after 51 / 45 / 40 / 24 minutes; the first case (a stall only 0.3 - 0.5 degC under SV) is therefore
+  // not faster than before (pinned at 55), the other three are.
+  {
+    struct Weak { const char *name; double health, start, limitMin, limitOver; };
+    const Weak cases[4] = {{"05/11 fit (25 % heater, 37.2 start)", 0.25, 37.2, 55.0, 0.20}, {"25 % heater from 36.9", 0.25, 36.9, 32.0, 0.30},
+                           {"35 % heater from 36.5", 0.35, 36.5, 26.0, 0.40}, {"50 % heater from 36.9", 0.50, 36.9, 22.0, 0.25}};
+    for (const Weak &w : cases) {
+      PlantParams wp = u29Oven(); wp.Pmax *= w.health; wp.UA = 100.0;
+      Rig r(wp, w.start, 37.0); r.plant.settleAt(w.start);
+      double reachMin = -1.0, over = 0.0;
+      for (int m = 1; m <= 90; ++m) {
+        r.advance(60.0);
+        const double a = r.plant.air();
+        if (reachMin < 0.0 && a >= SP_C - 0.1) reachMin = m;
+        if (reachMin >= 0.0) over = std::max(over, a - SP_C);
+      }
+      std::printf("  slow start, %s: SP - 0.1 reached after %.0f min, highest %+.2f over SP, E115 %s\n", w.name, reachMin, over, r.tripped() ? "TRIPPED" : "no");
+      CHECK(!r.tripped(), "slow start (%s): E115 tripped on a weak heater that was still climbing", w.name);
+      CHECK(reachMin > 0.0 && reachMin <= w.limitMin, "slow start (%s): SP - 0.1 reached after %.0f min (limit %.0f)", w.name, reachMin, w.limitMin);
+      CHECK(over < w.limitOver, "slow start (%s): the air rose %.2f over SP (limit %.2f)", w.name, over, w.limitOver);
+    }
+  }
+
+  // 2.9.10, a cold room: the worst winter day, 10 degC around an oven that is built for 28 (the heat the oven loses goes up 2.9 times, so does the hold level it needs).
+  // Ovens of the sample whose heater cannot take the oven to SP at 10 degC are not the controller's fault and are left out (their number is printed and pinned).
+  // Then the new-batch start: the controller starts from a share of what the oven needed last time (thermal_hold_record.h, restoredNewBatch), and the room of the new
+  // batch can be the same, colder or warmer than the room of the last one; the share must help when the room is colder and must not harm when it is warmer.
+  {
+    std::vector<Oven> coldAll, warmAll;
+    for (const Oven &o : ovens) { Oven c = o; c.p.Tamb = 10.0; coldAll.push_back(c); warmAll.push_back(o); }
+    std::vector<size_t> idx;                                                  // ovens that can hold SP at 10 degC
+    std::vector<Rig> coldSettled, warmSettled;
+    Stats climbCold;
+    for (size_t i = 0; i < coldAll.size(); ++i) {
+      Rig r(coldAll[i].p, 20.0, 20.0);                                       // eggs and air from a cool room
+      r.advance(4 * 3600.0);
+      const Outcome out = evaluate(r, 0);
+      climbCold.add(out);
+      if (out.reachS >= 0.0 && out.tripS < 0.0 && out.finalBandC <= 0.30) {
+        idx.push_back(i); coldSettled.push_back(r);
+        Rig w(warmAll[i].p, 28.0, 28.0); w.advance(4 * 3600.0); warmSettled.push_back(w);
+      }
+    }
+    climbCold.print("cold room 10 degC: first climb from 20");
+    std::printf("  cold room 10 degC: %zu of %zu ovens can hold SP\n", idx.size(), coldAll.size());
+    CHECK(climbCold.trips <= COLD_CLIMB_TRIPS_MAX, "cold room: E115 stopped %d ovens on the first climb (pin %d)", climbCold.trips, COLD_CLIMB_TRIPS_MAX);
+    CHECK(idx.size() >= COLD_CAPABLE_MIN, "cold room: only %zu of %zu ovens can hold SP at 10 degC (pin %zu)", idx.size(), coldAll.size(), static_cast<size_t>(COLD_CAPABLE_MIN));
+    auto scenario = [&](const char *name, const Limits &l, bool door, double minutes, double tray, bool restart) {
+      Stats st;
+      for (size_t k = 0; k < idx.size(); ++k) {
+        Rig r = coldSettled[k];
+        const size_t from = r.air().size();
+        if (tray > 0.0) r.plant.insertColdMass(tray, 25.0);
+        if (door) r.advance(minutes * 60.0, true, false);
+        if (restart) { const float kAir = r.ctl.kAir(), tau = r.ctl.tauTransit(); r.restartControllers(); r.ctl.restore(kAir, tau); r.skipClock(45.0); r.startAt(r.now() + 45.0); }
+        r.advance(2 * 3600.0);
+        st.add(evaluate(r, from));
+      }
+      st.print(name);
+      expectHealthy(st, name, l);
+    };
+    scenario("cold room: settled, door open 3 min", {COLD_DOOR3_OVER, COLD_BAND, COLD_PP, 0.0, false}, true, 3.0, 0.0, false);
+    scenario("cold room: settled, door open 5 min", {COLD_DOOR5_OVER, COLD_BAND, COLD_PP, 0.0, false}, true, 5.0, 0.0, false);
+    scenario("cold room: settled, door 150 s + tray x0.5", {COLD_TRAY_OVER, COLD_BAND, COLD_PP, 0.0, false}, true, 2.5, 0.5, false);
+    scenario("cold room: restart in a settled oven", {COLD_RESTART_OVER, COLD_BAND, COLD_PP, 0.0, false}, false, 0.0, 0.0, true);
+
+    // The new batch: eggs of 25 degC go in (door 150 s), the machine starts the batch at once. `from` / `to` = the room of the last batch / of this one.
+    auto newBatch = [&](const std::vector<Rig> &fromRigs, double toRoom, bool useStored) {
+      Stats st;
+      for (size_t k = 0; k < idx.size(); ++k) {
+        Rig r = fromRigs[k];
+        const float storedHold = r.ctl.pHold();
+        r.plant.setAmbient(toRoom);
+        r.plant.insertColdMass(0.5, 25.0);
+        r.advance(150.0, true, false);
+        const size_t from = r.air().size();
+        const float kAir = r.ctl.kAir(), tau = r.ctl.tauTransit();
+        r.restartControllers();
+        r.ctl.restore(kAir, tau);
+        if (useStored) {
+          const uint32_t t0 = 1700000000UL;
+          const thermalhold::Record rec = thermalhold::make(1U, storedHold, static_cast<float>(SP_C), static_cast<float>(SP_C), t0, 7U);
+          const float h = thermalhold::restoredNewBatch(rec, true, true, t0 + 6UL * 3600UL, static_cast<float>(SP_C));
+          if (h >= 0.0f) r.ctl.restoreHold(h);
+        }
+        r.skipClock(45.0);
+        r.startAt(r.now() + 45.0);
+        r.advance(2 * 3600.0);
+        st.add(evaluate(r, from));
+      }
+      return st;
+    };
+    struct NB { const char *name; const std::vector<Rig> *rigs; double room; };
+    const NB nbs[4] = {{"last batch 28 degC, this one 10 (colder day)", &warmSettled, 10.0}, {"last batch 10 degC, this one 10", &coldSettled, 10.0},
+                       {"last batch 10 degC, this one 28 (warmer day)", &coldSettled, 28.0}, {"last batch 28 degC, this one 28", &warmSettled, 28.0}};
+    for (int k = 0; k < 4; ++k) {
+      std::string a = std::string("new batch, ") + nbs[k].name + ": 12 % start", b = std::string("new batch, ") + nbs[k].name + ": share of the last level";
+      const Stats blind = newBatch(*nbs[k].rigs, nbs[k].room, false), kept = newBatch(*nbs[k].rigs, nbs[k].room, true);
+      blind.print(a.c_str());
+      kept.print(b.c_str());
+      CHECK(kept.trips <= blind.trips, "%s: the share of the last level made E115 trip on more ovens (%d > %d)", nbs[k].name, kept.trips, blind.trips);
+      CHECK(kept.maxOver <= blind.maxOver + NEWBATCH_MORE_OVER, "%s: the share overshoots %.2f against %.2f of the 12 %% start", nbs[k].name, kept.maxOver, blind.maxOver);
+      CHECK(kept.minAir >= NEWBATCH_MIN_AIR, "%s: the air fell to %.2f with the share (pin %.2f; 12 %% start: %.2f)", nbs[k].name, kept.minAir, NEWBATCH_MIN_AIR, blind.minAir);
+      if (k == 0) {
+        CHECK(kept.settlePercent(50) <= blind.settlePercent(50) + 1.0, "colder day: settle median %.0f s with the share against %.0f s with the 12 %% start", kept.settlePercent(50), blind.settlePercent(50));
+      }
+    }
+  }
+
+  {
+    const Stats a = now.restartSettled(0.0), b = now.restartSettled(-2.0), c = now.restartSettled(2.0);
+    a.print("restart in a settled oven");
+    b.print("restart, room 2 degC colder over 40 min");
+    c.print("restart, room 2 degC warmer over 40 min");
+    expectHealthy(a, "restart in a settled oven", {0.80, 0.12, 0.50, 0.0, false});
   }
 
   // A heater that really is dead (SSR open, element gone) must still stop the batch, and not later than the 2.3.4 rule did.

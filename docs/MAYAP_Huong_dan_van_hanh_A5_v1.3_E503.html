@@ -48,8 +48,8 @@ tr:target td:first-child strong{color:#8a5a00}
 @media screen { body { background:#e9efef; } .sheet { box-shadow:0 4px 18px rgba(0,0,0,.12); min-height:210mm; } }
 </style></head><body><div class="toolbar"><a class="tb" href="../">&larr; Quay lại MAYAP</a><a class="tb" href="#danh-sach-ma-loi">Danh sách mã lỗi</a><a class="tb" href="./MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.pdf">Mở PDF</a><button onclick="window.print()">In / Lưu PDF</button></div><main class="sheet"><h1>MÁY ẤP TRỨNG MAYAP - HƯỚNG DẪN VẬN HÀNH VÀ MÃ LỖI</h1>
 <p><strong>Phiên bản tài liệu:</strong> v1.4 (tên file giữ nguyên để các liên kết cũ vẫn mở được)<br />
-<strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - bản <strong>2.9.9</strong> (Web 1.1.31)<br />
-<strong>Ngày cập nhật:</strong> 03/11/2026<br />
+<strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - bản <strong>2.9.10</strong> (Web 1.1.32)<br />
+<strong>Ngày cập nhật:</strong> 07/11/2026<br />
 <strong>Nguồn chuẩn mã lỗi:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0/machine_control.h</code></p>
 <blockquote>
 <p>Tài liệu này thay thế danh sách mã lỗi cũ chỉ cập nhật tới E502. Firmware hiện tại có <strong>41 mã lỗi thực</strong>, không tính <code>None = 0</code>.</p>
@@ -596,4 +596,12 @@ tr:target td:first-child strong{color:#8a5a00}
 <li><strong>Tắt tiếng (ACK) khi thanh nhiệt đã về 0:</strong> máy không thể hạ nhiệt thêm nên còi không kêu lại sau 2 phút; còi chỉ kêu lại nếu nhiệt độ tăng thêm 0,2 °C hoặc sau 10 phút.</li>
 </ul>
 <hr />
-<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 2.9.9</strong></p></main></body></html>
+<h1>14. Khởi động chậm và mẻ mới (2.9.10)</h1>
+<ul>
+<li><strong>Bộ nâng khi nhiệt đứng yên dưới SV:</strong> khi nhiệt độ cách SV hơn 0,5 °C mà không tăng đủ nhanh (trứng lạnh, thanh nhiệt yếu), máy tăng mức giữ nhiệt theo tốc độ tăng đo được, không đợi bộ quan sát tự trườn lên. Trong 30 phút đầu của lần khởi động chưa tới gần SV, bộ nâng chờ 1 lần thời gian trễ rồi mới cộng; sau đó chờ 2 lần. Khi nhiệt độ vượt SV 0,03 °C, phần đã cộng được trả lại.</li>
+<li><strong>Mẻ mới bắt đầu từ mức đã học:</strong> khi bắt đầu mẻ mới (hoặc khởi động lại sau khi dừng lâu), mức giữ nhiệt khởi điểm bằng 0,9 mức lần ổn định gần nhất, nếu cùng điểm đặt và bản lưu không quá 1 ngày, và không thấp hơn mức mặc định 12 %. Máy ghi dòng <code>[THERMAL] new batch starts at ...</code> trên cổng serial.</li>
+<li><strong>Log PID mới:</strong> các cột <code>lift_pct</code> (phần bộ nâng đã cộng), <code>kair_src</code> (độ mạnh thanh nhiệt lấy từ đâu: 0 mặc định, 1 khôi phục hoặc nhập tay, 2 đo được), <code>lift_on</code> (bộ nâng đang cộng) và <code>stall_s</code> (số giây nhiệt độ đã tăng thiếu, bước 15 giây) thay cho các cột cũ <code>integral_pct</code>, <code>learn_src</code>, <code>learn_saved</code>, <code>stable_min</code> (luôn bằng 0 từ bản 2.5.5).</li>
+<li><strong>Không đổi:</strong> các ngưỡng bảo vệ, cảnh báo thanh nhiệt không nóng (E115), còi, đảo trứng. Kết quả trên lò mô phỏng: khởi động chậm của thanh nhiệt yếu nhanh hơn 10–40 % ở lò thiếu hơn 0,5 °C; ca thiếu chỉ 0,3–0,5 °C vẫn như bản 2.9.9.</li>
+</ul>
+<hr />
+<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 2.9.10</strong></p></main></body></html>

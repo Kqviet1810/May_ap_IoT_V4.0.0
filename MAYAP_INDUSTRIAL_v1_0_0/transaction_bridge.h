@@ -520,7 +520,7 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
           JsonArray x = lg["x"].to<JsonArray>();
           for (uint8_t i = 0U; i < n; ++i) {
             x.add(chunk[i].safe100); x.add(chunk[i].hold2); x.add(chunk[i].kair); x.add(chunk[i].tau);
-            x.add(chunk[i].integ4); x.add(chunk[i].vent); x.add(chunk[i].ctl); x.add(chunk[i].learn);
+            x.add(chunk[i].lift2); x.add(chunk[i].vent); x.add(chunk[i].ctl); x.add(chunk[i].learn);
           }
         } else {
           lg["s"] = first;
