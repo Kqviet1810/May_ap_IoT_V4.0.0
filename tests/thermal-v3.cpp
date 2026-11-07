@@ -455,10 +455,10 @@ void testStallLiftAndItsLog() {
   printf("[TEST] The stall lift pays after the wait, shows in the log fields, and gives back on overshoot...\n");
   thermalv3::Controller c;
   thermalv3::Input in;
-  in.sp = 37.5f; in.pv = 37.0f; in.dQ = 0.1f; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f;
+  in.sp = 37.5f; in.pv = 36.9f; in.dQ = 0.1f; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f;
   const float holdStart = c.pHold();
   bool lifting = false; float stallMax = 0.0f, paidAt150 = -1.0f;
-  for (long i = 0; i < 12000; ++i) {                                         // 20 minutes of a flat PV half a degree under SV
+  for (long i = 0; i < 12000; ++i) {                                         // 20 minutes of a flat PV 0.6 degC under SV (the lift pays only more than its gate, 0.5 degC, under SV)
     c.step(in);
     lifting = lifting || c.lifting();
     stallMax = std::max(stallMax, c.stallSeconds());

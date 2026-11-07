@@ -83,8 +83,10 @@ constexpr float LIFT_TI_OF_TAU = LIFT_TI_TAU;
 #ifndef LIFT_WAIT
 #define LIFT_WAIT 2.0f
 #endif
+// The lift pays only while PV is more than LIFT_GATE under SV: nearer than that a stall is most often the cold eggs giving their heat back slowly, and what the lift paid in
+// came out as an overshoot (closed-loop rig, new batch of cold eggs: 0.66 -> 1.19 degC with a gate of 0.2; with 0.5 the overshoot of 2.9.9 again, and 3 of the 4 weak starts as fast).
 #ifndef LIFT_GATE
-#define LIFT_GATE 0.2f
+#define LIFT_GATE 0.5f
 #endif
 constexpr float LIFT_GATE_C = LIFT_GATE;
 #ifndef LIFT_CLOSE
