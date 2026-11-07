@@ -10,7 +10,7 @@ using namespace thermalsim;
 struct Row{double t,req,pv,hold;int fan;};
 int main(int argc,char**argv){
   std::vector<Row> R; std::ifstream f("tools/thermal-research/calib-noon.csv"); std::string line;
-  while(std::getline(f,line)){ std::stringstream ss(line); Row r; char c; ss>>r.t>>c>>r.req>>c>>r.pv>>c>>r.hold>>c>>r.fan; R.push_back(r);} 
+  while(std::getline(f,line)){ std::stringstream ss(line); Row r; char c; ss>>r.t>>c>>r.req>>c>>r.pv>>c>>r.hold>>c>>r.fan; R.push_back(r);}
   const double UA=argc>1?atof(argv[1]):200.0, ventW=argc>2?atof(argv[2]):1500.0, tail=argc>3?atof(argv[3]):0.0;
   PlantParams p=u29Oven(); p.UA=UA; p.ventW=ventW;
   // smoothed logged request = the load the oven needed (PV was flat); ambient from it
@@ -18,7 +18,7 @@ int main(int argc,char**argv){
   p.Tamb = 37.5 - load[0]/100.0*p.Pmax/UA; Rig r(p,37.5,37.5); r.plant.settleAt(37.5);
   r.advance(3600.0);                                    // an hour settled at the first load so the controller has learned
   const size_t from=r.seen().size();
-  std::vector<double> pv; std::vector<double> hold,req; 
+  std::vector<double> pv; std::vector<double> hold,req;
   for(size_t i=0;i<R.size();++i){
     r.plant.setAmbient(37.5 - load[i]/100.0*p.Pmax/UA);
     r.advance(10.0,false,R[i].fan!=0);

@@ -9,7 +9,7 @@ using namespace thermalsim;
 struct Row{double t,req,pv,hold;int fan;};
 int main(int argc,char**argv){
   std::vector<Row> R; std::ifstream f(argv[1]); std::string line;
-  while(std::getline(f,line)){ std::stringstream ss(line); Row r; char c; ss>>r.t>>c>>r.req>>c>>r.pv>>c>>r.hold>>c>>r.fan; R.push_back(r);} 
+  while(std::getline(f,line)){ std::stringstream ss(line); Row r; char c; ss>>r.t>>c>>r.req>>c>>r.pv>>c>>r.hold>>c>>r.fan; R.push_back(r);}
   const double tEnd=R.back().t;
   struct Res{double rms; double s,usat,Q,egg,UA,p0; int model;};
   std::vector<Res> all;
