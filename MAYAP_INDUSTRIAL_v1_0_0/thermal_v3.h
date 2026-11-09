@@ -406,6 +406,11 @@ class Controller {
     if (have >= want) { stallS_ = 0.0f; return; }
     stallS_ += 1.0f;
     if (stallS_ < waitTau * tau_) return;
+#ifdef LIFT_BURST
+    // The heater's answer arrives a transit time late: paying every second while PV has not answered yet pays the same shortfall many times over. The slow law
+    // therefore pays for ONE transit time, then waits for the answer for another waitTau transit times before it pays again.
+    if (!start && stallS_ >= (waitTau + 1.0f) * tau_) { stallS_ = 0.0f; return; }
+#endif
     const float pay = std::min(cap_ - hold_, (want - have) / (LIFT_KREF * tiTau * tau_));
     hold_ += pay; lifted_ += pay; lifting_ = pay > 0.0f;
 #else
