@@ -373,7 +373,7 @@ class Controller {
   // Trim: near SV the observer follows a slowly changing load with a small standing error (an evening cooling: 0.04 degC under SV for half an hour). The error itself,
   // read on the fine PV, is paid into the hold with a long integral time (TRIM_TI_S) in BOTH directions; it needs no oven model.
   void trim() {
-#ifdef TRIM_TI_S
+#if defined(TRIM_TI_S) || defined(TRIM_KI)
     // quiet time after a change of the set-point: the climb to the new level is the hold law's job
     if (!std::isfinite(spTrim_) || std::fabs(sp_ - spTrim_) > 0.01f) { spTrim_ = sp_; quietTrimS_ = 0.0f; } else quietTrimS_ += 1.0f;
     if (quietTrimS_ < TRIM_QUIET_S) return;
@@ -381,7 +381,11 @@ class Controller {
     const float e = sp_ - pv_;
     // only UNDER SV: a load that grows is followed faster, a load that falls (a hot noon) is left to the observer, which must not be pulled down by the sensor step
     if (!std::isfinite(e) || e > TRIM_BAND_C || e <= TRIM_DEAD_C) return;
+#ifdef TRIM_KI
+    hold_ = std::min(cap_, hold_ + TRIM_KI * (e - TRIM_DEAD_C));          // power units: percent per degC per second, no kAir in it
+#else
     hold_ = std::min(cap_, hold_ + kn_ * (e - TRIM_DEAD_C) / static_cast<float>(TRIM_TI_S));
+#endif
 #endif
   }
   void stallLift() {
