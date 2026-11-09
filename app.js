@@ -1896,14 +1896,13 @@
   function dayNumberToIso(n) { return new Date(n * 86400000).toISOString().slice(0, 10); }
   function startIsoFromBatchDay(day) { return dayNumberToIso(isoToDayNumber(vnDateIso()) - (Number(day) - 1)); }
   function batchDayFromStartIso(iso) { return isoToDayNumber(vnDateIso()) - isoToDayNumber(iso) + 1; }
-  // The day the form asks for (NaN when it is not a whole day).
-  function batchDayInput() { const v = Number($('batchDay')?.value); return Number.isInteger(v) ? v : NaN; }
+  // The day of the batch comes from the start date alone (there is no separate day field): NaN when the date is not a valid day.
+  function batchDayInput() { const v = batchDayFromStartIso($('startDate')?.value); return Number.isInteger(v) ? v : NaN; }
   // A running batch: the form shows the machine's own day and the date it implies (unless the user is editing the form).
   function syncBatchDayFields(device) {
     const runtime = device?.snapshot?.runtime;
-    if (!runtime || !$('batchDay') || hasDirtyForm('batchForm')) return;
+    if (!runtime || hasDirtyForm('batchForm')) return;
     if (runtime.batchRunning && Number(runtime.currentDay) >= 1) {
-      $('batchDay').value = String(Math.round(Number(runtime.currentDay)));
       $('startDate').value = startIsoFromBatchDay(runtime.currentDay);
     }
   }
@@ -1959,10 +1958,6 @@
     if (!hasDirtyForm('batchForm') || force) {
       $('batchName').value = device.batchMeta.name;
       $('startDate').value = device.batchMeta.startDate;
-      if (!device.snapshot?.runtime?.batchRunning) {
-        const day = batchDayFromStartIso(device.batchMeta.startDate);
-        $('batchDay').value = String(Number.isFinite(day) && day >= 1 ? day : 1);
-      }
       syncBatchDayFields(device);
     }
 
@@ -3590,11 +3585,6 @@
       ? `PV ${numberVi(values.pv, 2)}°C · SP ${numberVi(values.sp, 2)}°C · yêu cầu ${numberVi(values.req, 0)}%`
       : 'Chưa có số liệu (cảm biến chưa sẵn sàng hoặc firmware cũ)';
 
-    if (pmReplay.active) {
-      pmReplay.renderStep();
-      return;
-    }
-
     const now = Date.now();
     if (runtime?.pidMon?.valid && now - pidMon.lastAt >= PM_SAMPLE_MS) {
       pidMon.lastAt = now;
@@ -3771,139 +3761,6 @@
     }
   };
 
-  // --- Replay Mode Controller (Auto-return 5 minutes) ---
-  const pmReplay = {
-    active: false,
-    record: null,
-    cursor: 0,
-    speed: 1,
-    timer: null,
-    timeoutTimer: null,
-    timeoutSec: 300, // strictly 5 minutes
-    start(record) {
-      if (!record || !Array.isArray(record.samples) || record.samples.length === 0) {
-        toast('Bản ghi không có số liệu');
-        return;
-      }
-      this.active = true;
-      this.record = record;
-      this.cursor = 0;
-      this.speed = 1;
-      this.timeoutSec = 300;
-      const banner = $('pmReplayBanner');
-      if (banner) banner.hidden = false;
-      if ($('pmReplayTitle')) $('pmReplayTitle').textContent = record.name;
-      this.updateTimerDisplay();
-
-      pmCharts.temp.zLo = 0; pmCharts.temp.zHi = 1;
-      pmCharts.power.zLo = 0; pmCharts.power.zHi = 1;
-
-      if (this.timeoutTimer) clearInterval(this.timeoutTimer);
-      this.timeoutTimer = setInterval(() => {
-        this.timeoutSec--;
-        this.updateTimerDisplay();
-        if (this.timeoutSec <= 0) {
-          this.stop();
-          toast('Hết thời gian phát lại (5 phút), đã tự động trở về thời gian thực');
-        }
-      }, 1000);
-
-      this.startPlayback();
-      toast('Đang phát lại bản ghi. Bấm "Thoát về hiện tại" để dừng.');
-    },
-    updateTimerDisplay() {
-      const el = $('pmReplayTimer');
-      if (!el) return;
-      const m = String(Math.floor(this.timeoutSec / 60)).padStart(2, '0');
-      const s = String(this.timeoutSec % 60).padStart(2, '0');
-      el.textContent = `${m}:${s}`;
-    },
-    startPlayback() {
-      if (this.timer) clearInterval(this.timer);
-      const intervalMs = Math.max(50, Math.floor(1000 / this.speed));
-      this.timer = setInterval(() => {
-        if (!this.active || !this.record) return;
-        if (this.cursor < this.record.samples.length - 1) {
-          this.cursor++;
-          this.renderStep();
-        } else {
-          this.pause();
-        }
-      }, intervalMs);
-      if ($('pmReplayPlayBtn')) $('pmReplayPlayBtn').textContent = '⏸ Tạm dừng';
-    },
-    pause() {
-      if (this.timer) { clearInterval(this.timer); this.timer = null; }
-      if ($('pmReplayPlayBtn')) $('pmReplayPlayBtn').textContent = '▶ Tiếp tục';
-    },
-    togglePlay() {
-      if (this.timer) this.pause();
-      else this.startPlayback();
-    },
-    seek(ratio) {
-      if (!this.active || !this.record) return;
-      const len = this.record.samples.length;
-      this.cursor = Math.max(0, Math.min(len - 1, Math.floor(ratio * (len - 1))));
-      this.renderStep();
-    },
-    setSpeed(spd) {
-      this.speed = spd;
-      document.querySelectorAll('.pmSpeedBtn').forEach((b) => {
-        b.classList.toggle('active', Number(b.dataset.speed) === spd);
-      });
-      if (this.timer) this.startPlayback();
-    },
-    renderStep() {
-      if (!this.active || !this.record) return;
-      const s = this.record.samples[this.cursor];
-      if (!s) return;
-      const scrubber = $('pmReplayScrubber');
-      const len = this.record.samples.length;
-      if (scrubber && len > 1) {
-        scrubber.value = ((this.cursor / (len - 1)) * 100).toFixed(1);
-      }
-      if ($('pmReplayCurrentTime') && s.t) {
-        $('pmReplayCurrentTime').textContent = vnTime(new Date(s.t));
-      }
-      if ($('pmReplayTotalTime') && this.record.samples[len - 1]?.t) {
-        $('pmReplayTotalTime').textContent = vnTime(new Date(this.record.samples[len - 1].t));
-      }
-      if (pidMon.cells) {
-        if (pidMon.cells.pv) pidMon.cells.pv.textContent = numberVi(s.pv, 2);
-        if (pidMon.cells.sp) pidMon.cells.sp.textContent = numberVi(s.sp, 2);
-        if (pidMon.cells.err) pidMon.cells.err.textContent = numberVi(s.err != null ? s.err : (s.sp - s.pv), 2);
-        if (pidMon.cells.req) pidMon.cells.req.textContent = numberVi(s.req, 1);
-        if (pidMon.cells.act) pidMon.cells.act.textContent = numberVi(s.act, 1);
-        if (pidMon.cells.pred) pidMon.cells.pred.textContent = numberVi(s.pred != null ? s.pred : s.pv, 2);
-        if (pidMon.cells.phase) pidMon.cells.phase.textContent = s.phase || 'Phát lại';
-        if (pidMon.cells.fmt) pidMon.cells.fmt.textContent = s.fmt || '0,1 °C';
-        if (pidMon.cells.slot) pidMon.cells.slot.textContent = s.slot != null ? String(s.slot) : '392';
-      }
-      if ($('pmSummary')) {
-        $('pmSummary').textContent = `[PHÁT LẠI] PV ${numberVi(s.pv, 2)}°C · SP ${numberVi(s.sp, 2)}°C · yêu cầu ${numberVi(s.req, 0)}%`;
-      }
-      drawPidMonitorCharts();
-    },
-    stop() {
-      if (this.timer) { clearInterval(this.timer); this.timer = null; }
-      if (this.timeoutTimer) { clearInterval(this.timeoutTimer); this.timeoutTimer = null; }
-      this.active = false;
-      this.record = null;
-      const banner = $('pmReplayBanner');
-      if (banner) banner.hidden = true;
-      renderPidMonitor(currentDevice());
-    }
-  };
-
-  function pmReplayLatest() {
-    const list = pmStorage.list(currentDevice()?.id);
-    if (!list || list.length === 0) {
-      toast('Chưa có bản ghi nào để phát lại. Bấm "Bắt đầu ghi 24h" để tạo bản ghi.');
-      return;
-    }
-    pmReplay.start(list[list.length - 1]);
-  }
-
   function pmDownloadRecordCsv(record) {
     if (!record || !record.samples || record.samples.length === 0) {
       toast('Bản ghi không có số liệu');
@@ -3944,15 +3801,10 @@
             <small>Thời lượng: ${durText} · ${r.sampleCount || 0} mẫu</small>
           </div>
           <div class="pmHistoryCardActions">
-            <button class="ghost small pmHistReplayBtn" type="button">▶ Phát</button>
             <button class="ghost small pmHistCsvBtn" type="button">📥 CSV</button>
             <button class="ghost small danger pmHistDelBtn" type="button">🗑</button>
           </div>
         `;
-        card.querySelector('.pmHistReplayBtn')?.addEventListener('click', () => {
-          dialog.close();
-          pmReplay.start(r);
-        });
         card.querySelector('.pmHistCsvBtn')?.addEventListener('click', () => {
           pmDownloadRecordCsv(r);
         });
@@ -4050,18 +3902,6 @@
       ctx.stroke();
     }
     ctx.setLineDash([]); ctx.fillStyle = color;
-
-    // Replay cursor indicator
-    if (pmReplay.active && pmReplay.record?.samples) {
-      const s = pmReplay.record.samples[pmReplay.cursor];
-      if (s && s.t >= tStart && s.t <= tEnd) {
-        const rx = x(s.t);
-        ctx.strokeStyle = '#f6c343'; ctx.lineWidth = 2; ctx.beginPath();
-        ctx.moveTo(rx, top); ctx.lineTo(rx, h - bottom); ctx.stroke();
-        ctx.fillStyle = '#f6c343'; ctx.beginPath();
-        ctx.arc(rx, top + 4, 3, 0, Math.PI * 2); ctx.fill();
-      }
-    }
 
     // Hover tooltip & Crosshair
     if (cState.hoverX != null && cState.hoverX >= left && cState.hoverX <= w - right) {
@@ -4177,7 +4017,7 @@
         if (!chartKey || !pmCharts[chartKey]) return;
         const cState = pmCharts[chartKey];
         const action = btn.dataset.action;
-        const series = pmReplay.active && pmReplay.record?.samples ? pmReplay.record.samples : pidMon.series;
+        const series = pidMon.series;
         if (!series || series.length < 2) return;
         const t0 = series[0].t, t1 = series[series.length - 1].t;
         const totalSpan = Math.max(1, t1 - t0);
@@ -4211,9 +4051,7 @@
 
   function drawPidMonitorCharts() {
     if (!pidMon.open) return;
-    const series = pmReplay.active && pmReplay.record?.samples?.length > 1
-      ? pmReplay.record.samples
-      : pidMon.series;
+    const series = pidMon.series;
     drawPmChart($('pmTempChart'), series, [{ key: 'pv', color: '#d9534f' }, { key: 'sp', color: '#2f80ed' }], { auto: true }, 'temp');
     drawPmChart($('pmPowerChart'), series, [{ key: 'req', color: '#f2994a' }, { key: 'act', color: '#9b51e0', dash: [4, 3] }],
       { lo: 0, hi: 100, vent: true }, 'power');
@@ -4521,8 +4359,8 @@
     if (!$('startDate').value) return invalidate('batchForm', 'startDate', 'Hãy chọn ngày bắt đầu.');
     const days = Number($('totalDays').value);
     const day = batchDayInput();
-    if (!(day >= 1)) return invalidate('batchForm', $('startDate').value > vnDateIso() ? 'startDate' : 'batchDay', 'Ngày bắt đầu không được ở tương lai; ngày ấp phải từ 1.');
-    if (!(day <= days)) return invalidate('batchForm', 'batchDay', `Ngày ấp hiện tại không được lớn hơn tổng số ngày ấp (${days}).`);
+    if (!(day >= 1)) return invalidate('batchForm', 'startDate', 'Ngày bắt đầu không được ở tương lai.');
+    if (!(day <= days)) return invalidate('batchForm', 'startDate', `Ngày bắt đầu quá xa: ngày ấp hiện tại sẽ lớn hơn tổng số ngày ấp (${days}).`);
     const temperature = Number($('batchTarget').value);
     const humidity = Number($('lowHumidityAlarm').value);
     if (!(days >= 1 && days <= 40)) return invalidate('batchForm', 'totalDays', 'Tổng số ngày ấp phải từ 1 đến 40 ngày.');
@@ -4971,15 +4809,6 @@
       await sendConfig('quickForm', 'quick');
     });
 
-    $('batchDay').addEventListener('input', () => {
-      const day = batchDayInput();
-      if (day >= 1) $('startDate').value = startIsoFromBatchDay(day);
-    });
-    $('startDate').addEventListener('input', () => {
-      const day = batchDayFromStartIso($('startDate').value);
-      if (Number.isFinite(day)) $('batchDay').value = String(day);
-    });
-
     $('batchForm').addEventListener('submit', async (event) => {
       event.preventDefault();
       if (!validateBatchForm()) return;
@@ -5117,7 +4946,6 @@
       if (pmRecorder.active) pmRecorder.stop();
       else pmRecorder.start(currentDevice());
     });
-    $('pmReplayBtn')?.addEventListener('click', pmReplayLatest);
     $('pmHistoryBtn')?.addEventListener('click', pmOpenHistoryDialog);
     $('pmHistoryClose')?.addEventListener('click', () => $('pmHistoryDialog')?.close());
     $('pmHistoryCloseBtn')?.addEventListener('click', () => $('pmHistoryDialog')?.close());
@@ -5126,11 +4954,6 @@
         pmStorage.clearAll(currentDevice()?.id);
         pmOpenHistoryDialog();
       }
-    });
-    $('pmReplayPlayBtn')?.addEventListener('click', () => pmReplay.togglePlay());
-    $('pmReplayExitBtn')?.addEventListener('click', () => pmReplay.stop());
-    $('pmReplayScrubber')?.addEventListener('input', (e) => {
-      pmReplay.seek(Number(e.target.value) / 100);
     });
 
     bindPmChartCanvas($('pmTempChart'), 'temp');

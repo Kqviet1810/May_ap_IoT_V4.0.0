@@ -4701,11 +4701,9 @@ class MachineController {
           const bool emergencyAckBlocked = remoteAck && emergencyActive_;
           const bool hadTurnFault = turnFaultLatched_;
           const bool turnAckBlocked = remoteAck && hadTurnFault;
-          // The noise follows alarm_sound.h: ACK mutes the High / Emergency siren while the reading falls (it speaks again when it stands or rises) and the
-          // output-conflict siren for a minute. Not remote for these (they need a person at the machine).
-          if (!emergencyAckBlocked && emergencyActive_) emergencyLoud_.ack(now, safetyTempLast_);
+          // The over-temperature siren has no ACK (alarm_sound.h: it stops when the condition ends). ACK mutes the output-conflict siren for a minute,
+          // not remote (it needs a person at the machine).
           if (!remoteAck && faults_.live(FaultCode::OutputConflict)) outputConflictMutedUntil_ = now + SIREN_TEMPORARY_MUTE_MS;
-          if (!emergencyAckBlocked && highTemperatureActive_) highLoud_.ack(now, safetyTempLast_);
           const bool turnCleared = (hadTurnFault && !turnAckBlocked) ? clearTurnFault() : false;
           const bool systemAck = (command.alarmMask & AlarmSystem) != 0U;
           const bool resetCleared = systemAck && abnormalResetLatched_;
@@ -5277,20 +5275,15 @@ class MachineController {
 
   // ---- What may make a noise and when it stops (alarm_sound.h): the live condition decides, never the stored record ----
   void updateSoundPolicy(uint32_t now) {
-    const alarmsound::LoudVoice::Params lp;
-    const bool valid = std::isfinite(safetyTempLast_);
-    // Both over-temperature lines are LOUD while their alarm is on and silent the moment it is off: the alarm itself is a plain comparison with the line.
-    const bool heaterOff = runtime_.heaterPower <= 0.5f;                        // the request is 0: an ACK is not asked for a fall the oven cannot make
-    const alarmsound::SirenGate::Params gp;
-    const bool highSiren = highGate_.update(now, valid, safetyTempLast_, config_.highTempAlarm, highTemperatureActive_, gp);   // E111 itself (and what it cuts) is unchanged
-    highLoud_.update(now, valid, safetyTempLast_, highSiren, lp, heaterOff);
-    emergencyLoud_.update(now, valid, safetyTempLast_, emergencyActive_, lp, heaterOff);
+    // The over-temperature siren: one rule from the setpoint (alarm_sound.h, OverSetpointSiren). E111 / E112 and what they cut are unchanged.
+    const alarmsound::OverSetpointSiren::Params op;
+    overSiren_.update(now, overSetpointC_, tempAlarmEligible_, op);
     const bool conflict = faults_.live(FaultCode::OutputConflict);
     if (!conflict) outputConflictMutedUntil_ = 0U;
     const bool conflictSiren = conflict && timeReached(now, outputConflictMutedUntil_);
-    sirenWanted_ = highLoud_.siren(now, lp) || emergencyLoud_.siren(now, lp) || conflictSiren;
+    sirenWanted_ = overSiren_.on() || conflictSiren;
     audibleMask_ = faults_.liveAlarmBits(FaultSound::Alert) | (conflictSiren ? AlarmSystem : AlarmNone) |
-                   (highLoud_.audible() ? AlarmTempHigh : AlarmNone) | (emergencyLoud_.audible() ? AlarmEmergency : AlarmNone);
+                   (overSiren_.on() ? (emergencyActive_ ? AlarmEmergency : AlarmTempHigh) : AlarmNone);
     bool chime = false;
     if (chimeReminder_.update(now, faults_.liveCodeBits(FaultSound::Chime), CHIME_REMIND_MS)) chime = true;
     if (chime) ++chimeSeq_;
@@ -5980,6 +5973,8 @@ class MachineController {
     // roi 1 canh bao qua nhiet dang active).
     const bool tempAlarmEligible = config_.highTempAlarmWithoutBatch || batchRunning_ ||
                                     testModeActive_;
+    tempAlarmEligible_ = tempAlarmEligible;
+    overSetpointC_ = (safetySampleValid_ && isfinite(temperature_)) ? temperature_ - config_.targetTemp : NAN;
 
     // Cap 3 vao ngay bang mau hop le dau tien, sau do giu qua mat cam bien.
     if (tempAlarmEligible && validSafety && safetyTemp >= config_.emergencyTemp) {
@@ -6033,7 +6028,12 @@ class MachineController {
       vc.fanRunning = outputs_.state().ventFan;                                   // the fans run now, for any reason (the day profile, the Web ...)
       float onIn = NAN, offIn = NAN;
       if (ventProfileTiming(now, onIn, offIn) && onIn > 0.0f) vc.profileOnInS = onIn;
-      ventTemperatureActive_ = ventLine_.update(now, validSafety, safetyTemp, config_.ventOnTemp, config_.ventOffTemp, vp, vc);
+      // The line looks at the FILTERED reading (max(raw, filtered) is +0.1 degC high on a sensor that steps, the fans ran on a temperature that stood on SV) and never
+      // below SV + VENT_LINE_MIN_OVER_C: a temperature that holds the setpoint is not an overheat. It stops at the setpoint at the latest.
+      const bool validVent = safetySampleValid_ && isfinite(temperature_);
+      const float ventOn = std::max(config_.ventOnTemp, config_.targetTemp + VENT_LINE_MIN_OVER_C);
+      const float ventOff = std::max(config_.ventOffTemp, config_.targetTemp);
+      ventTemperatureActive_ = ventLine_.update(now, validVent, temperature_, ventOn, ventOff, vp, vc);
     }
 
     // The heater is blocked only when the reading runs well past SV (a safety margin, not a fan rule): it comes back 0.1 degC lower. "Well past"
@@ -7231,7 +7231,7 @@ class MachineController {
     req.ventFanForceOn = req.ventFan;
     req.ventFanBypassTiming = true;
     req.light = pulseOn(TestOutputId::Light);
-    req.siren = pulseOn(TestOutputId::Siren);
+    req.siren = pulseOn(TestOutputId::Siren) || sirenWanted_;        // a real over-temperature siren is not cut by a test pulse that is off
     // CTHT la interlock cuoi cung ngay tai output request, ngoai logic stop/
     // latch o updateTestMode(): du 1 chu ky state chua kip clear cung khong
     // the tiep tuc day motor vao dung dau hanh trinh.
@@ -8056,11 +8056,6 @@ class MachineController {
       mayapSerialPrintf(false, "[SER] BATCH %s: %s - %s\n", arg1,
                        ok ? "OK" : "FAIL", message ? message : "SAI LENH");
     } else if (cmd && !strcmp(cmd, "ACK")) {
-      if (emergencyActive_) {
-        emergencyLoud_.ack(now, safetyTempLast_);
-        highLoud_.ack(now, safetyTempLast_);
-        mayapSerialPrintf(false, "[SER] SIREN MUTE (until the reading stands or rises)\n");
-      }
       if (abnormalResetLatched_) {
         abnormalResetLatched_ = false;
         power_.acknowledge();
@@ -8509,8 +8504,9 @@ class MachineController {
   bool otaCheckpointDone_ = false;                   // the batch was checkpointed for the update that is downloading now
   bool ventHeaterBlock_ = false;                     // the heater is held off well above SV (see updateAlarms); the fan has its own line
   uint8_t ventReason_ = 0U;
-  alarmsound::LoudVoice highLoud_{}, emergencyLoud_{};
-  alarmsound::SirenGate highGate_{};
+  alarmsound::OverSetpointSiren overSiren_{};
+  float overSetpointC_ = NAN;                       // filtered reading - SV, NAN when the reading is not valid
+  bool tempAlarmEligible_ = false;
   alarmsound::Reminder chimeReminder_{};
   bool sirenWanted_ = false;                        // the siren (external + ATtiny mirror) is wanted now
   uint32_t audibleMask_ = AlarmNone, outputConflictMutedUntil_ = 0U;

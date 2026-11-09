@@ -48,7 +48,7 @@ tr:target td:first-child strong{color:#8a5a00}
 @media screen { body { background:#e9efef; } .sheet { box-shadow:0 4px 18px rgba(0,0,0,.12); min-height:210mm; } }
 </style></head><body><div class="toolbar"><a class="tb" href="../">&larr; Quay lại MAYAP</a><a class="tb" href="#danh-sach-ma-loi">Danh sách mã lỗi</a><a class="tb" href="./MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.pdf">Mở PDF</a><button onclick="window.print()">In / Lưu PDF</button></div><main class="sheet"><h1>MÁY ẤP TRỨNG MAYAP - HƯỚNG DẪN VẬN HÀNH VÀ MÃ LỖI</h1>
 <p><strong>Phiên bản tài liệu:</strong> v1.4 (tên file giữ nguyên để các liên kết cũ vẫn mở được)<br />
-<strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - bản <strong>2.9.10</strong> (Web 1.1.32)<br />
+<strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - bản <strong>2.9.11</strong> (Web 1.1.33)<br />
 <strong>Ngày cập nhật:</strong> 07/11/2026<br />
 <strong>Nguồn chuẩn mã lỗi:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0/machine_control.h</code></p>
 <blockquote>
@@ -592,8 +592,8 @@ tr:target td:first-child strong{color:#8a5a00}
 <li><strong>Quạt hút không làm mức giữ nhiệt tăng:</strong> khi quạt hút chạy, mức giữ nhiệt chỉ được giảm, không tăng (trước đây máy đứng yên và giữ 5 % suốt đợt quạt).</li>
 <li><strong>Vùng chết 0,03 °C quanh SV:</strong> sai lệch dưới 0,03 °C không làm công suất nhấp nhả.</li>
 <li><strong>Nhớ mức giữ nhiệt qua khởi động lại:</strong> khi lò đã ổn định, máy lưu mức giữ nhiệt vào EEPROM (hai ô luân phiên, có CRC). Sau cập nhật phần mềm hay mất điện ngắn (dưới 30 phút, nhiệt độ và SV gần như cũ, cùng một mẻ) máy bật lại đúng mức đã nhớ (90 %) thay vì mức mặc định 12 %. Quá lâu, khác mẻ, hay nhiệt độ lệch thì bỏ qua. <em>Xoa du lieu hoc nhiet</em> xóa cả mức này.</li>
-<li><strong>Còi báo cao:</strong> nhiệt độ chạm rồi hạ rồi chạm lại quanh ngưỡng không còn làm còi bật tắt liên tục: còi kêu khi tổng thời gian vượt ngưỡng đủ 60 giây (vượt từ 0,1 °C thì kêu ngay) và chỉ tắt khi đã yên 30 giây. Việc cắt thanh nhiệt và contactor khi quá nhiệt không đổi.</li>
-<li><strong>Tắt tiếng (ACK) khi thanh nhiệt đã về 0:</strong> máy không thể hạ nhiệt thêm nên còi không kêu lại sau 2 phút; còi chỉ kêu lại nếu nhiệt độ tăng thêm 0,2 °C hoặc sau 10 phút.</li>
+<li><strong>Còi báo cao (đã thay bằng quy tắc ở mục 15):</strong> nhiệt độ chạm rồi hạ rồi chạm lại quanh ngưỡng không còn làm còi bật tắt liên tục: còi kêu khi tổng thời gian vượt ngưỡng đủ 60 giây (vượt từ 0,1 °C thì kêu ngay) và chỉ tắt khi đã yên 30 giây. Việc cắt thanh nhiệt và contactor khi quá nhiệt không đổi.</li>
+<li><strong>Tắt tiếng (ACK) khi thanh nhiệt đã về 0 (đã bỏ ở 2.9.11, mục 15):</strong> máy không thể hạ nhiệt thêm nên còi không kêu lại sau 2 phút; còi chỉ kêu lại nếu nhiệt độ tăng thêm 0,2 °C hoặc sau 10 phút.</li>
 </ul>
 <hr />
 <h1>14. Khởi động chậm và mẻ mới (2.9.10)</h1>
@@ -604,4 +604,13 @@ tr:target td:first-child strong{color:#8a5a00}
 <li><strong>Không đổi:</strong> các ngưỡng bảo vệ, cảnh báo thanh nhiệt không nóng (E115), còi, đảo trứng. Kết quả trên lò mô phỏng: khởi động chậm của thanh nhiệt yếu nhanh hơn 10–40 % ở lò thiếu hơn 0,5 °C; ca thiếu chỉ 0,3–0,5 °C vẫn như bản 2.9.9.</li>
 </ul>
 <hr />
-<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 2.9.10</strong></p></main></body></html>
+<h1>15. Còi quá nhiệt và quạt hút theo điểm đặt (2.9.11)</h1>
+<ul>
+<li><strong>Còi quá nhiệt, một quy tắc duy nhất:</strong> tính theo nhiệt độ đã lọc trừ điểm đặt (SV). Vượt SV từ 0,2 °C liên tục 60 giây thì còi kêu; vượt từ 0,3 °C thì kêu ngay. Còi kêu liên tục (không ngắt quãng), chỉ tắt khi nhiệt độ không quá SV + 0,1 °C trong 60 giây liên tục. Vượt lại thì kêu lại theo cùng quy tắc.</li>
+<li><strong>Không còn nút tắt tiếng (ACK) cho còi này</strong> và không còn quyền còi riêng cho mức khẩn cấp: còi chỉ tắt khi điều kiện vượt đã hết. Một mẫu cảm biến lỗi không làm còi đang kêu im đi; chế độ thử đầu ra không cắt còi thật.</li>
+<li><strong>Quạt hút theo nhiệt độ:</strong> quạt nhìn nhiệt độ đã lọc (không còn dùng giá trị cao hơn giữa nhiệt thô và nhiệt lọc, vốn cao hơn thật khoảng 0,1 °C), chỉ bắt đầu khi nhiệt độ vượt SV ít nhất 0,2 °C, và tắt muộn nhất khi nhiệt độ về SV. Nhiệt độ đứng đúng điểm đặt không còn làm quạt bật (log thực tế 09/11: 3 lần bật trong 40 phút, nay 0 lần).</li>
+<li><strong>Web:</strong> bỏ ô "Ngày ấp hiện tại" (ngày ấp tính từ "Ngày bắt đầu", huy hiệu NGÀY n giữ nguyên); bỏ khung phát lại của PID Monitor.</li>
+<li><strong>Không đổi:</strong> các bảo vệ E111/E112 (cắt thanh nhiệt, nhả contactor, quạt khẩn), E115, đảo trứng.</li>
+</ul>
+<hr />
+<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 2.9.11</strong></p></main></body></html>
