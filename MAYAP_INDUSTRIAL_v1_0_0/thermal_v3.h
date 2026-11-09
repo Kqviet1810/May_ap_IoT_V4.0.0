@@ -89,6 +89,10 @@ constexpr float LIFT_TI_OF_TAU = LIFT_TI_TAU;
 #define LIFT_GATE 0.5f
 #endif
 constexpr float LIFT_GATE_C = LIFT_GATE;
+#ifndef LIFT_GATE_SLOW
+#define LIFT_GATE_SLOW 0.5f
+#endif
+constexpr float LIFT_GATE_SLOW_C = LIFT_GATE_SLOW;
 #ifndef LIFT_CLOSE
 #define LIFT_CLOSE 4.0f
 #endif
@@ -385,14 +389,14 @@ class Controller {
       if (over > 0.03f) { const float g = std::min(lifted_, std::max(lifted_ / tau_, 0.0f)); hold_ = std::max(0.0f, hold_ - g); lifted_ -= g; }
       else lifted_ *= (1.0f - 1.0f / (10.0f * tau_));
     }
-    const float gate = std::max(LIFT_GATE_C, 3.0f * sigma_);
+    const bool start = !arrived_ && liveS_ < LIFT_START_S;
+    const float gate = std::max(start ? LIFT_GATE_C : LIFT_GATE_SLOW_C, 3.0f * sigma_);
     const float gap = sp_ - pv_;
     if (ventFan_ || door_ || doorLatch_ || !std::isfinite(gap) || !(gap > gate && gap < farBand_)) { stallS_ = 0.0f; return; }
 #ifdef LIFT_SLOPE
     // measured response only: PV must close the gap in LIFT_CLOSE_TAU transit times; what is missing of that slope is paid into the hold with the gain of a slow oven.
     // The first minutes of a start that has not reached SV yet (cold eggs, a heavy load that nobody has measured) use a faster law; once PV has been at SV, or after
     // LIFT_START_S, a stall is more likely a door, a tray or the fan (a temporary load), and the slow law applies.
-    const bool start = !arrived_ && liveS_ < LIFT_START_S;
     const float closeTau = start ? LIFT_FAST_CLOSE : LIFT_CLOSE_TAU, tiTau = start ? LIFT_FAST_TI : LIFT_TI_OF_TAU, waitTau = start ? LIFT_FAST_WAIT : LIFT_WAIT;
     const float want = (sp_ - pv_) / (closeTau * tau_);
     const float have = std::max(0.0f, lsSlope_);
