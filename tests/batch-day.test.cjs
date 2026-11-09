@@ -43,7 +43,7 @@ test('HMI: the batch screen has a fifth parameter (day); starting sends the chos
 
 test('Web: the day field, its two-way link with the start date, and the commands', () => {
   const html = read('index.html');
-  assert.match(html, /id="batchDay"/);
+  assert.ok(!/id="batchDay"/.test(html), "the day is derived from the start date: no separate input");
   const app = read('app.js');
   assert.match(app, /sendCommand\('batch_set_day', \{ arg0: day \}\)/);
   assert.match(app, /sendCommand\('batch_start', batchDayInput\(\) > 1 \? \{ arg0: batchDayInput\(\) \} : \{\}\)/);

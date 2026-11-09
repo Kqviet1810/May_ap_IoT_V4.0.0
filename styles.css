@@ -492,24 +492,6 @@ input:disabled,select:disabled,textarea:disabled,.customSelectTrigger:disabled{o
 .pmRecordBtn.isRecording .pmRecDot{animation:pmBlink 1s infinite}
 @keyframes pmBlink{0%,100%{opacity:1}50%{opacity:.2}}
 
-.pmReplayBanner{display:grid;gap:8px;padding:10px 12px;border-radius:var(--radius-sm);background:var(--tile);border:1px solid var(--lineSoft);color:var(--ink);margin-bottom:10px}
-.pmReplayHead{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
-.pmReplayBadgeWrap{display:flex;align-items:center;gap:8px}
-.pmReplayBadge{padding:2px 8px;border-radius:var(--radius-xs);background:var(--wash);border:1px solid var(--lineSoft);color:var(--primary2);font-size:var(--fs-2xs);font-weight:700;letter-spacing:.3px}
-.pmReplayTitle{font-weight:700;font-size:var(--fs-xs);color:var(--ink)}
-.pmReplayCountdown{font-size:var(--fs-xs);color:var(--muted);display:flex;align-items:center;gap:6px}
-.pmTimerText{font-variant-numeric:tabular-nums;color:#d9534f;font-weight:700}
-.pmExitBtn{min-height:28px !important;padding:0 8px !important;font-size:var(--fs-2xs) !important;border-color:var(--lineSoft) !important;color:var(--muted) !important}
-.pmExitBtn:hover{color:#d9534f !important;border-color:#d9534f !important}
-.pmReplayScrubberWrap{display:flex;align-items:center;gap:8px}
-.pmTimeLabel{font-size:var(--fs-2xs);font-variant-numeric:tabular-nums;font-weight:600;min-width:50px;color:var(--muted)}
-.pmSlider{flex:1 1 auto;-webkit-appearance:none;appearance:none;height:4px;border-radius:2px;background:var(--lineSoft);outline:none;cursor:pointer}
-.pmSlider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:var(--primary);cursor:pointer}
-.pmSlider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:var(--primary);cursor:pointer;border:none}
-.pmReplayControls{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:var(--fs-xs)}
-.pmReplayControls button{min-height:28px;padding:0 8px;font-size:var(--fs-2xs);border-radius:var(--radius-xs)}
-.pmSpeedWrap{display:flex;align-items:center;gap:4px;font-size:var(--fs-2xs);color:var(--muted)}
-.pmSpeedBtn.active{background:var(--primary) !important;color:#fff !important;border-color:var(--primary) !important}
 
 .pmHistoryList{display:grid;gap:8px;max-height:360px;overflow-y:auto;padding-right:4px}
 .pmHistoryCard{display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px;padding:10px 12px;border-radius:var(--radius-sm);background:var(--tile);border:1px solid var(--lineSoft)}

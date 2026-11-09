@@ -11,7 +11,7 @@ const protocol = require('../protocol_v2.js');
 function loadBrowserEnv(overrides = {}, initialStorage = {}) {
   const source = fs.readFileSync(require.resolve('../app.js'), 'utf8').replace(/  init\(\);\s*\}\)\(\);\s*$/, `
     Object.assign(window.hooks, {
-      state, pidMon, pmStorage, pmRecorder, pmReplay, pmCharts,
+      state, pidMon, pmStorage, pmRecorder, pmCharts,
       pmUpdateRecordCount, pmValues, PM_ITEMS, pmIngestLog, pmCsv,
       drawPidMonitorCharts, drawPmChart
     });
@@ -56,13 +56,11 @@ function loadBrowserEnv(overrides = {}, initialStorage = {}) {
   return { ...window.hooks, elements, storage, timers, elapse(ms) { wall += ms; now += ms; } };
 }
 
-test('UI elements for 24h recording, replay, 4-button action bar and history modal exist in index.html', () => {
+test('UI elements for 24h recording, 3-button action bar and history modal exist in index.html', () => {
   const html = fs.readFileSync(require.resolve('../index.html'), 'utf8');
   for (const id of [
     'pmRecordBtn', 'pmRecordBtnText', 'pmRecDot',
-    'pmReplayBtn', 'pmHistoryBtn', 'pmRecordCount',
-    'pmReplayBanner', 'pmReplayTitle', 'pmReplayTimer', 'pmReplayExitBtn', 'pmReplayScrubber',
-    'pmReplayPlayBtn', 'pmReplayCurrentTime', 'pmReplayTotalTime',
+    'pmHistoryBtn', 'pmRecordCount',
     'pmHistoryDialog', 'pmHistoryTitle', 'pmHistoryList', 'pmHistoryClose', 'pmHistoryClearAll',
     'pmTempChart', 'pmPowerChart', 'pmDownload'
   ]) {
@@ -79,8 +77,6 @@ test('styles.css contains styling for chart toolbar, replay banner, recording do
   for (const sel of [
     '.pmChartContainer', '.pmChartHeader', '.pmChartToolbar',
     '.pmRecordBtn', '.isRecording', '.pmRecDot',
-    '.pmReplayBanner', '.pmReplayHead', '.pmReplayBadge', '.pmTimerText',
-    '.pmReplayScrubberWrap', '.pmSlider', '.pmReplayControls',
     '.pmHistoryList', '.pmHistoryCard'
   ]) {
     assert.ok(css.includes(sel), `Missing CSS selector ${sel}`);
@@ -150,28 +146,10 @@ test('pmRecorder starts, accumulates samples, and stops with valid record', () =
   assert.equal(saved[saved.length - 1].sampleCount, 2);
 });
 
-test('pmReplay initializes 5-minute timeout and can be stopped', () => {
-  const env = loadBrowserEnv();
-  const { pmReplay } = env;
-
-  const mockRecord = {
-    id: 'rec_mock',
-    name: 'Bản ghi test',
-    deviceId: 'MAP-01',
-    samples: [
-      { t: 1000, pv: 37.50, sp: 37.50, req: 10, act: 10 },
-      { t: 2000, pv: 37.52, sp: 37.50, req: 8, act: 9 }
-    ]
-  };
-
-  pmReplay.start(mockRecord);
-  assert.equal(pmReplay.active, true);
-  assert.equal(pmReplay.timeoutSec, 300); // exactly 5 minutes (300 seconds)
-
-  // Exit replay
-  pmReplay.stop();
-  assert.equal(pmReplay.active, false);
-  assert.equal(pmReplay.record, null);
+test('the replay player is gone (2.9.11): no banner, no button, no controller', () => {
+  const html = fs.readFileSync(require.resolve('../index.html'), 'utf8');
+  const app = fs.readFileSync(require.resolve('../app.js'), 'utf8');
+  assert.ok(!/pmReplay/.test(html) && !/pmReplay/.test(app));
 });
 
 test('pmCharts maintains independent zoom states for temp and power charts', () => {

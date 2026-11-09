@@ -86,7 +86,6 @@
 <div class="batchGrid" id="batchGrid">
 <label class="compactTile"><span>Tên mẻ ấp</span><input id="batchName" maxlength="32" value="Mẻ ấp 01"/></label>
 <label class="compactTile"><span>Ngày bắt đầu</span><input id="startDate" type="date" value="2026-07-29"/></label>
-<label class="compactTile"><span>Ngày ấp hiện tại</span><div class="unit"><input id="batchDay" max="40" min="1" type="number" value="1"/><b>Ngày</b></div></label>
 <label class="compactTile"><span>Tổng số ngày ấp</span><div class="unit"><input id="totalDays" max="40" min="1" type="number" value="21"/><b>Ngày</b></div></label>
 <label class="compactTile"><span>Nhiệt độ đặt</span><div class="unit"><input id="batchTarget" max="40" min="30" step="0.1" type="number" value="37.5"/><b>°C</b></div></label>
 <label class="compactTile"><span>Cảnh báo ẩm thấp</span><div class="unit"><input id="lowHumidityAlarm" max="90" min="10" step="1" type="number" value="45"/><b>%RH</b></div></label>
@@ -247,34 +246,6 @@
 <details class="settingCard" id="pidMonitorCard">
 <summary><span class="settingIcon"><svg fill="none" height="22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="22"><polyline points="3 17 9 11 13 15 21 6"/><polyline points="15 6 21 6 21 12"/></svg></span><span class="settingSummary"><strong>PID Monitor</strong><small id="pmSummary">Chỉ xem · số liệu thật từ bộ điều khiển</small></span><span aria-hidden="true" class="disclosure"></span></summary>
 <div class="settingBody">
-<div class="pmReplayBanner" id="pmReplayBanner" hidden>
-  <div class="pmReplayHead">
-    <div class="pmReplayBadgeWrap">
-      <span class="pmReplayBadge">Phát lại</span>
-      <strong class="pmReplayTitle" id="pmReplayTitle">Bản ghi gần nhất</strong>
-    </div>
-    <div class="pmReplayCountdown">
-      <span>Tự quay lại:</span>
-      <b class="pmTimerText" id="pmReplayTimer">05:00</b>
-    </div>
-    <button class="ghost small pmExitBtn" id="pmReplayExitBtn" type="button">✕ Thoát</button>
-  </div>
-  <div class="pmReplayScrubberWrap">
-    <span class="pmTimeLabel" id="pmReplayCurrentTime">00:00:00</span>
-    <input class="pmSlider" id="pmReplayScrubber" max="100" min="0" step="0.1" type="range" value="0" />
-    <span class="pmTimeLabel" id="pmReplayTotalTime">24:00:00</span>
-  </div>
-  <div class="pmReplayControls">
-    <button class="ghost small" id="pmReplayPlayBtn" type="button">⏸ Tạm dừng</button>
-    <div class="pmSpeedWrap">
-      <span>Tốc độ:</span>
-      <button class="ghost small pmSpeedBtn active" data-speed="1" type="button">1x</button>
-      <button class="ghost small pmSpeedBtn" data-speed="5" type="button">5x</button>
-      <button class="ghost small pmSpeedBtn" data-speed="20" type="button">20x</button>
-      <button class="ghost small pmSpeedBtn" data-speed="60" type="button">60x</button>
-    </div>
-  </div>
-</div>
 <div class="pmGrid" id="pmGrid"></div>
 <div class="pmChartWrap"><canvas aria-label="Nhiệt độ và giá trị đặt" height="150" id="pmTempChart"></canvas></div>
 <div class="pmChartWrap"><canvas aria-label="Công suất gia nhiệt và sự kiện quạt hút" height="150" id="pmPowerChart"></canvas></div>
@@ -283,7 +254,6 @@
     <span class="pmRecDot" id="pmRecDot"></span>
     <span id="pmRecordBtnText">Bắt đầu ghi 24h</span>
   </button>
-  <button class="ghost pmActionBtn" id="pmReplayBtn" type="button">▶ Phát lại gần nhất</button>
   <button class="ghost pmActionBtn" id="pmHistoryBtn" type="button">📁 Bản ghi (<span id="pmRecordCount">0</span>/5)</button>
   <button class="ghost pmActionBtn" disabled="" id="pmDownload" type="button">📥 Tải log CSV</button>
 </div>
@@ -447,5 +417,5 @@
 </dialog>
 <div aria-live="polite" class="toast" id="toast" role="status"></div>
 
-<script defer src="./config.js?v=1.1.32"></script><script defer src="./account.js?v=1.1.32"></script><script defer src="./vendor/jsQR.min.js"></script><script defer src="./vendor/mqtt.min.js"></script><script defer src="./push.js?v=1.1.32"></script><script defer src="./protocol_v2.js?v=1.1.32"></script><script defer src="./notes.js?v=1.1.32"></script><script defer src="./mqtt_transport.js?v=1.1.32"></script><script defer src="./app.js?v=1.1.32"></script></body>
+<script defer src="./config.js?v=1.1.33"></script><script defer src="./account.js?v=1.1.33"></script><script defer src="./vendor/jsQR.min.js"></script><script defer src="./vendor/mqtt.min.js"></script><script defer src="./push.js?v=1.1.33"></script><script defer src="./protocol_v2.js?v=1.1.33"></script><script defer src="./notes.js?v=1.1.33"></script><script defer src="./mqtt_transport.js?v=1.1.33"></script><script defer src="./app.js?v=1.1.33"></script></body>
 </html>

@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.9.10";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "2.9.11";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -612,6 +612,7 @@ constexpr uint8_t VENT_LINE_BUCKET_CAP = 3U;              // ... and start at mo
 constexpr uint32_t VENT_LINE_BUCKET_REFILL_MS = 1800000UL;
 constexpr uint32_t VENT_LINE_COALESCE_MS = 300000UL;      // a day-profile block due within this time is waited for (unless the overshoot is decisive)
 constexpr float VENT_LINE_EPS_C = 0.005f;
+constexpr float VENT_LINE_MIN_OVER_C = 0.2f;              // the line starts only this far over SV (the same margin as the siren): holding the setpoint is not an overheat
 // Heater block line: max(vent ON, SV + max(MIN, STEPS * sensor step)); released RELEASE degC lower.
 constexpr float VENT_HEATER_BLOCK_MIN_C = 0.3f;
 constexpr float VENT_HEATER_BLOCK_STEPS = 3.0f;
