@@ -439,10 +439,10 @@ void testZeroZoneAndFan() {
     for (int i = 0; i < 3000; ++i) { in.pv = 37.3f - 0.0005f * (i % 200); c.step(in); if (c.pHold() > hmax) hmax = c.pHold(); }
     assert(hmax <= h0 + 1e-3f);
   }
-  {   // restoreHold: finite values only, inside 0..40
+  {   // restoreHold: finite values only, inside 0..100
     thermalv3::Controller c;
     c.restoreHold(NAN); c.restoreHold(-1.0f); c.restoreHold(99.0f);
-    assert(c.pHold() >= 0.0f && c.pHold() <= 40.0f);
+    assert(c.pHold() >= 0.0f && c.pHold() <= 100.0f);
     c.restoreHold(5.0f);
     assert(std::fabs(c.pHold() - 5.0f) < 0.01f);
   }

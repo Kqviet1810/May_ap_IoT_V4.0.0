@@ -20,6 +20,8 @@ struct ThermalV3SlotIn {
   float alarmHeadroomC = 0.0f;        // Headroom from target to Emergency line
   float deliveredPct = 0.0f;          // Actual energy delivered in previous cycle [%]
   float e115Frac = 0.0f;              // E115 heater stuck evidence fraction
+  float e115LimitS = 900.0f;          // E115 limit [s of SSR on-time]
+  float fanOnInS = NAN, fanOffInS = NAN;   // day profile of the exhaust fan (see thermalv3::Input)
   float dQ = 0.1f;                    // Sensor resolution step [degC]
   float slopeFine = NAN;              // Slope of PV from sensor_fine.h [degC/s] (NaN: not available)
   float dtOverrideS = NAN;            // Host rigs only
@@ -59,6 +61,9 @@ class ThermalV3Slot {
     i.capPct = in.capPct;
     i.deliveredPct = in.deliveredPct;
     i.e115Frac = in.e115Frac;
+    i.e115LimitS = in.e115LimitS;
+    i.fanOnInS = in.fanOnInS;
+    i.fanOffInS = in.fanOffInS;
     i.dtS = dt;
     i.newSample = in.newSample;
     i.permit = in.permit;
