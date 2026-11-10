@@ -29,6 +29,10 @@ struct Sample {
   int8_t lift2 = 0;                             // what the stall lift has paid into the hold and not given back, percent * 2 (the controller has no integral term; this byte was its)
   uint8_t vent = 0;                             // vent line: bits0-2 why (VentLine::Why), bits3-7 its state bits (VentLine::Bit*)
   uint8_t ctl = 0;
+  int8_t ff2 = 0;                               // (a third chunk, 3.0.1) the compensation of the scheduled fan that is added to the command now, percent * 2 (signed)
+  uint8_t lead2 = 0;                            // how many seconds before the fan it starts, / 2
+  uint8_t e115 = 0;                             // the evidence of the heater-stuck rule, percent of its limit
+  uint8_t thermal = 0;                          // what the hold writers are doing (thermal_v3.h thermalBits)
   uint8_t learn = 0;                            // bits0-1 where kAir came from (0 prior, 1 restored from the EEPROM or typed, 2 measured since power-up), bit2 the stall lift paid this second, bits3-7 seconds the rise has been short / 15 (0..31)
 };
 

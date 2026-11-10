@@ -68,6 +68,9 @@ constexpr float FAN_GAIN_MIN = 0.1f, FAN_GAIN_MAX = 3.0f, FAN_LEARN_DEAD = 0.01f
 // up or down; the step is a proportional gain times a factor between PROBE_GAIN_MIN and PROBE_GAIN_MAX. It starts PROBE_ARRIVE_S after the first arrival at SV and not while PV rises faster than
 // PROBE_RISE_SIGMA noises (or PROBE_RISE_MIN) a second; only inside +-PROBE_BAND_C; no change under PROBE_DEAD_C.
 constexpr float PROBE_BAND_C = 0.6f, PROBE_DEAD_C = 0.02f, PROBE_QUIET_TAU = 2.0f, PROBE_WINDOW_TAU = 2.0f, PROBE_MIN_S = 240.0f, PROBE_GAIN_MIN = 0.1f, PROBE_GAIN_MAX = 2.0f;
+// A start next to SV (a restart, a batch put into a warm oven) has no climb behind it: the load is the settled one and the probe starts after PROBE_WARM_ARRIVE_TAU transit times,
+// with quicker rounds (the closed-loop family of the cold room rings with anything quicker: PROBE_WARM_QUIET_TAU = PROBE_WARM_WINDOW_TAU = 1).
+constexpr float PROBE_WARM_ARRIVE_TAU = 0.5f, PROBE_WARM_QUIET_TAU = 1.0f, PROBE_WARM_WINDOW_TAU = 1.0f, PROBE_WARM_MIN_S = 120.0f;
 constexpr float PROBE_ARRIVE_S = 7200.0f, PROBE_RISE_SIGMA = 3.0f, PROBE_RISE_MIN = 2.0e-5f;
 // The landing of the first climb (landing): a climb that began COLD_START_FAR farBands under SV and was never interrupted (the air never fell LAND_DROP_C from its peak: no door, no tray)
 // lowers the hold by LAND_SHARE of the power that made the overshoot, every LAND_WAIT_TAU transit times while PV stands LAND_MIN_C over SV, for LAND_SPAN_TAU transit times at most.
@@ -268,6 +271,22 @@ class Controller {
     if (std::isfinite(hold) && hold >= 0.0f && hold <= 100.0f) hold_ = hold;
     derive();
   }
+  // The learned compensation of the fan as the machine keeps it across a restart (size in percent of the heater, lead in seconds), and what is being added to the command now.
+  float fanComp() const { return fanFF_; }
+  float fanLeadS() const { return fanLead_; }
+  float fanAdded() const { return ffNow_; }
+  // What the hold writers are doing, for the log (bits): 1 the fan compensation is being added, 2 the probe is collecting a round, 4 the landing is active, 8 this run began cold
+  // (a climb), 16 the fan runs (the observer, the lift and the probe wait), 32 the heater-stuck evidence is pushing the hold, 64 the probe is armed (its wait after the first arrival is over).
+  uint8_t thermalBits() const {
+    const bool armed = arrived_ && (liveS_ - arrivedAtS_ >= (coldStart_ ? PROBE_ARRIVE_S : PROBE_WARM_ARRIVE_TAU * tau_));
+    return static_cast<uint8_t>((ffNow_ != 0.0f ? 1U : 0U) | (probeN_ > 0.0f ? 2U : 0U) | ((landSeenOver_ && !landDone_) ? 4U : 0U) | (coldStart_ ? 8U : 0U) |
+        (ventFan_ ? 16U : 0U) | (e115Frac_ > E115_PUSH_START ? 32U : 0U) | (armed ? 64U : 0U));
+  }
+  float e115Evidence() const { return e115Frac_; }
+  void restoreFan(float comp, float leadS) {
+    if (std::isfinite(comp) && comp >= 0.0f && comp <= 0.4f * 100.0f) fanFF_ = comp;
+    if (std::isfinite(leadS) && leadS >= 0.0f && leadS <= 1.6f * TAU_PRIOR * TAU_HI) fanLead_ = leadS;
+  }
   bool hasRun() const { return wasLive_ || liveS_ > 0.0f; }
   // PV close to SV, no door, tracking: the hold estimate is worth keeping.
   bool settled() const { return wasLive_ && state_ == StTrack && !doorLatch_ && std::isfinite(pv_) && std::fabs(sp_ - pv_) <= nearBand_; }
@@ -396,12 +415,12 @@ class Controller {
     const float e = sp_ - pv_;
     if (!std::isfinite(sp_) || !std::isfinite(spProbe_) || std::fabs(sp_ - spProbe_) > 0.01f) { spProbe_ = sp_; probeE_ = probeN_ = 0.0f; probeQuietS_ = 0.0f; }
     probeQuietS_ += 1.0f;
-    if (liveS_ - arrivedAtS_ < PROBE_ARRIVE_S) { probeE_ = probeN_ = 0.0f; return; }      // not while the eggs are still giving back the heat of the climb
+    if (liveS_ - arrivedAtS_ < (coldStart_ ? PROBE_ARRIVE_S : PROBE_WARM_ARRIVE_TAU * tau_)) { probeE_ = probeN_ = 0.0f; return; }      // not while the eggs are still giving back the heat of the climb
     // not while PV is on its way up to SV (cold eggs warming, a recovery): that is not a stand-still, it needs no help and what the probe paid would come back as an overshoot
     const bool rising = lsSlope_ > PROBE_RISE_SIGMA * lsSigma_ + PROBE_RISE_MIN;
-    if (ventFan_ || door_ || doorLatch_ || !arrived_ || rising || !std::isfinite(e) || std::fabs(e) > PROBE_BAND_C || probeQuietS_ < PROBE_QUIET_TAU * tau_) { probeE_ = probeN_ = 0.0f; return; }
+    if (ventFan_ || door_ || doorLatch_ || !arrived_ || rising || !std::isfinite(e) || std::fabs(e) > PROBE_BAND_C || probeQuietS_ < (coldStart_ ? PROBE_QUIET_TAU : PROBE_WARM_QUIET_TAU) * tau_) { probeE_ = probeN_ = 0.0f; return; }
     probeE_ += e; probeN_ += 1.0f;
-    if (probeN_ < std::max(PROBE_MIN_S, PROBE_WINDOW_TAU * tau_)) return;
+    if (probeN_ < (coldStart_ ? std::max(PROBE_MIN_S, PROBE_WINDOW_TAU * tau_) : std::max(PROBE_WARM_MIN_S, PROBE_WARM_WINDOW_TAU * tau_))) return;
     const float mean = probeE_ / probeN_;
     probeE_ = probeN_ = 0.0f;
     if (std::fabs(mean) <= PROBE_DEAD_C) return;                    // the level is right: stay

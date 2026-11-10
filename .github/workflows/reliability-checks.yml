@@ -184,6 +184,9 @@ jobs:
       - name: "Fleet bench builds (210 random ovens x 10 situations with the real vent line and the restored state)"
         run: g++ -O2 -std=c++17 -Wall -Wextra -Werror tools/thermal-research/fleet-bench.cpp -o /tmp/mayap-fleet-bench
 
+      - name: "Pass-rate tool builds (the yardstick of every change of thermal_v3.h: fan, weather, climb, restart)"
+        run: g++ -O2 -std=c++17 -Wall -Wextra -Werror -DTHERMAL_SENSOR_NOISE_K=0.02 tools/thermal-research/pass-rates.cpp -o /tmp/mayap-pass-rates
+
       - name: "E115 evidence (heater_response_watch.h): unit tests of the rule MachineController runs"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/heater-response-watch.cpp -o /tmp/mayap-heater-response-watch

@@ -446,6 +446,13 @@ void testZeroZoneAndFan() {
     c.restoreHold(5.0f);
     assert(std::fabs(c.pHold() - 5.0f) < 0.01f);
   }
+  {   // restoreFan: the compensation of the fan comes back only inside its limits (size 0..40 percent, lead 0..360 s = 1.6 x the largest transit time)
+    thermalv3::Controller c;
+    c.restoreFan(NAN, NAN); c.restoreFan(-1.0f, -1.0f); c.restoreFan(41.0f, 361.0f);
+    assert(c.fanComp() == 0.0f && c.fanLeadS() == 0.0f);
+    c.restoreFan(12.5f, 80.0f);
+    assert(std::fabs(c.fanComp() - 12.5f) < 1.0e-6f && std::fabs(c.fanLeadS() - 80.0f) < 1.0e-6f);
+  }
   printf("  -> Pass\n");
 }
 

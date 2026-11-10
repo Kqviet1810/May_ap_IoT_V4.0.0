@@ -48,8 +48,8 @@ tr:target td:first-child strong{color:#8a5a00}
 @media screen { body { background:#e9efef; } .sheet { box-shadow:0 4px 18px rgba(0,0,0,.12); min-height:210mm; } }
 </style></head><body><div class="toolbar"><a class="tb" href="../">&larr; Quay lại MAYAP</a><a class="tb" href="#danh-sach-ma-loi">Danh sách mã lỗi</a><a class="tb" href="./MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.pdf">Mở PDF</a><button onclick="window.print()">In / Lưu PDF</button></div><main class="sheet"><h1>MÁY ẤP TRỨNG MAYAP - HƯỚNG DẪN VẬN HÀNH VÀ MÃ LỖI</h1>
 <p><strong>Phiên bản tài liệu:</strong> v1.4 (tên file giữ nguyên để các liên kết cũ vẫn mở được)<br />
-<strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - bản <strong>3.0.0</strong> (Web 1.1.33)<br />
-<strong>Ngày cập nhật:</strong> 10/11/2026<br />
+<strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - bản <strong>3.0.1</strong> (Web 1.1.34)<br />
+<strong>Ngày cập nhật:</strong> 11/11/2026<br />
 <strong>Nguồn chuẩn mã lỗi:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0/machine_control.h</code></p>
 <blockquote>
 <p>Tài liệu này thay thế danh sách mã lỗi cũ chỉ cập nhật tới E502. Firmware hiện tại có <strong>41 mã lỗi thực</strong>, không tính <code>None = 0</code>.</p>
@@ -628,4 +628,15 @@ tr:target td:first-child strong{color:#8a5a00}
 <li><strong>Không đổi:</strong> giới hạn và điều kiện cắt của E111, E112, E115, cảm biến, bộ chia xung SSR, còi, đảo trứng, lược đồ cấu hình và EEPROM.</li>
 </ul>
 <hr />
-<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 3.0.0</strong></p></main></body></html>
+<h1>17. Bản 3.0.1: khởi động lại giữa lịch quạt và log nhiệt chi tiết hơn</h1>
+<ul>
+<li><strong>Vấn đề:</strong> log 10/11 14:30-17:37 cho thấy ở 3.0.0 mức bù quạt học được sau vài lần chạy nhưng <strong>mất hết mỗi lần máy khởi động lại</strong> (nạp phần mềm, mất điện). Lần chạy quạt đầu tiên sau khởi động không được bù: dip 0,36 °C, yêu cầu công suất chỉ tăng 2,5 điểm so với mức giữ, giống bản 2.9.11.</li>
+<li><strong>Lưu mức bù quạt cùng mức giữ nhiệt:</strong> mức bù (phần trăm công suất) và thời điểm bắt đầu bù (giây trước khi quạt chạy) nằm trong bản ghi mức giữ (EEPROM, hai ô luân phiên có CRC), được khôi phục theo đúng điều kiện của mức giữ: cùng mẻ, cùng điểm đặt, nhiệt độ gần SV, dừng dưới 30 phút. Mô phỏng khởi động lại trước lần chạy quạt (62 ca): lần chạy quạt đầu trong ±0,2 °C tăng từ 2 % lên 90 %, dip trung bình lần đầu từ 0,85 xuống 0,11 °C. Bản ghi dùng khuôn mới (MKH2): ở lần đầu nạp 3.0.1 bản ghi mức giữ của bản trước không được đọc, máy bắt đầu ở mức mặc định một lần.</li>
+<li><strong>Khởi động khi lò đã ở SV:</strong> bộ dò mức giữ trước đây chờ 2 giờ sau lần đầu tới SV, kể cả khi mẻ bắt đầu lúc lò đã ở SV. Nay trường hợp đó chờ nửa thời gian trễ rồi đánh giá theo vòng một thời gian trễ. Sai lệch ổn định trước lần quạt đầu trong ±0,05 °C tăng từ 52 % lên 60 % trong mô phỏng. Lần leo nguội từ xa giữ 2 giờ như cũ.</li>
+<li><strong>Log PID có thêm 4 cột</strong> (Web 1.1.34): <code>fan_comp_pct</code> (mức bù quạt đang cộng vào lệnh), <code>fan_lead_s</code> (bắt đầu bù trước quạt bao nhiêu giây), <code>e115_pct</code> (bằng chứng của cảnh báo thanh nhiệt không nóng, phần trăm giới hạn) và <code>thermal_writers</code> (các cơ chế đang chỉnh mức giữ: <code>fan_comp</code>, <code>probe_round</code>, <code>landing</code>, <code>cold_start</code>, <code>fan_wait</code>, <code>e115_push</code>, <code>probe_armed</code>). Máy gửi dữ liệu này ở một nhóm thứ ba xen kẽ với hai nhóm cũ; Web cũ bỏ qua nhóm mới. Cột <code>time_vn</code> vẫn là cột cuối.</li>
+<li><strong>Công cụ đo mới:</strong> <code>tools/thermal-research/pass-rates.cpp</code> in tỷ lệ đạt theo dải ±0,05 / ±0,1 / ±0,2 °C cho quạt, thời tiết 24 giờ, leo nhiệt và khởi động lại. Với dải ±0,05 °C của chủ máy, trạng thái hiện tại trong mô phỏng: mỗi lần quạt 14 %, 24 giờ thời tiết có quạt 0/20 lò (trung bình 61 % thời gian trong dải), không quạt 19/20 lò. Dải ±0,05 °C chưa đạt cho các nhóm có quạt; ±0,1 °C: 41 % và 50 %; ±0,2 °C: 85 % và 95 %.</li>
+<li><strong>Đã thử và không nhận:</strong> mức bù tính theo tỷ lệ với mức giữ (để theo thời tiết ngay trong chiều lạnh dần) làm xấu đi nhiều lò (24 giờ thời tiết có quạt: 86 % xuống 81 %, một số lò mất tới 40 điểm), nên không đưa vào.</li>
+<li><strong>Không đổi:</strong> bảo vệ E111, E112, E115, bộ chia xung SSR, lược đồ cấu hình, giao thức Web v2 (nhóm log mới là phần thêm).</li>
+</ul>
+<hr />
+<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 3.0.1</strong></p></main></body></html>

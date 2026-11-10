@@ -4,10 +4,10 @@ This repository starts at the V3 `main` commit `52f10af1722c453f5cf3270f5387b74d
 
 | Component | Baseline version |
 | --- | --- |
-| Release / baseline mã nguồn | 3.0.0 |
-| ESP32 firmware | 3.0.0 |
+| Release / baseline mã nguồn | 3.0.1 |
+| ESP32 firmware | 3.0.1 |
 | HMI firmware | 1.0.0 |
-| Web PWA | 1.1.33 |
+| Web PWA | 1.1.34 |
 
 ## Current architecture
 

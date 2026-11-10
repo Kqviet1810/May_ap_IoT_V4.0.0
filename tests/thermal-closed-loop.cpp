@@ -766,12 +766,60 @@ static void testFanProfile() {
   }
 }
 
+// A restart next to SV in the middle of the fan profile (firmware 3.0.1): the machine restores kAir, tau, 0.9 x the hold and, now, the learned compensation of the fan (it is part of
+// the hold record). Without it the first run of the fan after the restart is as bad as with no compensation at all (log of 10/11 14:30: dip 0.36 degC, request +2.5 points on the
+// hold); with it the first run is compensated. Oven of the 29/10 batch, fan 7.2 min in every 40, the machine restarts 16 minutes before a run.
+static void testRestartFan() {
+  std::printf("\n[R] A restart in the middle of the fan profile: the compensation of the fan is restored with the hold\n");
+  const double PERIOD = 2400.0, ON = 432.0;
+  struct Day { double tamb, dipMax, overMax; };
+  const Day days[] = {{12.0, 0.25, 0.20}, {22.0, 0.25, 0.20}, {30.0, 0.20, 0.20}};
+  for (const Day &d : days) {
+    double dip[2] = {0.0, 0.0}, over[2] = {0.0, 0.0};
+    for (int restore = 0; restore < 2; ++restore) {
+      thermalsim::PlantParams p = thermalsim::u29Oven(); p.Tamb = d.tamb;
+      Rig r(p, 25.0, 25.0); r.advance(5 * 3600.0);
+      const double base = r.now();
+      auto runTo = [&](double tEnd) {
+        while (r.now() - base < tEnd - 1e-9) {
+          const double ph = std::fmod(r.now() - base, PERIOD);
+          const bool vent = ph < ON;
+          r.in.fanOnInS = vent ? 0.0f : static_cast<float>(PERIOD - ph);
+          r.in.fanOffInS = vent ? static_cast<float>(ON - ph) : static_cast<float>(NAN);
+          r.advance(1.0, false, vent);
+        }
+      };
+      runTo(12 * PERIOD + (PERIOD - 1000.0));
+      const thermalv3::Controller old = r.ctl;
+      const float kA = r.ctl.kAir(), tau = r.ctl.tauTransit(), hold = r.ctl.pHold();
+      r.restartControllers(); r.ctl.restore(kA, tau); r.ctl.restoreHold(0.9f * hold);
+      if (restore) r.ctl.restoreFan(old.fanComp(), old.fanLeadS());
+      r.skipClock(45.0);
+      const double t0 = r.now() - base;
+      runTo(t0 + 2 * PERIOD);
+      const auto &a = r.air(); const size_t n0 = a.size() - static_cast<size_t>(2 * PERIOD);
+      double mn = 99.0, mx = -99.0;
+      for (size_t i = n0; i < a.size(); ++i) {
+        const double sec = static_cast<double>(i - n0);
+        if (sec >= 1000.0 && sec < 1000.0 + ON + 600.0) { mn = std::min(mn, static_cast<double>(a[i])); mx = std::max(mx, static_cast<double>(a[i])); }
+      }
+      dip[restore] = thermalsim::SP_C - mn; over[restore] = mx - thermalsim::SP_C;
+      if (restore) CHECK(!r.tripped(), "room %.0f: E115 must not trip after the restart", d.tamb);
+    }
+    std::printf("  room %4.0f degC: first run after the restart: lost  dip %.2f rise %.2f | restored  dip %.2f rise %.2f degC\n", d.tamb, dip[0], over[0], dip[1], over[1]);
+    CHECK(dip[1] <= d.dipMax, "room %.0f: the restored compensation leaves a dip of %.2f on the first run (limit %.2f)", d.tamb, dip[1], d.dipMax);
+    CHECK(over[1] <= d.overMax, "room %.0f: the restored compensation leaves a rise of %.2f on the first run (limit %.2f)", d.tamb, over[1], d.overMax);
+    CHECK(dip[1] <= 0.5 * dip[0], "room %.0f: restoring the compensation must at least halve the first dip (%.2f against %.2f)", d.tamb, dip[1], dip[0]);
+  }
+}
+
 int main() {
   std::printf("=== Thermal closed-loop tests ===\n");
   test29();
   testReboot29();
   testFamily(std::getenv("THERMAL_FULL_FAMILY") != nullptr);
   testFanProfile();
+  testRestartFan();
   if (failures) {
     std::printf("THERMAL CLOSED-LOOP: %d FAILED\n", failures);
     return 1;

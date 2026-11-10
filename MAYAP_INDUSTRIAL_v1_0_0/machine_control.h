@@ -2381,12 +2381,12 @@ class PersistentStore {
     const bool readA = readRecord(EEPROM_ADDR_THERMAL_HOLD_A, a), readB = readRecord(EEPROM_ADDR_THERMAL_HOLD_B, b);
     return thermalhold::pick(a, readA, b, readB, best) != 0U;
   }
-  bool saveThermalHold(float hold, float pv, float sp, uint32_t epoch, uint32_t batchId) {
+  bool saveThermalHold(float hold, float pv, float sp, uint32_t epoch, uint32_t batchId, float fanComp, float fanLead) {
     if (!ready_) return false;
     thermalhold::Record a{}, b{};
     const bool readA = readRecord(EEPROM_ADDR_THERMAL_HOLD_A, a), readB = readRecord(EEPROM_ADDR_THERMAL_HOLD_B, b);
     bool toA = true;
-    const thermalhold::Record rec = thermalhold::nextToWrite(a, readA, b, readB, hold, pv, sp, epoch, batchId, toA);
+    const thermalhold::Record rec = thermalhold::nextToWrite(a, readA, b, readB, hold, pv, sp, epoch, batchId, fanComp, fanLead, toA);
     const uint16_t target = toA ? EEPROM_ADDR_THERMAL_HOLD_A : EEPROM_ADDR_THERMAL_HOLD_B;   // the slot that does NOT hold the newest record
     if (!thermalhold::valid(rec) || !writeRecord(target, rec)) return false;
     thermalhold::Record verify{};
@@ -5267,6 +5267,13 @@ class MachineController {
         const float stall = std::min(v3.stallSeconds(), 31.0f * 15.0f);
         s.learn = static_cast<uint8_t>(src | (v3.lifting() ? 0x04U : 0U) | (static_cast<uint8_t>(stall / 15.0f) << 3));
       }
+      {   // what the hold writers did (3.0.1): the fan compensation added now, its lead, the heater-stuck evidence, the writer bits
+        const float lim = static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f;
+        s.ff2 = MayapPidLog::toI8x2(v3.fanAdded());
+        s.lead2 = MayapPidLog::toU8((v3.fanLeadS() > 0.0f ? v3.fanLeadS() : v3.tauTransit()) * 0.5f);
+        s.e115 = MayapPidLog::toU8(lim > 0.0f ? 100.0f * static_cast<float>(heaterWatch_.accumOnMs()) / lim : 0.0f);
+        s.thermal = v3.thermalBits();
+      }
       MayapPidLog::ring().push(s);
     }
   }
@@ -5361,17 +5368,18 @@ class MachineController {
         const float h = thermalhold::restored(holdSaved_, true, batchId, rtc_.valid(), rtc_.epoch(), temperature_, config_.targetTemp);
         if (h >= 0.0f) {
           c.restoreHold(h);
-          mayapSerialPrintf(false, "[THERMAL] hold %.1f %% given back (saved %.1f %%)\n", static_cast<double>(h), static_cast<double>(holdSaved_.hold));
+          c.restoreFan(holdSaved_.fanComp, holdSaved_.fanLead);                       // what the fan did to this oven in the last runs: the first run after the restart is compensated
+          mayapSerialPrintf(false, "[THERMAL] hold %.1f %% given back (saved %.1f %%), fan compensation %.1f %% lead %.0f s\n", static_cast<double>(h), static_cast<double>(holdSaved_.hold), static_cast<double>(holdSaved_.fanComp), static_cast<double>(holdSaved_.fanLead));
         }
       }
     }
     if (c.settled()) { if (!holdSettledOn_) { holdSettledOn_ = true; holdSettledSinceMs_ = now; } } else holdSettledOn_ = false;
     const uint32_t settledMs = holdSettledOn_ ? elapsedMs(now, holdSettledSinceMs_) : 0U;
-    if (!thermalhold::wanted(settledMs, elapsedMs(now, holdLastSaveMs_), holdHave_, holdSaved_.hold, holdSaved_.batchId, c.pHold(), batchId)) return;
+    if (!thermalhold::wanted(settledMs, elapsedMs(now, holdLastSaveMs_), holdHave_, holdSaved_.hold, holdSaved_.batchId, c.pHold(), batchId, holdSaved_.fanComp, c.fanComp())) return;
     holdLastSaveMs_ = now;
     const uint32_t epoch = rtc_.valid() ? rtc_.epoch() : 0U;
-    if (store_.saveThermalHold(c.pHold(), temperature_, config_.targetTemp, epoch, batchId)) {
-      holdSaved_ = thermalhold::make(holdSaved_.sequence + 1UL, c.pHold(), temperature_, config_.targetTemp, epoch, batchId); holdHave_ = true;
+    if (store_.saveThermalHold(c.pHold(), temperature_, config_.targetTemp, epoch, batchId, c.fanComp(), c.fanLeadS())) {
+      holdSaved_ = thermalhold::make(holdSaved_.sequence + 1UL, c.pHold(), temperature_, config_.targetTemp, epoch, batchId, c.fanComp(), c.fanLeadS()); holdHave_ = true;
     }
   }
   bool holdLoaded_ = false, holdHave_ = false, holdRestoreDone_ = false, holdSettledOn_ = false;

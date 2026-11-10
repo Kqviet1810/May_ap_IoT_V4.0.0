@@ -3495,10 +3495,11 @@
     if (!lg) return;
     const head = Number(lg.h);
     if (!Number.isFinite(head) || head < 1) return;
-    const hasPlain = Array.isArray(lg.d), hasDiag = Array.isArray(lg.x);
-    if (!hasPlain && !hasDiag) return;
+    const hasPlain = Array.isArray(lg.d), hasDiag = Array.isArray(lg.x), hasThermal = Array.isArray(lg.y);
+    if (!hasPlain && !hasDiag && !hasThermal) return;
     if (hasPlain && !Number.isFinite(Number(lg.s))) return;
     if (hasDiag && !Number.isFinite(Number(lg.xs))) return;
+    if (hasThermal && !Number.isFinite(Number(lg.ys))) return;
     if (head < pidMon.logHead - 3) { pidMon.log = new Map(); }                // the machine restarted its counter (same boot id is not guaranteed)
     pidMon.logHead = head; pidMon.logHeadAt = Date.now();
     if (hasPlain) {
@@ -3516,6 +3517,15 @@
         pidMon.log.set(idx, { ...pidMon.log.get(idx), safe: lg.x[i] / 100, hold: lg.x[i + 1] / 2, kair: lg.x[i + 2], tau: lg.x[i + 3], lift: lg.x[i + 4] / 2, vent: lg.x[i + 5], ctl: lg.x[i + 6], learn: lg.x[i + 7] });
       }
     }
+    // What the hold writers did (firmware 3.0.1 and later): 4 numbers per sample, own start index: the fan compensation added now [percent x2], its lead [s / 2], the
+    // heater-stuck evidence [percent of its limit] and the writer bits (pmThermalState).
+    if (hasThermal) {
+      const first = Number(lg.ys);
+      for (let i = 0; i + 3 < lg.y.length; i += 4) {
+        const idx = first + i / 4;
+        pidMon.log.set(idx, { ...pidMon.log.get(idx), ff: lg.y[i] / 2, lead: lg.y[i + 1] * 2, e115: lg.y[i + 2], tb: lg.y[i + 3] });
+      }
+    }
     while (pidMon.log.size > PM_LOG_MAX) pidMon.log.delete(pidMon.log.keys().next().value);
     const info = $('pmLogInfo');
     if (info) info.textContent = `Đã nhận ${pidMon.log.size} mẫu (10 s một mẫu). Máy giữ 30 phút gần nhất; trang này giữ cả phần đã nhận trước đó khi mục đang mở. Giữ mục này mở vài phút để nhận đủ.`;
@@ -3528,6 +3538,10 @@
     const b = (v >> 3) & 31;
     return [b & 1 ? 'watch' : '', b & 2 ? 'on' : '', b & 4 ? 'budget' : '', b & 8 ? 'wait_profile' : '', b & 16 ? 'maxrun' : ''].filter(Boolean).join('+');
   }
+  // The bits of thermalBits() (thermal_v3.h): which writer of the hold is at work.
+  function pmThermalState(b) {
+    return [b & 1 ? 'fan_comp' : '', b & 2 ? 'probe_round' : '', b & 4 ? 'landing' : '', b & 8 ? 'cold_start' : '', b & 16 ? 'fan_wait' : '', b & 32 ? 'e115_push' : '', b & 64 ? 'probe_armed' : ''].filter(Boolean).join('+');
+  }
   function pmCsv(device) {
     const iso = (t) => new Date(t).toISOString();
     const rows = [];
@@ -3539,16 +3553,18 @@
         diag ? r.safe : '', diag ? r.hold : '', diag ? r.kair : '', diag ? r.tau : '', diag ? r.lift : '',
         diag ? ((r.vent & 7) < PM_VENT_WHY.length ? PM_VENT_WHY[r.vent & 7] : String(r.vent & 7)) : '', diag ? pmVentState(r.vent) : '',
         diag ? (r.ctl & 1) : '', diag ? ((r.ctl >> 1) & 1) : '', diag ? ((r.ctl >> 2) & 3) : '', diag ? ((r.ctl >> 4) & 15) : '',
-        diag ? (r.learn & 3) : '', diag ? ((r.learn >> 2) & 1) : '', diag ? (r.learn >> 3) * 15 : '']);
+        diag ? (r.learn & 3) : '', diag ? ((r.learn >> 2) & 1) : '', diag ? (r.learn >> 3) * 15 : '',
+        Number.isFinite(r.tb) ? r.ff : '', Number.isFinite(r.tb) ? r.lead : '', Number.isFinite(r.tb) ? r.e115 : '', Number.isFinite(r.tb) ? pmThermalState(r.tb) : '']);
     }
     for (const r of pidMon.series) rows.push([r.t, '', r.pv, r.sp, '', r.req, r.act, '', '', r.vent, '', '', '', '', '', '', 'page', '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
     rows.sort((a, b) => a[0] - b[0]);
     // The first 17 columns keep their place; the diagnostics are appended (safety reading, learned hold, heater gain x1e5, transit time, the hold the stall
     // lift has paid in [percent], why the overheat fan started, the state of that line, door guard, transit time measured, fan-budget tokens, ventReason,
     // where kAir came from [0 prior, 1 restored or typed, 2 measured since power-up], whether the stall lift paid this second, seconds the rise has been
-    // short in steps of 15).
+    // short in steps of 15). From 3.0.1 four more: the fan compensation added to the command [percent], how many seconds before the fan it starts, the evidence of
+    // the heater-stuck rule [percent of its limit] and which writers of the hold are at work (pmThermalState).
     const head = 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,trust_pct,source,' +
-      'safety_c,hold_pct,kair_e5,tau_s,lift_pct,vent_why,vent_line,door,identified,fan_tokens,vent_reason,kair_src,lift_on,stall_s,time_vn';
+      'safety_c,hold_pct,kair_e5,tau_s,lift_pct,vent_why,vent_line,door,identified,fan_tokens,vent_reason,kair_src,lift_on,stall_s,fan_comp_pct,fan_lead_s,e115_pct,thermal_writers,time_vn';
     const cell = (v) => (typeof v === 'number' ? (Number.isFinite(v) ? String(v) : '') : String(v));
     return [`# mayap pid log device=${device?.id || ''} boot=${device?.bootId || ''} exported=${iso(Date.now())}`, head,
       ...rows.map((r) => [iso(r[0]), ...r.slice(1), vnDateTimeIso(r[0])].map(cell).join(','))].join('\n') + '\n';

@@ -19,7 +19,7 @@ struct Chip {
   bool load(Record &best) const { return pick(slot[0], readable[0], slot[1], readable[1], best) != 0U; }
   void save(float hold, uint32_t batch, size_t cutAfter = sizeof(Record)) {
     bool toA = true;
-    const Record rec = nextToWrite(slot[0], readable[0], slot[1], readable[1], hold, 37.5f, 37.5f, 1000000UL, batch, toA);
+    const Record rec = nextToWrite(slot[0], readable[0], slot[1], readable[1], hold, 37.5f, 37.5f, 1000000UL, batch, 12.5f, 90.0f, toA);
     std::memcpy(&slot[toA ? 0 : 1], &rec, cutAfter);
   }
 };
@@ -33,12 +33,29 @@ static void testRecord() {
   assert(!valid(make(1U, NAN, 37.5f, 37.5f, 1U, 5U)) && !valid(make(1U, -1.0f, 37.5f, 37.5f, 1U, 5U)) && !valid(make(1U, 101.0f, 37.5f, 37.5f, 1U, 5U)));
   assert(!valid(make(1U, 3.0f, 10.0f, 37.5f, 1U, 5U)) && !valid(make(1U, 3.0f, 37.5f, 60.0f, 1U, 5U)) && !valid(make(1U, 3.0f, 37.5f, 37.5f, 1U, 0U)));
   Record blank{}; assert(!valid(blank));
+  // the compensation of the fan rides in the record: kept, limited, and part of the CRC
+  Record f = make(3U, 20.0f, 37.5f, 37.5f, 1000U, 55U, 18.5f, 75.0f);
+  assert(valid(f) && f.fanComp == 18.5f && f.fanLead == 75.0f);
+  t = f; t.fanComp = 19.0f; assert(!valid(t));
+  assert(!valid(make(1U, 3.0f, 37.5f, 37.5f, 1U, 5U, -1.0f, 50.0f)) && !valid(make(1U, 3.0f, 37.5f, 37.5f, 1U, 5U, 41.0f, 50.0f)) && !valid(make(1U, 3.0f, 37.5f, 37.5f, 1U, 5U, NAN, 50.0f)));
+  assert(!valid(make(1U, 3.0f, 37.5f, 37.5f, 1U, 5U, 10.0f, -1.0f)) && !valid(make(1U, 3.0f, 37.5f, 37.5f, 1U, 5U, 10.0f, 361.0f)));
+  t = f; t.magic = 0x4D4B4831UL; t.crc = recordCrc(t); assert(!valid(t));            // a record of the 2.9 layout is never read
   Record a = make(5U, 1.0f, 37.5f, 37.5f, 1U, 9U), b = make(6U, 2.0f, 37.5f, 37.5f, 1U, 9U), out{};
   assert(pick(a, true, b, true, out) == 2U && out.hold == 2.0f);
   assert(pick(a, true, b, false, out) == 1U);
   assert(pick(blank, true, blank, true, out) == 0U);
   Record wa = make(0xFFFFFFFFUL, 1.0f, 37.5f, 37.5f, 1U, 9U), wb = make(0U, 2.0f, 37.5f, 37.5f, 1U, 9U);
   assert(pick(wa, true, wb, true, out) == 2U);
+  std::printf("  -> Pass\n");
+}
+
+static void testFanWrite() {
+  std::printf("[TEST] write rule: the compensation of the fan alone is worth a write when it moved...\n");
+  const uint32_t ok = SETTLED_MIN_MS, gap = SAVE_MIN_MS;
+  assert(!wanted(ok, gap, true, 20.0f, 9U, 20.0f, 9U, 10.0f, 10.2f));
+  assert(wanted(ok, gap, true, 20.0f, 9U, 20.0f, 9U, 10.0f, 10.0f + SAVE_MOVE_PCT));
+  assert(wanted(ok, gap, true, 20.0f, 9U, 20.0f, 9U, 10.0f, 9.0f));
+  assert(!wanted(ok, gap - 1U, true, 20.0f, 9U, 20.0f, 9U, 10.0f, 15.0f));            // never more often than every 10 minutes
   std::printf("  -> Pass\n");
 }
 
@@ -127,6 +144,7 @@ static void testControllerRestart() {
 int main() {
   std::printf("=== Thermal hold record ===\n");
   testRecord();
+  testFanWrite();
   testPowerCuts();
   testWhenToWrite();
   testRestore();
