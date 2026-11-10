@@ -153,37 +153,7 @@ class RigT {
   std::vector<float> ta_, pv_, u_;
 };
 
-#ifdef THERMAL_ADVISED
-}  // namespace thermalsim
-#include "thermal-advised.h"
-namespace thermalsim {
-#endif
-#ifdef THERMAL_SIMPLE
-}  // namespace thermalsim
-#include "thermal-simple-rig.h"
-namespace thermalsim {
-#endif
-#ifdef THERMAL_RAMP
-}  // namespace thermalsim
-#include "thermal-ramp-rig.h"
-namespace thermalsim {
-#endif
-#ifdef THERMAL_DUAL
-}  // namespace thermalsim
-#include "thermal-dual.h"
-namespace thermalsim {
-using Rig = RigT<DualCtl, thermalv3::Input, HeaterResponseWatch>;
-#else
-#ifdef THERMAL_SIMPLE
-using Rig = RigT<SimpleCtl, thermalv3::Input, HeaterResponseWatch>;
-#elif defined(THERMAL_RAMP)
-using Rig = RigT<RampCtl, thermalv3::Input, HeaterResponseWatch>;
-#elif defined(THERMAL_ADVISED)
-using Rig = RigT<AdvisedCtl, thermalv3::Input, HeaterResponseWatch>;
-#else
 using Rig = RigT<thermalv3::Controller, thermalv3::Input, HeaterResponseWatch>;
-#endif
-#endif
 #ifdef THERMAL_SCENARIOS_WITH_LEGACY
 using LegacyRig = RigT<thermalv3_v234::Controller, thermalv3_v234::Input, LegacyHeaterWatch>;
 #endif

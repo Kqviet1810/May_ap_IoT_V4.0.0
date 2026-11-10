@@ -11,14 +11,10 @@
 struct ThermalV3SlotIn {
   uint32_t nowMs = 0;                 // Control-task clock
   float pv = NAN, sp = NAN;           // Control temperature (offset applied) and target [degC]
-  bool newSample = false;             // A new accepted sensor sample arrived since last call
   bool permit = false;                // Production decided SSR may conduct (all protections green)
   bool shadow = false;                // Permit is false only because vent line blocks heater
   bool ventFan = false;               // Exhaust fan is running
   float capPct = 0.0f;                // Configured heater power ceiling [%]
-  float headroomC = 0.0f;             // Headroom from target to High line
-  float alarmHeadroomC = 0.0f;        // Headroom from target to Emergency line
-  float deliveredPct = 0.0f;          // Actual energy delivered in previous cycle [%]
   float e115Frac = 0.0f;              // E115 heater stuck evidence fraction
   float e115LimitS = 900.0f;          // E115 limit [s of SSR on-time]
   float fanOnInS = NAN, fanOffInS = NAN;   // day profile of the exhaust fan (see thermalv3::Input)
@@ -56,16 +52,12 @@ class ThermalV3Slot {
     i.sp = in.sp;
     i.dQ = in.dQ;
     i.slopeFine = in.slopeFine;
-    i.headroomC = in.headroomC;
-    i.alarmHeadroomC = in.alarmHeadroomC;
     i.capPct = in.capPct;
-    i.deliveredPct = in.deliveredPct;
     i.e115Frac = in.e115Frac;
     i.e115LimitS = in.e115LimitS;
     i.fanOnInS = in.fanOnInS;
     i.fanOffInS = in.fanOffInS;
     i.dtS = dt;
-    i.newSample = in.newSample;
     i.permit = in.permit;
     i.shadow = in.shadow;
     i.ventFan = in.ventFan;
