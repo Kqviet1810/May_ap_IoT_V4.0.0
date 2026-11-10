@@ -4535,7 +4535,6 @@ class MachineController {
         lastAcceptedTemperature_ = candidateTemp;
         lastSuspectCandidate_ = candidateTemp;
         if (goodSensorStreak_ < UINT8_MAX) ++goodSensorStreak_;
-        newSensorSample_ = true;
         feedFineEstimators(now, rawSensorTemp + config_.tempOffset);
         // F-08: theo doi moc "gia tri vua thay doi that su" - moi lan mau
         // moi lech qua SENSOR_FROZEN_EPSILON_C so voi moc hien tai thi doi
@@ -4548,7 +4547,6 @@ class MachineController {
         }
       } else {
         goodSensorStreak_ = 0U;
-        newSensorSample_ = false;
       }
     }
 
@@ -5427,13 +5425,9 @@ class MachineController {
   ThermalV3SlotIn buildThermalV3SlotIn(uint32_t now, bool permit, bool shadow = false) const {
     ThermalV3SlotIn si;
     si.slopeFine = (fineFresh(now) && sensorUsable_) ? fineSlopeEst_.slopePerS() : NAN;
-    si.nowMs = now; si.pv = fineControlValue(now); si.sp = config_.targetTemp; si.newSample = newSensorSample_; si.permit = permit; si.shadow = shadow && !permit;
+    si.nowMs = now; si.pv = fineControlValue(now); si.sp = config_.targetTemp; si.permit = permit; si.shadow = shadow && !permit;
     si.capPct = static_cast<float>(config_.maxHeaterPower);
-    const float offsetDown = std::max(0.0f, -config_.tempOffset);
-    si.headroomC = std::min(config_.highTempAlarm, config_.ventOnTemp) - offsetDown - config_.targetTemp;
-    si.alarmHeadroomC = config_.emergencyTemp - offsetDown - config_.targetTemp;
     const auto &st = outputs_.state();
-    si.deliveredPct = (st.heaterSsr && st.heatMaster) ? 100.0f : 0.0f;
     const float stuckLimitMs = static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f;
     si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterWatch_.accumOnMs()) / stuckLimitMs : 0.0f;
     si.e115LimitS = stuckLimitMs * 0.001f;
@@ -6941,7 +6935,6 @@ class MachineController {
     const bool v3Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && ventHeaterBlock_ && actuatorReady;   // blocked ONLY by the heater block line
     float commandedPower = thermalV3Command(now, normalSsrPermit && actuatorReady, v3Shadow);
     // ====================================================================================================
-    newSensorSample_ = false;
 
     const bool masterPermit = normalMasterPermit;
     const bool ssrPermit = normalSsrPermit && masterPermit;
@@ -8370,7 +8363,6 @@ class MachineController {
   bool safetySampleValid_ = false;
   uint32_t sensorStartupGraceUntil_ = 0U;
   uint8_t goodSensorStreak_ = 0;
-  bool newSensorSample_ = false;
   float temperature_ = NAN;
   float rawTemperature_ = NAN;
   float humidity_ = NAN;
