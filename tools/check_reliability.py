@@ -249,7 +249,10 @@ require_re(
     r'\{FaultCode::HighTemperature,\s*FaultSeverity::Stop,.*?false,\s*true,\s*true,\s*true,\s*true,\s*true,\s*"TEMP HIGH"\}',
     "High temperature drops SSR and heat master",
 )
-require(machine, "std::max(rawSensorTemp, candidateRawCorrected)", "negative temperature calibration cannot weaken overheat safety")
+# 3.0.0: the protections read the CORRECTED temperature (raw + offset), the value the screen, the Web, the PID and the siren show; a threshold typed on the HMI means that temperature.
+require(machine, "const float candidateRaw = rawSensorTemp + config_.tempOffset;", "protections read the offset-corrected temperature (3.0.0)")
+if "std::max(rawSensorTemp, candidateRawCorrected)" in machine:
+    raise SystemExit("FAIL: protections must not skip a negative offset (the uncorrected reading made E111 trip under its setting)")
 require(machine, "tempOscillationLastWindowCrossCount_", "TemperatureUnstable preserves triggering detail")
 require(machine, "cfg.highTempAlarm + EMERGENCY_ABOVE_HIGH_C", "alarm lines edited during a batch keep low < SV < high < emergency (sanitizer)")
 require(machine, "cfg.sensorTimeoutSec = defaults.sensorTimeoutSec;", "legacy sensor timeout normalized in controller")
