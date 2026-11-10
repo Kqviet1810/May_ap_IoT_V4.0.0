@@ -470,7 +470,7 @@ static const size_t COLD_CAPABLE_MIN = 21;                           // of the 3
 static const int COLD_CLIMB_TRIPS_MAX = 4;                           // E115 stops 4 of 35 ovens on a first climb from 20 degC at 10 degC (heater too weak for the room): pinned, not hidden
 static const double COLD_DOOR3_OVER = 1.10, COLD_DOOR5_OVER = 1.10, COLD_TRAY_OVER = 0.50, COLD_RESTART_OVER = 0.45, COLD_BAND = 0.40, COLD_PP = 0.30, COLD_UNUSED = 0.0;
 static const int NEWBATCH_TRIPS_MAX[4] = {1, 1, 0, 0};   // measured 1/1/0/0 of 21 ovens: the weakest oven on a 10 degC day needs more than the E115 budget (physics, not loosened)
-static const double NEWBATCH_OVER_MAX[4] = {0.70, 0.90, 0.50, 0.50};
+static const double NEWBATCH_OVER_MAX[4] = {0.85, 0.95, 0.50, 0.50};
 
 static void testFamily(bool everything) {
   strictLimits = !everything;

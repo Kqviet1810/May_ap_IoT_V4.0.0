@@ -111,6 +111,16 @@ constexpr float PROBE_ARRIVE_S = PROBE_ARRIVE_V;
 #define PROBE_RISE_MIN_V 2.0e-5f
 #endif
 constexpr float PROBE_RISE_SIGMA = PROBE_RISE_SIGMA_V, PROBE_RISE_MIN = PROBE_RISE_MIN_V;
+#ifndef LAND_SHARE_V
+#define LAND_SHARE_V 0.4f
+#endif
+#ifndef LAND_MIN_V
+#define LAND_MIN_V 0.08f
+#endif
+#ifndef LAND_WAIT_V
+#define LAND_WAIT_V 0.1f
+#endif
+constexpr float LAND_SHARE = LAND_SHARE_V, LAND_MIN_C = LAND_MIN_V, LAND_WAIT_TAU = LAND_WAIT_V, LAND_SPAN_TAU = 20.0f, COLD_START_FAR = 3.0f, LAND_DROP_C = 1.5f;
 constexpr float PROBE_BAND_C = 0.6f, PROBE_DEAD_C = 0.02f, PROBE_QUIET_TAU = 2.0f, PROBE_WINDOW_TAU = 2.0f, PROBE_MIN_S = 240.0f, PROBE_GAIN_MIN = 0.1f, PROBE_GAIN_MAX = 2.0f;
 constexpr float FAN_FADE_C = 0.5f;
 constexpr float FAN_LEAD_WORSE = 1.05f;
@@ -158,7 +168,7 @@ class Controller {
     swOn_ = false; swPv0_ = swT_ = 0.0f;
     pm_ = NAN; rate_ = 0.0f; zz_ = false;
     escPrev_ = 0.0f; e115Frac_ = 0.0f; e115Lim_ = 900.0f;
-    arrivedAtS_ = 0.0f; spProbe_ = NAN; probeE_ = probeN_ = probeQuietS_ = probeSign_ = 0.0f; probeGain_ = 0.5f;
+    arrivedAtS_ = 0.0f; landMaxPv_ = -1.0e9f; landDone_ = landSeenOver_ = doorSeen_ = coldKnown_ = coldStart_ = false; landT_ = 0.0f; spProbe_ = NAN; probeE_ = probeN_ = probeQuietS_ = probeSign_ = 0.0f; probeGain_ = 0.5f;
     fanFF_ = 0.0f; ffNow_ = 0.0f; fanGain_ = 1.0f; fanSign_ = 0.0f; fanWinE_ = fanWinN_ = fanWinT_ = fanWinE2_ = 0.0f; fanLead_ = fanJ_ = 0.0f; fanLeadDir_ = -1.0f; fanLeadStep_ = 30.0f; fanHaveJ_ = false; fanWinOpen_ = false;
     derive();
     for (uint16_t i = 0U; i < HIST_LEN; ++i) { pvHist_[i] = 0.0f; uHist_[i] = 0.0f; ffHist_[i] = 0.0f; }
@@ -185,6 +195,7 @@ class Controller {
     }
     // Started close to SV (a reboot, a restart): there is no climb to measure kAir on - begin at the middle of the fleet, not at its slowest oven.
     if (!wasLive_ && !identified_ && !tauMeasured_ && liveS_ <= 0.0f && std::fabs(in.sp - in.pv) < farBand_) kAir_ = KAIR_WARM;
+    if (!wasLive_ && liveS_ <= 0.0f && !coldKnown_) { coldKnown_ = true; coldStart_ = (in.sp - in.pv) >= COLD_START_FAR * farBand_; }   // a first climb from far under SV (not a restart next to it)
     wasLive_ = true; pv_ = in.pv; sp_ = in.sp;
     slope_ = std::isfinite(in.slopeFine) ? in.slopeFine : lsSlope_;
     const float e = sp_ - pv_;
@@ -281,7 +292,7 @@ class Controller {
       pushHist(pv_, in.shadow ? 0.0f : net, in.shadow ? 0.0f : ffNow_);
       measureNoiseAndSlope();
       derive();
-      if (in.permit && !in.shadow) { e115Push(); observe(); stallLift(); trim(); probe(); identifyGain(e); } else if (in.shadow) observe();
+      if (in.permit && !in.shadow) { e115Push(); observe(); stallLift(); trim(); probe(); landing(); identifyGain(e); } else if (in.shadow) observe();
       stopwatch(e, in.permit && !in.shadow);
     }
     lastCmd_ = in.shadow ? 0.0f : cmd;
@@ -449,6 +460,23 @@ class Controller {
     hold_ = std::min(cap_, hold_ + kn_ * (e - TRIM_DEAD_C) / static_cast<float>(TRIM_TI_S));
 #endif
   }
+  // The landing of the first climb. The hold of a climb is paid for the cold eggs (they take heat while the air is under SV); when the air gets to SV they take less and less, and the
+  // hold that was right a minute ago is a surplus now: the air goes over SV and stays there until the observer has followed the load down. The surplus is known (how far over, for how
+  // long it has been over), so the hold is lowered by the power that made it: over / (kAir x transit time) per transit time. It runs once, in the first LAND_SPAN transit times after the
+  // first arrival at SV, and ends when PV is back at SV from above: an overshoot of a door, a tray or a noon is not this load.
+  void landing() {
+    if (std::isfinite(pv_)) { landMaxPv_ = std::max(landMaxPv_, pv_); if (landMaxPv_ - pv_ > LAND_DROP_C) doorSeen_ = true; }     // the air fell by more than a climb ever does: a door, a tray
+    if (landDone_ || !coldStart_ || !arrived_ || doorSeen_ || door_ || doorLatch_ || ventFan_ || !std::isfinite(pv_)) return;     // a climb that was never interrupted: a door or a tray has its own recovery
+    if (liveS_ - arrivedAtS_ > LAND_SPAN_TAU * tau_) { landDone_ = true; return; }
+    const float over = pv_ - sp_;
+    if (over <= 0.0f) { if (landSeenOver_) landDone_ = true; landT_ = 0.0f; return; }
+    if (over < LAND_MIN_C) return;
+    landSeenOver_ = true;
+    landT_ += 1.0f;
+    if (landT_ < LAND_WAIT_TAU * tau_ || lsSlope_ < 0.0f) return;                  // (PV already turning down: the surplus is going)
+    landT_ = 0.0f;
+    hold_ = std::max(0.0f, hold_ - LAND_SHARE * over / std::max(1.0e-9f, kAir_ * tau_));
+  }
   // The probe: try, judge, correct. Near SV, over a stretch of clean time (no fan, no door, no change of set-point) the mean error says what the hold level did: under SV on average,
   // the level was too low; over SV, too high; near zero, leave it. Each judgement moves the hold by a step of the oven's proportional gain times a factor that is learned: the same
   // direction twice in a row means the steps are too short (grow), a change of direction that they overshot (shrink). It needs no oven model (so a wrong kAir only changes the
@@ -558,7 +586,7 @@ class Controller {
   float ffHist_[HIST_LEN] = {};
   float ffNow_ = 0.0f;
   float escPrev_ = 0.0f, e115Frac_ = 0.0f, e115Lim_ = 900.0f;
-  float arrivedAtS_ = 0.0f;
+  float arrivedAtS_ = 0.0f; float landMaxPv_ = -1.0e9f; bool landDone_ = false, landSeenOver_ = false, doorSeen_ = false, coldKnown_ = false, coldStart_ = false; float landT_ = 0.0f;
   float spProbe_ = NAN, probeE_ = 0.0f, probeN_ = 0.0f, probeQuietS_ = 0.0f, probeGain_ = 0.5f, probeSign_ = 0.0f;
   float fanGain_ = 1.0f, fanSign_ = 0.0f, fanWinE2_ = 0.0f, fanLead_ = 0.0f, fanJ_ = 0.0f, fanLeadDir_ = -1.0f, fanLeadStep_ = 30.0f; bool fanHaveJ_ = false;
   float fanFF_ = 0.0f, fanWinE_ = 0.0f, fanWinN_ = 0.0f, fanWinT_ = 0.0f; bool fanWinOpen_ = false;
