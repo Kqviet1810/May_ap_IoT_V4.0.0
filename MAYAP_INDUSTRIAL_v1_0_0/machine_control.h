@@ -4481,10 +4481,10 @@ class MachineController {
       const float candidateHum = clampFloat(
           sensor_.humidityRH() + config_.humidityOffset, 0.0f, 100.0f);
       const float rawSensorTemp = sensor_.rawTemperatureC();
-      // Bu am co the can cho calibration/PID nhung KHONG duoc ha nguong bao
-      // ve qua nhiet. Bu duong van duoc ap dung theo huong fail-safe.
-      const float candidateRawCorrected = rawSensorTemp + config_.tempOffset;
-      const float candidateRaw = std::max(rawSensorTemp, candidateRawCorrected);
+      // The protections read the CORRECTED temperature (the raw reading plus the offset), the same value that the screen, the Web, the PID and the siren show: the offset is the
+      // calibration of this sensor, and a threshold typed on the HMI means that temperature. (Until 2.9.12 a negative offset was left out here: with an offset of -0.1 the
+      // overheat alarm tripped 0.1 degC under its setting.)
+      const float candidateRaw = rawSensorTemp + config_.tempOffset;
       const bool frameValid = sensor_.dataValid() && isfinite(candidateTemp) &&
                               isfinite(candidateHum) && isfinite(rawSensorTemp) &&
                               isfinite(candidateRaw);
@@ -5364,12 +5364,6 @@ class MachineController {
         if (h >= 0.0f) {
           c.restoreHold(h);
           mayapSerialPrintf(false, "[THERMAL] hold %.1f %% given back (saved %.1f %%)\n", static_cast<double>(h), static_cast<double>(holdSaved_.hold));
-        } else {                                                           // another batch or a long stop: a share of what the oven needed last time (a day at most)
-          const float n = thermalhold::restoredNewBatch(holdSaved_, true, rtc_.valid(), rtc_.epoch(), config_.targetTemp);
-          if (n >= 0.0f) {
-            c.restoreHold(n);
-            mayapSerialPrintf(false, "[THERMAL] new batch starts at %.1f %% (saved %.1f %%)\n", static_cast<double>(n), static_cast<double>(holdSaved_.hold));
-          }
         }
       }
     }
@@ -5442,6 +5436,14 @@ class MachineController {
     si.deliveredPct = (st.heaterSsr && st.heatMaster) ? 100.0f : 0.0f;
     const float stuckLimitMs = static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f;
     si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterWatch_.accumOnMs()) / stuckLimitMs : 0.0f;
+    si.e115LimitS = stuckLimitMs * 0.001f;
+    {   // the day profile of the fan, for the compensation of the controller: seconds to the next run (0 while one runs) and to the end of the running one
+      float onIn = NAN, offIn = NAN;
+      if (ventProfileTiming(now, onIn, offIn)) {
+        si.fanOnInS = onIn;
+        si.fanOffInS = onIn > 0.0f ? static_cast<float>(NAN) : offIn;
+      }
+    }
     si.dQ = thermalV3SensorStepC();
     si.ventFan = st.ventFan;                                                // the fan that really runs
     return si;
@@ -6893,7 +6895,8 @@ class MachineController {
       else if (webOverrideLive(webVentUntil_, now) && webVentValue_) why = 6U;
       else if (profileVentActive) why = 7U;
       else if (scheduledVentActive) why = 8U;
-      ventReason_ = why;
+      // the fan relay keeps running for its minimum on-time after the request ended: it keeps the reason it was started for
+      ventReason_ = (why != 0U || !outputs_.state().ventFan) ? why : ventReason_;
     }               // a Web override replaces the automatic vent, never a forced one
 
     // "Nhiet ngoai me" da bo khoi HMI (khong con cach nao nguoi dung tat lai

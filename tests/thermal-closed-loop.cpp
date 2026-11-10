@@ -468,8 +468,9 @@ static void reference(const char *name, const Stats &st) {
 // Pins of the cold-room block: measured on the fixed sample of 35 ovens, plus a margin (set from the first run, see the numbers printed by the test).
 static const size_t COLD_CAPABLE_MIN = 21;                           // of the 35 (the others have a heater that cannot take the oven to SP at 10 degC)
 static const int COLD_CLIMB_TRIPS_MAX = 4;                           // E115 stops 4 of 35 ovens on a first climb from 20 degC at 10 degC (heater too weak for the room): pinned, not hidden
-static const double COLD_DOOR3_OVER = 1.10, COLD_DOOR5_OVER = 1.10, COLD_TRAY_OVER = 0.50, COLD_RESTART_OVER = 0.45, COLD_BAND = 0.40, COLD_PP = 0.30, NEWBATCH_MORE_OVER = 0.30,                  // 0.30: the level stored in a cold room used on a warmer day (+0.24 on the worst oven, known and pinned)
-                       NEWBATCH_MIN_AIR = 25.0;
+static const double COLD_DOOR3_OVER = 1.10, COLD_DOOR5_OVER = 1.10, COLD_TRAY_OVER = 0.50, COLD_RESTART_OVER = 0.45, COLD_BAND = 0.40, COLD_PP = 0.30, COLD_UNUSED = 0.0;
+static const int NEWBATCH_TRIPS_MAX[4] = {1, 1, 0, 0};   // measured 1/1/0/0 of 21 ovens: the weakest oven on a 10 degC day needs more than the E115 budget (physics, not loosened)
+static const double NEWBATCH_OVER_MAX[4] = {0.85, 0.95, 0.50, 0.50};
 
 static void testFamily(bool everything) {
   strictLimits = !everything;
@@ -639,8 +640,7 @@ static void testFamily(bool everything) {
 
   // 2.9.10, a cold room: the worst winter day, 10 degC around an oven that is built for 28 (the heat the oven loses goes up 2.9 times, so does the hold level it needs).
   // Ovens of the sample whose heater cannot take the oven to SP at 10 degC are not the controller's fault and are left out (their number is printed and pinned).
-  // Then the new-batch start: the controller starts from a share of what the oven needed last time (thermal_hold_record.h, restoredNewBatch), and the room of the new
-  // batch can be the same, colder or warmer than the room of the last one; the share must help when the room is colder and must not harm when it is warmer.
+  // Then the new-batch start from the controller's own prior (the room of the new batch can be the same, colder or warmer than the room of the last one).
   {
     std::vector<Oven> coldAll, warmAll;
     for (const Oven &o : ovens) { Oven c = o; c.p.Tamb = 10.0; coldAll.push_back(c); warmAll.push_back(o); }
@@ -680,12 +680,12 @@ static void testFamily(bool everything) {
     scenario("cold room: settled, door 150 s + tray x0.5", {COLD_TRAY_OVER, COLD_BAND, COLD_PP, 0.0, false}, true, 2.5, 0.5, false);
     scenario("cold room: restart in a settled oven", {COLD_RESTART_OVER, COLD_BAND, COLD_PP, 0.0, false}, false, 0.0, 0.0, true);
 
-    // The new batch: eggs of 25 degC go in (door 150 s), the machine starts the batch at once. `from` / `to` = the room of the last batch / of this one.
-    auto newBatch = [&](const std::vector<Rig> &fromRigs, double toRoom, bool useStored) {
+    // The new batch: eggs of 25 degC go in (door 150 s), the machine starts the batch at once from its own 12 % hold prior: nothing of the last batch is carried over (the hold is read
+    // again by the feedback, and by the evidence of the heater-stuck rule when that is slow). `from` / `to` = the room of the last batch / of this one.
+    auto newBatch = [&](const std::vector<Rig> &fromRigs, double toRoom) {
       Stats st;
       for (size_t k = 0; k < idx.size(); ++k) {
         Rig r = fromRigs[k];
-        const float storedHold = r.ctl.pHold();
         r.plant.setAmbient(toRoom);
         r.plant.insertColdMass(0.5, 25.0);
         r.advance(150.0, true, false);
@@ -693,12 +693,6 @@ static void testFamily(bool everything) {
         const float kAir = r.ctl.kAir(), tau = r.ctl.tauTransit();
         r.restartControllers();
         r.ctl.restore(kAir, tau);
-        if (useStored) {
-          const uint32_t t0 = 1700000000UL;
-          const thermalhold::Record rec = thermalhold::make(1U, storedHold, static_cast<float>(SP_C), static_cast<float>(SP_C), t0, 7U);
-          const float h = thermalhold::restoredNewBatch(rec, true, true, t0 + 6UL * 3600UL, static_cast<float>(SP_C));
-          if (h >= 0.0f) r.ctl.restoreHold(h);
-        }
         r.skipClock(45.0);
         r.startAt(r.now() + 45.0);
         r.advance(2 * 3600.0);
@@ -710,16 +704,11 @@ static void testFamily(bool everything) {
     const NB nbs[4] = {{"last batch 28 degC, this one 10 (colder day)", &warmSettled, 10.0}, {"last batch 10 degC, this one 10", &coldSettled, 10.0},
                        {"last batch 10 degC, this one 28 (warmer day)", &coldSettled, 28.0}, {"last batch 28 degC, this one 28", &warmSettled, 28.0}};
     for (int k = 0; k < 4; ++k) {
-      std::string a = std::string("new batch, ") + nbs[k].name + ": 12 % start", b = std::string("new batch, ") + nbs[k].name + ": share of the last level";
-      const Stats blind = newBatch(*nbs[k].rigs, nbs[k].room, false), kept = newBatch(*nbs[k].rigs, nbs[k].room, true);
-      blind.print(a.c_str());
-      kept.print(b.c_str());
-      CHECK(kept.trips <= blind.trips, "%s: the share of the last level made E115 trip on more ovens (%d > %d)", nbs[k].name, kept.trips, blind.trips);
-      CHECK(kept.maxOver <= blind.maxOver + NEWBATCH_MORE_OVER, "%s: the share overshoots %.2f against %.2f of the 12 %% start", nbs[k].name, kept.maxOver, blind.maxOver);
-      CHECK(kept.minAir >= NEWBATCH_MIN_AIR, "%s: the air fell to %.2f with the share (pin %.2f; 12 %% start: %.2f)", nbs[k].name, kept.minAir, NEWBATCH_MIN_AIR, blind.minAir);
-      if (k == 0) {
-        CHECK(kept.settlePercent(50) <= blind.settlePercent(50) + 1.0, "colder day: settle median %.0f s with the share against %.0f s with the 12 %% start", kept.settlePercent(50), blind.settlePercent(50));
-      }
+      const std::string a = std::string("new batch, ") + nbs[k].name;
+      const Stats st = newBatch(*nbs[k].rigs, nbs[k].room);
+      st.print(a.c_str());
+      CHECK(st.trips <= NEWBATCH_TRIPS_MAX[k], "%s: E115 tripped on %d ovens (pin %d)", nbs[k].name, st.trips, NEWBATCH_TRIPS_MAX[k]);
+      CHECK(st.maxOver <= NEWBATCH_OVER_MAX[k], "%s: the air went %.2f over SP (pin %.2f)", nbs[k].name, st.maxOver, NEWBATCH_OVER_MAX[k]);
     }
   }
 
@@ -745,11 +734,44 @@ static void testFamily(bool everything) {
   CHECK(trayOld[1].trips * 2 >= trayOld[1].n, "the family must be able to reproduce the failure: 2.3.4 stopped %d of %d healthy ovens", trayOld[1].trips, trayOld[1].n);
 }
 
+// The day profile of the exhaust fan takes a different amount of heat out on every day of the year (a cold day: 25 points of the heater, a warm one: nothing, and in the summer
+// the air it brings in can even add heat). The controller learns the compensation (its size by the mean error of each run, its timing by hill-climbing on the energy of the
+// error) run after run; it must find the winter size, the autumn size and the summer size by itself. Oven of the 29/10 batch, fan 7.2 min in every 40.
+static void testFanProfile() {
+  std::printf("\n[F] The exhaust fan on a day profile, at every season (learned, nothing fixed)\n");
+  const double PERIOD = 2400.0, ON = 432.0;
+  struct Day { double tamb; double dipMax, overMax; };
+  const Day days[] = {{4.0, 0.25, 0.20}, {14.0, 0.20, 0.15}, {24.0, 0.20, 0.15}, {34.0, 0.15, 0.15}};   // measured on the sixteenth run; the 2.9.11 controller: 0.73 / 0.61 / 0.36 / 0.11 under SV
+  for (const Day &d : days) {
+    thermalsim::PlantParams p = thermalsim::u29Oven(); p.Tamb = d.tamb;
+    Rig r(p, 25.0, 25.0); r.advance(5 * 3600.0);
+    const double base = r.now();
+    double dipLast = 0.0, overLast = 0.0;
+    for (int c = 0; c < 16; ++c) {
+      double mn = 99.0, mx = -99.0;
+      for (int s = 0; s < static_cast<int>(PERIOD); ++s) {
+        const double ph = std::fmod(r.now() - base, PERIOD);
+        const bool vent = ph < ON;
+        r.in.fanOnInS = vent ? 0.0f : static_cast<float>(PERIOD - ph);
+        r.in.fanOffInS = vent ? static_cast<float>(ON - ph) : static_cast<float>(NAN);
+        r.advance(1.0, false, vent);
+        const double a = r.plant.air(); mn = std::min(mn, a); mx = std::max(mx, a);
+      }
+      dipLast = thermalsim::SP_C - mn; overLast = mx - thermalsim::SP_C;
+    }
+    std::printf("  room %4.0f degC: sixteenth run: dip %.2f, rise %.2f degC (hold %.1f %%)\n", d.tamb, dipLast, overLast, static_cast<double>(r.ctl.pHold()));
+    CHECK(!r.tripped(), "room %.0f: E115 must not trip on a healthy oven with the fan on its profile", d.tamb);
+    CHECK(dipLast <= d.dipMax, "room %.0f: the fan still pulls the air %.2f under SV on the sixteenth run (limit %.2f)", d.tamb, dipLast, d.dipMax);
+    CHECK(overLast <= d.overMax, "room %.0f: the compensation leaves the air %.2f over SV on the sixteenth run (limit %.2f)", d.tamb, overLast, d.overMax);
+  }
+}
+
 int main() {
   std::printf("=== Thermal closed-loop tests ===\n");
   test29();
   testReboot29();
   testFamily(std::getenv("THERMAL_FULL_FAMILY") != nullptr);
+  testFanProfile();
   if (failures) {
     std::printf("THERMAL CLOSED-LOOP: %d FAILED\n", failures);
     return 1;

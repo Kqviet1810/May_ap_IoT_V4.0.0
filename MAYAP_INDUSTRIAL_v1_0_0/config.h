@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "2.9.11";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "3.0.0";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -590,8 +590,8 @@ constexpr float SENSOR_FROZEN_EPSILON_C = 0.01f;
 constexpr uint32_t SENSOR_FROZEN_TIMEOUT_MS = 1200000UL; // 20 phut
 // Warm-up: profile / scheduled ventilation waits while PV is more than this far below SP (the fan takes heat away while the oven climbs);
 // released at the second threshold or after the maximum. Forced vents (High, sensor fault) are untouched.
-constexpr float WARMUP_VENT_HOLD_ERR_C = 1.0f;
-constexpr float WARMUP_VENT_RELEASE_ERR_C = 0.5f;
+constexpr float WARMUP_VENT_HOLD_ERR_C = 0.3f;
+constexpr float WARMUP_VENT_RELEASE_ERR_C = 0.2f;
 constexpr uint32_t WARMUP_VENT_HOLD_MAX_MS = 1800000UL;   // 30 phut
 // Vent line (the exhaust fans of the overheat, a last resort; see vent_line.h and updateAlarms). The fans never cut the heater.
 constexpr uint32_t VENT_LINE_CONFIRM_MS = 20000UL;        // a decisive overshoot (FAST / PRED) must stand this long

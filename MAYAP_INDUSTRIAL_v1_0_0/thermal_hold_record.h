@@ -8,9 +8,8 @@
 //   Saved only when the oven is settled (tracking, PV near SV, no door) for 10 minutes, at most every 10 minutes, and when the level moved by 0.5 points or the batch is another one.
 //   Restored only when ALL of these hold: a valid record of THIS batch; SV unchanged; PV near SV and near the PV of the record (the oven did not cool or heat meanwhile);
 //   the clock says the stop was short (30 minutes) - or, with no usable clock, the PV says so. The level given back is 0.9 of the saved one (a little under is safer than a little over:
-//   the controller raises it if it is too low). Anything else: the 12 % start, as before - except a NEW batch (or a long stop) of the same set-point within a day of the save: its
-//   start is a share (0.9, the same share as a resumed batch) of the level the oven needed last time, never under the 12 % start (restoredNewBatch). The cold eggs of a new batch take more than the settled oven does (log of 05/11: 12 % -> 49 %), so a share of the settled level is not too much; it is
-//   still never above what the oven needed last time. If the day is much warmer than the last one the level is too high for a while (rig, an oven alone at 1.5 x the true level: +0.36 degC).
+//   the controller raises it if it is too low). Anything else: the 12 % start. (A new batch carries nothing over: the memory is only for a restart close to the save, so that the
+//   controller does not give the wrong power while it finds the load again; the feedback and the evidence of the heater-stuck rule do the rest.)
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -28,15 +27,7 @@ constexpr float RESTORE_NEAR_C = 0.5f;                   // PV within this of SV
 constexpr float RESTORE_PV_MOVE_C = 0.5f;                // ... and within this of the PV saved
 constexpr float RESTORE_SP_MOVE_C = 0.05f;               // the set-point must be the one of the record
 constexpr float RESTORE_FACTOR = 0.9f;
-constexpr float HOLD_MAX_PCT = 40.0f;
-#ifndef NEWBATCH_FACTOR
-#define NEWBATCH_FACTOR 0.9f
-#endif
-#ifndef NEWBATCH_MAX_AGE_S
-#define NEWBATCH_MAX_AGE_S 86400UL
-#endif
-constexpr float NEWBATCH_SHARE = NEWBATCH_FACTOR;
-constexpr uint32_t NEWBATCH_MAX_AGE = NEWBATCH_MAX_AGE_S;   // the record of the oven is a day old at most: the weather of another day is another hold
+constexpr float HOLD_MAX_PCT = 100.0f;                    // what the heater can give: a cold day needs 50 - 60 % and must be kept (a cap of 40 % kept a stale 38 % for ever)
 constexpr float START_HOLD_PCT = 12.0f;                       // the controller's own start (HOLD_PRIOR_OF_CAP in thermal_v3.h)
 
 struct Record {
@@ -93,17 +84,6 @@ inline float restored(const Record &r, bool recordValid, uint32_t batchId, bool 
   }
   const float h = r.hold * RESTORE_FACTOR;
   return h > HOLD_MAX_PCT ? HOLD_MAX_PCT : (h < 0.0f ? 0.0f : h);
-}
-
-// The level to start a NEW batch (or a restart after a long stop) at, or a negative number: the 12 % start. Needs a valid record of the same set-point, a usable clock and a
-// save not older than a day; the level is a share of the saved one and only used when it is higher than the 12 % start.
-inline float restoredNewBatch(const Record &r, bool recordValid, bool rtcValid, uint32_t nowEpoch, float sp) {
-  if (!recordValid || !rtcValid || r.epoch == 0U || !std::isfinite(sp)) return -1.0f;
-  if (std::fabs(r.sp - sp) > RESTORE_SP_MOVE_C) return -1.0f;
-  if (nowEpoch < r.epoch || nowEpoch - r.epoch > NEWBATCH_MAX_AGE) return -1.0f;
-  const float h = r.hold * NEWBATCH_SHARE;
-  if (!(h > START_HOLD_PCT)) return -1.0f;
-  return h > HOLD_MAX_PCT ? HOLD_MAX_PCT : h;
 }
 
 }  // namespace thermalhold
