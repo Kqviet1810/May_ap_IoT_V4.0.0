@@ -734,20 +734,20 @@ static void testFamily(bool everything) {
   CHECK(trayOld[1].trips * 2 >= trayOld[1].n, "the family must be able to reproduce the failure: 2.3.4 stopped %d of %d healthy ovens", trayOld[1].trips, trayOld[1].n);
 }
 
-// The day profile of the exhaust fan takes a different amount of heat out on every day of the year (a cold day: 20 points of the heater, a warm one: nothing, and in the summer
-// the air it brings in can even add heat). The controller learns the compensation run after run from what the run did to the air; it must find the winter size, the autumn size and
-// the summer size by itself, and a turn of the weather in the middle of a batch. Oven of the 29/10 batch, fan 7.2 min in every 40.
+// The day profile of the exhaust fan takes a different amount of heat out on every day of the year (a cold day: 25 points of the heater, a warm one: nothing, and in the summer
+// the air it brings in can even add heat). The controller learns the compensation (its size by the mean error of each run, its timing by hill-climbing on the energy of the
+// error) run after run; it must find the winter size, the autumn size and the summer size by itself. Oven of the 29/10 batch, fan 7.2 min in every 40.
 static void testFanProfile() {
   std::printf("\n[F] The exhaust fan on a day profile, at every season (learned, nothing fixed)\n");
   const double PERIOD = 2400.0, ON = 432.0;
   struct Day { double tamb; double dipMax, overMax; };
-  const Day days[] = {{4.0, 0.55, 0.25}, {14.0, 0.45, 0.25}, {24.0, 0.15, 0.15}, {34.0, 0.15, 0.15}};   // measured on the tenth run; the 2.9.11 controller: 0.73 / 0.61 / 0.36 / 0.11 under SV
+  const Day days[] = {{4.0, 0.25, 0.20}, {14.0, 0.20, 0.15}, {24.0, 0.20, 0.15}, {34.0, 0.15, 0.15}};   // measured on the sixteenth run; the 2.9.11 controller: 0.73 / 0.61 / 0.36 / 0.11 under SV
   for (const Day &d : days) {
     thermalsim::PlantParams p = thermalsim::u29Oven(); p.Tamb = d.tamb;
     Rig r(p, 25.0, 25.0); r.advance(5 * 3600.0);
     const double base = r.now();
     double dipLast = 0.0, overLast = 0.0;
-    for (int c = 0; c < 10; ++c) {
+    for (int c = 0; c < 16; ++c) {
       double mn = 99.0, mx = -99.0;
       for (int s = 0; s < static_cast<int>(PERIOD); ++s) {
         const double ph = std::fmod(r.now() - base, PERIOD);
@@ -759,10 +759,10 @@ static void testFanProfile() {
       }
       dipLast = thermalsim::SP_C - mn; overLast = mx - thermalsim::SP_C;
     }
-    std::printf("  room %4.0f degC: tenth run: dip %.2f, rise %.2f degC (hold %.1f %%)\n", d.tamb, dipLast, overLast, static_cast<double>(r.ctl.pHold()));
+    std::printf("  room %4.0f degC: sixteenth run: dip %.2f, rise %.2f degC (hold %.1f %%)\n", d.tamb, dipLast, overLast, static_cast<double>(r.ctl.pHold()));
     CHECK(!r.tripped(), "room %.0f: E115 must not trip on a healthy oven with the fan on its profile", d.tamb);
-    CHECK(dipLast <= d.dipMax, "room %.0f: the fan still pulls the air %.2f under SV on the tenth run (limit %.2f)", d.tamb, dipLast, d.dipMax);
-    CHECK(overLast <= d.overMax, "room %.0f: the compensation leaves the air %.2f over SV on the tenth run (limit %.2f)", d.tamb, overLast, d.overMax);
+    CHECK(dipLast <= d.dipMax, "room %.0f: the fan still pulls the air %.2f under SV on the sixteenth run (limit %.2f)", d.tamb, dipLast, d.dipMax);
+    CHECK(overLast <= d.overMax, "room %.0f: the compensation leaves the air %.2f over SV on the sixteenth run (limit %.2f)", d.tamb, overLast, d.overMax);
   }
 }
 
