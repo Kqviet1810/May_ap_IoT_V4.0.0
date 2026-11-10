@@ -99,7 +99,11 @@ constexpr float LIFT_CLOSE_TAU = LIFT_CLOSE, LIFT_KREF = LIFT_KREF_V;
 // The heater-stuck rule as the milestone of the controller (e115Push): the evidence from which the hold is raised, and the evidence at which it would reach the heater's ceiling.
 constexpr float E115_PUSH_START = 0.10f, E115_PUSH_END = 0.70f;
 // The scheduled fan (fan compensation in step): the learning of its size from the dip of the last run [percent of power per degC], and the dip that is left alone [degC].
-constexpr float FAN_LEARN_K = 20.0f, FAN_LEARN_DEAD = 0.04f;
+constexpr float FAN_GAIN_MIN = 0.1f, FAN_GAIN_MAX = 3.0f, FAN_LEARN_DEAD = 0.01f;
+constexpr float PROBE_BAND_C = 0.6f, PROBE_DEAD_C = 0.02f, PROBE_QUIET_TAU = 2.0f, PROBE_WINDOW_TAU = 2.0f, PROBE_MIN_S = 240.0f, PROBE_GAIN_MIN = 0.1f, PROBE_GAIN_MAX = 2.0f;
+constexpr float FAN_FADE_C = 0.1f;
+constexpr float FAN_BOTH_C = 0.2f, FAN_BOTH_KEEP = 0.7f;
+constexpr float FAN_LEARN_K = 1.5f;        // one run: the compensation moves by this many proportional gains of the oven per degC of mean error (measured: settles in 3-4 runs, no ringing)
 constexpr float SIGMA_FLOOR = 0.004f;      // a reading of a 0.1 degC sensor cannot be quieter than this (degC)
 constexpr uint16_t HIST_LEN = 640U;        // seconds of history (memory, not tuning): 4 x the largest transit time
 
@@ -143,9 +147,10 @@ class Controller {
     swOn_ = false; swPv0_ = swT_ = 0.0f;
     pm_ = NAN; rate_ = 0.0f; zz_ = false;
     escPrev_ = 0.0f; e115Frac_ = 0.0f; e115Lim_ = 900.0f;
-    fanFF_ = 0.0f; fanWinMin_ = 99.0f; fanWinMax_ = -99.0f; fanWinT_ = 0.0f; fanWinOpen_ = false;
+    spProbe_ = NAN; probeE_ = probeN_ = probeQuietS_ = probeSign_ = 0.0f; probeGain_ = 0.5f;
+    fanFF_ = 0.0f; ffNow_ = 0.0f; fanTailS_ = 1.0e6f; fanGain_ = 1.0f; fanSign_ = 0.0f; fanWinE_ = fanWinN_ = fanWinT_ = 0.0f; fanWinMin_ = 99.0f; fanWinMax_ = -99.0f; fanWinOpen_ = false;
     derive();
-    for (uint16_t i = 0U; i < HIST_LEN; ++i) { pvHist_[i] = 0.0f; uHist_[i] = 0.0f; }
+    for (uint16_t i = 0U; i < HIST_LEN; ++i) { pvHist_[i] = 0.0f; uHist_[i] = 0.0f; ffHist_[i] = 0.0f; }
   }
 
   Output step(const Input &in) {
@@ -164,7 +169,7 @@ class Controller {
       }
       wasLive_ = false; liveS_ = lastCmd_ = 0.0f; swOn_ = false; zz_ = false;
       secAcc_ += dt;
-      while (secAcc_ >= 1.0f) { secAcc_ -= 1.0f; pushHist(std::isfinite(pv_) ? pv_ : 0.0f, 0.0f); }
+      while (secAcc_ >= 1.0f) { secAcc_ -= 1.0f; pushHist(std::isfinite(pv_) ? pv_ : 0.0f, 0.0f, 0.0f); }
       return out;
     }
     // Started close to SV (a reboot, a restart): there is no climb to measure kAir on - begin at the middle of the fleet, not at its slowest oven.
@@ -178,7 +183,10 @@ class Controller {
 
     // --- power: hold plus a saturating function of the PREDICTED error (the heat on its way is counted before it arrives)
     e115Frac_ = in.e115Frac; e115Lim_ = in.e115LimitS;
-    ventFan_ = in.ventFan;   // the fan takes heat out for a few minutes and stops: that load is not a hold level to learn (the observer is held while it runs)
+    // the fan takes heat out for a few minutes and stops: that load is not a hold level to learn. The observer is held while it runs AND while its effect is still on its way (two transit
+    // times after it stops): what happens then is the fan's, and the compensation of the fan (fanFF_) is what learns from it, not the hold.
+    fanTailS_ = in.ventFan ? 0.0f : std::min(1.0e6f, fanTailS_ + dt);
+    ventFan_ = in.ventFan || fanTailS_ < 2.0f * tau_;
     updateInflight();
     const float el = e - lead_;
     elLast_ = el;
@@ -204,17 +212,33 @@ class Controller {
     {
       const bool fanRuns = std::isfinite(in.fanOffInS);
       const bool inWindow = fanRuns ? in.fanOffInS > tau_ : (std::isfinite(in.fanOnInS) && in.fanOnInS <= tau_);
-      if (inWindow && !in.shadow) cmd += fanFF_;
-      if (in.ventFan) { fanWinOpen_ = true; fanWinT_ = 0.0f; }
+      // never feed a compensation into an air that is already over SV: it fades out over FAN_FADE_C of rise (a weather that turned warm overnight is caught inside the run, not the next one)
+      const float fade = fanFF_ > 0.0f ? std::max(0.0f, 1.0f - std::max(0.0f, pv_ - sp_) / FAN_FADE_C) : 1.0f;
+      ffNow_ = (inWindow && !in.shadow) ? fanFF_ * fade : 0.0f;
+      cmd += ffNow_;
+      if (in.ventFan && !fanWinOpen_) { fanWinOpen_ = true; fanWinT_ = 0.0f; fanWinE_ = 0.0f; fanWinN_ = 0.0f; fanWinMin_ = 99.0f; fanWinMax_ = -99.0f; }
       if (fanWinOpen_ && std::isfinite(pv_)) {
+        // the outcome of a run is the mean error over the run and the two transit times after it (all of its effect): an early dip and a late rise of the same size cancel, a mean
+        // under SV means the compensation was too small, a mean over SV that it was too big. One step of the proportional gain of the oven per run, run after run.
+        fanWinE_ += (sp_ - pv_) * dt; fanWinN_ += dt;
         fanWinMin_ = std::min(fanWinMin_, pv_); fanWinMax_ = std::max(fanWinMax_, pv_);
         if (!in.ventFan) fanWinT_ += dt;
-        if (!in.ventFan && fanWinT_ > 2.0f * tau_) {                                // two transit times after the run: its whole effect is in
+        if (!in.ventFan && fanWinT_ > 2.0f * tau_) {
+          const float mean = fanWinE_ / std::max(1.0f, fanWinN_);
+          // up, down or leave it: the sign of the mean says which; the size of the step is the proportional gain of the oven (which rests on a kAir that may be a guess) times a
+          // factor that is learned too: the same sign run after run means the steps are too short (grow), a change of sign means they overshot (shrink).
+          if (std::fabs(mean) > FAN_LEARN_DEAD) {
+            const float sgn = mean > 0.0f ? 1.0f : -1.0f;
+            if (fanSign_ == sgn) fanGain_ = std::min(FAN_GAIN_MAX, fanGain_ * 1.3f);
+            else if (fanSign_ != 0.0f) fanGain_ = std::max(FAN_GAIN_MIN, fanGain_ * 0.5f);
+            fanSign_ = sgn;
+            fanFF_ = std::max(-hold_, std::min(0.4f * cap_, fanFF_ + fanGain_ * FAN_LEARN_K * kn_ * mean));
+          }
+          // A compensation that is mistimed (the heat arrives too early or too late) makes a dip AND a rise in the same run: whatever the mean says, that is no help, so it is taken back.
           const float dip = sp_ - fanWinMin_, over = fanWinMax_ - sp_;
-          if (dip > FAN_LEARN_DEAD) fanFF_ += FAN_LEARN_K * (dip - FAN_LEARN_DEAD);
-          else if (over > FAN_LEARN_DEAD) fanFF_ -= FAN_LEARN_K * (over - FAN_LEARN_DEAD);
-          fanFF_ = std::max(0.0f, std::min(0.4f * cap_, fanFF_));
-          fanWinOpen_ = false; fanWinMin_ = 99.0f; fanWinMax_ = -99.0f;
+          if (dip > FAN_BOTH_C && over > FAN_BOTH_C && fanFF_ > 0.0f) { fanFF_ *= FAN_BOTH_KEEP; fanGain_ = std::max(FAN_GAIN_MIN, fanGain_ * 0.5f); }
+          fanWinMin_ = 99.0f; fanWinMax_ = -99.0f;
+          fanWinOpen_ = false;
         }
       }
     }
@@ -238,10 +262,10 @@ class Controller {
     if (secAcc_ >= 1.0f) {
       secAcc_ -= 1.0f;
       const float net = in.shadow ? 0.0f : cmd;
-      pushHist(pv_, in.shadow ? 0.0f : net);
+      pushHist(pv_, in.shadow ? 0.0f : net, in.shadow ? 0.0f : ffNow_);
       measureNoiseAndSlope();
       derive();
-      if (in.permit && !in.shadow) { e115Push(); observe(); stallLift(); trim(); identifyGain(e); } else if (in.shadow) observe();
+      if (in.permit && !in.shadow) { e115Push(); observe(); stallLift(); trim(); probe(); identifyGain(e); } else if (in.shadow) observe();
       stopwatch(e, in.permit && !in.shadow);
     }
     lastCmd_ = in.shadow ? 0.0f : cmd;
@@ -320,13 +344,14 @@ class Controller {
     const float siMc = 1.0f / (2.0f * kAir_ * 1.35f * tau_);
     kn_ = std::max(0.05f * span / farBand_, std::min(siMc, 0.5f * span / nearBand_));
   }
-  void pushHist(float pv, float u) {
-    pvHist_[histHead_] = pv; uHist_[histHead_] = std::max(0.0f, std::min(100.0f, u));
+  void pushHist(float pv, float u, float ff) {
+    pvHist_[histHead_] = pv; uHist_[histHead_] = std::max(0.0f, std::min(100.0f, u)); ffHist_[histHead_] = ff;
     histHead_ = static_cast<uint16_t>((histHead_ + 1U) % HIST_LEN);
     if (histCount_ < HIST_LEN) ++histCount_;
   }
   float pvAge(uint16_t a) const { return pvHist_[(histHead_ + HIST_LEN - 1U - a) % HIST_LEN]; }
   float uAge(uint16_t a) const { return uHist_[(histHead_ + HIST_LEN - 1U - a) % HIST_LEN]; }
+  float ffAge(uint16_t a) const { return ffHist_[(histHead_ + HIST_LEN - 1U - a) % HIST_LEN]; }
   // Noise and slope of PV from the last 0.8 tau seconds: least-squares line, its residual (sigma) and the uncertainty of its slope.
   void measureNoiseAndSlope() {
     const uint16_t n = static_cast<uint16_t>(std::min<float>(std::max(30.0f, 0.8f * tau_), static_cast<float>(HIST_LEN - 1U)));
@@ -361,7 +386,8 @@ class Controller {
     if (histCount_ >= static_cast<uint16_t>(3U * n) && n > 0U) { float a = 0.0f; for (uint16_t i = n; i < 3U * n; ++i) a += uAge(i); ref = a / static_cast<float>(2U * n); }
     for (uint16_t i = 0U; i < n; ++i) sum += uAge(i) - ref;
 #else
-    for (uint16_t i = 0U; i < n; ++i) sum += uAge(i) - hold_;
+    // the compensation of the fan is not a surplus: it is the heat the fan is about to take out, so it does not count as heat in flight
+    for (uint16_t i = 0U; i < n; ++i) sum += uAge(i) - ffAge(i) - hold_;
 #endif
     float lead = kAir_ * LEAD_GAIN * sum;
     // On a climb (far under SV) the measured slope is a floor for the heat in flight (a wrong kAir cannot hide it); near SV its noise must not count.
@@ -380,7 +406,7 @@ class Controller {
     // reading that stays over SV with the fan running IS proof of a smaller one (log of 05/11: with the estimate frozen under the fan it stood at 5 % for an
     // hour while the oven needed nothing). The trend (rate_) is kept for the same reason: wiped at every fan start, it never followed a falling load.
     const float holdBefore = hold_, rateBefore = rate_;
-    const float u = uAge(delay);
+    const float u = uAge(delay) - ffAge(delay);      // the compensation of the fan answers the fan's loss: the model of the air does not see it as heat
     const float w = 1.0f / (OBS_POLE_TAU * tau_);
     const float err = pv_ - pm_;
     pm_ += kAir_ * (u - hold_) + 3.0f * w * err;
@@ -406,6 +432,27 @@ class Controller {
     if (!std::isfinite(e) || e > TRIM_BAND_C || e <= TRIM_DEAD_C) return;
     hold_ = std::min(cap_, hold_ + kn_ * (e - TRIM_DEAD_C) / static_cast<float>(TRIM_TI_S));
 #endif
+  }
+  // The probe: try, judge, correct. Near SV, over a stretch of clean time (no fan, no door, no change of set-point) the mean error says what the hold level did: under SV on average,
+  // the level was too low; over SV, too high; near zero, leave it. Each judgement moves the hold by a step of the oven's proportional gain times a factor that is learned: the same
+  // direction twice in a row means the steps are too short (grow), a change of direction that they overshot (shrink). It needs no oven model (so a wrong kAir only changes the
+  // speed of the search), it works at any load the oven has (a cold day and a hot noon alike), and it is the writer that finds a hold the observer cannot (the fan runs a third of
+  // the time and holds the observer; the weather moves faster than its leak).
+  void probe() {
+    const float e = sp_ - pv_;
+    if (!std::isfinite(sp_) || !std::isfinite(spProbe_) || std::fabs(sp_ - spProbe_) > 0.01f) { spProbe_ = sp_; probeE_ = probeN_ = 0.0f; probeQuietS_ = 0.0f; }
+    probeQuietS_ += 1.0f;
+    if (ventFan_ || door_ || doorLatch_ || !arrived_ || !std::isfinite(e) || std::fabs(e) > PROBE_BAND_C || probeQuietS_ < PROBE_QUIET_TAU * tau_) { probeE_ = probeN_ = 0.0f; return; }
+    probeE_ += e; probeN_ += 1.0f;
+    if (probeN_ < std::max(PROBE_MIN_S, PROBE_WINDOW_TAU * tau_)) return;
+    const float mean = probeE_ / probeN_;
+    probeE_ = probeN_ = 0.0f;
+    if (std::fabs(mean) <= PROBE_DEAD_C) return;                    // the level is right: stay
+    const float sgn = mean > 0.0f ? 1.0f : -1.0f;
+    if (probeSign_ == sgn) probeGain_ = std::min(PROBE_GAIN_MAX, probeGain_ * 1.3f);
+    else if (probeSign_ != 0.0f) probeGain_ = std::max(PROBE_GAIN_MIN, probeGain_ * 0.5f);
+    probeSign_ = sgn;
+    hold_ = std::max(0.0f, std::min(cap_, hold_ + probeGain_ * kn_ * mean));
   }
   void stallLift() {
     lifting_ = false;
@@ -489,8 +536,13 @@ class Controller {
   bool swOn_ = false; float swPv0_ = 0.0f, swT_ = 0.0f;
   float pvHist_[HIST_LEN] = {};
   float uHist_[HIST_LEN] = {};
+  float ffHist_[HIST_LEN] = {};
+  float ffNow_ = 0.0f;
   float escPrev_ = 0.0f, e115Frac_ = 0.0f, e115Lim_ = 900.0f;
-  float fanFF_ = 0.0f, fanWinMin_ = 99.0f, fanWinMax_ = -99.0f, fanWinT_ = 0.0f; bool fanWinOpen_ = false;
+  float spProbe_ = NAN, probeE_ = 0.0f, probeN_ = 0.0f, probeQuietS_ = 0.0f, probeGain_ = 0.5f, probeSign_ = 0.0f;
+  float fanTailS_ = 1.0e6f, fanGain_ = 1.0f, fanSign_ = 0.0f;
+  float fanWinMin_ = 99.0f, fanWinMax_ = -99.0f;
+  float fanFF_ = 0.0f, fanWinE_ = 0.0f, fanWinN_ = 0.0f, fanWinT_ = 0.0f; bool fanWinOpen_ = false;
   uint16_t histHead_ = 0U, histCount_ = 0U;
 };
 

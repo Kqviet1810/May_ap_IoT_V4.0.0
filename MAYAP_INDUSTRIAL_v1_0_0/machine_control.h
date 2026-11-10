@@ -4481,10 +4481,10 @@ class MachineController {
       const float candidateHum = clampFloat(
           sensor_.humidityRH() + config_.humidityOffset, 0.0f, 100.0f);
       const float rawSensorTemp = sensor_.rawTemperatureC();
-      // Bu am co the can cho calibration/PID nhung KHONG duoc ha nguong bao
-      // ve qua nhiet. Bu duong van duoc ap dung theo huong fail-safe.
-      const float candidateRawCorrected = rawSensorTemp + config_.tempOffset;
-      const float candidateRaw = std::max(rawSensorTemp, candidateRawCorrected);
+      // The protections read the CORRECTED temperature (the raw reading plus the offset), the same value that the screen, the Web, the PID and the siren show: the offset is the
+      // calibration of this sensor, and a threshold typed on the HMI means that temperature. (Until 2.9.12 a negative offset was left out here: with an offset of -0.1 the
+      // overheat alarm tripped 0.1 degC under its setting.)
+      const float candidateRaw = rawSensorTemp + config_.tempOffset;
       const bool frameValid = sensor_.dataValid() && isfinite(candidateTemp) &&
                               isfinite(candidateHum) && isfinite(rawSensorTemp) &&
                               isfinite(candidateRaw);
