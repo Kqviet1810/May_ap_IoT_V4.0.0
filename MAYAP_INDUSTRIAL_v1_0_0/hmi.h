@@ -467,7 +467,6 @@ const char *const OPT_OFFLINE_ONLINE[] = {"OFFLINE", "ONLINE"};
 const char *const OPT_ON_OFF_HOI[] = {"HOI XN", "TU DONG"};
 const char *const OPT_VENT_LEVEL[] = {"THAP", "TIEU CHUAN", "CAO"};
 const char *const OPT_SENSOR_RES[] = {"TU DONG", "0.1 C", "0.01 C"};
-const char *const OPT_OVEN_GAIN[] = {"TU DONG", "0.6e-4", "0.8e-4", "1.0e-4", "1.4e-4", "2.0e-4", "3.0e-4", "5.0e-4"};   // heater gain of the oven, degC/s per % (thermal_gain_record.h manualKAir)
 #define ITEM_FLOAT(lbl, member, mn, mx, st, dec, unitText) \
   {lbl, SettingType::Float, offsetof(MachineConfig, member), mn, mx, st, dec, unitText, nullptr, 0}
 #define ITEM_U8(lbl, member, mn, mx, st, unitText) \
@@ -588,13 +587,11 @@ const SettingItem SETTINGS[] = {
   // Smart Thermal (NANG CAO > PID/GIA NHIET): works only with "Tu can bang nhiet" ON; locked while a batch runs.
   ITEM_BOOL("Smart Thermal", smartThermalEnabled),                              // 54
   // Thermal Predictive V1 (NANG CAO > PID/GIA NHIET): default ON; read at the start of a batch; acts only with "Tu can bang nhiet" ON.
-  ITEM_BOOL("Nhiet du doan", predictiveThermalEnabled),                         // 55
-  // Heater gain of the oven (NANG CAO > GIA NHIET): AUTO = what the last climb measured and the machine kept; a value = typed by hand, the starting value.
-  ITEM_U8_OPTIONS("He so heater", ovenGainMode, OPT_OVEN_GAIN, 8)               // 56
+  ITEM_BOOL("Nhiet du doan", predictiveThermalEnabled)                          // 55
 };
 
 constexpr uint8_t SETTING_COUNT = sizeof(SETTINGS) / sizeof(SETTINGS[0]);
-static_assert(SETTING_COUNT == 57, "Bang SETTINGS phai co 57 thong so");
+static_assert(SETTING_COUNT == 56, "Bang SETTINGS phai co 56 thong so");
 
 // Thermal Control V2.0.0: the old controller's rows (Kp/Ki/Kd 15-17, tune 26-27, balance 51, Smart Thermal 54, Predictive 55) stay in
 // SETTINGS so every index and the stored config keep their meaning, but no menu group lists them.
@@ -603,7 +600,7 @@ const uint8_t GROUP_SETTING_INDEXES[] = {
   4,5,6,8,                             // Nhiet do (nguong van hanh; Bu nhiet do da chuyen sang HIEU CHUAN)
   11,12,13,28,                         // Dao trung
   14,                                  // He thong: Che do (online/offline)
-  19, 56,                              // GIA NHIET: tran cong suat; he so heater (NANG CAO)
+  19,                                  // GIA NHIET: tran cong suat (NANG CAO)
   20,21,22,23,24,25,                   // Bao ve nhiet      (NANG CAO)
   9,10,                                // Quat hut; Thong gio la menu con
   30,31,                               // Tao am
@@ -624,15 +621,15 @@ const SettingGroup GROUPS[] = {
   // la cai dat mang - gom ca ma QR, dat lai PIN, cap nhat firmware... nen
   // "He thong" mo ta dung hon la cai dat chung cua may.
   {"HE THONG", 12, 1},
-  {"GIA NHIET", 13, 2},
-  {"BAO VE NHIET", 15, 6},
-  {"QUAT HUT", 21, 2},
-  {"TAO AM", 23, 2},
-  {"HIEU CHUAN", 25, 4}
+  {"GIA NHIET", 13, 1},
+  {"BAO VE NHIET", 14, 6},
+  {"QUAT HUT", 20, 2},
+  {"TAO AM", 22, 2},
+  {"HIEU CHUAN", 24, 4}
 };
 constexpr uint8_t GROUP_COUNT = sizeof(GROUPS) / sizeof(GROUPS[0]);
 static_assert(GROUP_COUNT == 9, "Bang GROUPS phai co 9 nhom");
-static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) == 29U,
+static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) == 28U,
               "Sai so luong setting hien trong menu chinh");
 
 // Dong phu (khong phai setting gia tri) duoc gan them vao cuoi mot so nhom.
@@ -744,7 +741,6 @@ void sanitizeConfig(MachineConfig &cfg) {
   }
   if (!cfg.humidifierInstalled) cfg.humidifierEnabled = false;
   if (cfg.sensorResolutionMode > 2U) cfg.sensorResolutionMode = 0U;
-  if (cfg.ovenGainMode > 7U) cfg.ovenGainMode = 0U;
 
   if (!isfinite(cfg.tempHysteresis)) cfg.tempHysteresis = defaults.tempHysteresis;
   cfg.tempHysteresis = constrain(cfg.tempHysteresis, 0.1f, 1.0f);
@@ -973,14 +969,11 @@ View view = View::Home;
 uint8_t homePage = 1; // 0 = Cai dat me, 1 = Trang chu (default), 2 = Trang thai
 bool batchEditMode = false;
 bool batchValEditing = false;
-uint8_t batchParamIndex = 0; // 0=SP, 1=RH, 2=So Ngay, 3=Ap Lai, 4=Ngay ap (dang chay: doi ngay cua me; chua chay: ngay bat dau)
+uint8_t batchParamIndex = 0; // 0=SP, 1=RH, 2=So Ngay, 3=Ap Lai
 float editTargetTemp = 37.5f;
 float editTargetHumidity = 60.0f;
 uint8_t editTotalDays = 21;
 uint8_t editAutoResume = 0;
-uint8_t editBatchDay = 1;      // value being edited in param 4
-uint8_t batchStartDay = 1;     // the day the NEXT batch starts from (1 = a new batch); sent with BatchStart and then back to 1
-const uint8_t BATCH_PARAM_COUNT = 5;
 uint8_t mainIndex = 0;
 uint8_t chungIndex = 0;
 uint8_t chungTop = 0;
@@ -1257,8 +1250,6 @@ const char *groupExtraLabelFor(GroupExtra extra) {
 bool settingLockedDuringBatch(uint8_t settingIndex) {
   if (!currentRuntime.batchRunning && !currentRuntime.resumeConfirmationRequired) return false;
   const uint16_t offset = SETTINGS[settingIndex].offset;
-  // The two sensor offsets are open while a batch RUNS (2.9.7; NANG CAO needs the technical PIN, a step is limited to 0.5 degC / 5 %RH in the firmware); not while a resume is pending.
-  if ((offset == offsetof(MachineConfig, tempOffset) || offset == offsetof(MachineConfig, humidityOffset)) && !currentRuntime.resumeConfirmationRequired) return false;
   // Mo dung nhom VAN HANH co the can chinh khi dang ap (gom ba nguong canh bao
   // nhiet, so ngay ap, tu ap lai). Calibration, PID/tuning, timeout co khi va
   // recovery/system settings bi khoa.
@@ -1434,8 +1425,8 @@ void armInputGuard(uint32_t durationMs = HMI_INPUT_GUARD_MS) {
 
 bool commandTypesConflict(HmiCommandType a, HmiCommandType b) {
   if (a == b) return true;
-  const bool aBatch = a == HmiCommandType::BatchStart || a == HmiCommandType::BatchStop || a == HmiCommandType::BatchSetDay;
-  const bool bBatch = b == HmiCommandType::BatchStart || b == HmiCommandType::BatchStop || b == HmiCommandType::BatchSetDay;
+  const bool aBatch = a == HmiCommandType::BatchStart || a == HmiCommandType::BatchStop;
+  const bool bBatch = b == HmiCommandType::BatchStart || b == HmiCommandType::BatchStop;
   if (aBatch && bBatch) return true;
   const bool aResume = a == HmiCommandType::ResumeYes || a == HmiCommandType::ResumeNo;
   const bool bResume = b == HmiCommandType::ResumeYes || b == HmiCommandType::ResumeNo;
@@ -1560,7 +1551,6 @@ void advBeginExit();
 void advOpenPin(PinPurpose purpose);
 void drawWifiChange();
 void saveBatchSetting(uint8_t param, float val);
-void saveBatchDay();
 
 void goBack() {
   switch (view) {
@@ -2518,11 +2508,9 @@ void executeConfirmation(bool accepted) {
 
   if (accepted) {
     if (action == ConfirmAction::BatchToggle) {
-      const bool starting = !currentRuntime.batchRunning;
-      if (queueCommand(starting ? HmiCommandType::BatchStart : HmiCommandType::BatchStop, COMMAND_DEFAULT_VALID_MS, 0,
-                       starting ? static_cast<uint32_t>(batchStartDay) : AlarmNone)) {
+      if (queueCommand(currentRuntime.batchRunning ?
+                       HmiCommandType::BatchStop : HmiCommandType::BatchStart)) {
         showToast("DANG KIEM TRA DIEU KIEN");
-        if (starting) batchStartDay = 1;                      // the next batch starts from day 1 again unless it is set
       }
       view = View::Home;
       homePage = 1;
@@ -3144,8 +3132,6 @@ void handleInput() {
                 editTotalDays = static_cast<uint8_t>(constrain(static_cast<int>(editTotalDays) + rotary.step, 1, 45));
               } else if (batchParamIndex == 3) {
                 editAutoResume = (editAutoResume == 0) ? 1 : 0;
-              } else if (batchParamIndex == 4) {
-                editBatchDay = static_cast<uint8_t>(constrain(static_cast<int>(editBatchDay) + rotary.step, 1, (currentConfig.totalIncubationDays > 1 ? static_cast<int>(currentConfig.totalIncubationDays) : 1)));
               }
               dirty = true;
             }
@@ -3154,15 +3140,14 @@ void handleInput() {
               else if (batchParamIndex == 1) saveBatchSetting(1, editTargetHumidity);
               else if (batchParamIndex == 2) saveBatchSetting(2, editTotalDays);
               else if (batchParamIndex == 3) saveBatchSetting(3, editAutoResume);
-              else if (batchParamIndex == 4) saveBatchDay();
               batchValEditing = false;
               dirty = true;
             }
           } else {
             if (rotary.step) {
               int q = static_cast<int>(batchParamIndex) + rotary.step;
-              if (q < 0) q = BATCH_PARAM_COUNT - 1;
-              if (q >= BATCH_PARAM_COUNT) q = 0;
+              if (q < 0) q = 3;
+              if (q > 3) q = 0;
               batchParamIndex = static_cast<uint8_t>(q);
               dirty = true;
             }
@@ -3172,7 +3157,6 @@ void handleInput() {
               editTargetHumidity = currentConfig.targetHumidity;
               editTotalDays = currentConfig.totalIncubationDays;
               editAutoResume = currentConfig.autoResumeOnPowerLoss ? 1 : 0;
-              editBatchDay = currentRuntime.batchRunning ? static_cast<uint8_t>(constrain(static_cast<int>(currentRuntime.currentDay), 1, 255)) : batchStartDay;
               dirty = true;
             }
           }
@@ -4153,33 +4137,8 @@ void saveBatchSetting(uint8_t quadrant, float value) {
   }
 }
 
-// Param 4 of the batch screen. A running batch: the machine moves its day counter to the chosen day (batch_day.h; kept in the EEPROM). No batch: the day the
-// next batch starts from, sent with the start command (a batch ended by mistake is started again from its day).
-void saveBatchDay() {
-  const uint8_t day = static_cast<uint8_t>(constrain(static_cast<int>(editBatchDay), 1, (currentConfig.totalIncubationDays > 1 ? static_cast<int>(currentConfig.totalIncubationDays) : 1)));
-  if (currentRuntime.batchRunning) {
-    if (day == currentRuntime.currentDay) { showToast("NGAY AP KHONG DOI"); return; }
-    if (queueCommand(HmiCommandType::BatchSetDay, COMMAND_DEFAULT_VALID_MS, 0, day)) showToast("DANG DOI NGAY AP");
-  } else {
-    batchStartDay = day;
-    showToast(day > 1 ? "SE BAT DAU TU NGAY NAY" : "BAT DAU TU NGAY 1");
-  }
-}
-
 void drawHomeBatch() {
   drawHeader("CAI DAT ME");
-  if (batchEditMode && batchParamIndex == 4) {                 // its own page: the value is a day of the batch, not a quadrant
-    const bool blinkNow = (millis() / 300) % 2 == 0;
-    lcd.setFont(u8g2_font_6x12_tf);
-    drawCenteredText(26, currentRuntime.batchRunning ? "NGAY AP HIEN TAI" : "BAT DAU TU NGAY");
-    char dayBuf[20];
-    const uint8_t shown = batchValEditing ? editBatchDay : (currentRuntime.batchRunning ? static_cast<uint8_t>(constrain(static_cast<int>(currentRuntime.currentDay), 1, 255)) : batchStartDay);
-    snprintf(dayBuf, sizeof(dayBuf), "%u / %u", shown, currentConfig.totalIncubationDays);
-    if (!batchValEditing || blinkNow) drawCenteredText(44, dayBuf);
-    lcd.setFont(u8g2_font_5x8_tf);
-    drawCenteredText(58, batchValEditing ? "XOAY: DOI   NHAN: LUU" : "NHAN: SUA");
-    return;
-  }
 
   // Dau + cach vien:
   // Duong ngang: y = 37, x = 6..121 (cach mep 6px)
@@ -5401,11 +5360,6 @@ void drawConfirmScreen() {
     line2 = fwVerLine;
   } else if (currentRuntime.batchRunning) {
     line1 = "DUNG ME DANG CHAY?";
-  } else if (batchStartDay > 1U) {
-    static char startDayLine[24];
-    snprintf(startDayLine, sizeof(startDayLine), "TU NGAY %u/%u", batchStartDay, currentConfig.totalIncubationDays);
-    line1 = "BAT DAU ME AP?";
-    line2 = startDayLine;
   } else {
     line1 = "BAT DAU ME AP MOI?";
   }

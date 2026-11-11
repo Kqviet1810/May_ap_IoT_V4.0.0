@@ -66,7 +66,7 @@ jobs:
 
       - name: Install pinned Chromium for browser regressions
         working-directory: cloudflare
-        run: npx pnpm@11.19.0 exec playwright install --with-deps chromium
+        run: npx pnpm@11.19.0 exec playwright install --with-deps chromium || npx pnpm@11.19.0 exec playwright install chromium
 
       - name: Browser UX regression
         run: |
@@ -176,11 +176,6 @@ jobs:
           g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-stall-log.cpp -o /tmp/mayap-thermal-stall-log
           /tmp/mayap-thermal-stall-log
 
-      - name: "Real night of 10/11 replayed into the controller: a door and a tray of cold mass must not move kAir or the transit time (3.0.0 read kAir 3..80e-5)"
-        run: |
-          g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-replay-tray.cpp -o /tmp/mayap-thermal-replay-tray
-          /tmp/mayap-thermal-replay-tray
-
       - name: "Fine temperature from a 0.1 degC sensor (sensor_fine.h): sliding least-squares value and slope, follows a fall, restarts after a gap, bounded on hostile input"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/sensor-fine.cpp -o /tmp/mayap-sensor-fine
@@ -189,28 +184,10 @@ jobs:
       - name: "Fleet bench builds (210 random ovens x 10 situations with the real vent line and the restored state)"
         run: g++ -O2 -std=c++17 -Wall -Wextra -Werror tools/thermal-research/fleet-bench.cpp -o /tmp/mayap-fleet-bench
 
-      - name: "Pass-rate tool builds (the yardstick of every change of thermal_v3.h: fan, weather, climb, restart)"
-        run: g++ -O2 -std=c++17 -Wall -Wextra -Werror -DTHERMAL_SENSOR_NOISE_K=0.02 tools/thermal-research/pass-rates.cpp -o /tmp/mayap-pass-rates
-
       - name: "E115 evidence (heater_response_watch.h): unit tests of the rule MachineController runs"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/heater-response-watch.cpp -o /tmp/mayap-heater-response-watch
           /tmp/mayap-heater-response-watch
-
-      - name: "Thermal gain record (kAir and transit time kept in the EEPROM): CRC, two alternating slots, every cut of a write, when a write is wanted, manual levels, restore() limits"
-        run: |
-          g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-gain-record.cpp -o /tmp/mayap-thermal-gain-record
-          /tmp/mayap-thermal-gain-record
-
-      - name: "Thermal hold record (the hold level kept in the EEPROM: CRC, two slots, every cut of a write, when to save, when a restart may use it)"
-        run: |
-          g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-hold-record.cpp -o /tmp/mayap-thermal-hold-record
-          /tmp/mayap-thermal-hold-record
-
-      - name: "Batch day (the day counter of a batch: start from day N, set the day of a running batch, the time of day stays)"
-        run: |
-          g++ -std=c++11 -Wall -Wextra -Werror tests/batch-day.cpp -o /tmp/mayap-batch-day
-          /tmp/mayap-batch-day
 
       - name: "Thermal V3 closed loop: the real controller and the real E115 rule on simulated ovens (first climb also after an idle start, door, cold tray, vent, set-point step, reboot, a day of ordinary operation, dead heater), next to the 2.3.4 pair, and on the oven fitted to the 29/10 batch"
         run: |

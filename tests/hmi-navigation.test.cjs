@@ -52,10 +52,10 @@ test('all settings remain reachable exactly once in shorter groups', () => {
   // Thermal Control V2.0.0: the old controller's rows (15-17 Kp/Ki/Kd, 26-27 tune, 29 siren self-test, 51 balance, 54 Smart Thermal, 55 Predictive) stay in the
   // SETTINGS table (indexes and stored config keep their meaning) but no group lists them any more.
   const hidden = [15, 16, 17, 26, 27, 29, 51, 54, 55];
-  assert.equal(indexes.length, 29);
-  assert.equal(new Set(indexes).size, 29);
+  assert.equal(indexes.length, 28);
+  assert.equal(new Set(indexes).size, 28);
   assert.deepEqual([...indexes].sort((a, b) => a - b), [
-    ...Array.from({ length: 33 }, (_, i) => i).filter((i) => ![18, 33, 34, 35, 36, 37, 38, 39, 40, 41, ...hidden].includes(i)), 52, 53, 56,
+    ...Array.from({ length: 33 }, (_, i) => i).filter((i) => ![18, 33, 34, 35, 36, 37, 38, 39, 40, 41, ...hidden].includes(i)), 52, 53,
   ]);
   assert.equal(groups.length, 9);
   assert.equal(groups.at(-1).name, 'HIEU CHUAN');
@@ -99,7 +99,7 @@ test('PID, thermal protection and calibration live only under NANG CAO; operatin
     .map((m) => ({ name: m[1], first: Number(m[2]), count: Number(m[3]) }));
   const of = (name) => { const g = groups.find((x) => x.name === name); return idx.slice(g.first, g.first + g.count); };
   assert.deepEqual(of('NHIET DO'), [4, 5, 6, 8]);                 // low / high / emergency / out-of-batch: unchanged
-  assert.deepEqual(of('GIA NHIET'), [19, 56]);                   // the power ceiling and the heater gain (kAir, AUTO or typed) are left of the old PID group
+  assert.deepEqual(of('GIA NHIET'), [19]);                       // only the power ceiling is left of the old PID group
   assert.deepEqual(of('BAO VE NHIET'), [20, 21, 22, 23, 24, 25]);
   assert.deepEqual(of('HIEU CHUAN'), [7, 52, 32, 53]);      // + Bo tao am (hardware) and DPG cam bien, both behind the technical PIN
   assert.deepEqual(of('HE THONG'), [14]);
@@ -326,33 +326,4 @@ test('CD Nha phat trien: developer mode switch in HMI Nang cao; the Web reads th
   const bridge = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'transaction_bridge.h'), 'utf8');
   assert.match(bridge, /tech\["webCtl"\] = rt\.tech\.webCtlMask;/);
   for (const action of ['vent_toggle', 'circ_toggle', 'heater_toggle', 'siren_toggle', 'turn_hold']) assert.ok(bridge.includes(`"${action}"`), action);
-});
-
-test('He so heater (kAir): an option row in NANG CAO > GIA NHIET stored in bits 5-7 of the schema-13 byte; the machine applies it, keeps the measured number in the EEPROM and clears it with the learning', () => {
-  assert.match(hmi, /ITEM_U8_OPTIONS\("He so heater", ovenGainMode, OPT_OVEN_GAIN, 8\)/);
-  assert.match(hmi, /OPT_OVEN_GAIN\[\] = \{"TU DONG", "0\.6e-4", "0\.8e-4", "1\.0e-4", "1\.4e-4", "2\.0e-4", "3\.0e-4", "5\.0e-4"\}/);
-  assert.match(hmi, /ovenGainMode > 7U\) cfg\.ovenGainMode = 0U/);
-  assert.match(hmi, /static_assert\(SETTING_COUNT == 57,/);
-  // old rows keep their index: the new row is the LAST one
-  assert.match(hmi, /ITEM_BOOL\("Nhiet du doan", predictiveThermalEnabled\),[\s\S]*ITEM_U8_OPTIONS\("He so heater"[\s\S]*\n\};/);
-  const mc = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'machine_control.h'), 'utf8');
-  assert.match(mc, /\(c\.ovenGainMode < thermalgain::MANUAL_LEVELS \? c\.ovenGainMode : 0U\) << 5U/);
-  assert.match(mc, /c\.ovenGainMode = static_cast<uint8_t>\(\(p\.adaptiveThermalBalanceEnabled >> 5U\) & 7U\)/);
-  assert.match(mc, /EEPROM_ADDR_THERMAL_GAIN_A = 0x3200U/);
-  assert.match(mc, /bool eraseThermalGain\(\)/);
-  // the thermal slot serves the numbers before the controller runs, and "clear thermal learning" erases the record too
-  assert.match(mc, /float thermalV3Command\(uint32_t now, bool permit, bool shadow\) \{\s*serviceThermalGain\(now\);/);
-  assert.match(mc, /bool clearThermalLearning\(\) \{[\s\S]*?eraseThermalGain\(\)/);
-});
-
-test('Bu nhiet do / Bu do am: open while a batch runs (technical PIN, step limit in the firmware), locked while a resume is pending; the Web offers only these two during a batch', () => {
-  assert.match(bodyOf('bool settingLockedDuringBatch('), /offsetof\(MachineConfig, tempOffset\) \|\| offset == offsetof\(MachineConfig, humidityOffset\)\) && !currentRuntime\.resumeConfirmationRequired\) return false;/);
-  const mc = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'machine_control.h'), 'utf8');
-  assert.match(mc, /bool techEditBlocked\(const char \*&message, bool calibrationOnly = false\) const \{\s*if \(resumePending_ \|\| \(batchRunning_ && !calibrationOnly\)\)/);
-  assert.match(mc, /message = "OFFSET_STEP"/);
-  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
-  assert.match(app, /const TECH_OFFSET_KEYS = Object\.freeze\(\['tempOffset', 'humidityOffset'\]\);/);
-  assert.match(app, /\$\('techSendBtn'\)\.disabled = Boolean\(pending\) \|\| !controlReady\(device\);/);
-  assert.ok(!/techSendBtn'\)\.disabled[^;]*batchRunning/.test(app), 'the send button must not be dead during a batch any more');
-  assert.match(app, /'OFFSET_STEP':/);
 });

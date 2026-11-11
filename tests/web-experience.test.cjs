@@ -149,55 +149,37 @@ test('PID log: chunks of the machine ring are assembled by index and saved as CS
   const lines = csv.trim().split('\n');
   assert.match(lines[0], /^# mayap pid log device=MAP-TEST boot=7/);
   assert.equal(lines[1], 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,trust_pct,source,' +
-    'safety_c,hold_pct,kair_e5,tau_s,lift_pct,vent_why,vent_line,door,identified,fan_tokens,vent_reason,kair_src,lift_on,stall_s,fan_comp_pct,fan_lead_s,e115_pct,thermal_writers,time_vn');
+    'safety_c,hold_pct,kair_e5,tau_s,integral_pct,vent_why,vent_line,door,identified,fan_tokens,vent_reason,learn_src,learn_saved,stable_min');
   assert.equal(lines.length, 5);
   const second = lines[3].split(',');
   assert.equal(second[1], '21'); assert.equal(second[7], '1'); assert.equal(second[8], '1'); assert.equal(second[14], 'frozen'); assert.equal(second[15], '53'); assert.equal(second[16], 'machine');   // phase 1, suspect flag
-  assert.equal(second.length, 36);                                                                               // an older machine sends no diagnostics: the new columns stay empty
-  assert.equal(second.slice(17, 35).join(''), '');                                                              // diagnostics and thermal writers empty
-  assert.match(second[35], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);                                          // time_vn: the Vietnam wall clock, the last column
+  assert.equal(second.length, 31);                                                                               // an older machine sends no diagnostics: the new columns stay empty
+  assert.equal(second.slice(17).join(''), '');
 });
 
 test('PID log: the diagnostics chunk (firmware 2.5.5) merges into the samples it belongs to, in either order', () => {
   const h = browser();
   h.pidMon.log = new Map(); h.pidMon.series = []; h.pidMon.logHead = 0;
   // the diagnostics of samples 40 and 41 arrive first: no row yet (no temperature), nothing invented
-  // per sample: safety reading x100, hold x2, kAir x1e5, tau, lift paid x2, vent byte (why | state << 3), ctl byte, learn byte
+  // per sample: safety reading x100, hold x2, kAir x1e5, tau, integral x4, vent byte (why | state << 3), ctl byte, learn byte
   const vent40 = 3 | ((1 | 2) << 3);                  // floor, watching + on
   const ctl40 = 1 | 2 | (2 << 2) | (3 << 4);          // door guard, transit measured, 2 tokens, reason 3
-  const learn40 = 2 | (1 << 2) | (7 << 3);            // kAir measured, the stall lift paid this second, rise short for 105 s
+  const learn40 = 2 | (1 << 2) | (7 << 3);            // oven + hold restored, snapshot stored, 28 stable minutes
   h.pmIngestLog({ h: 50, xs: 40, x: [3760, 4, 40, 150, -6, vent40, ctl40, learn40, 3750, 3, 40, 150, 0, 0, 0, 0] });
   assert.equal(h.pmCsv({ id: 'MAP-TEST', bootId: 7 }).trim().split('\n').length, 2);                           // header lines only
   h.pmIngestLog({ h: 50, s: 40, d: [3760, 3750, 3761, 4, 0, 0x41, 0, 3750, 3750, 3750, 6, 0, 0x41, 0] });
   const lines = h.pmCsv({ id: 'MAP-TEST', bootId: 7 }).trim().split('\n');
   assert.equal(lines.length, 4);
   const a = lines[2].split(',');
-  assert.equal(a.length, 36);                                                                                   // 35 columns + time_vn (Vietnam time) appended last
-  assert.equal(a[17], '37.6'); assert.equal(a[18], '2'); assert.equal(a[19], '40'); assert.equal(a[20], '150'); assert.equal(a[21], '-3');
+  assert.equal(a.length, 31);
+  assert.equal(a[17], '37.6'); assert.equal(a[18], '2'); assert.equal(a[19], '40'); assert.equal(a[20], '150'); assert.equal(a[21], '-1.5');
   assert.equal(a[22], 'floor'); assert.equal(a[23], 'watch+on'); assert.equal(a[24], '1'); assert.equal(a[25], '1'); assert.equal(a[26], '2'); assert.equal(a[27], '3');
-  assert.equal(a[28], '2'); assert.equal(a[29], '1'); assert.equal(a[30], '105');
+  assert.equal(a[28], '2'); assert.equal(a[29], '1'); assert.equal(a[30], '28');
   const b = lines[3].split(',');
   assert.equal(b[17], '37.5'); assert.equal(b[22], ''); assert.equal(b[23], '');                                // no why, no state bits
   h.pmIngestLog({ h: 50, xs: 40, x: [3760, 4, 40, 150, -6, 0, 0] });                                                                   // a short or broken chunk changes nothing
   h.pmIngestLog({ h: 50, xs: 'q', x: [1, 2, 3, 4, 5, 6, 7] });
   assert.equal(h.pmCsv({ id: 'MAP-TEST', bootId: 7 }).trim().split('\n').length, 4);
-});
-
-test('PID log: the thermal-writers chunk (firmware 3.0.1) merges into its samples and shows in the CSV', () => {
-  const h = browser();
-  h.pidMon.log = new Map(); h.pidMon.series = []; h.pidMon.logHead = 0;
-  h.pmIngestLog({ h: 60, s: 50, d: [3730, 3740, 3735, 70, 60, 0x41, 0, 3720, 3740, 3730, 134, 120, 0x49, 0] });
-  // per sample: fan compensation added x2, lead / 2, heater-stuck evidence in percent, writer bits (1 fan_comp, 2 probe_round, 4 landing, 8 cold_start, 16 fan_wait, 32 e115_push, 64 probe_armed)
-  h.pmIngestLog({ h: 60, ys: 50, y: [0, 52, 3, 64, 40, 52, 12, 1 | 64] });
-  h.pmIngestLog({ h: 60, ys: 50, y: [1, 2, 3] });                                                                // a short chunk changes nothing
-  h.pmIngestLog({ h: 60, ys: 'q', y: [1, 2, 3, 4] });
-  const lines = h.pmCsv({ id: 'MAP-TEST', bootId: 7 }).trim().split('\n');
-  assert.equal(lines.length, 4);
-  const a = lines[2].split(','), b = lines[3].split(',');
-  assert.equal(a.length, 36);
-  assert.equal(a[31], '0'); assert.equal(a[32], '104'); assert.equal(a[33], '3'); assert.equal(a[34], 'probe_armed');
-  assert.equal(b[31], '20'); assert.equal(b[32], '104'); assert.equal(b[33], '12'); assert.equal(b[34], 'fan_comp+probe_armed');
-  assert.match(b[35], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
 });
 
 test('fan config requires complete capabilities and preserves legacy schedules', () => {
@@ -410,22 +392,4 @@ test('Web output control: buttons exist, are gated by the HMI permissions, and o
   assert.match(fs.readFileSync(require.resolve('../styles.css'), 'utf8'), /\.advGrid>\.compactTile\.ro\{background:var\(--tileRo\)/);
   // the exhaust-fan tile says why the fan runs, the egg-turn tile says which way
   assert.match(src, /VENT_WHY/); assert.match(src, /ĐANG ĐẢO TRÁI/); assert.match(html, /<span>Quạt hút<\/span><strong id="outputVent">/);
-});
-
-test('Time: every page and the machine log show Vietnam time; the machine epoch (Vietnam wall clock counted as UTC) is shifted back before it is shown; a save never looks dead', () => {
-  const src = fs.readFileSync(require.resolve('../app.js'), 'utf8');
-  assert.match(src, /const VN_TZ = 'Asia\/Ho_Chi_Minh';/);
-  assert.match(src, /const deviceEpochToMs = \(epoch\) => \(Number\(epoch\) - DEVICE_CLOCK_OFFSET_S\) \* 1000;/);
-  assert.match(src, /time: Number\(event\.epoch \|\| 0\) > 1700000000 \? deviceEpochToMs\(event\.epoch\) : Date\.now\(\)/);
-  // no date or time of a page is formatted in the browser's own zone any more
-  assert.equal((src.match(/\.toLocale(Time|Date)?String\('vi-VN'/g) || []).length, 3);        // the three inside the vnTime / vnDate / vnDateTime helpers' definitions only
-  assert.ok(!/new Date\(\)\.toISOString\(\)\.slice\(0, 10\)/.test(src), 'the default start date must be the Vietnam date, not the UTC date');
-  // a save with nothing to send says so and clears the "unsaved" mark
-  assert.match(src, /if \(!Object\.keys\(patch\)\.length\) \{[\s\S]{0,400}setFormState\(formId, 'saved', 'Không có thay đổi'\)/);
-  assert.match(src, /if \(group !== 'batch' && configEquals\(config, device\.config\)\) \{[\s\S]{0,200}setFormState\(formId, 'saved'/);
-  // arithmetic of the epoch shift: 14:00 Vietnam wall clock arrives as 14:00 "UTC" and is really 07:00 UTC
-  const epoch = Date.UTC(2026, 10, 5, 14, 0, 0) / 1000;
-  const real = new Date((epoch - 7 * 3600) * 1000);
-  assert.equal(real.toISOString(), '2026-11-05T07:00:00.000Z');
-  assert.equal(real.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Ho_Chi_Minh' }).replace(/\D/g, ''), '1400');
 });

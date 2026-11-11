@@ -504,31 +504,23 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
     // The log ring, a few samples per snapshot, cycling from the oldest to the newest and around again: "h" = how many samples the machine ever took
     // (the newest has index h-1, 10 s apart), "s" = index of the first sample here, "d" = 7 numbers per sample. Only while the frame has room.
     if (measureJson(doc) < 1300U) {
-      // Three chunk kinds share the room one chunk used to have, one per snapshot in turn: the plain samples ("d"), the diagnostics of the same ring ("x", 8 numbers per
-      // sample, own start index "xs") and, from 3.0.1, what the hold writers did ("y", 4 numbers per sample, own start index "ys"). The frame never grows beyond what it was;
-      // an older Web ignores "x" and "y".
-      static uint32_t pidLogCursor = 0U, pidLogCursorX = 0U, pidLogCursorY = 0U;
-      static uint8_t pidLogTurn = 0U;
-      pidLogTurn = static_cast<uint8_t>((pidLogTurn + 1U) % 3U);
-      const bool sendDiagnostics = pidLogTurn == 1U, sendThermal = pidLogTurn == 2U;
+      // Two chunk kinds share the room one chunk used to have: the plain samples ("d") and, on every other snapshot, the diagnostics of the same
+      // ring ("x", 8 numbers per sample, with their own start index "xs"). The frame never grows beyond what it was; an older Web ignores "x".
+      static uint32_t pidLogCursor = 0U, pidLogCursorX = 0U;
+      static bool sendDiagnostics = false;
+      sendDiagnostics = !sendDiagnostics;
       MayapPidLog::Sample chunk[MayapPidLog::CHUNK];
       uint32_t first = 0U;
-      const uint8_t n = MayapPidLog::ring().fetch(sendThermal ? pidLogCursorY : (sendDiagnostics ? pidLogCursorX : pidLogCursor), chunk, first);
+      const uint8_t n = MayapPidLog::ring().fetch(sendDiagnostics ? pidLogCursorX : pidLogCursor, chunk, first);
       if (n > 0U) {
         JsonObject lg = m["lg"].to<JsonObject>();
         lg["h"] = MayapPidLog::ring().head();
-        if (sendThermal) {
-          lg["ys"] = first;
-          JsonArray y = lg["y"].to<JsonArray>();
-          for (uint8_t i = 0U; i < n; ++i) {
-            y.add(chunk[i].ff2); y.add(chunk[i].lead2); y.add(chunk[i].e115); y.add(chunk[i].thermal);
-          }
-        } else if (sendDiagnostics) {
+        if (sendDiagnostics) {
           lg["xs"] = first;
           JsonArray x = lg["x"].to<JsonArray>();
           for (uint8_t i = 0U; i < n; ++i) {
             x.add(chunk[i].safe100); x.add(chunk[i].hold2); x.add(chunk[i].kair); x.add(chunk[i].tau);
-            x.add(chunk[i].lift2); x.add(chunk[i].vent); x.add(chunk[i].ctl); x.add(chunk[i].learn);
+            x.add(chunk[i].integ4); x.add(chunk[i].vent); x.add(chunk[i].ctl); x.add(chunk[i].learn);
           }
         } else {
           lg["s"] = first;
@@ -764,7 +756,6 @@ inline HmiCommandType mapCommandAction(const char *action) {
   if (!action) return HmiCommandType::None;
   if (!strcmp(action, "batch_start")) return HmiCommandType::BatchStart;
   if (!strcmp(action, "batch_stop")) return HmiCommandType::BatchStop;
-  if (!strcmp(action, "batch_set_day")) return HmiCommandType::BatchSetDay;
   if (!strcmp(action, "resume_yes")) return HmiCommandType::ResumeYes;
   if (!strcmp(action, "resume_no")) return HmiCommandType::ResumeNo;
   // Technical access: the PIN is verified on the ESP32 (shared with the HMI); a request only PARKS values until the HMI answers Yes/No.
@@ -777,8 +768,6 @@ inline HmiCommandType mapCommandAction(const char *action) {
   if (!strcmp(action, "firmware_check_now")) return HmiCommandType::FirmwareWebCheckNow;
   // CD nha phat trien (Developer Mode) cho phep tai va ap dung OTA ngay lap tuc tu xa:
   if (!strcmp(action, "apply_firmware_now")) return HmiCommandType::FirmwareWebApply;
-  // Clear what the thermal controller learned (kAir, transit time, hold, fan compensation): developer mode only, refused while a batch runs (3.0.21).
-  if (!strcmp(action, "thermal_learn_clear")) return HmiCommandType::ClearThermalLearn;
   // Quay lai firmware truoc do (xem ota_rollback.h) - KHAC voi cap nhat
   // (chi "kiem tra", phai xac nhan vat ly tren HMI), lenh nay ap dung
   // NGAY qua web vi ban chat la doi ve firmware DA TUNG chay on dinh
@@ -1020,7 +1009,7 @@ inline void handleCommandMessage(const JsonDocument &doc) {
 
   // Cap nhat va quay lai ban cu tu Web chi duoc phep khi may dang o Che do nha phat trien (Developer Mode); ngoai che do do quay lai
   // chi lam duoc tren HMI voi man hinh xac nhan CO/HUY. May van tu kiem tra (dung me/test, tat cong tac nhiet, con ban cu) truoc khi doi.
-  if (type == HmiCommandType::FirmwareWebApply || type == HmiCommandType::FirmwareRollback || type == HmiCommandType::ClearThermalLearn) {
+  if (type == HmiCommandType::FirmwareWebApply || type == HmiCommandType::FirmwareRollback) {
     bool devAllowed = false;
     portENTER_CRITICAL(&realtimeMux);
     devAllowed = knownRuntimeValid && knownRuntime.tech.devMode;
@@ -1063,14 +1052,6 @@ inline void handleCommandMessage(const JsonDocument &doc) {
       if (lease > 3000U) lease = 3000U;
       alarmMaskParam = dir | (lease << 8U);
     }
-  }
-  if (type == HmiCommandType::BatchStart || type == HmiCommandType::BatchSetDay) {
-    // The day the batch starts from (batch_start, 1 when absent) or is moved to (batch_set_day): arg0, 1 .. 255. The machine checks it against the
-    // total days again (batch_day.h valid()) before it moves anything.
-    const uint32_t day = static_cast<uint32_t>(doc["arg0"] | 0U);
-    if (type == HmiCommandType::BatchSetDay && (day < 1U || day > 255U)) { publishAck(requestId, "invalid", "DAY"); return; }
-    if (day > 255U) { publishAck(requestId, "invalid", "DAY"); return; }
-    alarmMaskParam = day;
   }
   if (type == HmiCommandType::AlarmAck) {
     portENTER_CRITICAL(&realtimeMux);

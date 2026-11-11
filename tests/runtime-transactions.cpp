@@ -130,11 +130,6 @@ static void techTests(){
  { JsonDocument d=techCommand("firmware_rollback");handleCommandMessage(d);assert(acks.back()=="rejected"&&commandCount==0); }
  reset();knownRuntime.tech.devMode=true;
  { JsonDocument d=techCommand("firmware_rollback");handleCommandMessage(d);assert(acks.back()!="rejected"&&commandCount==1&&lastQueued().type==HmiCommandType::FirmwareRollback); }
- // "clear the thermal learning data" from the Web (3.0.21): developer mode only; the machine refuses while a batch runs
- reset();knownRuntime.tech.devMode=false;
- { JsonDocument d=techCommand("thermal_learn_clear");handleCommandMessage(d);assert(acks.back()=="rejected"&&commandCount==0); }
- reset();knownRuntime.tech.devMode=true;
- { JsonDocument d=techCommand("thermal_learn_clear");handleCommandMessage(d);assert(acks.back()!="rejected"&&commandCount==1&&lastQueued().type==HmiCommandType::ClearThermalLearn); }
  knownRuntime.tech.webCtlMask=63;knownRuntime.tech.devMode=false;
  // saturation: a full tracker / full queue leaves nothing parked
  reset();techState(true,true);for(auto &p:pendingCommands)p.used=true;

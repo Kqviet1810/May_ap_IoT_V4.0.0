@@ -284,8 +284,7 @@ void testStartIdentifiesTheOven() {
   const double trueK = plant.Pmax / 100.0 / plant.Cf;                    // degC/s per % of the heater
   printf("  -> identified=%d tau=%.0f s kAir=%.5f (true %.5f)\n", ctl.identified() ? 1 : 0, ctl.tauTransit(), ctl.kAir(), trueK);
   assert(ctl.identified());
-  // 3.0.2: the transit time is the START of the answer (between the plant's dead time and dead time + lag), not the moment the rise could be trusted (that read over 90 s here)
-  assert(ctl.tauTransit() >= plant.td && ctl.tauTransit() <= plant.td + plant.tl + 30.0);
+  assert(ctl.tauTransit() >= 90.0f && ctl.tauTransit() <= 220.0f);
   assert(ctl.kAir() > 0.5 * trueK && ctl.kAir() < 1.3 * trueK);
 }
 
@@ -318,7 +317,6 @@ void testStartAfterAPause() {
       if (s > pause) lowestHold = std::min(lowestHold, static_cast<double>(ctl.pHold()));
       if (identifiedAt < 0 && ctl.identified()) identifiedAt = s;
       if (identifiedAt < 0) continue;
-      if (ctl.tauTransit() != tauBefore) continue;                         // the step in which the transit time is corrected at the end of the climb (3.0.2) predicts with the new one
       const int len = static_cast<int>(thermalv3::PIPE_K * tauBefore);   // the window of power counted as still in flight
       if (s < identifiedAt + len + 2) continue;                            // until the ring holds only commands that were really sent
       float sum = 0.0f;
@@ -326,12 +324,9 @@ void testStartAfterAPause() {
       const float raw = kAirBefore * thermalv3::LEAD_GAIN * (sum - static_cast<float>(len) * holdBefore);
       const float lo = -kAirBefore * holdBefore * tauBefore;                // nothing in the pipe: the load cools the air for one transit time
       const float inflightMax = kAirBefore * (100.0f - holdBefore) * tauBefore;
-      if (in.sp - in.pv > 0.70f * inflightMax) continue;                           // far under SV the measured slope sets a floor under the prediction (checked by the rigs); the margin keeps the test off the edge of that region (PV moves in steps of 0.1 degC, the floor starts at 0.75 x inflightMax)
+      if (in.sp - in.pv > 0.75f * inflightMax) continue;                           // far under SV the measured slope sets a floor under the prediction (checked by the rigs)
       const float expected = in.pv + std::min(1.2f * inflightMax, std::max(lo, raw));
-      // 3.0.2: under SV a measured rise is a floor under the prediction (the heat that is arriving whatever the model says), so the prediction may stand ABOVE the sum of the
-      // commands there, never under it; at or over SV it is that sum exactly.
-      const double gap = static_cast<double>(expected) - static_cast<double>(ctl.predicted());
-      worst = std::max(worst, in.sp - in.pv > 0.0f ? gap : std::fabs(gap));
+      worst = std::max(worst, static_cast<double>(std::fabs(ctl.predicted() - expected)));
     }
     ++runs;
     if (identifiedAt >= 0) ++identified;
@@ -399,97 +394,6 @@ void testBoundsUnderHostileInput() {
   printf("  -> Pass\n");
 }
 
-// 2.9.9: the zero zone, the dead zone around SV and the vent fan that may only lower the hold.
-void testZeroZoneAndFan() {
-  printf("[TEST] Zero zone, dead zone, fan lowers the hold only...\n");
-  {   // low hold, PV a step over SV: the heater is off until PV is back under SV
-    thermalv3::Controller c; thermalv3::Input in;
-    in.sp = 37.5f; in.pv = 37.5f; in.permit = true; in.dtS = 0.1f;
-    c.restoreHold(2.0f);
-    in.pv = 37.56f;
-    thermalv3::Output o = c.step(in);
-    assert(c.zeroZone() && o.powerPct == 0.0f);
-    in.pv = 37.49f; o = c.step(in);                      // below SV - 0.02 is not yet reached: still off
-    assert(o.powerPct == 0.0f);
-    in.pv = 37.45f; o = c.step(in);                      // under SV - 0.02: the zone ends
-    assert(!c.zeroZone());
-  }
-  {   // a high hold never enters the zone
-    thermalv3::Controller c; thermalv3::Input in;
-    in.sp = 37.5f; in.pv = 37.56f; in.permit = true; in.dtS = 0.1f;
-    c.restoreHold(10.0f);
-    c.step(in);
-    assert(!c.zeroZone());
-  }
-  {   // the dead zone: two readings a hundredth apart, both inside it, give the same command
-    auto cmdAt = [](float pv) {
-      thermalv3::Controller c; thermalv3::Input in;
-      in.sp = 37.5f; in.pv = pv; in.permit = true; in.dtS = 0.1f;
-      c.restoreHold(8.0f);
-      float o = 0.0f;
-      for (int i = 0; i < 20; ++i) o = c.step(in).powerPct;
-      return o;
-    };
-    const float a = cmdAt(37.495f), b = cmdAt(37.505f);
-    assert(a > 4.0f);   // the restored hold is what the heater gets
-    assert(std::fabs(a - b) < 0.05f);
-  }
-  {   // the fan: the hold may go down, never up, while it runs
-    thermalv3::Controller c; thermalv3::Input in;
-    in.sp = 37.5f; in.pv = 37.3f; in.permit = true; in.dtS = 0.1f;
-    for (int i = 0; i < 6000; ++i) c.step(in);
-    const float h0 = c.pHold();
-    in.ventFan = true;
-    float hmax = h0;
-    for (int i = 0; i < 3000; ++i) { in.pv = 37.3f - 0.0005f * (i % 200); c.step(in); if (c.pHold() > hmax) hmax = c.pHold(); }
-    assert(hmax <= h0 + 1e-3f);
-  }
-  {   // restoreHold: finite values only, inside 0..100
-    thermalv3::Controller c;
-    c.restoreHold(NAN); c.restoreHold(-1.0f); c.restoreHold(99.0f);
-    assert(c.pHold() >= 0.0f && c.pHold() <= 100.0f);
-    c.restoreHold(5.0f);
-    assert(std::fabs(c.pHold() - 5.0f) < 0.01f);
-  }
-  {   // restoreFan: the compensation of the fan comes back only inside its limits (size 0..40 percent, lead 0..360 s = 1.6 x the largest transit time)
-    thermalv3::Controller c;
-    c.restoreFan(NAN, NAN); c.restoreFan(-1.0f, -1.0f); c.restoreFan(41.0f, 361.0f);
-    assert(c.fanComp() == 0.0f && c.fanLeadS() == 0.0f);
-    c.restoreFan(12.5f, 80.0f);
-    assert(std::fabs(c.fanComp() - 12.5f) < 1.0e-6f && std::fabs(c.fanLeadS() - 80.0f) < 1.0e-6f);
-  }
-  printf("  -> Pass\n");
-}
-
-// The stall lift (stallLift) and what the log shows of it: PV stands still under SV, the rise is short, and only after the wait (one transit time in the first minutes of a
-// start that has not reached SV, two otherwise; a drop after SV is a door and is left alone) does it pay into the hold; when PV then passes SV the surplus is given back. Nothing is paid while the oven is where it should be.
-void testStallLiftAndItsLog() {
-  printf("[TEST] The stall lift pays after the wait, shows in the log fields, and gives back on overshoot...\n");
-  thermalv3::Controller c;
-  thermalv3::Input in;
-  in.sp = 37.5f; in.pv = 36.9f; in.dQ = 0.1f; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f;
-  const float holdStart = c.pHold();
-  bool lifting = false; float stallMax = 0.0f, paidAt150 = -1.0f;
-  for (long i = 0; i < 12000; ++i) {                                         // 20 minutes of a flat PV 0.6 degC under SV (the lift pays only more than its gate, 0.5 degC, under SV)
-    c.step(in);
-    lifting = lifting || c.lifting();
-    stallMax = std::max(stallMax, c.stallSeconds());
-    if (i == 600) paidAt150 = c.lifted();                                     // 60 s: the wait (a transit time) has not passed
-  }
-  assert(paidAt150 == 0.0f);
-  assert(lifting && stallMax >= c.tauTransit());
-  assert(c.lifted() > 5.0f && c.pHold() > holdStart + 5.0f);
-  const float paid = c.lifted();
-  in.pv = 37.6f;                                                             // PV passes SV: the surplus comes back
-  for (long i = 0; i < 6000; ++i) c.step(in);
-  assert(c.lifted() < 0.5f * paid);
-  thermalv3::Controller d;                                                    // an oven that sits at SV is never lifted
-  in.pv = 37.5f;
-  for (long i = 0; i < 12000; ++i) d.step(in);
-  assert(d.lifted() == 0.0f && !d.lifting());
-  printf("  -> Pass: %.1f %% paid after 20 min flat, %.1f %% left 10 min after passing SV\n", paid, c.lifted());
-}
-
 int main() {
   printf("=========================================\n");
   printf("RUNNING THERMAL V3 CONTROLLER UNIT TESTS\n");
@@ -506,8 +410,6 @@ int main() {
   testShadowHold();
   testResumeAfterHold();
   testSensorFallback();
-  testZeroZoneAndFan();
-  testStallLiftAndItsLog();
   printf("=========================================\n");
   printf("ALL THERMAL V3 TESTS PASSED SUCCESSFULLY!\n");
   printf("=========================================\n");
