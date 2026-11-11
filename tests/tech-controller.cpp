@@ -398,20 +398,17 @@ int main() {
     CHECK(d.history_.get(0, a) && d.history_.get(1, b) && a.kp == 22.0f && b.kp == 21.0f);
   }
 
-  // 12. Developer mode (the factory default): the Web needs no PIN, a request outside the protected fields is applied at once, a request that
-  //     touches a calibration or a protection still waits for the HMI, and a remote switch of the mode is refused.
+  // 12. Developer mode (the factory default): the Web needs no PIN, every request is applied at once (3.0.21: the sensor calibrations and the protections too; until 3.0.20
+  //     they waited for the HMI), and a remote switch of the mode is refused.
   { Ctl c; fresh(c, now, true);
     CHECK(c.runtime_.tech.webSession);                                                   // no PIN needed
     CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_KP, 9.0}, {AdvancedHistory::F_TUNE_BAND, 0.5}}, "dev-ok", c.config_));
     CHECK(c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "DA AP DUNG" && c.config_.kp == 9.0f && c.store_.saves == 1);
     CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_TEMP_OFFSET, 0.5}}, "dev-cal", c.config_));
-    CHECK(c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "PENDING_HMI" && c.store_.saves == 1);
-    CHECK(c.runtime_.tech.pendingKind == 1 && c.runtime_.tech.pendingMask == (1U << AdvancedHistory::F_TEMP_OFFSET));
-    CHECK(c.run(now + 5000, HmiCommandType::TechDecision, false, 0, m));                // declined on the HMI: the calibration did not move
-    CHECK(c.config_.tempOffset == 0.0f);
+    CHECK(c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "DA AP DUNG" && fabsf(c.config_.tempOffset - 0.5f) < 1.0e-6f && c.store_.saves == 2);   // no HMI yes
+    CHECK(c.runtime_.tech.pendingKind == 0);
     CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_KP, 8.0}, {AdvancedHistory::F_MAX_POWER, 60}}, "dev-mixed", c.config_));
-    CHECK(c.run(now + 6000, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "PENDING_HMI" && c.config_.kp == 9.0f);   // one protected field holds the whole request
-    CHECK(c.run(now + 7000, HmiCommandType::TechDecision, false, 0, m));
+    CHECK(c.run(now + 6000, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "DA AP DUNG" && c.config_.kp == 8.0f && c.runtime_.tech.pendingKind == 0);   // a protection field too
     CHECK(!c.run(now + 8000, HmiCommandType::DeveloperModeSet, true, 0, m) && m == "CHI HMI DUOC DOI QUYEN" && c.runtime_.tech.devMode);
   }
 

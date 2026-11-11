@@ -5062,7 +5062,8 @@ class MachineController {
         break;
       }
       case HmiCommandType::ClearThermalLearn: {
-        if (remote) { message = "CHI HMI DUOC XOA"; break; }
+        // From the Web only in developer mode (3.0.21): the owner who gave the Web full authority needs no walk to the machine to clear what the controller learned.
+        if (remote && !techGate_.developerMode()) { message = "CHI HMI HOAC CD NHA PHAT TRIEN DUOC XOA"; break; }
         if (batchRunning_) { message = "DUNG ME TRUOC KHI XOA"; break; }
         ok = clearThermalLearning();
         message = ok ? "DA XOA DU LIEU HOC NHIET" : "LOI XOA DU LIEU HOC";
@@ -5130,8 +5131,9 @@ class MachineController {
     techPending_ = next;
     techResult_ = TechResult::Pending;
     snprintf(techResultId_, sizeof(techResultId_), "%s", next.requestId);
-    // Developer mode applies a request at once, except one that touches a sensor calibration or a protection: that still waits for the HMI.
-    if (techGate_.developerMode() && (next.mask & AdvancedHistory::ProtectedMask) == 0U) {
+    // Developer mode applies a request at once, the sensor calibrations and the protections included (3.0.21: the owner who gave the Web full authority is not asked again at
+    // the machine). The limits of a running batch (only the offsets, in small steps) and every safety condition at execution are checked before and after as for any request.
+    if (techGate_.developerMode()) {
       return executeTechPending(now, message);
     }
     message = "PENDING_HMI";
