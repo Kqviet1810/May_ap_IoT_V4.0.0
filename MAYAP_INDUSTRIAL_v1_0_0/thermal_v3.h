@@ -472,16 +472,20 @@ class Controller {
     const float x = std::min(1.0f, (frac - E115_PUSH_START) / (E115_PUSH_END - E115_PUSH_START));
     hold_ = std::min(cap_, hold_ + (cap_ - hold_) * 2.0f * x / (E115_PUSH_END - E115_PUSH_START) * dF);
   }
-  // kAir at every saturated climb: the heater has been at its ceiling for a whole transit time plus a part of one, PV is far under SV and climbing.
+  // kAir of the climb from cold: the heater has been at its ceiling for a whole transit time plus a part of one, PV is far under SV and climbing. Only the climb BEFORE PV has been at SV
+  // (arrived_) measures the oven: a recovery from a door or a tray is a climb with a load of cold mass on it, its slope says how much the load takes, not what the heater can give (log of
+  // 10/11: after a tray kAir read 3e-5 against 22e-5, then 80e-5 once the hold had run up to 99 %; every threshold of the controller was derived from it), and kAir is a property of the
+  // oven that does not move by factors: a measurement more than a factor of two from what is known is not taken.
   void identifyGain(float e) {
-    if (e < farBand_ || lsSlope_ <= 3.0f * lsSigma_) { epMax_ = 0.0f; epFresh_ = true; return; }
+    if (arrived_ || e < farBand_ || lsSlope_ <= 3.0f * lsSigma_) { epMax_ = 0.0f; epFresh_ = true; return; }
     const uint16_t need = static_cast<uint16_t>(1.4f * tau_);
     if (histCount_ < need) return;
     for (uint16_t i = 0U; i < need; ++i) if (uAge(i) < 0.9f * cap_) return;
     // the slope of a saturated climb is still rising while the window runs: the PEAK of the slope over the episode is the oven's gain
     const float obs = std::max(lsSlope_, slope_) / std::max(1.0f, cap_ - hold_);
     epMax_ = std::max(epMax_, obs);
-    const float k = std::max(KAIR_PRIOR * KAIR_LO, std::min(KAIR_PRIOR * KAIR_HI, epMax_));
+    const float kRaw = std::max(KAIR_PRIOR * KAIR_LO, std::min(KAIR_PRIOR * KAIR_HI, epMax_));
+    const float k = identified_ ? std::max(0.5f * kAir_, std::min(2.0f * kAir_, kRaw)) : kRaw;
     kAir_ = identified_ && !epFresh_ ? kAir_ + 0.3f * (k - kAir_) : k;
     epFresh_ = false;
     identified_ = true;
