@@ -6142,6 +6142,9 @@ class MachineController {
     // Moc so sanh la DAY nhiet do thap nhat da thay (khong phai gia tri luc bat dau cua so): sau khi mo cua / them
     // khay trung lanh nhiet tut xuong, thanh nhiet khoe dang keo nhiet len lai khong con bi tinh la "khong tang".
     // Quy tac nam trong heater_response_watch.h de test host chay dung ma nay.
+    // E115 itself (3.0.1) is the simple rule of HeaterFallWatch: the request has been at least 85 % of the ceiling for two hours and the temperature has fallen 1 degC from its highest
+    // value of those two hours. The accumulated on-time (HeaterResponseWatch, below) no longer raises the alarm: a heavy load kept the rise under 0.3 degC longer than 900 s of
+    // on-time in healthy ovens, and a dead heater is a fall, which this rule sees.
     const bool responseDemand = batchRunning_ && inputs_.state().heaterEnable &&
         sensorUsable_ && isfinite(temperature_) &&
         temperature_ < config_.targetTemp - config_.tempHysteresis;
@@ -6154,7 +6157,8 @@ class MachineController {
     if (!responseDemand || heaterWatch_.riseC(temperature_) >= config_.heaterStuckMinRiseC) doorSuspected_ = false;
     heaterWatch_.update(responseDemand, temperature_, now, outputs_.state().heaterSsr,
                         config_.heaterStuckMinRiseC, responseRequiredOnMs, doorSuspected_);
-    heaterNotHeatingActive_ = heaterWatch_.active();
+    heaterFallWatch_.update(responseDemand, temperature_, now, runtime_.heaterPower, static_cast<float>(config_.maxHeaterPower));
+    heaterNotHeatingActive_ = heaterFallWatch_.active();      // E115 (3.0.1): simple rule, see heater_response_watch.h
     // The warning goes up when a third of the E115 evidence is in (a third of the configured window, nothing typed) with the door suspected, so it comes
     // two thirds of a window BEFORE E115 would have.
     const bool doorWarning = doorSuspected_ && !heaterNotHeatingActive_ && heaterWatch_.accumOnMs() + heaterWatch_.pausedMs() >= responseRequiredOnMs / 3UL;
@@ -6187,7 +6191,7 @@ class MachineController {
     faults_.set(FaultCode::TemperatureUnstable, temperatureUnstableActive_, now,
                 static_cast<int16_t>(tempOscillationLastWindowCrossCount_));
     faults_.set(FaultCode::HeaterNotHeating, heaterNotHeatingActive_, now,
-                static_cast<int16_t>(lroundf(heaterWatch_.riseC(temperature_) * 10.0f)));
+                static_cast<int16_t>(lroundf(heaterFallWatch_.fallC() * 10.0f)));
     // F-08: cam bien "dung hinh" - chi canh bao trong luc dang co me (giong
     // cach LowTemperature/HumidityLow chi xet trong batch), vi ngoai me gia
     // tri on dinh dai han la binh thuong (khong dieu nhiet chu dong).
@@ -8532,7 +8536,8 @@ class MachineController {
   uint8_t tempOscillationLastWindowCrossCount_ = 0U;
   uint32_t tempOscillationWindowStart_ = 0U;
   bool temperatureUnstableActive_ = false;
-  HeaterResponseWatch heaterWatch_;
+  HeaterResponseWatch heaterWatch_;       // evidence of the heater's response (door warning, frozen-sensor check, the controller's push of the hold)
+  HeaterFallWatch heaterFallWatch_;       // the alarm: the heater asked for (nearly) everything for two hours and the temperature still falls
   bool heaterNotHeatingActive_ = false;
   bool doorSuspected_ = false;                      // the temperature fell the way an open door makes it fall (see the E115 watch)
 

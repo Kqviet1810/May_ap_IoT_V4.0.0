@@ -389,7 +389,7 @@ class Family {
       R r = settled;
       const size_t from = r.air().size();
       r.plant.setHeaterHealth(0.0);
-      r.advance(3 * 3600.0);
+      r.advance(6 * 3600.0);                 // E115 of 3.0.1 reports after two hours at the ceiling and a fall of 1 degC: a dead heater in the best insulated oven takes up to 4.5 hours
       return evaluate(r, from);
     });
   }
@@ -467,9 +467,9 @@ static void reference(const char *name, const Stats &st) {
 
 // Pins of the cold-room block: measured on the fixed sample of 35 ovens, plus a margin (set from the first run, see the numbers printed by the test).
 static const size_t COLD_CAPABLE_MIN = 21;                           // of the 35 (the others have a heater that cannot take the oven to SP at 10 degC)
-static const int COLD_CLIMB_TRIPS_MAX = 4;                           // E115 stops 4 of 35 ovens on a first climb from 20 degC at 10 degC (heater too weak for the room): pinned, not hidden
+static const int COLD_CLIMB_TRIPS_MAX = 0;                           // E115 of 3.0.1 (two hours at the ceiling and a fall) stops no oven on a first climb from 20 degC at 10 degC (3.0.0: 4 of 35, the 900 s of on-time without a 0.3 degC rise)
 static const double COLD_DOOR3_OVER = 1.10, COLD_DOOR5_OVER = 1.10, COLD_TRAY_OVER = 0.50, COLD_RESTART_OVER = 0.45, COLD_BAND = 0.40, COLD_PP = 0.30, COLD_UNUSED = 0.0;
-static const int NEWBATCH_TRIPS_MAX[4] = {1, 1, 0, 0};   // measured 1/1/0/0 of 21 ovens: the weakest oven on a 10 degC day needs more than the E115 budget (physics, not loosened)
+static const int NEWBATCH_TRIPS_MAX[4] = {0, 0, 0, 0};   // measured 0/0/0/0 of 21 ovens (3.0.0: 1/1/0/0: the weakest oven on a 10 degC day needed more than 900 s of on-time for a 0.3 degC rise)
 static const double NEWBATCH_OVER_MAX[4] = {0.85, 0.95, 0.50, 0.50};
 
 static void testFamily(bool everything) {
@@ -725,10 +725,12 @@ static void testFamily(bool everything) {
   const Stats deadOld = before.deadHeater();
   dead.print("settled, heater DEAD (must trip)");
   reference("settled, heater DEAD (must trip)", deadOld);
+  // E115 of 3.0.1 is the simple rule (the request at 85 % of the ceiling or more for two hours and the air 1 degC under its highest value of that stretch): a dead heater is reported
+  // by every oven of the family, in the best insulated ones after up to 4.5 hours, in exchange for no false stop of a healthy oven under any load of this file (the first rule, 900 s
+  // of on-time without a rise of 0.3 degC, stopped 5 of 21 healthy ovens under a heavy tray in the cold). 2.3.4 found it sooner and stopped healthy ovens.
   CHECK(dead.trips == dead.n, "a dead heater must trip E115 on every oven (%d of %d)", dead.trips, dead.n);
-  CHECK(dead.maxTripS <= 6000.0, "a dead heater must be stopped within 100 minutes (last one at %.0f s)", dead.maxTripS);
+  CHECK(dead.maxTripS <= 5.0 * 3600.0, "a dead heater must be reported within 5 hours (last one at %.0f s)", dead.maxTripS);
   CHECK(deadOld.trips == deadOld.n, "2.3.4 stops a dead heater too (%d of %d)", deadOld.trips, deadOld.n);
-  CHECK(dead.maxTripS <= deadOld.maxTripS + 60.0, "the new rule must not find a dead heater later than the old one (%.0f vs %.0f s)", dead.maxTripS, deadOld.maxTripS);
 
   // The family must be able to reproduce the failure of 29/10 with the old pair, or it is not a test of the new one.
   CHECK(trayOld[1].trips * 2 >= trayOld[1].n, "the family must be able to reproduce the failure: 2.3.4 stopped %d of %d healthy ovens", trayOld[1].trips, trayOld[1].n);
