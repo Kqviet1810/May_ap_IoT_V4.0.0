@@ -33,7 +33,7 @@ typedef int portMUX_TYPE;
 #include "tech_request.h"
 struct MachineConfig{float kp=5,ki=0.1f,kd=30,tempOffset=0,humidityOffset=0,heaterStuckMinRiseC=0.3f,tempRateLimitC=2,autotuneBandC=0.2f;
  uint16_t pidCycleSec=2,heaterStuckDurationSec=600,tempRateWindowSec=300,tempOscillationWindowSec=900;
- uint8_t maxHeaterPower=100,tempOscillationCrossLimit=6,autotuneRelayPowerPercent=40;bool adaptiveThermalBalanceEnabled=false,humidifierInstalled=false;};
+ uint8_t maxHeaterPower=100,tempOscillationCrossLimit=6,autotuneRelayPowerPercent=40,sensorResolutionMode=0,ovenGainMode=0;bool adaptiveThermalBalanceEnabled=false,humidifierInstalled=false;};
 static HmiCommand commandQueue[4];static uint8_t commandTail=0,commandHead=0,commandCount=0,commandOutstandingCount=0;static uint32_t nextCommandId=1;
 bool commandConflictLocked(HmiCommandType){return false;}void showToast(const char*,bool){}void buzzerPlayCue(BuzzerCue){}
 #include "actual-transaction-hmi.inc"
