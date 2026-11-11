@@ -25,8 +25,9 @@ struct Snapshot {
   float heaterStuckMinRiseC = 0, tempRateLimitC = 0, autotuneBandC = 0;
   uint16_t pidCycleSec = 0, heaterStuckDurationSec = 0, tempRateWindowSec = 0, tempOscillationWindowSec = 0;
   uint8_t maxHeaterPower = 0, tempOscillationCrossLimit = 0, autotuneRelayPowerPercent = 0, adaptiveThermalBalanceEnabled = 0;
+  uint8_t sensorResolutionMode = 0, ovenGainMode = 0;       // 0 automatic, 1 / 2 = 0.1 / 0.01 degC; 0 automatic, 1..7 = heater gain typed by hand (3.1.0)
 };
-static_assert(sizeof(Snapshot) == 44, "Snapshot layout is part of the stored record");
+static_assert(sizeof(Snapshot) == 48, "Snapshot layout is part of the stored record");
 
 inline bool same(const Snapshot &a, const Snapshot &b) { return memcmp(&a, &b, sizeof(Snapshot)) == 0; }
 
@@ -41,6 +42,7 @@ inline Snapshot fromConfig(const Cfg &c) {
   s.maxHeaterPower = c.maxHeaterPower; s.tempOscillationCrossLimit = c.tempOscillationCrossLimit;
   s.autotuneRelayPowerPercent = c.autotuneRelayPowerPercent;
   s.adaptiveThermalBalanceEnabled = c.adaptiveThermalBalanceEnabled ? 1U : 0U;
+  s.sensorResolutionMode = c.sensorResolutionMode; s.ovenGainMode = c.ovenGainMode;
   return s;
 }
 template <class Cfg>
@@ -52,29 +54,30 @@ inline void applyTo(Cfg &c, const Snapshot &s) {
   c.maxHeaterPower = s.maxHeaterPower; c.tempOscillationCrossLimit = s.tempOscillationCrossLimit;
   c.autotuneRelayPowerPercent = s.autotuneRelayPowerPercent;
   c.adaptiveThermalBalanceEnabled = s.adaptiveThermalBalanceEnabled != 0U;
+  c.sensorResolutionMode = s.sensorResolutionMode; c.ovenGainMode = s.ovenGainMode;
 }
 
 // ---- field table: the single list of "technical" fields (HMI Nang cao, the Web technical request, the history snapshot) -----------
 enum Field : uint8_t {
   F_KP, F_KI, F_KD, F_MAX_POWER, F_PID_CYCLE, F_ADAPTIVE, F_STUCK_RISE, F_STUCK_DURATION, F_RATE_LIMIT, F_RATE_WINDOW,
-  F_OSC_CROSS, F_OSC_WINDOW, F_TUNE_POWER, F_TUNE_BAND, F_TEMP_OFFSET, F_HUM_OFFSET, F_COUNT
+  F_OSC_CROSS, F_OSC_WINDOW, F_TUNE_POWER, F_TUNE_BAND, F_TEMP_OFFSET, F_HUM_OFFSET, F_SENSOR_RES, F_OVEN_GAIN, F_COUNT
 };
-static_assert(F_COUNT == 16, "the field mask is 16 bits");
+static_assert(F_COUNT == 18, "the field mask is 32 bits (3.1.0: two fields added to the 16 of before)");
 // Fields that calibrate the sensors or set the protections. Outside developer mode a Web request touching any of them waits for the HMI "yes" like every other one;
 // in developer mode (3.1.0) the owner who gave the Web full authority is not asked again.
-constexpr uint16_t ProtectedMask = static_cast<uint16_t>((1U << F_MAX_POWER) | (1U << F_STUCK_RISE) | (1U << F_STUCK_DURATION) |
+constexpr uint32_t ProtectedMask = static_cast<uint32_t>((1U << F_MAX_POWER) | (1U << F_STUCK_RISE) | (1U << F_STUCK_DURATION) |
     (1U << F_RATE_LIMIT) | (1U << F_RATE_WINDOW) | (1U << F_OSC_CROSS) | (1U << F_OSC_WINDOW) | (1U << F_TEMP_OFFSET) | (1U << F_HUM_OFFSET));
 // The two sensor offsets ("Bu nhiet do", "Bu do am"): the only technical fields that may change while a batch runs (2.9.7; the HMI "yes" is still needed for a Web
 // request, and an HMI edit still needs the unlocked Nang cao session). A step of more than MidBatchOffsetStepC / MidBatchHumStepRh at once is refused: the controller
 // reads the change as a step of PV, and a big one would look like a door or trip the rate protection.
-constexpr uint16_t CalibrationMask = static_cast<uint16_t>((1U << F_TEMP_OFFSET) | (1U << F_HUM_OFFSET));
+constexpr uint32_t CalibrationMask = static_cast<uint32_t>((1U << F_TEMP_OFFSET) | (1U << F_HUM_OFFSET));
 constexpr float MidBatchOffsetStepC = 0.5f;
 constexpr float MidBatchHumStepRh = 5.0f;
 // JSON keys (same names as the configuration patch the Web already uses).
 static const char *const FieldKeys[F_COUNT] = {
   "kp", "ki", "kd", "maxHeaterPower", "pidCycleSec", "adaptiveThermalBalanceEnabled", "heaterStuckMinRiseC", "heaterStuckDurationSec",
   "tempRateLimitC", "tempRateWindowSec", "tempOscillationCrossLimit", "tempOscillationWindowSec", "autotuneRelayPowerPercent",
-  "autotuneBandC", "tempOffset", "humidityOffset"};
+  "autotuneBandC", "tempOffset", "humidityOffset", "sensorResolutionMode", "ovenGainMode"};
 inline float fieldValue(const Snapshot &s, uint8_t f) {
   switch (f) {
     case F_KP: return s.kp; case F_KI: return s.ki; case F_KD: return s.kd; case F_MAX_POWER: return s.maxHeaterPower;
@@ -84,6 +87,7 @@ inline float fieldValue(const Snapshot &s, uint8_t f) {
     case F_OSC_CROSS: return s.tempOscillationCrossLimit; case F_OSC_WINDOW: return s.tempOscillationWindowSec;
     case F_TUNE_POWER: return s.autotuneRelayPowerPercent; case F_TUNE_BAND: return s.autotuneBandC;
     case F_TEMP_OFFSET: return s.tempOffset; case F_HUM_OFFSET: return s.humidityOffset;
+    case F_SENSOR_RES: return s.sensorResolutionMode; case F_OVEN_GAIN: return s.ovenGainMode;
     default: return 0.0f;
   }
 }
@@ -92,7 +96,7 @@ struct FieldLimit { float lo, hi; bool integer; };
 static const FieldLimit FieldLimits[F_COUNT] = {
   {0.0f, 100.0f, false}, {0.0f, 20.0f, false}, {0.0f, 200.0f, false}, {10.0f, 100.0f, true}, {1.0f, 60.0f, true}, {0.0f, 1.0f, true},
   {0.05f, 5.0f, false}, {60.0f, 3600.0f, true}, {0.1f, 10.0f, false}, {30.0f, 1800.0f, true}, {2.0f, 30.0f, true}, {60.0f, 3600.0f, true},
-  {10.0f, 80.0f, true}, {0.05f, 1.0f, false}, {-5.0f, 5.0f, false}, {-20.0f, 20.0f, false}};
+  {10.0f, 80.0f, true}, {0.05f, 1.0f, false}, {-5.0f, 5.0f, false}, {-20.0f, 20.0f, false}, {0.0f, 2.0f, true}, {0.0f, 7.0f, true}};
 // Set one field; false when the value is not finite or outside its range (nothing is changed then).
 inline bool setField(Snapshot &s, uint8_t f, double value) {
   if (f >= F_COUNT || !(value == value) || value < FieldLimits[f].lo || value > FieldLimits[f].hi) return false;
@@ -112,21 +116,23 @@ inline bool setField(Snapshot &s, uint8_t f, double value) {
     case F_TUNE_BAND: s.autotuneBandC = static_cast<float>(value); break;
     case F_TEMP_OFFSET: s.tempOffset = static_cast<float>(value); break;
     case F_HUM_OFFSET: s.humidityOffset = static_cast<float>(value); break;
+    case F_SENSOR_RES: s.sensorResolutionMode = static_cast<uint8_t>(value); break;
+    case F_OVEN_GAIN: s.ovenGainMode = static_cast<uint8_t>(value); break;
   }
   return true;
 }
 // Bitmask of the fields in which `a` and `b` differ (exact compare: both sides come from the same sanitised stores).
-inline uint16_t differingMask(const Snapshot &a, const Snapshot &b) {
-  uint16_t mask = 0;
-  for (uint8_t f = 0; f < F_COUNT; ++f) if (fieldValue(a, f) != fieldValue(b, f)) mask = static_cast<uint16_t>(mask | (1U << f));
+inline uint32_t differingMask(const Snapshot &a, const Snapshot &b) {
+  uint32_t mask = 0;
+  for (uint8_t f = 0; f < F_COUNT; ++f) if (fieldValue(a, f) != fieldValue(b, f)) mask |= (1UL << f);
   return mask;
 }
-inline void copyFields(Snapshot &dst, const Snapshot &src, uint16_t mask) {
-  for (uint8_t f = 0; f < F_COUNT; ++f) if (mask & (1U << f)) (void)setField(dst, f, fieldValue(src, f));
+inline void copyFields(Snapshot &dst, const Snapshot &src, uint32_t mask) {
+  for (uint8_t f = 0; f < F_COUNT; ++f) if (mask & (1UL << f)) (void)setField(dst, f, fieldValue(src, f));
 }
 
 constexpr uint32_t Magic = 0x4D414848UL;   // "MAHH"
-constexpr uint16_t Schema = 1;
+constexpr uint16_t Schema = 2;   // 2: the snapshot carries the sensor resolution and the heater gain (3.1.0); records of schema 1 are ignored (the history starts empty once)
 struct Record {
   uint32_t magic = Magic;
   uint16_t schema = Schema;

@@ -5060,7 +5060,7 @@ class MachineController {
       if (next.mask == 0U) { message = "NO_CHANGE"; return false; }
       // While a batch runs only the two sensor offsets may change, in small steps (the HMI "yes" is still needed: they are protected fields).
       if (batchRunning_) {
-        if ((next.mask & static_cast<uint16_t>(~AdvancedHistory::CalibrationMask)) != 0U) { message = "BATCH_LOCKED"; return false; }
+        if ((next.mask & static_cast<uint32_t>(~AdvancedHistory::CalibrationMask)) != 0U) { message = "BATCH_LOCKED"; return false; }
         if (offsetStepTooBig(current, wanted)) { message = "OFFSET_STEP"; return false; }
       }
     } else {
@@ -8203,7 +8203,7 @@ class MachineController {
   struct TechPending {
     MayapTech::Kind kind = MayapTech::Kind::None;
     uint32_t deadline = 0;
-    uint16_t mask = 0;
+    uint32_t mask = 0;
     AdvancedHistory::Snapshot values;
     char requestId[MayapTech::RequestIdCapacity] = "";
   } techPending_;

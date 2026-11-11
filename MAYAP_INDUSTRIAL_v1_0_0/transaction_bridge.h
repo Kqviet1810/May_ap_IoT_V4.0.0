@@ -367,6 +367,8 @@ inline bool publishConfigReport(const MachineConfig &cfg, uint32_t revision) {
   c["powerRestoreDelaySec"] = cfg.powerRestoreDelaySec;
   c["sensorTimeoutSec"] = cfg.sensorTimeoutSec;
   c["maxHeaterPower"] = cfg.maxHeaterPower;
+  c["sensorResolutionMode"] = cfg.sensorResolutionMode;   // 3.1.0: the two NANG CAO option rows the Web edits as technical fields
+  c["ovenGainMode"] = cfg.ovenGainMode;
   c["adaptiveThermalBalanceEnabled"] = cfg.adaptiveThermalBalanceEnabled;
   c["totalIncubationDays"] = cfg.totalIncubationDays;
   c["circulationFanEnabled"] = cfg.circulationFanEnabled;
@@ -979,7 +981,7 @@ inline void handleCommandMessage(const JsonDocument &doc) {
     if (!haveRuntime || !allowed) { publishAck(requestId, "rejected", "WEB_HIDDEN"); return; }
     if (!session) { publishAck(requestId, "rejected", "WEB_LOCKED"); return; }
     MayapTech::Kind kind = MayapTech::Kind::Config;
-    uint16_t mask = 0U;
+    uint32_t mask = 0U;
     AdvancedHistory::Snapshot values = known;
     {
       const char *kindText = doc["kind"] | "";
@@ -1000,7 +1002,7 @@ inline void handleCommandMessage(const JsonDocument &doc) {
             publishAck(requestId, "invalid", "INVALID_TECH_FIELD");
             return;
           }
-          mask = static_cast<uint16_t>(mask | (1U << index));
+          mask |= (1UL << index);
         }
       } else {
         publishAck(requestId, "invalid", "KIND");

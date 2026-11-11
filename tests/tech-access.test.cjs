@@ -82,7 +82,7 @@ test('old-record snapshot excludes PIN, Web permission, batch data and independe
   const snapshot = history.slice(history.indexOf('struct Snapshot {'), history.indexOf('};', history.indexOf('struct Snapshot {')));
   const members = [...snapshot.matchAll(/\b(?:float|uint8_t|uint16_t)\s+([^;]+);/g)].flatMap((m) => m[1].split(',').map((n) => n.split('=')[0].trim()));
   assert.deepEqual(members.sort(), ['adaptiveThermalBalanceEnabled', 'autotuneBandC', 'autotuneRelayPowerPercent', 'heaterStuckDurationSec', 'heaterStuckMinRiseC',
-    'humidityOffset', 'kd', 'ki', 'kp', 'maxHeaterPower', 'pidCycleSec', 'tempOffset', 'tempOscillationCrossLimit', 'tempOscillationWindowSec',
+    'humidityOffset', 'kd', 'ki', 'kp', 'maxHeaterPower', 'ovenGainMode', 'pidCycleSec', 'sensorResolutionMode', 'tempOffset', 'tempOscillationCrossLimit', 'tempOscillationWindowSec',
     'tempRateLimitC', 'tempRateWindowSec'].sort());
   for (const forbidden of ['highTempAlarm', 'emergencyTemp', 'lowTempAlarm', 'sensorTimeout', 'pin', 'webAllowed', 'batch'])
     assert.doesNotMatch(snapshot, new RegExp(forbidden, 'i'));

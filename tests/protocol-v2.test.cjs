@@ -84,7 +84,7 @@ test('FRAME packet worst cases stay within budgets', () => {
   // Thermal Control V2.0.0: the old controller's fields stay in the legacy config readback but are no longer technical request fields.
   const retired = ['kp', 'ki', 'kd', 'autotuneRelayPowerPercent', 'autotuneBandC', 'adaptiveThermalBalanceEnabled'];
   assert.deepEqual([...techKeys].sort(),
-    Object.keys(advanced).filter((key) => key !== 'pidCycleSec' && !retired.includes(key)).concat(['tempOffset', 'humidityOffset']).sort());
+    Object.keys(advanced).filter((key) => key !== 'pidCycleSec' && !retired.includes(key)).concat(['tempOffset', 'humidityOffset', 'sensorResolutionMode', 'ovenGainMode']).sort());
   assert.ok(webSource.includes("'pidCycleSec'"), 'legacy full-config readback remains supported');
   const fields = Object.fromEntries(techKeys.map((key) => [key, 3600.1234]));
   const techRequest = { ...base, bootId: 4294967295, expiresAt: 1780000000, action: 'tech_request', kind: 'config', fields };

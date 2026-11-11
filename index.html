@@ -276,6 +276,7 @@
 <p class="advGroup">Gia nhiệt</p>
 <div class="advGrid">
 <label class="compactTile"><span>Trần công suất nhiệt</span><div class="unit"><input id="advMaxHeaterPower" max="100" min="10" step="1" type="number"/><b>%</b></div></label>
+<label class="compactTile"><span>Hệ số heater (giá trị khởi điểm của kAir, °C/s trên mỗi %)</span><select id="advOvenGainMode"><option value="0">Tự động</option><option value="1">0,6e-4</option><option value="2">0,8e-4</option><option value="3">1,0e-4</option><option value="4">1,4e-4</option><option value="5">2,0e-4</option><option value="6">3,0e-4</option><option value="7">5,0e-4</option></select></label>
 </div>
 <p class="advGroup">Bảo vệ nhiệt</p>
 <div class="advGrid">
@@ -290,6 +291,7 @@
 <div class="advGrid">
 <label class="compactTile"><span>Bù nhiệt độ</span><div class="unit"><input id="tempOffset" max="5" min="-5" step="0.1" type="number" value="0"/><b>°C</b></div></label>
 <label class="compactTile"><span>Bù độ ẩm</span><div class="unit"><input id="humidityOffset" max="20" min="-20" step="0.1" type="number" value="0"/><b>%RH</b></div></label>
+<label class="compactTile"><span>Độ phân giải cảm biến</span><select id="advSensorResolutionMode"><option value="0">Tự động</option><option value="1">0,1 °C</option><option value="2">0,01 °C</option></select></label>
 </div>
 <p class="advGroup">Dữ liệu học nhiệt</p>
 <p class="settingFootnote">Đưa bộ điều khiển nhiệt về giá trị khởi đầu để học lại từ đầu (cấu hình giữ nguyên). Chỉ làm được ở Chế độ nhà phát triển và khi không có mẻ chạy.</p>
@@ -299,7 +301,7 @@
 <p class="formError" id="advancedFormError" role="alert"></p>
 <p class="settingFootnote" id="techRequestStatus" role="status"></p>
 <div id="techActions" hidden>
-<p class="settingFootnote">Web không tự lưu: nút này chỉ gửi yêu cầu, máy hiện giá trị cũ/mới và chờ bạn bấm CÓ hoặc KHÔNG trong 60 giây. Đang ấp thì chỉ Bù nhiệt độ và Bù độ ẩm được đổi (mỗi lần tối đa 0,5 °C và 5 %RH); các mục khác chỉ áp dụng khi không có mẻ chạy.</p>
+<p class="settingFootnote">Ở Chế độ nhà phát triển yêu cầu được áp dụng ngay. Ngoài chế độ đó: Web không tự lưu, nút này chỉ gửi yêu cầu, máy hiện giá trị cũ/mới và chờ bạn bấm CÓ hoặc KHÔNG trong 60 giây. Đang ấp thì chỉ Bù nhiệt độ và Bù độ ẩm được đổi (mỗi lần tối đa 0,5 °C và 5 %RH); các mục khác chỉ áp dụng khi không có mẻ chạy.</p>
 <button class="primary full" id="techSendBtn" type="submit">Gửi yêu cầu (chờ xác nhận tại máy)</button>
 <button class="ghost full" id="techLockBtn" type="button">Khóa lại</button>
 </div>

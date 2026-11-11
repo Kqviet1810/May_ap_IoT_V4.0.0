@@ -1991,6 +1991,8 @@
     check('lightAlarmForm', 'lightAfterBatchAlarmEnabled', config.lightAfterBatchAlarmEnabled);
 
     assign('advancedForm', 'advMaxHeaterPower', config.maxHeaterPower);
+    assign('advancedForm', 'advSensorResolutionMode', config.sensorResolutionMode);
+    assign('advancedForm', 'advOvenGainMode', config.ovenGainMode);
     assign('advancedForm', 'advTempRateLimitC', config.tempRateLimitC);
     assign('advancedForm', 'advTempRateWindowSec', config.tempRateWindowSec);
     assign('advancedForm', 'advTempOscillationCrossLimit', config.tempOscillationCrossLimit);
@@ -3343,7 +3345,8 @@
     ['heaterStuckMinRiseC', 'advHeaterStuckMinRiseC'], ['heaterStuckDurationSec', 'advHeaterStuckDurationSec'],
     ['tempRateLimitC', 'advTempRateLimitC'], ['tempRateWindowSec', 'advTempRateWindowSec'],
     ['tempOscillationCrossLimit', 'advTempOscillationCrossLimit'], ['tempOscillationWindowSec', 'advTempOscillationWindowSec'],
-    ['tempOffset', 'tempOffset'], ['humidityOffset', 'humidityOffset']]);
+    ['tempOffset', 'tempOffset'], ['humidityOffset', 'humidityOffset'],
+    ['sensorResolutionMode', 'advSensorResolutionMode'], ['ovenGainMode', 'advOvenGainMode']]);
   const TECH_OFFSET_KEYS = Object.freeze(['tempOffset', 'humidityOffset']);
   const techUi = { requestId: '' };
 
@@ -3387,7 +3390,9 @@
       return toast('Đang ấp · chỉ đổi được Bù nhiệt độ và Bù độ ẩm');
     const ok = await confirmAction({
       title: 'Gửi yêu cầu đổi thông số?',
-      message: `${Object.keys(fields).length} thông số sẽ được gửi. Máy hiện giá trị cũ/mới và chờ bạn bấm CÓ hoặc KHÔNG trong 60 giây.`,
+      message: runtime?.tech?.devMode === true
+        ? `${Object.keys(fields).length} thông số sẽ được gửi và áp dụng ngay (Chế độ nhà phát triển).`
+        : `${Object.keys(fields).length} thông số sẽ được gửi. Máy hiện giá trị cũ/mới và chờ bạn bấm CÓ hoặc KHÔNG trong 60 giây.`,
       accept: 'Gửi yêu cầu'
     });
     if (!ok) return;
@@ -3422,7 +3427,7 @@
     $('techActions').hidden = !gate.session;
     // the light tiles are the ones the Web may write: they open for editing only inside an unlocked technician session
     // while a batch runs only the two sensor offsets stay open
-    for (const input of card.querySelectorAll('#advancedForm .advGrid:not(#advOverview) input'))
+    for (const input of card.querySelectorAll('#advancedForm .advGrid:not(#advOverview) input, #advancedForm .advGrid:not(#advOverview) select'))
       input.disabled = !gate.session || (Boolean(runtime?.batchRunning) && !TECH_OFFSET_KEYS.includes(input.id));
     if (!gate.allowed) $('techPin').value = '';
     const mmss = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;

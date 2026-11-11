@@ -1202,7 +1202,7 @@ struct TechStatus {
   uint16_t webSessionRemainingS = 0;
   uint8_t pendingKind = 0;            // 0 none, 1 config change (2 was Smart AutoTune: retired)
   uint8_t pendingRemainingS = 0;      // of the 60 s the HMI has to answer
-  uint16_t pendingMask = 0;           // which snapshot fields the Web asked to change
+  uint32_t pendingMask = 0;           // which snapshot fields the Web asked to change
   uint8_t webCtlMask = 0;             // WebCtl* permission bits set on the HMI (read-only for the Web)
   uint8_t webCtlActive = 0;           // WebCtl* bits whose output is currently overridden from the Web (heater: switched OFF remotely)
   uint8_t historyCount = 0;           // advanced-config records available on the HMI (0..3)

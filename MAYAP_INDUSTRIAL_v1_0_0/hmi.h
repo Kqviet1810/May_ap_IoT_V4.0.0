@@ -2957,26 +2957,28 @@ void infoItem(uint8_t i, const char *&label, char *v, size_t n) {
 const char *advFieldLabel(uint8_t f) {
   static const char *const labels[AdvancedHistory::F_COUNT] = {
     "Kp", "Ki", "Kd", "Tran CS", "Chu ky PID", "Can bang", "Muc tang TT", "TG k.tang",
-    "Nguong toc do", "Khung toc do", "So lan doi dau", "Khung dao dong", "CS tune", "Bien do tune", "Bu nhiet", "Bu do am"};
+    "Nguong toc do", "Khung toc do", "So lan doi dau", "Khung dao dong", "CS tune", "Bien do tune", "Bu nhiet", "Bu do am", "DPG cam bien", "He so heater"};
   return f < AdvancedHistory::F_COUNT ? labels[f] : "?";
 }
 void advFieldText(uint8_t f, float value, char *out, size_t n) {
   if (f == AdvancedHistory::F_ADAPTIVE) snprintf(out, n, "%s", value > 0.5f ? "BAT" : "TAT");
+  else if (f == AdvancedHistory::F_SENSOR_RES) snprintf(out, n, "%s", OPT_SENSOR_RES[static_cast<uint8_t>(value) % 3U]);
+  else if (f == AdvancedHistory::F_OVEN_GAIN) snprintf(out, n, "%s", OPT_OVEN_GAIN[static_cast<uint8_t>(value) % 8U]);
   else if (AdvancedHistory::FieldLimits[f].integer) snprintf(out, n, "%ld", lroundf(value));
   else snprintf(out, n, f == AdvancedHistory::F_KI ? "%.3f" : "%.2f", value);
 }
 // Dem va tra ve truong thu `k` (0-based) co bit trong mask.
-int8_t advMaskedField(uint16_t mask, uint8_t k) {
+int8_t advMaskedField(uint32_t mask, uint8_t k) {
   for (uint8_t f = 0; f < AdvancedHistory::F_COUNT; ++f) {
-    if (!(mask & (1U << f))) continue;
+    if (!(mask & (1UL << f))) continue;
     if (k == 0U) return static_cast<int8_t>(f);
     --k;
   }
   return -1;
 }
-uint8_t advMaskCount(uint16_t mask) {
+uint8_t advMaskCount(uint32_t mask) {
   uint8_t c = 0U;
-  for (uint8_t f = 0; f < AdvancedHistory::F_COUNT; ++f) if (mask & (1U << f)) ++c;
+  for (uint8_t f = 0; f < AdvancedHistory::F_COUNT; ++f) if (mask & (1UL << f)) ++c;
   return c;
 }
 uint8_t techReqItemCount() {
@@ -3386,7 +3388,7 @@ void handleInput() {
 
     case View::AdvHistoryView: {
       if (rotary.step) {
-        int p = (static_cast<int>(histPage) + rotary.step) % 6;     // 16 truong, 3 dong/trang
+        int p = (static_cast<int>(histPage) + rotary.step) % 6;     // 18 truong, 3 dong/trang
         if (p < 0) p += 6;
         histPage = static_cast<uint8_t>(p);
         dirty = true;

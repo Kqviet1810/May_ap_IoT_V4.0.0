@@ -28,7 +28,7 @@ struct HmiCommand { uint32_t id = 0; HmiCommandType type = HmiCommandType::None;
 struct MachineConfig {
   float kp = 5, ki = 0.1f, kd = 30, tempOffset = 0, humidityOffset = 0, heaterStuckMinRiseC = 0.3f, tempRateLimitC = 2, autotuneBandC = 0.2f;
   uint16_t pidCycleSec = 2, heaterStuckDurationSec = 600, tempRateWindowSec = 300, tempOscillationWindowSec = 900;
-  uint8_t maxHeaterPower = 100, tempOscillationCrossLimit = 6, autotuneRelayPowerPercent = 40;
+  uint8_t maxHeaterPower = 100, tempOscillationCrossLimit = 6, autotuneRelayPowerPercent = 40, sensorResolutionMode = 0, ovenGainMode = 0;
   bool adaptiveThermalBalanceEnabled = false;
   float targetTemp = 37.5f, highTempAlarm = 38.2f, emergencyTemp = 39.0f;     // must never be touched by an advanced apply
 };
@@ -111,8 +111,8 @@ struct Ctl {
 
 static bool stage(MayapTech::Kind kind, std::initializer_list<std::pair<uint8_t, double>> fields, const char *id, const MachineConfig &base) {
   AdvancedHistory::Snapshot values = AdvancedHistory::fromConfig(base);
-  uint16_t mask = 0;
-  for (auto &f : fields) { CHECK(AdvancedHistory::setField(values, f.first, f.second)); mask = static_cast<uint16_t>(mask | (1U << f.first)); }
+  uint32_t mask = 0;
+  for (auto &f : fields) { CHECK(AdvancedHistory::setField(values, f.first, f.second)); mask |= (1UL << f.first); }
   return MayapTech::stage(kind, mask, values, id);
 }
 
@@ -409,6 +409,10 @@ int main() {
     CHECK(c.runtime_.tech.pendingKind == 0);
     CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_KP, 8.0}, {AdvancedHistory::F_MAX_POWER, 60}}, "dev-mixed", c.config_));
     CHECK(c.run(now + 6000, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "DA AP DUNG" && c.config_.kp == 8.0f && c.runtime_.tech.pendingKind == 0);   // a protection field too
+    // 3.1.0: the heater gain typed by hand and the sensor resolution are technical fields too (the HMI has them in NANG CAO, so the Web has them)
+    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_OVEN_GAIN, 3.0}, {AdvancedHistory::F_SENSOR_RES, 2.0}}, "dev-gain", c.config_));
+    CHECK(c.run(now + 7500, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "DA AP DUNG" && c.config_.ovenGainMode == 3 && c.config_.sensorResolutionMode == 2);
+    { AdvancedHistory::Snapshot probe = AdvancedHistory::fromConfig(c.config_); CHECK(!AdvancedHistory::setField(probe, AdvancedHistory::F_OVEN_GAIN, 8.0) && !AdvancedHistory::setField(probe, AdvancedHistory::F_SENSOR_RES, 3.0)); }   // out of range: refused
     CHECK(!c.run(now + 8000, HmiCommandType::DeveloperModeSet, true, 0, m) && m == "CHI HMI DUOC DOI QUYEN" && c.runtime_.tech.devMode);
   }
 
