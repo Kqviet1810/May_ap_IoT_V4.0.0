@@ -55,13 +55,6 @@ jobs:
           sudo install -m 0755 arduino-cli /usr/local/bin/arduino-cli
           arduino-cli version
 
-      - name: Point apt at the public Ubuntu mirrors (the runner's azure mirror alias may fail to resolve)
-        run: |
-          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-            sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' /etc/apt/sources.list.d/ubuntu.sources
-          fi
-          echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
-
       - name: Cai toolchain ATtiny13A
         run: |
           sudo apt-get update

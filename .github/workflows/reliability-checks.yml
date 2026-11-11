@@ -64,13 +64,6 @@ jobs:
       - name: Protocol V2 transaction and packet regression
         run: node --test tests/*.test.cjs
 
-      - name: Point apt at the public Ubuntu mirrors (the runner's azure mirror alias may fail to resolve)
-        run: |
-          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-            sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' /etc/apt/sources.list.d/ubuntu.sources
-          fi
-          echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
-
       - name: Install pinned Chromium for browser regressions
         working-directory: cloudflare
         run: npx pnpm@11.19.0 exec playwright install --with-deps chromium
