@@ -2613,6 +2613,9 @@
     'STORAGE_ERROR': 'Máy không đọc được bộ nhớ mã kỹ thuật',
     'NOT_UNLOCKED': 'Chưa mở khóa kỹ thuật',
     'PENDING_HMI': 'Đã gửi · chờ xác nhận CÓ/KHÔNG trên màn hình máy (60 giây)',
+    'DA XOA DU LIEU HOC NHIET': 'Đã xóa dữ liệu học nhiệt, máy học lại từ đầu',
+    'DUNG ME TRUOC KHI XOA': 'Hãy dừng mẻ đang chạy trước khi xóa dữ liệu học nhiệt',
+    'LOI XOA DU LIEU HOC': 'Máy không xóa được dữ liệu học nhiệt',
     'BUSY_PENDING': 'Đang có một yêu cầu kỹ thuật chờ xác nhận trên máy',
     'TECH_BUSY': 'Đang có một yêu cầu kỹ thuật chờ xác nhận trên máy',
     'NO_NETWORK': 'Máy đang mất kết nối mạng',
@@ -4955,6 +4958,18 @@
     });
 
     $('advancedForm').addEventListener('submit', (event) => { event.preventDefault(); submitTechRequest(); });
+    $('thermalLearnClearBtn')?.addEventListener('click', async () => {
+      // Developer mode only (the machine checks it again, and refuses while a batch runs). Otherwise it is done on the machine: Nâng cao → Xóa dữ liệu học nhiệt.
+      const isDev = device?.snapshot?.runtime?.tech?.devMode === true;
+      if (!isDev) { toast('Xóa dữ liệu học nhiệt từ Web cần Chế độ nhà phát triển. Hoặc làm trên máy: Nâng cao → Xóa dữ liệu học nhiệt.', 8000); return; }
+      const ok = await confirmAction({
+        title: 'Xóa dữ liệu học nhiệt?',
+        message: 'Máy quên kAir, thời gian trễ, mức giữ và mức bù quạt đã học và học lại từ đầu. Chỉ làm được khi đã dừng mẻ. Để máy đo lại đúng, cho lò nghỉ ít nhất 1 phút (thanh nhiệt tắt, nhiệt đứng yên) trước khi bắt đầu mẻ.',
+        accept: 'Xóa',
+        danger: true,
+      });
+      if (ok) { sendCommand('thermal_learn_clear'); toast('Đã gửi lệnh xóa dữ liệu học nhiệt.', 6000); }
+    });
     $('techUnlockForm').addEventListener('submit', (event) => { event.preventDefault(); submitTechUnlock(); });
     $('techLockBtn').addEventListener('click', () => { sendCommand('tech_lock'); });
     $('pmDownload')?.addEventListener('click', pmDownload);

@@ -671,4 +671,11 @@ tr:target td:first-child strong{color:#8a5a00}
 <li><strong>Chưa giải quyết:</strong> các bộ ghi mức giữ (bộ quan sát, bộ dò, nâng khi nhiệt không lên, hạ cánh) chưa gộp thành một bộ ước lượng tải ba thành phần; dải ±0,05 °C khi có quạt; trong kịch bản sự cố vẫn còn 35 % thời gian ngoài ±0,1 °C. Mọi số trên là mô phỏng; chưa có log máy thật của 3.0.2. <strong>Việc cần làm một lần trên máy:</strong> Xóa dữ liệu học nhiệt (kAir 48e-5 và τ lưu theo cách đo cũ), rồi cho máy khởi động mẻ từ trạng thái nghỉ để đo lại.</li>
 </ul>
 <hr />
-<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 3.0.2</strong></p></main></body></html>
+<h1>19. Bản 3.0.21 (Web 1.1.35): Chế độ nhà phát triển trên Web</h1>
+<ul>
+<li><strong>Xóa dữ liệu học nhiệt từ Web:</strong> mục Nâng cao trên Web có thêm nút "Xóa dữ liệu học nhiệt". Chỉ dùng được khi máy đang ở Chế độ nhà phát triển (Web toàn quyền) và không có mẻ chạy; máy kiểm tra lại cả hai điều kiện. Ngoài chế độ đó vẫn làm trên màn hình máy: Nâng cao → Xóa dữ liệu học nhiệt. Lệnh xóa kAir, thời gian trễ, mức giữ và mức bù quạt đã lưu; cấu hình máy giữ nguyên.</li>
+<li><strong>Chế độ nhà phát triển không hỏi lại ở máy:</strong> trước đây vẫn phải bấm CÓ trên màn hình máy trong 60 giây khi Web đổi hiệu chuẩn cảm biến (bù nhiệt độ, bù độ ẩm) hoặc ngưỡng bảo vệ (công suất tối đa, mức tăng và thời gian xác nhận không tăng nhiệt, tốc độ tăng/giảm, dao động). Nay các thay đổi đó được áp dụng ngay. Các giới hạn khác không đổi: khi mẻ đang chạy chỉ đổi được hai bù cảm biến và mỗi lần không quá 0,5 °C / 5 %RH, máy kiểm tra lại mọi điều kiện an toàn lúc áp dụng, mỗi thay đổi vẫn ghi vào lịch sử để hoàn tác. <strong>Lưu ý an toàn:</strong> ai có quyền Web ở chế độ này có thể đổi ngưỡng bảo vệ từ xa mà không cần ai xác nhận ở máy; chỉ bật chế độ này khi tài khoản Web được bảo vệ tốt.</li>
+<li><strong>Không đổi:</strong> bộ điều khiển nhiệt (nhiệt độ, dự đoán, E115), các ngưỡng bảo vệ E111/E112, lược đồ cấu hình và EEPROM.</li>
+</ul>
+<hr />
+<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 3.0.21</strong></p></main></body></html>

@@ -777,6 +777,8 @@ inline HmiCommandType mapCommandAction(const char *action) {
   if (!strcmp(action, "firmware_check_now")) return HmiCommandType::FirmwareWebCheckNow;
   // CD nha phat trien (Developer Mode) cho phep tai va ap dung OTA ngay lap tuc tu xa:
   if (!strcmp(action, "apply_firmware_now")) return HmiCommandType::FirmwareWebApply;
+  // Clear what the thermal controller learned (kAir, transit time, hold, fan compensation): developer mode only, refused while a batch runs (3.0.21).
+  if (!strcmp(action, "thermal_learn_clear")) return HmiCommandType::ClearThermalLearn;
   // Quay lai firmware truoc do (xem ota_rollback.h) - KHAC voi cap nhat
   // (chi "kiem tra", phai xac nhan vat ly tren HMI), lenh nay ap dung
   // NGAY qua web vi ban chat la doi ve firmware DA TUNG chay on dinh
@@ -1018,7 +1020,7 @@ inline void handleCommandMessage(const JsonDocument &doc) {
 
   // Cap nhat va quay lai ban cu tu Web chi duoc phep khi may dang o Che do nha phat trien (Developer Mode); ngoai che do do quay lai
   // chi lam duoc tren HMI voi man hinh xac nhan CO/HUY. May van tu kiem tra (dung me/test, tat cong tac nhiet, con ban cu) truoc khi doi.
-  if (type == HmiCommandType::FirmwareWebApply || type == HmiCommandType::FirmwareRollback) {
+  if (type == HmiCommandType::FirmwareWebApply || type == HmiCommandType::FirmwareRollback || type == HmiCommandType::ClearThermalLearn) {
     bool devAllowed = false;
     portENTER_CRITICAL(&realtimeMux);
     devAllowed = knownRuntimeValid && knownRuntime.tech.devMode;
