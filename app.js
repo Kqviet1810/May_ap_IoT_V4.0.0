@@ -2941,7 +2941,7 @@
     112: 'Nhiệt độ vượt ngưỡng khẩn cấp — mức nghiêm trọng nhất.',
     113: 'Tốc độ thay đổi nhiệt độ vượt ngưỡng bình thường.',
     114: 'Nhiệt độ dao động vượt biên độ cho phép quanh mức đặt.',
-    115: 'Thanh nhiệt đang bật nhưng nhiệt độ không tăng đủ.',
+    115: 'Máy đã yêu cầu thanh nhiệt gần hết công suất suốt 2 giờ mà nhiệt độ vẫn tụt (từ 1 °C trở lên).',
     116: 'Nhiệt độ rơi như khi cửa mở và chưa lên lại. Đóng cửa buồng ấp. Nếu cửa đã đóng mà nhiệt vẫn không lên thì kiểm tra thanh nhiệt (E115 sẽ báo).',
     120: 'Độ ẩm đang dưới ngưỡng cấu hình.',
     121: 'Độ ẩm đang vượt ngưỡng cấu hình.',
