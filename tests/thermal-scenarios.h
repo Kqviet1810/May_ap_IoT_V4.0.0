@@ -91,6 +91,8 @@ class RigT {
   }
 
   double now() const { return t_; }
+  int protectionCuts() const { return cuts_; }
+  double protectOverC = 0.0;      // > 0: emulate the protection of the machine
   double lastU() const { return lastU_; }
   bool tripped() const { return tripped_; }
   double tripTime() const { return tripT_; }
@@ -125,7 +127,12 @@ class RigT {
     }
     in.pv = chain.value();
     if (fineInput && pvEst_.ready()) { in.pv = pvEst_.valueAt(static_cast<float>(t_ - lastSample_)); setSlope(in, slopeEst_.slopePerS(), 0); }
-    in.permit = !tripped_ && t_ >= startS_;
+    if (protectOverC > 0.0) {                                   // the protection of the machine (E111): the heater is cut while the reading is over SV + protectOverC
+      const double over = chain.value() - in.sp;
+      if (!prot_ && over >= protectOverC) { prot_ = true; ++cuts_; }
+      else if (prot_ && over <= protectOverC - 0.05) prot_ = false;
+    }
+    in.permit = !tripped_ && t_ >= startS_ && !prot_;
     in.ventFan = vent;
     const auto o = ctl.step(in);
     const double u = tripped_ ? 0.0 : o.powerPct;
@@ -149,7 +156,8 @@ class RigT {
   double gauss() { auto u = [&]() { rng_ ^= rng_ << 13; rng_ ^= rng_ >> 17; rng_ ^= rng_ << 5; return (rng_ + 1.0) / 4294967297.0; }; return std::sqrt(-2.0 * std::log(u())) * std::cos(6.283185307179586 * u()); }
   long tick_ = 0;
   double t_ = 0.0, t0_ = 0.0, duty_ = 0.0, lastU_ = 0.0, tripT_ = -1.0, startS_ = 0.0;
-  bool tripped_ = false;
+  bool tripped_ = false, prot_ = false;
+  int cuts_ = 0;
   std::vector<float> ta_, pv_, u_;
 };
 
