@@ -507,7 +507,7 @@ class Controller {
   // limit - door recoveries overshot by 1.3 degC; fleet of the closed-loop rig, door 2 min: worst overshoot 1.27 -> 0.48.)
   // Transit time by stopwatch on a clean start: full power from a PV that is not moving, far under SV, until PV has risen by what the noise allows to trust.
   void stopwatch(float e, bool ok) {
-    if (tauMeasured_ || !ok) { swOn_ = false; return; }
+    if (tauMeasured_ || !ok || arrived_) { swOn_ = false; return; }      // only the climb from cold: after a tray the rise of PV is slowed by the load, not delayed by the oven (log of 10/11: tau 103 -> 90 -> 155 on one machine)
     if (!swOn_) {
       if (e >= farBand_ && lastCmd_ >= 0.8f * cap_ && std::fabs(lsSlope_) <= 3.0f * lsSigma_ && liveS_ > 5.0f) { swOn_ = true; swPv0_ = pv_; swT_ = 0.0f; }
       return;
