@@ -324,7 +324,7 @@ void testStartAfterAPause() {
       const float raw = kAirBefore * thermalv3::LEAD_GAIN * (sum - static_cast<float>(len) * holdBefore);
       const float lo = -kAirBefore * holdBefore * tauBefore;                // nothing in the pipe: the load cools the air for one transit time
       const float inflightMax = kAirBefore * (100.0f - holdBefore) * tauBefore;
-      if (in.sp - in.pv > 0.75f * inflightMax) continue;                           // far under SV the measured slope sets a floor under the prediction (checked by the rigs)
+      if (in.sp - in.pv > 0.70f * inflightMax) continue;                           // far under SV the measured slope sets a floor under the prediction (checked by the rigs); the margin keeps the test off the edge of that region (PV moves in steps of 0.1 degC, the floor starts at 0.75 x inflightMax)
       const float expected = in.pv + std::min(1.2f * inflightMax, std::max(lo, raw));
       worst = std::max(worst, static_cast<double>(std::fabs(ctl.predicted() - expected)));
     }
