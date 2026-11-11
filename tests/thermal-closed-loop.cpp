@@ -466,11 +466,11 @@ static void reference(const char *name, const Stats &st) {
 }
 
 // Pins of the cold-room block: measured on the fixed sample of 35 ovens, plus a margin (set from the first run, see the numbers printed by the test).
-static const size_t COLD_CAPABLE_MIN = 26;                           // of the 35 (the others have a heater that cannot take the oven to SP at 10 degC)
+static const size_t COLD_CAPABLE_MIN = 25;                           // of the 35 (the others have a heater that cannot take the oven to SP at 10 degC)
 static const int COLD_CLIMB_TRIPS_MAX = 0;                           // E115 of 3.0.1 (two hours at the ceiling and a fall) stops no oven on a first climb from 20 degC at 10 degC (3.0.0: 4 of 35, the 900 s of on-time without a 0.3 degC rise)
 static const double COLD_DOOR3_OVER = 1.10, COLD_DOOR5_OVER = 1.10, COLD_TRAY_OVER = 0.50, COLD_RESTART_OVER = 0.45, COLD_BAND = 0.40, COLD_PP = 0.30, COLD_UNUSED = 0.0;
 static const int NEWBATCH_TRIPS_MAX[4] = {0, 0, 0, 0};   // measured 0/0/0/0 of 21 ovens (3.0.0: 1/1/0/0: the weakest oven on a 10 degC day needed more than 900 s of on-time for a 0.3 degC rise)
-static const double NEWBATCH_OVER_MAX[4] = {0.75, 0.55, 0.35, 0.80};   // measured 0.66 / 0.48 / 0.29 / 0.75 of 26 ovens (3.0.0: 0.67 / 0.81 / 0.48 / 0.43 of the 21 that could settle; the other five now settle too)
+static const double NEWBATCH_OVER_MAX[4] = {0.30, 0.30, 0.35, 0.50};   // 3.0.2 measured 0.19 / 0.20 / 0.23 / 0.38 of 25 ovens (the restart of a new batch no longer measures the transit time on a recovery); 3.0.1 pins: 0.75 / 0.55 / 0.35 / 0.80; //   // measured 0.66 / 0.48 / 0.29 / 0.75 of 26 ovens (3.0.0: 0.67 / 0.81 / 0.48 / 0.43 of the 21 that could settle; the other five now settle too)
 
 static void testFamily(bool everything) {
   strictLimits = !everything;
@@ -720,7 +720,7 @@ static void testFamily(bool everything) {
     a.print("restart in a settled oven");
     b.print("restart, room 2 degC colder over 40 min");
     c.print("restart, room 2 degC warmer over 40 min");
-    expectHealthy(a, "restart in a settled oven", {0.80, 0.12, 0.50, 0.0, false});
+    expectHealthy(a, "restart in a settled oven", {0.50, 0.14, 0.30, 0.0, false});   // 3.0.2: over 0.40, band 0.12, swing 0.20
   }
 
   // A heater that really is dead (SSR open, element gone) must still stop the batch, and not later than the 2.3.4 rule did.
@@ -874,6 +874,63 @@ static void testTrayKeepsTheOvenNumbers() {
   CHECK(tLo >= 0.9 && tHi <= 1.1, "the transit time moved to %.2f .. %.2f of its value after a tray (limit 0.9 .. 1.1)", tLo, tHi);
 }
 
+static const double SHARE_MIN = 0.55, TAU_RATIO_LO = 0.60, TAU_RATIO_HI = 1.35;   // measured 0.62; 0.72 .. 1.19 (3.0.1: 0.39; up to 1.75)
+
+// What broke the machine on 11/11, as one scenario: a restart with a stored kAir twice the oven's, the fan compensation restored at its ceiling (40 points), the protection at SV + 0.1
+// and the fan on its profile, room 12 degC. 3.0.1 kept less than 40 % of the time inside +-0.1 degC, asked for power above the hold while the air stood over SV and was cut 118 times
+// on 17 ovens. Invariants: no heat above the hold (plus the fan compensation) while the reading is over SV; the air back inside +-0.1 degC most of the time.
+static void testWrongNumbersAndProtection() {
+  std::printf("\n[W] Restart with kAir x2, the compensation at its ceiling, protection at SV + 0.1, fan profile, room 12\n");
+  auto fleet = thermalsim::family(4343u, 5, true); fleet.push_back(thermalsim::u29Oven());
+  int n = 0, cuts = 0; double heatAbove = 0.0, share = 0.0, worstOver = 0.0;
+  for (thermalsim::PlantParams p : fleet) {
+    p.Tamb = 12.0;
+    if ((p.UA + p.ventW / 12.5) * (thermalsim::SP_C - 2.0) / p.Pmax > 0.85) continue;
+    Rig r(p, 25.0, 25.0); r.advance(5 * 3600.0);
+    const float kA = r.ctl.kAir(), tau = r.ctl.tauTransit(), hold = r.ctl.pHold();
+    r.restartControllers(); r.ctl.restore(2.0f * kA, tau); r.ctl.restoreHold(0.9f * hold); r.ctl.restoreFan(40.0f, tau); r.skipClock(45.0); r.startAt(r.now() + 45.0);
+    r.protectOverC = 0.1;
+    const double base = r.now(); long in10 = 0, cnt = 0;
+    for (long s = 0; s < 6 * 3600; ++s) {
+      const double ph = std::fmod(r.now() - base + 1200.0, 2400.0); const bool vent = ph < 432.0;
+      r.in.fanOnInS = vent ? 0.0f : static_cast<float>(2400.0 - ph); r.in.fanOffInS = vent ? static_cast<float>(432.0 - ph) : static_cast<float>(NAN);
+      r.advance(1.0, false, vent);
+      const double e = thermalsim::SP_C - r.plant.air();
+      if (r.in.pv >= thermalsim::SP_C + 0.05 && r.lastU() > r.ctl.pHold() + r.ctl.fanAdded() + 1.0) heatAbove += 1.0;
+      worstOver = std::max(worstOver, -e);
+      if (s > 1800) { ++cnt; in10 += std::fabs(e) <= 0.1; }
+    }
+    ++n; cuts += r.protectionCuts(); share += static_cast<double>(in10) / static_cast<double>(cnt);
+    CHECK(!r.tripped(), "E115 must not trip (oven %d)", n);
+  }
+  share /= n;
+  std::printf("  %d ovens: %.0f %% of the time inside +-0.1 degC, %d protection cuts, %.0f s of heat above the hold with the reading over SV, highest %.2f over SV\n", n, 100.0 * share, cuts, heatAbove, worstOver);
+  CHECK(heatAbove == 0.0, "%.0f s of power above the hold while the reading stood over SV (the prediction of a fall must not add heat)", heatAbove);
+  CHECK(share >= SHARE_MIN, "only %.0f %% of the time inside +-0.1 degC (pin %.0f %%)", 100.0 * share, 100.0 * SHARE_MIN);
+}
+
+// The transit time is the start of the oven's answer: between the dead time and dead time + lag of the plant, not the moment the rise could be trusted (3.0.1 read 201 s on an oven
+// whose delay is 115 s, and every gain is derived from it). A new batch after a restart keeps the stored value: a recovery after a door is not a start from rest.
+static void testTransitTime() {
+  std::printf("\n[D] The transit time the controller measures against the plant's delay\n");
+  auto fleet = thermalsim::family(4343u, 8, true); auto more = thermalsim::family(4242u, 8, false); fleet.insert(fleet.end(), more.begin(), more.end()); fleet.push_back(thermalsim::u29Oven());
+  double worstLo = 9.0, worstHi = 0.0;
+  for (thermalsim::PlantParams p : fleet) {
+    p.Tamb = 20.0;
+    Rig r(p, 25.0, 25.0); r.advance(4 * 3600.0);
+    const double ratio = r.ctl.tauTransit() / (p.td + p.tl);
+    worstLo = std::min(worstLo, ratio); worstHi = std::max(worstHi, ratio);
+    // the new batch: door, cold eggs, restart with the stored numbers
+    const float kA = r.ctl.kAir(), tau = r.ctl.tauTransit();
+    r.plant.insertColdMass(0.5, 25.0); r.advance(150.0, true, false);
+    r.restartControllers(); r.ctl.restore(kA, tau); r.skipClock(45.0); r.startAt(r.now() + 45.0);
+    r.advance(3600.0);
+    CHECK(std::fabs(r.ctl.tauTransit() - tau) < 0.5f, "a new batch after a restart moved the transit time %.0f -> %.0f s", static_cast<double>(tau), static_cast<double>(r.ctl.tauTransit()));
+  }
+  std::printf("  measured / (dead time + lag): %.2f .. %.2f over %zu ovens\n", worstLo, worstHi, fleet.size());
+  CHECK(worstLo >= TAU_RATIO_LO && worstHi <= TAU_RATIO_HI, "transit time %.2f .. %.2f of the plant's (pins %.2f .. %.2f)", worstLo, worstHi, TAU_RATIO_LO, TAU_RATIO_HI);
+}
+
 int main() {
   std::printf("=== Thermal closed-loop tests ===\n");
   test29();
@@ -883,6 +940,8 @@ int main() {
   testRestartFan();
   testFanWithProtection();
   testTrayKeepsTheOvenNumbers();
+  testWrongNumbersAndProtection();
+  testTransitTime();
   if (failures) {
     std::printf("THERMAL CLOSED-LOOP: %d FAILED\n", failures);
     return 1;

@@ -20,7 +20,7 @@ constexpr float TAU_SAVE_S = 5.0f;                       // ... or the transit t
 
 // Same limits as thermalv3::restore() (they are repeated so that this file stands alone; the tests compare them).
 constexpr float KAIR_MIN = 8.0e-5f / 3.0f, KAIR_MAX = 8.0e-5f * 10.0f;
-constexpr float TAU_MIN = 150.0f * 0.6f, TAU_MAX = 150.0f * 1.5f;
+constexpr float TAU_MIN = 150.0f * (4.0f / 15.0f), TAU_MAX = 150.0f * 1.5f;
 
 struct Record {
   uint32_t magic;

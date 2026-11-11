@@ -284,7 +284,8 @@ void testStartIdentifiesTheOven() {
   const double trueK = plant.Pmax / 100.0 / plant.Cf;                    // degC/s per % of the heater
   printf("  -> identified=%d tau=%.0f s kAir=%.5f (true %.5f)\n", ctl.identified() ? 1 : 0, ctl.tauTransit(), ctl.kAir(), trueK);
   assert(ctl.identified());
-  assert(ctl.tauTransit() >= 90.0f && ctl.tauTransit() <= 220.0f);
+  // 3.0.2: the transit time is the START of the answer (between the plant's dead time and dead time + lag), not the moment the rise could be trusted (that read over 90 s here)
+  assert(ctl.tauTransit() >= plant.td && ctl.tauTransit() <= plant.td + plant.tl + 30.0);
   assert(ctl.kAir() > 0.5 * trueK && ctl.kAir() < 1.3 * trueK);
 }
 
@@ -317,6 +318,7 @@ void testStartAfterAPause() {
       if (s > pause) lowestHold = std::min(lowestHold, static_cast<double>(ctl.pHold()));
       if (identifiedAt < 0 && ctl.identified()) identifiedAt = s;
       if (identifiedAt < 0) continue;
+      if (ctl.tauTransit() != tauBefore) continue;                         // the step in which the transit time is corrected at the end of the climb (3.0.2) predicts with the new one
       const int len = static_cast<int>(thermalv3::PIPE_K * tauBefore);   // the window of power counted as still in flight
       if (s < identifiedAt + len + 2) continue;                            // until the ring holds only commands that were really sent
       float sum = 0.0f;
@@ -326,7 +328,10 @@ void testStartAfterAPause() {
       const float inflightMax = kAirBefore * (100.0f - holdBefore) * tauBefore;
       if (in.sp - in.pv > 0.70f * inflightMax) continue;                           // far under SV the measured slope sets a floor under the prediction (checked by the rigs); the margin keeps the test off the edge of that region (PV moves in steps of 0.1 degC, the floor starts at 0.75 x inflightMax)
       const float expected = in.pv + std::min(1.2f * inflightMax, std::max(lo, raw));
-      worst = std::max(worst, static_cast<double>(std::fabs(ctl.predicted() - expected)));
+      // 3.0.2: under SV a measured rise is a floor under the prediction (the heat that is arriving whatever the model says), so the prediction may stand ABOVE the sum of the
+      // commands there, never under it; at or over SV it is that sum exactly.
+      const double gap = static_cast<double>(expected) - static_cast<double>(ctl.predicted());
+      worst = std::max(worst, in.sp - in.pv > 0.0f ? gap : std::fabs(gap));
     }
     ++runs;
     if (identifiedAt >= 0) ++identified;
