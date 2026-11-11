@@ -57,8 +57,19 @@ jobs:
 
       - name: Cai toolchain ATtiny13A
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-avr avr-libc binutils-avr
+          # Primary: the Ubuntu packages. If the runner cannot resolve the Ubuntu hosts (it has
+          # happened for hours), fall back to the avr-gcc that ships with the Arduino AVR core.
+          APT_OPTS="-o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          if sudo apt-get $APT_OPTS update && sudo apt-get $APT_OPTS install -y gcc-avr avr-libc binutils-avr; then
+            echo "avr-gcc from Ubuntu packages"
+          else
+            echo "::warning::Ubuntu packages unreachable; using the Arduino AVR core toolchain"
+            arduino-cli core update-index
+            arduino-cli core install arduino:avr@1.8.6
+            AVR_BIN="$(dirname "$(find "$HOME/.arduino15/packages/arduino/tools/avr-gcc" -name avr-g++ -type f | head -n 1)")"
+            test -x "$AVR_BIN/avr-g++" || { echo "::error::no avr-g++ in the Arduino AVR core"; exit 1; }
+            echo "$AVR_BIN" >> "$GITHUB_PATH"
+          fi
 
       - name: Cai loi ESP32
         run: |
