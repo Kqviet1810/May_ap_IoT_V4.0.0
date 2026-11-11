@@ -1,5 +1,6 @@
 // Unit tests of what makes a noise and when it stops (MAYAP_INDUSTRIAL_v1_0_0/alarm_sound.h), the code MachineController runs every cycle.
-// 2.9.11: the over-temperature siren is ONE rule measured from the setpoint (OverSetpointSiren); no ACK, no pulsing, no special level.
+// 2.9.5: the over-temperature lines have ONE rule - the siren sounds while the alarm is on and is silent the moment it is off. (Versions before waited 180 s
+// and started the wait again at every dip, so a reading that flickered around the line never made a sound.)
 #include "../MAYAP_INDUSTRIAL_v1_0_0/alarm_sound.h"
 #include <cassert>
 #include <cmath>
@@ -9,93 +10,97 @@
 using namespace alarmsound;
 
 struct Rig {
-  OverSetpointSiren s;
-  OverSetpointSiren::Params p;
-  bool at(uint32_t sec, float over, bool eligible = true) { return s.update(1000U + sec * 1000UL, over, eligible, p); }
+  LoudVoice v;
+  LoudVoice::Params p;
+  uint32_t t0;
+  explicit Rig(uint32_t start = 1000U) : t0(start) {}
+  uint32_t ms(int s) const { return t0 + static_cast<uint32_t>(s) * 1000UL; }
+  void at(int s, float pv, bool active = true) { v.update(ms(s), true, pv, active, p); }
 };
 
 int main() {
-  // 1. 0.2 over for 60 s: silent until the 60th second, then on.
+  // 1. The alarm on: the siren sounds at once, continuously at first.
   {
     Rig r;
-    for (uint32_t t = 0; t < 60; ++t) assert(!r.at(t, 0.2f));
-    assert(r.at(60, 0.2f));
-    std::printf("0.2 over for 60 s -> siren\n");
+    r.at(0, 37.6f, false);
+    assert(!r.v.sounding() && !r.v.siren(r.ms(0), r.p));
+    r.at(1, 37.7f);
+    assert(r.v.sounding() && r.v.audible() && r.v.siren(r.ms(1), r.p));
+    assert(r.v.siren(r.ms(250), r.p));
+    std::printf("alarm on: siren at once\n");
   }
-  // 2. 0.3 over: at once. 0.29 is not.
+  // 2. The alarm off: silent at once, and a new alarm sounds at once again (nothing is remembered, nothing waits).
   {
     Rig r;
-    assert(!r.at(0, 0.29f));
-    assert(r.at(1, 0.3f));
-    Rig q;
-    assert(q.at(0, 0.4f));
+    r.at(0, 37.8f); r.at(10, 37.8f);
+    assert(r.v.audible());
+    r.at(11, 37.69f, false);
+    assert(!r.v.audible() && !r.v.sounding() && !r.v.siren(r.ms(11), r.p));
+    r.at(20, 37.75f);
+    assert(r.v.audible() && r.v.siren(r.ms(20), r.p));
   }
-  // 3. A dip under 0.2 restarts the 60 s (it is an unbroken stretch).
+  // 3. A reading that flickers around the line: whenever the alarm is on the siren is on (it does not start a wait at every dip).
   {
     Rig r;
-    for (uint32_t t = 0; t < 40; ++t) r.at(t, 0.2f);
-    r.at(40, 0.1f);
-    for (uint32_t t = 41; t < 100; ++t) assert(!r.at(t, 0.2f));
-    assert(r.at(101, 0.2f));
+    for (int s = 0; s < 120; s += 2) {
+      const bool on = (s / 2) % 3 != 2;                                        // on, on, off ...
+      r.at(s, on ? 37.72f : 37.68f, on);
+      assert(r.v.audible() == on);
+    }
   }
-  // 4. Continuous: on for 30 minutes at 0.25 over, never pulsed, no ACK exists.
+  // 4. Continuous for 5 minutes after it starts, then pulsed 5 s on / 25 s off.
   {
     Rig r;
-    r.at(0, 0.3f);
-    for (uint32_t t = 1; t < 1800; ++t) assert(r.at(t, 0.25f));
+    r.at(0, 37.8f); r.at(1, 37.8f);
+    assert(r.v.sounding());
+    assert(r.v.siren(r.ms(299), r.p));
+    assert(r.v.siren(r.ms(301), r.p) && r.v.siren(r.ms(304), r.p));
+    assert(!r.v.siren(r.ms(306), r.p) && !r.v.siren(r.ms(329), r.p));
+    assert(r.v.siren(r.ms(330), r.p) && r.v.siren(r.ms(334), r.p) && !r.v.siren(r.ms(335), r.p));
   }
-  // 5. Off only after 60 s at/under 0.1 over; between 0.1 and 0.2 it stays on; a rise during the 60 s restarts them.
+  // 5. ACK at the machine mutes; a falling reading keeps it quiet, a reading that stands comes back after 2 minutes, one that rises comes back at once,
+  //    and 10 minutes is the longest silence.
   {
     Rig r;
-    r.at(0, 0.5f);
-    for (uint32_t t = 1; t < 100; ++t) assert(r.at(t, 0.15f));
-    for (uint32_t t = 100; t < 160; ++t) assert(r.at(t, 0.1f));
-    assert(!r.at(160, 0.1f));
-    // on again by the same rule
-    assert(!r.at(161, 0.2f));
-    assert(r.at(221, 0.2f));
+    r.at(0, 37.9f); r.at(10, 37.9f);
+    r.v.ack(r.ms(190), 37.9f);
+    assert(r.v.muted() && !r.v.audible() && !r.v.siren(r.ms(190), r.p));
+    r.at(240, 37.88f);
+    assert(r.v.muted());
+    r.at(311, 37.79f);                                                         // fell 0.11 over the check: quiet, look again later
+    assert(r.v.muted());
+    r.at(432, 37.78f);                                                         // did not fall another 0.1 over the next 2 minutes: back
+    assert(!r.v.muted() && r.v.audible());
+    Rig s;
+    s.at(0, 37.9f); s.at(10, 37.9f);
+    s.v.ack(s.ms(190), 37.9f);
+    s.at(210, 38.11f);
+    assert(!s.v.muted() && s.v.audible());                                     // rose 0.2
+    Rig u;
+    u.at(0, 37.95f); u.at(10, 37.95f);
+    u.v.ack(u.ms(190), 37.95f);
+    for (int sec = 191; sec < 900; sec += 10) u.at(sec, 37.95f - 0.0003f * static_cast<float>(sec - 190));   // falls slowly, never unmuted by the check
+    assert(!u.v.muted());                                                      // ... but the 10-minute limit always ends it
   }
+  // 6. The sensor lost: silence now (the sensor faults have their own voice).
   {
     Rig r;
-    r.at(0, 0.5f);
-    for (uint32_t t = 1; t < 50; ++t) r.at(t, 0.0f);
-    r.at(50, 0.15f);                                          // the calm stretch is broken
-    for (uint32_t t = 51; t < 100; ++t) assert(r.at(t, 0.0f));
-    assert(!r.at(111, 0.0f));
+    r.at(0, 37.9f); r.at(10, 37.9f);
+    assert(r.v.audible());
+    r.v.update(r.ms(11), false, NAN, true, r.p);
+    assert(!r.v.audible());
   }
-  // 6. A sample that is not valid keeps the state, both ways: a siren that sounds goes on, one that is waiting does not start or reset by it.
+  // 7. The 32-bit clock wraps.
   {
-    Rig r;
-    r.at(0, 0.5f);
-    for (uint32_t t = 1; t < 300; ++t) assert(r.at(t, NAN));
-    Rig q;
-    for (uint32_t t = 0; t < 30; ++t) q.at(t, 0.2f);
-    for (uint32_t t = 30; t < 200; ++t) assert(!q.at(t, NAN));
-    assert(!q.s.on());
-  }
-  // 7. Not eligible (no batch, the alarm without batch is off): silent and forgotten.
-  {
-    Rig r;
-    r.at(0, 0.5f);
-    assert(!r.at(1, 0.5f, false));
-    assert(r.at(2, 0.5f, true));
-  }
-  // 8. The 32-bit clock wraps.
-  {
-    OverSetpointSiren s; OverSetpointSiren::Params p;
-    uint32_t t = 0xFFFFFFFFUL - 30000UL;
-    bool on = false;
-    for (int i = 0; i < 70; ++i) { on = s.update(t, 0.2f, true, p); t += 1000UL; }
-    assert(on);
-  }
-  // 9. A reading on the edge as a float (37.7 - 37.5 is 0.2000008, 37.6 - 37.4 is 0.19999695) counts as 0.2.
-  {
-    Rig r;
-    for (uint32_t t = 0; t < 60; ++t) r.at(t, 37.6f - 37.4f);
-    assert(r.at(60, 37.6f - 37.4f));
+    Rig r(0xFFFFFFFFUL - 100000UL);
+    r.at(0, 37.8f); r.at(100, 37.8f);
+    assert(r.v.siren(r.ms(100), r.p));
+    assert(r.v.siren(r.ms(100 + 200), r.p) && !r.v.siren(r.ms(100 + 310), r.p));
+    r.at(500, 37.45f, false);
+    assert(!r.v.audible());
   }
 
-  // 10. The Chime class: a chime for every code that appears, a thin reminder (here 30 minutes) while one lasts, silent when none is left.
+  // 9. The Chime class: a chime for every code that appears, a thin reminder (here 30 minutes) while one lasts, silent when none is left.
   {
     Reminder r;
     const uint32_t remind = 1800000UL;
@@ -114,6 +119,6 @@ int main() {
     t += 1000U;
     assert(r.update(t, 1ULL << 3, remind));                                    // and back: a chime again
   }
-  std::printf("alarm_sound ok\n");
+  std::printf("alarm-sound: OK\n");
   return 0;
 }

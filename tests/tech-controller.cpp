@@ -221,41 +221,6 @@ int main() {
     CHECK(!e.techGate_.webSessionActive(now + 5000));                      // a reboot never keeps a Web session
   }
 
-  // 6b. While a batch runs ONLY the two sensor offsets may change: the HMI "yes" is still needed, a step is limited, anything else (or a pending resume) stays locked.
-  { Ctl c; fresh(c, now); grantWeb(c, now);
-    c.batchRunning_ = true;
-    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_TEMP_OFFSET, 0.3}}, "off-1", c.config_));
-    CHECK(c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "PENDING_HMI");           // accepted for the HMI to decide, nothing applied yet
-    CHECK(c.store_.saves == 0 && c.config_.tempOffset == 0.0f);
-    CHECK(c.run(now + 1000, HmiCommandType::TechDecision, false, 1, m));                                // the HMI says yes while the batch runs
-    CHECK(c.store_.saves == 1 && fabsf(c.config_.tempOffset - 0.3f) < 1.0e-6f && c.runtime_.tech.resultState == TechResult::Applied);
-    // the humidity offset too, and both together
-    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_HUM_OFFSET, 3.0}, {AdvancedHistory::F_TEMP_OFFSET, 0.5}}, "off-2", c.config_));
-    CHECK(c.run(now + 2000, HmiCommandType::TechRequestSubmit, true, 0, m));
-    CHECK(c.run(now + 3000, HmiCommandType::TechDecision, false, 1, m));
-    CHECK(fabsf(c.config_.humidityOffset - 3.0f) < 1.0e-6f && fabsf(c.config_.tempOffset - 0.5f) < 1.0e-6f);
-    // a step over 0.5 degC (or 5 %RH) at once is refused at submit time, and nothing changes
-    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_TEMP_OFFSET, 1.2}}, "off-big", c.config_));
-    CHECK(!c.run(now + 4000, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "OFFSET_STEP");
-    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_HUM_OFFSET, 9.5}}, "off-big-h", c.config_));
-    CHECK(!c.run(now + 4100, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "OFFSET_STEP");
-    CHECK(fabsf(c.config_.tempOffset - 0.5f) < 1.0e-6f);
-    // an offset together with any other technical field is refused as a whole
-    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_TEMP_OFFSET, 0.6}, {AdvancedHistory::F_KP, 9.0}}, "off-mix", c.config_));
-    CHECK(!c.run(now + 5000, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "BATCH_LOCKED");
-    CHECK(c.config_.kp == 5.0f);
-    // a resume that is still pending locks the offsets too
-    c.batchRunning_ = false; c.resumePending_ = true;
-    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_TEMP_OFFSET, 0.6}}, "off-resume", c.config_));
-    CHECK(!c.run(now + 6000, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "BATCH_LOCKED");
-    // a decision made after a step-limit breach cannot slip through: the limit is checked again at "yes"
-    c.resumePending_ = false;
-    CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_TEMP_OFFSET, 0.9}}, "off-late", c.config_));     // 0.4 from 0.5: allowed while no batch runs
-    CHECK(c.run(now + 7000, HmiCommandType::TechRequestSubmit, true, 0, m));
-    c.batchRunning_ = true; c.config_.tempOffset = 0.0f;                                                  // batch starts, the offset is 0.9 away from the request now
-    CHECK(!c.run(now + 8000, HmiCommandType::TechDecision, false, 1, m) && m == "BU QUA 0.5C/LAN");
-  }
-
   // 7. Safety conditions are checked AGAIN at "yes": a batch that started meanwhile blocks the apply (and at submit time too).
   { Ctl c; fresh(c, now); grantWeb(c, now);
     c.batchRunning_ = true;
@@ -398,17 +363,20 @@ int main() {
     CHECK(d.history_.get(0, a) && d.history_.get(1, b) && a.kp == 22.0f && b.kp == 21.0f);
   }
 
-  // 12. Developer mode (the factory default): the Web needs no PIN, every request is applied at once (3.0.21: the sensor calibrations and the protections too; until 3.0.20
-  //     they waited for the HMI), and a remote switch of the mode is refused.
+  // 12. Developer mode (the factory default): the Web needs no PIN, a request outside the protected fields is applied at once, a request that
+  //     touches a calibration or a protection still waits for the HMI, and a remote switch of the mode is refused.
   { Ctl c; fresh(c, now, true);
     CHECK(c.runtime_.tech.webSession);                                                   // no PIN needed
     CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_KP, 9.0}, {AdvancedHistory::F_TUNE_BAND, 0.5}}, "dev-ok", c.config_));
     CHECK(c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "DA AP DUNG" && c.config_.kp == 9.0f && c.store_.saves == 1);
     CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_TEMP_OFFSET, 0.5}}, "dev-cal", c.config_));
-    CHECK(c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "DA AP DUNG" && fabsf(c.config_.tempOffset - 0.5f) < 1.0e-6f && c.store_.saves == 2);   // no HMI yes
-    CHECK(c.runtime_.tech.pendingKind == 0);
+    CHECK(c.run(now, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "PENDING_HMI" && c.store_.saves == 1);
+    CHECK(c.runtime_.tech.pendingKind == 1 && c.runtime_.tech.pendingMask == (1U << AdvancedHistory::F_TEMP_OFFSET));
+    CHECK(c.run(now + 5000, HmiCommandType::TechDecision, false, 0, m));                // declined on the HMI: the calibration did not move
+    CHECK(c.config_.tempOffset == 0.0f);
     CHECK(stage(MayapTech::Kind::Config, {{AdvancedHistory::F_KP, 8.0}, {AdvancedHistory::F_MAX_POWER, 60}}, "dev-mixed", c.config_));
-    CHECK(c.run(now + 6000, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "DA AP DUNG" && c.config_.kp == 8.0f && c.runtime_.tech.pendingKind == 0);   // a protection field too
+    CHECK(c.run(now + 6000, HmiCommandType::TechRequestSubmit, true, 0, m) && m == "PENDING_HMI" && c.config_.kp == 9.0f);   // one protected field holds the whole request
+    CHECK(c.run(now + 7000, HmiCommandType::TechDecision, false, 0, m));
     CHECK(!c.run(now + 8000, HmiCommandType::DeveloperModeSet, true, 0, m) && m == "CHI HMI DUOC DOI QUYEN" && c.runtime_.tech.devMode);
   }
 

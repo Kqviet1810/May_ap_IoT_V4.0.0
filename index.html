@@ -246,18 +246,11 @@
 <details class="settingCard" id="pidMonitorCard">
 <summary><span class="settingIcon"><svg fill="none" height="22" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24" width="22"><polyline points="3 17 9 11 13 15 21 6"/><polyline points="15 6 21 6 21 12"/></svg></span><span class="settingSummary"><strong>PID Monitor</strong><small id="pmSummary">Chỉ xem · số liệu thật từ bộ điều khiển</small></span><span aria-hidden="true" class="disclosure"></span></summary>
 <div class="settingBody">
+<p class="settingFootnote">Chỉ đọc. Không thể chỉnh PID tại đây. Số liệu được máy gửi khi mục này đang mở, không giả lập.</p>
 <div class="pmGrid" id="pmGrid"></div>
 <div class="pmChartWrap"><canvas aria-label="Nhiệt độ và giá trị đặt" height="150" id="pmTempChart"></canvas></div>
 <div class="pmChartWrap"><canvas aria-label="Công suất gia nhiệt và sự kiện quạt hút" height="150" id="pmPowerChart"></canvas></div>
-<div class="pmActionsRow pmDownloadRow">
-  <button class="ghost pmActionBtn pmRecordBtn" id="pmRecordBtn" type="button">
-    <span class="pmRecDot" id="pmRecDot"></span>
-    <span id="pmRecordBtnText">Bắt đầu ghi 24h</span>
-  </button>
-  <button class="ghost pmActionBtn" id="pmHistoryBtn" type="button">📁 Bản ghi (<span id="pmRecordCount">0</span>/5)</button>
-  <button class="ghost pmActionBtn" disabled="" id="pmDownload" type="button">📥 Tải log CSV</button>
-</div>
-<span class="settingFootnote" id="pmLogInfo">Giữ mục này mở vài phút để nhận đủ 30 phút log từ máy.</span>
+<div class="pmDownloadRow"><button class="ghost" disabled="" id="pmDownload" type="button">Tải log CSV</button><span class="settingFootnote" id="pmLogInfo">Giữ mục này mở vài phút để nhận đủ 30 phút log từ máy.</span></div>
 <p class="settingFootnote" id="pmLegend">Đỏ: nhiệt độ · xanh: giá trị đặt · cam: công suất yêu cầu · tím nét đứt: SSR thực tế (TB 60 s) · dải xám: quạt hút chạy</p>
 </div>
 </details>
@@ -283,23 +276,20 @@
 <label class="compactTile"><span>Khung đánh giá tốc độ</span><div class="unit"><input id="advTempRateWindowSec" max="1800" min="30" step="1" type="number"/><b>Giây</b></div></label>
 <label class="compactTile"><span>Số lần dao động cho phép</span><input id="advTempOscillationCrossLimit" max="30" min="2" step="1" type="number"/></label>
 <label class="compactTile"><span>Khung đánh giá dao động</span><div class="unit"><input id="advTempOscillationWindowSec" max="3600" min="60" step="1" type="number"/><b>Giây</b></div></label>
-<label class="compactTile"><span>Mức tăng nhiệt tối thiểu (cảnh báo cửa E116)</span><div class="unit"><input id="advHeaterStuckMinRiseC" max="5" min="0.05" step="0.05" type="number"/><b>°C</b></div></label>
-<label class="compactTile"><span>Thời gian xác nhận không tăng nhiệt (cảnh báo cửa E116)</span><div class="unit"><input id="advHeaterStuckDurationSec" max="3600" min="60" step="1" type="number"/><b>Giây</b></div></label>
+<label class="compactTile"><span>Mức tăng nhiệt tối thiểu</span><div class="unit"><input id="advHeaterStuckMinRiseC" max="5" min="0.05" step="0.05" type="number"/><b>°C</b></div></label>
+<label class="compactTile"><span>Thời gian xác nhận không tăng nhiệt</span><div class="unit"><input id="advHeaterStuckDurationSec" max="3600" min="60" step="1" type="number"/><b>Giây</b></div></label>
 </div>
 <p class="advGroup">Hiệu chuẩn cảm biến</p>
 <div class="advGrid">
 <label class="compactTile"><span>Bù nhiệt độ</span><div class="unit"><input id="tempOffset" max="5" min="-5" step="0.1" type="number" value="0"/><b>°C</b></div></label>
 <label class="compactTile"><span>Bù độ ẩm</span><div class="unit"><input id="humidityOffset" max="20" min="-20" step="0.1" type="number" value="0"/><b>%RH</b></div></label>
 </div>
-<p class="advGroup">Dữ liệu học nhiệt</p>
-<p class="settingFootnote">Xóa kAir, thời gian trễ, mức giữ và mức bù quạt máy đã học (cấu hình giữ nguyên). Chỉ làm được ở Chế độ nhà phát triển và khi không có mẻ chạy.</p>
-<button class="dangerButton full" id="thermalLearnClearBtn" type="button">Xóa dữ liệu học nhiệt</button>
 <p class="advGroup">Trên máy</p>
 <div class="advGrid" id="advOverview"></div>
 <p class="formError" id="advancedFormError" role="alert"></p>
 <p class="settingFootnote" id="techRequestStatus" role="status"></p>
 <div id="techActions" hidden>
-<p class="settingFootnote">Web không tự lưu: nút này chỉ gửi yêu cầu, máy hiện giá trị cũ/mới và chờ bạn bấm CÓ hoặc KHÔNG trong 60 giây. Đang ấp thì chỉ Bù nhiệt độ và Bù độ ẩm được đổi (mỗi lần tối đa 0,5 °C và 5 %RH); các mục khác chỉ áp dụng khi không có mẻ chạy.</p>
+<p class="settingFootnote">Web không tự lưu: nút này chỉ gửi yêu cầu, máy hiện giá trị cũ/mới và chờ bạn bấm CÓ hoặc KHÔNG trong 60 giây. Không có mẻ đang chạy mới áp dụng được.</p>
 <button class="primary full" id="techSendBtn" type="submit">Gửi yêu cầu (chờ xác nhận tại máy)</button>
 <button class="ghost full" id="techLockBtn" type="button">Khóa lại</button>
 </div>
@@ -397,20 +387,6 @@
 <dialog id="profilePhotoDialog" aria-labelledby="profilePhotoTitle">
 <div class="dialogBody"><h2 id="profilePhotoTitle">Ảnh đại diện Google</h2><p>Xác minh lại tài khoản Google để cập nhật ảnh. Không cần đăng xuất trước.</p><div class="googleLogin" aria-label="Xác minh tài khoản Google"></div><p id="profilePhotoError" role="alert"></p><button class="ghost" id="profilePhotoClose" type="button">Đóng</button></div>
 </dialog>
-<dialog id="pmHistoryDialog" aria-labelledby="pmHistoryTitle">
-<div class="dialogBody">
-  <div class="dialogHead">
-    <h2 id="pmHistoryTitle">Quản lý bản ghi 24h</h2>
-    <button class="ghost small" id="pmHistoryClose" type="button">✕</button>
-  </div>
-  <p class="settingFootnote">Hệ thống lưu tối đa 5 bản ghi gần nhất. Bản ghi thứ 6 sẽ tự động dọn bản cũ nhất (FIFO).</p>
-  <div class="pmHistoryList" id="pmHistoryList"></div>
-  <div class="confirmActions">
-    <button class="ghost" id="pmHistoryClearAll" type="button">Xóa tất cả</button>
-    <button class="primary" id="pmHistoryCloseBtn" type="button">Đóng</button>
-  </div>
-</div>
-</dialog>
 <dialog id="confirmDialog">
 <div class="confirmBody">
 <div><p class="eyebrow">XÁC NHẬN THAO TÁC</p><h2 id="confirmTitle">Xác nhận</h2></div>
@@ -420,5 +396,5 @@
 </dialog>
 <div aria-live="polite" class="toast" id="toast" role="status"></div>
 
-<script defer src="./config.js?v=1.1.35"></script><script defer src="./account.js?v=1.1.35"></script><script defer src="./vendor/jsQR.min.js"></script><script defer src="./vendor/mqtt.min.js"></script><script defer src="./push.js?v=1.1.35"></script><script defer src="./protocol_v2.js?v=1.1.35"></script><script defer src="./notes.js?v=1.1.35"></script><script defer src="./mqtt_transport.js?v=1.1.35"></script><script defer src="./app.js?v=1.1.35"></script></body>
+<script defer src="./config.js?v=1.1.29"></script><script defer src="./account.js?v=1.1.29"></script><script defer src="./vendor/jsQR.min.js"></script><script defer src="./vendor/mqtt.min.js"></script><script defer src="./push.js?v=1.1.29"></script><script defer src="./protocol_v2.js?v=1.1.29"></script><script defer src="./notes.js?v=1.1.29"></script><script defer src="./mqtt_transport.js?v=1.1.29"></script><script defer src="./app.js?v=1.1.29"></script></body>
 </html>

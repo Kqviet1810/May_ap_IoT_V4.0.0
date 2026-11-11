@@ -16,9 +16,6 @@
 #include "advanced_history.h"
 #include "tech_request.h"
 #include "thermal_v3_adapter.h"
-#include "thermal_gain_record.h"
-#include "thermal_hold_record.h"
-#include "batch_day.h"
 #include "sensor_fine.h"
 #include "heater_response_watch.h"
 #include "vent_line.h"
@@ -1486,7 +1483,6 @@ inline void sanitizeMachineConfig(MachineConfig &cfg) {
       static_cast<int>(cfg.humidifierHysteresisRh), 1, 10));
   if (!cfg.humidifierInstalled) cfg.humidifierEnabled = false;
   if (cfg.sensorResolutionMode > 2U) cfg.sensorResolutionMode = 0U;
-  if (cfg.ovenGainMode >= thermalgain::MANUAL_LEVELS) cfg.ovenGainMode = 0U;
 
   cfg.ventScheduleCount = static_cast<uint8_t>(constrain(
       static_cast<int>(cfg.ventScheduleCount), 1, VENT_SCHEDULE_MAX_RUNS));
@@ -1919,7 +1915,7 @@ inline PackedMachineConfigV1 packConfig(const MachineConfig &c) {
   p.ventScheduleHour6 = c.ventScheduleHour6;
   p.adaptiveThermalBalanceEnabled = static_cast<uint8_t>((c.adaptiveThermalBalanceEnabled ? 1U : 0U) |
       ((c.sensorResolutionMode <= 2U ? c.sensorResolutionMode : 0U) << 1U) | (c.smartThermalEnabled ? 8U : 0U) |
-      (c.predictiveThermalEnabled ? 0U : 16U) | ((c.ovenGainMode < thermalgain::MANUAL_LEVELS ? c.ovenGainMode : 0U) << 5U));
+      (c.predictiveThermalEnabled ? 0U : 16U));
   p.ventAutoEnabled = c.ventAutoEnabled ? 1U : 0U;
   p.ventProfileLevel = c.ventProfileLevel;
   p.ventCycleMinutes = c.ventCycleMinutes;
@@ -1991,7 +1987,6 @@ inline MachineConfig unpackConfig(const PackedMachineConfigV1 &p) {
   { const uint8_t mode = static_cast<uint8_t>((p.adaptiveThermalBalanceEnabled >> 1U) & 3U); c.sensorResolutionMode = mode <= 2U ? mode : 0U; }
   c.smartThermalEnabled = (p.adaptiveThermalBalanceEnabled & 8U) != 0U;
   c.predictiveThermalEnabled = (p.adaptiveThermalBalanceEnabled & 16U) == 0U;
-  c.ovenGainMode = static_cast<uint8_t>((p.adaptiveThermalBalanceEnabled >> 5U) & 7U);
   c.ventAutoEnabled = p.ventAutoEnabled != 0U;
   c.ventProfileLevel = p.ventProfileLevel;
   c.ventCycleMinutes = p.ventCycleMinutes;
@@ -2217,22 +2212,6 @@ static_assert(EEPROM_ADDR_TECH_AUTH_A + sizeof(TechAccess::AuthRecord) <= EEPROM
 static_assert(EEPROM_ADDR_TECH_AUTH_B + sizeof(TechAccess::AuthRecord) <= EEPROM_ADDR_ADV_HISTORY, "auth B overlaps the advanced history");
 static_assert(sizeof(AdvancedHistory::Record) <= EEPROM_ADV_HISTORY_SLOT_BYTES, "advanced history record does not fit its slot");
 static_assert(EEPROM_ADDR_ADV_HISTORY + AdvancedHistory::Slots * EEPROM_ADV_HISTORY_SLOT_BYTES <= EEPROM_CAPACITY_BYTES, "advanced history beyond the chip");
-// What the thermal controller measured about this oven (heater gain, transit time): two CRC slots, see thermal_gain_record.h.
-constexpr uint16_t EEPROM_ADDR_THERMAL_GAIN_A = 0x3200U;
-constexpr uint16_t EEPROM_ADDR_THERMAL_GAIN_B = 0x3240U;
-constexpr uint16_t EEPROM_THERMAL_GAIN_SLOT_BYTES = 0x0040U;
-static_assert(EEPROM_ADDR_THERMAL_GAIN_A >= EEPROM_ADDR_ADV_HISTORY + AdvancedHistory::Slots * EEPROM_ADV_HISTORY_SLOT_BYTES, "thermal gain A overlaps the advanced history");
-static_assert(EEPROM_ADDR_THERMAL_GAIN_A + EEPROM_THERMAL_GAIN_SLOT_BYTES <= EEPROM_ADDR_THERMAL_GAIN_B, "thermal gain A overlaps B");
-static_assert(sizeof(thermalgain::Record) <= EEPROM_THERMAL_GAIN_SLOT_BYTES, "thermal gain record does not fit its slot");
-static_assert(EEPROM_ADDR_THERMAL_GAIN_B + EEPROM_THERMAL_GAIN_SLOT_BYTES <= EEPROM_CAPACITY_BYTES, "thermal gain beyond the chip");
-// The hold level of the oven (thermal_hold_record.h), right after the gain record.
-constexpr uint16_t EEPROM_ADDR_THERMAL_HOLD_A = 0x3280U;
-constexpr uint16_t EEPROM_ADDR_THERMAL_HOLD_B = 0x32C0U;
-constexpr uint16_t EEPROM_THERMAL_HOLD_SLOT_BYTES = 0x0040U;
-static_assert(EEPROM_ADDR_THERMAL_HOLD_A >= EEPROM_ADDR_THERMAL_GAIN_B + EEPROM_THERMAL_GAIN_SLOT_BYTES, "thermal hold A overlaps the gain record");
-static_assert(EEPROM_ADDR_THERMAL_HOLD_A + EEPROM_THERMAL_HOLD_SLOT_BYTES <= EEPROM_ADDR_THERMAL_HOLD_B, "thermal hold A overlaps B");
-static_assert(sizeof(thermalhold::Record) <= EEPROM_THERMAL_HOLD_SLOT_BYTES, "thermal hold record does not fit its slot");
-static_assert(EEPROM_ADDR_THERMAL_HOLD_B + EEPROM_THERMAL_HOLD_SLOT_BYTES <= EEPROM_CAPACITY_BYTES, "thermal hold beyond the chip");
 
 class PersistentStore {
  public:
@@ -2349,53 +2328,6 @@ class PersistentStore {
     if (!writeRecord(target, rec)) return false;
     TechAccess::AuthRecord verify{};
     return readRecord(target, verify) && TechAccess::recordValid(verify) && memcmp(&verify, &rec, sizeof(rec)) == 0;
-  }
-  // ---- thermal gain record (kAir, transit time of this oven): two alternating slots with sequence + CRC ---------------------
-  // Returns true when a valid record was found (the newest of the two).
-  bool loadThermalGain(thermalgain::Record &best) {
-    if (!ready_) return false;
-    thermalgain::Record a{}, b{};
-    const bool readA = readRecord(EEPROM_ADDR_THERMAL_GAIN_A, a), readB = readRecord(EEPROM_ADDR_THERMAL_GAIN_B, b);
-    return thermalgain::pick(a, readA, b, readB, best) != 0U;
-  }
-  bool saveThermalGain(float kAir, float tau) {
-    if (!ready_) return false;
-    thermalgain::Record a{}, b{};
-    const bool readA = readRecord(EEPROM_ADDR_THERMAL_GAIN_A, a), readB = readRecord(EEPROM_ADDR_THERMAL_GAIN_B, b);
-    bool toA = true;
-    const thermalgain::Record rec = thermalgain::nextToWrite(a, readA, b, readB, kAir, tau, toA);
-    const uint16_t target = toA ? EEPROM_ADDR_THERMAL_GAIN_A : EEPROM_ADDR_THERMAL_GAIN_B;   // the slot that does NOT hold the newest record
-    if (!thermalgain::valid(rec) || !writeRecord(target, rec)) return false;
-    thermalgain::Record verify{};
-    return readRecord(target, verify) && memcmp(&verify, &rec, sizeof(rec)) == 0;
-  }
-  bool eraseThermalGain() {
-    if (!ready_) return false;
-    const thermalgain::Record blank{};                                    // magic 0: never valid
-    return writeRecord(EEPROM_ADDR_THERMAL_GAIN_A, blank) && writeRecord(EEPROM_ADDR_THERMAL_GAIN_B, blank);
-  }
-  // ---- thermal hold record (the hold level of the oven): same two-slot scheme ------------------------------------------------
-  bool loadThermalHold(thermalhold::Record &best) {
-    if (!ready_) return false;
-    thermalhold::Record a{}, b{};
-    const bool readA = readRecord(EEPROM_ADDR_THERMAL_HOLD_A, a), readB = readRecord(EEPROM_ADDR_THERMAL_HOLD_B, b);
-    return thermalhold::pick(a, readA, b, readB, best) != 0U;
-  }
-  bool saveThermalHold(float hold, float pv, float sp, uint32_t epoch, uint32_t batchId, float fanComp, float fanLead) {
-    if (!ready_) return false;
-    thermalhold::Record a{}, b{};
-    const bool readA = readRecord(EEPROM_ADDR_THERMAL_HOLD_A, a), readB = readRecord(EEPROM_ADDR_THERMAL_HOLD_B, b);
-    bool toA = true;
-    const thermalhold::Record rec = thermalhold::nextToWrite(a, readA, b, readB, hold, pv, sp, epoch, batchId, fanComp, fanLead, toA);
-    const uint16_t target = toA ? EEPROM_ADDR_THERMAL_HOLD_A : EEPROM_ADDR_THERMAL_HOLD_B;   // the slot that does NOT hold the newest record
-    if (!thermalhold::valid(rec) || !writeRecord(target, rec)) return false;
-    thermalhold::Record verify{};
-    return readRecord(target, verify) && memcmp(&verify, &rec, sizeof(rec)) == 0;
-  }
-  bool eraseThermalHold() {
-    if (!ready_) return false;
-    const thermalhold::Record blank{};                                    // magic 0: never valid
-    return writeRecord(EEPROM_ADDR_THERMAL_HOLD_A, blank) && writeRecord(EEPROM_ADDR_THERMAL_HOLD_B, blank);
   }
   // ---- advanced-config history slots ------------------------------------------------------------------------------------
   bool readAdvHistory(uint8_t slot, AdvancedHistory::Record &out) const {
@@ -4481,10 +4413,10 @@ class MachineController {
       const float candidateHum = clampFloat(
           sensor_.humidityRH() + config_.humidityOffset, 0.0f, 100.0f);
       const float rawSensorTemp = sensor_.rawTemperatureC();
-      // The protections read the CORRECTED temperature (the raw reading plus the offset), the same value that the screen, the Web, the PID and the siren show: the offset is the
-      // calibration of this sensor, and a threshold typed on the HMI means that temperature. (Until 2.9.12 a negative offset was left out here: with an offset of -0.1 the
-      // overheat alarm tripped 0.1 degC under its setting.)
-      const float candidateRaw = rawSensorTemp + config_.tempOffset;
+      // Bu am co the can cho calibration/PID nhung KHONG duoc ha nguong bao
+      // ve qua nhiet. Bu duong van duoc ap dung theo huong fail-safe.
+      const float candidateRawCorrected = rawSensorTemp + config_.tempOffset;
+      const float candidateRaw = std::max(rawSensorTemp, candidateRawCorrected);
       const bool frameValid = sensor_.dataValid() && isfinite(candidateTemp) &&
                               isfinite(candidateHum) && isfinite(rawSensorTemp) &&
                               isfinite(candidateRaw);
@@ -4535,6 +4467,7 @@ class MachineController {
         lastAcceptedTemperature_ = candidateTemp;
         lastSuspectCandidate_ = candidateTemp;
         if (goodSensorStreak_ < UINT8_MAX) ++goodSensorStreak_;
+        newSensorSample_ = true;
         feedFineEstimators(now, rawSensorTemp + config_.tempOffset);
         // F-08: theo doi moc "gia tri vua thay doi that su" - moi lan mau
         // moi lech qua SENSOR_FROZEN_EPSILON_C so voi moc hien tai thi doi
@@ -4547,6 +4480,7 @@ class MachineController {
         }
       } else {
         goodSensorStreak_ = 0U;
+        newSensorSample_ = false;
       }
     }
 
@@ -4604,20 +4538,17 @@ class MachineController {
       // Trong me/resume mo cac tham so VAN HANH: SV, ba nguong canh bao nhiet
       // (thu tu thap < SV < cao < khan cap do sanitizeMachineConfig giu), bao am,
       // nguong quat hut, so ngay ap, tu ap lai sau mat dien, chu ky/bat-tat dao,
-      // dao tay dong lich va cho phep ONLINE->OFFLINE; tu 2.9.7 ca hai offset (nhiet, do am) trong buoc nho (HMI Nang cao da mo khoa). PID/tuning, timeout co khi, sensor/recovery va OFFLINE->ONLINE van bi
+      // dao tay dong lich va cho phep ONLINE->OFFLINE. Calibration (offset),
+      // PID/tuning, timeout co khi, sensor/recovery va OFFLINE->ONLINE van bi
       // khoa o lop luu that su nay de web/Serial/HMI khong the di vong qua khoa giao dien.
       // Technical fields (PID, protection, calibration, tune relay) change only inside an unlocked HMI "Nang cao" session, or through a
       // Web request the HMI approved (that path saves directly, not through here). A Web config patch can never reach this far.
       const AdvancedHistory::Snapshot beforeAdvanced = AdvancedHistory::fromConfig(config_);
       const bool advancedChange = !AdvancedHistory::same(beforeAdvanced, AdvancedHistory::fromConfig(requested));
       const bool techLocked = advancedChange && !techGate_.hmiUnlocked(now);
-      // The sensor offsets are open while a batch runs (2.9.7), in steps of at most MidBatchOffsetStepC / MidBatchHumStepRh, and only with the unlocked HMI session
-      // (techLocked above); not while a resume is pending.
-      const bool offsetStepBlocked = batchRunning_ && (
-          fabsf(requested.tempOffset - config_.tempOffset) > AdvancedHistory::MidBatchOffsetStepC + 1.0e-4f ||
-          fabsf(requested.humidityOffset - config_.humidityOffset) > AdvancedHistory::MidBatchHumStepRh + 1.0e-4f);
-      const bool protectedBatchChange = offsetStepBlocked || (resumePending_ && (
-          requested.tempOffset != config_.tempOffset || requested.humidityOffset != config_.humidityOffset)) || ((batchRunning_ || resumePending_) && (
+      const bool protectedBatchChange = (batchRunning_ || resumePending_) && (
+          requested.tempOffset != config_.tempOffset ||
+          requested.humidityOffset != config_.humidityOffset ||
           requested.kp != config_.kp || requested.ki != config_.ki ||
           requested.kd != config_.kd ||
           requested.pidCycleSec != config_.pidCycleSec ||
@@ -4635,7 +4566,7 @@ class MachineController {
           requested.sensorTimeoutSec != config_.sensorTimeoutSec ||
           requested.allowHeatWithoutBatch != config_.allowHeatWithoutBatch ||
           (requested.connectivityMode == ConnectivityMode::Online &&
-           config_.connectivityMode != ConnectivityMode::Online)));
+           config_.connectivityMode != ConnectivityMode::Online));
       const MachineConfig previousConfig = config_;
       MachineConfig readback{};
       const bool safetySaveBlocked = batchClearPending_ || safetyJournalFaultLatched_;
@@ -4676,11 +4607,9 @@ class MachineController {
       const char *message = "LENH KHONG HOP LE";
       switch (command.type) {
         case HmiCommandType::BatchStart:
-          ok = startBatch(now, message, static_cast<uint8_t>(std::min<uint32_t>(command.alarmMask, 255U))); break;
+          ok = startBatch(now, message); break;
         case HmiCommandType::BatchStop:
           ok = stopBatch(now, message); break;
-        case HmiCommandType::BatchSetDay:
-          ok = setBatchDay(now, command.alarmMask, message); break;
         case HmiCommandType::AlarmAck: {
           // F-12: chuoi bao tam dung coi truoc day hard-code "5 PHUT" trong
           // khi SIREN_TEMPORARY_MUTE_MS thuc te la 60000UL (1 phut) - nguoi
@@ -4699,9 +4628,11 @@ class MachineController {
           const bool emergencyAckBlocked = remoteAck && emergencyActive_;
           const bool hadTurnFault = turnFaultLatched_;
           const bool turnAckBlocked = remoteAck && hadTurnFault;
-          // The over-temperature siren has no ACK (alarm_sound.h: it stops when the condition ends). ACK mutes the output-conflict siren for a minute,
-          // not remote (it needs a person at the machine).
+          // The noise follows alarm_sound.h: ACK mutes the High / Emergency siren while the reading falls (it speaks again when it stands or rises) and the
+          // output-conflict siren for a minute. Not remote for these (they need a person at the machine).
+          if (!emergencyAckBlocked && emergencyActive_) emergencyLoud_.ack(now, safetyTempLast_);
           if (!remoteAck && faults_.live(FaultCode::OutputConflict)) outputConflictMutedUntil_ = now + SIREN_TEMPORARY_MUTE_MS;
+          if (!emergencyAckBlocked && highTemperatureActive_) highLoud_.ack(now, safetyTempLast_);
           const bool turnCleared = (hadTurnFault && !turnAckBlocked) ? clearTurnFault() : false;
           const bool systemAck = (command.alarmMask & AlarmSystem) != 0U;
           const bool resetCleared = systemAck && abnormalResetLatched_;
@@ -4971,12 +4902,8 @@ class MachineController {
   // Every decision is taken HERE, on the ESP32. The Web can only ask: a request is parked (60 s) until the HMI answers Yes/No, and the
   // same safety conditions as a local change (no batch / resume, no storage or safety-journal fault, PID authority) are checked again at
   // the moment of execution. The PIN travels as a number in HmiCommand::alarmMask and is never stored or logged in clear.
-  static bool offsetStepTooBig(const AdvancedHistory::Snapshot &from, const AdvancedHistory::Snapshot &to) {
-    return fabsf(to.tempOffset - from.tempOffset) > AdvancedHistory::MidBatchOffsetStepC + 1.0e-4f ||
-           fabsf(to.humidityOffset - from.humidityOffset) > AdvancedHistory::MidBatchHumStepRh + 1.0e-4f;
-  }
-  bool techEditBlocked(const char *&message, bool calibrationOnly = false) const {
-    if (resumePending_ || (batchRunning_ && !calibrationOnly)) { message = "DANG AP - KHONG DOI PID"; return true; }
+  bool techEditBlocked(const char *&message) const {
+    if (batchRunning_ || resumePending_) { message = "DANG AP - KHONG DOI PID"; return true; }
     if (batchClearPending_ || safetyJournalFaultLatched_ || storageFaultLatched_ || storageDegraded_) { message = "LOI AN TOAN/BO NHO"; return true; }
     return false;
   }
@@ -5062,8 +4989,7 @@ class MachineController {
         break;
       }
       case HmiCommandType::ClearThermalLearn: {
-        // From the Web only in developer mode (3.0.21): the owner who gave the Web full authority needs no walk to the machine to clear what the controller learned.
-        if (remote && !techGate_.developerMode()) { message = "CHI HMI HOAC CD NHA PHAT TRIEN DUOC XOA"; break; }
+        if (remote) { message = "CHI HMI DUOC XOA"; break; }
         if (batchRunning_) { message = "DUNG ME TRUOC KHI XOA"; break; }
         ok = clearThermalLearning();
         message = ok ? "DA XOA DU LIEU HOC NHIET" : "LOI XOA DU LIEU HOC";
@@ -5108,7 +5034,7 @@ class MachineController {
     if (!MayapTech::take(staged)) { message = "NO_REQUEST"; return false; }
     if (techPending_.kind != MayapTech::Kind::None) { message = "BUSY_PENDING"; return false; }
     if (!runtime_.networkConnected) { message = "NO_NETWORK"; return false; }
-    if (resumePending_) { message = "BATCH_LOCKED"; return false; }
+    if (batchRunning_ || resumePending_) { message = "BATCH_LOCKED"; return false; }
     TechPending next;
     next.kind = staged.kind;
     snprintf(next.requestId, sizeof(next.requestId), "%s", staged.requestId);
@@ -5119,11 +5045,6 @@ class MachineController {
       next.mask = AdvancedHistory::differingMask(current, wanted);     // only what really differs is shown to the HMI
       next.values = wanted;
       if (next.mask == 0U) { message = "NO_CHANGE"; return false; }
-      // While a batch runs only the two sensor offsets may change, in small steps (the HMI "yes" is still needed: they are protected fields).
-      if (batchRunning_) {
-        if ((next.mask & static_cast<uint16_t>(~AdvancedHistory::CalibrationMask)) != 0U) { message = "BATCH_LOCKED"; return false; }
-        if (offsetStepTooBig(current, wanted)) { message = "OFFSET_STEP"; return false; }
-      }
     } else {
       message = "UNSUPPORTED"; return false;
     }
@@ -5131,9 +5052,8 @@ class MachineController {
     techPending_ = next;
     techResult_ = TechResult::Pending;
     snprintf(techResultId_, sizeof(techResultId_), "%s", next.requestId);
-    // Developer mode applies a request at once, the sensor calibrations and the protections included (3.0.21: the owner who gave the Web full authority is not asked again at
-    // the machine). The limits of a running batch (only the offsets, in small steps) and every safety condition at execution are checked before and after as for any request.
-    if (techGate_.developerMode()) {
+    // Developer mode applies a request at once, except one that touches a sensor calibration or a protection: that still waits for the HMI.
+    if (techGate_.developerMode() && (next.mask & AdvancedHistory::ProtectedMask) == 0U) {
       return executeTechPending(now, message);
     }
     message = "PENDING_HMI";
@@ -5150,11 +5070,8 @@ class MachineController {
   }
   // Apply the technical fields of `target` to the live configuration: undo record first, one atomic A/B config save, then publish.
   bool applyAdvancedSnapshot(uint32_t now, const AdvancedHistory::Snapshot &target, const char *&message) {
+    if (techEditBlocked(message)) return false;
     const AdvancedHistory::Snapshot current = AdvancedHistory::fromConfig(config_);
-    const uint16_t diff = AdvancedHistory::differingMask(current, target);
-    const bool calibrationOnly = (diff & static_cast<uint16_t>(~AdvancedHistory::CalibrationMask)) == 0U;   // only the sensor offsets differ
-    if (techEditBlocked(message, calibrationOnly)) return false;
-    if (batchRunning_ && offsetStepTooBig(current, target)) { message = "BU QUA 0.5C/LAN"; return false; }
     if (AdvancedHistory::same(current, target)) { message = "KHONG DOI"; return true; }
     MachineConfig candidate = config_;
     AdvancedHistory::applyTo(candidate, target);
@@ -5257,40 +5174,31 @@ class MachineController {
       s.hold2 = MayapPidLog::toPct2(v3.pHold());
       s.kair = MayapPidLog::toU8(v3.kAir() * 1.0e5f);
       s.tau = MayapPidLog::toU8(v3.tauTransit());
-      s.lift2 = MayapPidLog::toI8x2(v3.lifted());
+      s.integ4 = MayapPidLog::toI8x4(v3.integral());
       s.vent = static_cast<uint8_t>((ventLine_.why() & 0x07U) | static_cast<uint8_t>(ventLine_.bits() << 3));
       {
         const uint8_t tokens = static_cast<uint8_t>(std::min(3.0f, ventLine_.tokens()));
         s.ctl = static_cast<uint8_t>((v3.doorDetected() ? MayapPidLog::CtlDoor : 0U) | (v3.identified() ? MayapPidLog::CtlIdentified : 0U) |
             static_cast<uint8_t>(tokens << 2) | static_cast<uint8_t>((ventReason_ & 0x0FU) << 4));
       }
-      {
-        const uint8_t src = v3.kAirMeasured() ? 2U : (v3.identified() ? 1U : 0U);
-        const float stall = std::min(v3.stallSeconds(), 31.0f * 15.0f);
-        s.learn = static_cast<uint8_t>(src | (v3.lifting() ? 0x04U : 0U) | (static_cast<uint8_t>(stall / 15.0f) << 3));
-      }
-      {   // what the hold writers did (3.0.1): the fan compensation added now, its lead, the heater-stuck evidence, the writer bits
-        const float lim = static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f;
-        s.ff2 = MayapPidLog::toI8x2(v3.fanAdded());
-        s.lead2 = MayapPidLog::toU8((v3.fanLeadS() > 0.0f ? v3.fanLeadS() : v3.tauTransit()) * 0.5f);
-        s.e115 = MayapPidLog::toU8(lim > 0.0f ? 100.0f * static_cast<float>(heaterWatch_.accumOnMs()) / lim : 0.0f);
-        s.thermal = v3.thermalBits();
-      }
+      s.learn = 0U;                                                          // nothing is kept across a restart any more (field kept for the frame layout)
       MayapPidLog::ring().push(s);
     }
   }
 
   // ---- What may make a noise and when it stops (alarm_sound.h): the live condition decides, never the stored record ----
   void updateSoundPolicy(uint32_t now) {
-    // The over-temperature siren: one rule from the setpoint (alarm_sound.h, OverSetpointSiren). E111 / E112 and what they cut are unchanged.
-    const alarmsound::OverSetpointSiren::Params op;
-    overSiren_.update(now, overSetpointC_, tempAlarmEligible_, op);
+    const alarmsound::LoudVoice::Params lp;
+    const bool valid = std::isfinite(safetyTempLast_);
+    // Both over-temperature lines are LOUD while their alarm is on and silent the moment it is off: the alarm itself is a plain comparison with the line.
+    highLoud_.update(now, valid, safetyTempLast_, highTemperatureActive_, lp);
+    emergencyLoud_.update(now, valid, safetyTempLast_, emergencyActive_, lp);
     const bool conflict = faults_.live(FaultCode::OutputConflict);
     if (!conflict) outputConflictMutedUntil_ = 0U;
     const bool conflictSiren = conflict && timeReached(now, outputConflictMutedUntil_);
-    sirenWanted_ = overSiren_.on() || conflictSiren;
+    sirenWanted_ = highLoud_.siren(now, lp) || emergencyLoud_.siren(now, lp) || conflictSiren;
     audibleMask_ = faults_.liveAlarmBits(FaultSound::Alert) | (conflictSiren ? AlarmSystem : AlarmNone) |
-                   (overSiren_.on() ? (emergencyActive_ ? AlarmEmergency : AlarmTempHigh) : AlarmNone);
+                   (highLoud_.audible() ? AlarmTempHigh : AlarmNone) | (emergencyLoud_.audible() ? AlarmEmergency : AlarmNone);
     bool chime = false;
     if (chimeReminder_.update(now, faults_.liveCodeBits(FaultSound::Chime), CHIME_REMIND_MS)) chime = true;
     if (chime) ++chimeSeq_;
@@ -5306,91 +5214,10 @@ class MachineController {
     return ok;
   }
   bool clearThermalLearning() {
-    bool ok = eraseLearnedBlob();
-    if (store_.ready() && !store_.eraseThermalGain()) ok = false;
-    if (store_.ready() && !store_.eraseThermalHold()) ok = false;
-    holdHave_ = false; holdSettledOn_ = false;
-    gainHave_ = false;
-    gainAppliedMode_ = 0xFFU;                                           // the manual value (a setting, not learned) is applied again
-    gainLastSaveMs_ = millis();
+    const bool ok = eraseLearnedBlob();
     thermalV3_.reset();
     return ok;
   }
-
-  // ---- The numbers of the OVEN (heater gain, transit time) ----
-  // Read once from the EEPROM when it is ready, handed to the controller; written back after a climb has MEASURED them and they moved (thermal_gain_record.h:
-  // at most once in 10 minutes, a few times a day at the very most). A value typed on the HMI (NANG CAO > GIA NHIET) is applied on top, and wins until the
-  // next measured climb. Called from the thermal slot, before the controller runs.
-  void serviceThermalGain(uint32_t now) {
-    if (!store_.ready()) return;
-    if (!gainLoaded_) {
-      gainLoaded_ = true;
-      thermalgain::Record r{};
-      if (store_.loadThermalGain(r)) {
-        thermalV3_.controller().restore(r.kAir, r.tau);
-        gainSaved_ = r; gainHave_ = true;
-      }
-      gainLastSaveMs_ = now;
-    }
-    const uint8_t mode = config_.ovenGainMode;
-    if (mode != gainAppliedMode_) {                                     // at start, or when the owner changed the setting
-      const bool first = gainAppliedMode_ == 0xFFU;
-      gainAppliedMode_ = mode;
-      if (mode != 0U) thermalV3_.controller().restore(thermalgain::manualKAir(mode), 0.0f);
-      else if (!first && gainHave_) thermalV3_.controller().restore(gainSaved_.kAir, gainSaved_.tau);   // back to automatic: what was kept
-    }
-    if (elapsedMs(now, gainLastSaveMs_) < thermalgain::GAIN_SAVE_MIN_MS) return;
-    const thermalv3::Controller &c = thermalV3_.controller();
-    const float tau = c.tauMeasured() ? c.tauTransit() : (gainHave_ ? gainSaved_.tau : 0.0f);
-    if (!thermalgain::wanted(c.kAirMeasured(), gainHave_, gainSaved_.kAir, gainSaved_.tau, c.kAir(), tau, elapsedMs(now, gainLastSaveMs_))) return;
-    gainLastSaveMs_ = now;
-    if (store_.saveThermalGain(c.kAir(), tau)) {
-      gainSaved_ = thermalgain::make(gainSaved_.sequence + 1UL, c.kAir(), tau); gainHave_ = true;
-      mayapSerialPrintf(false, "[THERMAL] kept kAir=%.2e tau=%.0f s\n", static_cast<double>(c.kAir()), static_cast<double>(tau));
-    }
-  }
-  // ---- The hold level of the OVEN (thermal_hold_record.h) ----
-  // Read once from the EEPROM; given back to the controller ONCE, when the batch is running and the sensor has a value (a resumed batch after an update or a power cut:
-  // the same batch, a short stop, the oven where it was - otherwise the 12 % start as before); written while the oven is settled and the level moved (at most every 10 minutes).
-  void serviceThermalHold(uint32_t now) {
-    if (!store_.ready()) return;
-    thermalv3::Controller &c = thermalV3_.controller();
-    if (!holdLoaded_) {
-      holdLoaded_ = true;
-      thermalhold::Record r{};
-      if (store_.loadThermalHold(r)) { holdSaved_ = r; holdHave_ = true; }
-      holdLastSaveMs_ = now;
-    }
-    const uint32_t batchId = batchRunning_ ? batchStartEpoch_ : 0U;
-    if (batchId == 0U) { holdSettledOn_ = false; return; }
-    if (!holdRestoreDone_) {
-      if (!sensorUsable_ || !std::isfinite(temperature_)) return;
-      holdRestoreDone_ = true;
-      if (holdHave_ && !c.hasRun()) {
-        const float h = thermalhold::restored(holdSaved_, true, batchId, rtc_.valid(), rtc_.epoch(), temperature_, config_.targetTemp);
-        if (h >= 0.0f) {
-          c.restoreHold(h);
-          c.restoreFan(holdSaved_.fanComp, holdSaved_.fanLead);                       // what the fan did to this oven in the last runs: the first run after the restart is compensated
-          mayapSerialPrintf(false, "[THERMAL] hold %.1f %% given back (saved %.1f %%), fan compensation %.1f %% lead %.0f s\n", static_cast<double>(h), static_cast<double>(holdSaved_.hold), static_cast<double>(holdSaved_.fanComp), static_cast<double>(holdSaved_.fanLead));
-        }
-      }
-    }
-    if (c.settled()) { if (!holdSettledOn_) { holdSettledOn_ = true; holdSettledSinceMs_ = now; } } else holdSettledOn_ = false;
-    const uint32_t settledMs = holdSettledOn_ ? elapsedMs(now, holdSettledSinceMs_) : 0U;
-    if (!thermalhold::wanted(settledMs, elapsedMs(now, holdLastSaveMs_), holdHave_, holdSaved_.hold, holdSaved_.batchId, c.pHold(), batchId, holdSaved_.fanComp, c.fanComp())) return;
-    holdLastSaveMs_ = now;
-    const uint32_t epoch = rtc_.valid() ? rtc_.epoch() : 0U;
-    if (store_.saveThermalHold(c.pHold(), temperature_, config_.targetTemp, epoch, batchId, c.fanComp(), c.fanLeadS())) {
-      holdSaved_ = thermalhold::make(holdSaved_.sequence + 1UL, c.pHold(), temperature_, config_.targetTemp, epoch, batchId, c.fanComp(), c.fanLeadS()); holdHave_ = true;
-    }
-  }
-  bool holdLoaded_ = false, holdHave_ = false, holdRestoreDone_ = false, holdSettledOn_ = false;
-  thermalhold::Record holdSaved_{};
-  uint32_t holdLastSaveMs_ = 0U, holdSettledSinceMs_ = 0U;
-  bool gainLoaded_ = false, gainHave_ = false;
-  thermalgain::Record gainSaved_{};
-  uint8_t gainAppliedMode_ = 0xFFU;
-  uint32_t gainLastSaveMs_ = 0U;
 
   // ---- Thermal V3 slot glue ----
   float thermalV3SensorStepC() const {                          // the step of the value the controller sees: the locked sensor format decides, an unlocked one is treated as the coarse 0.1
@@ -5435,26 +5262,20 @@ class MachineController {
   ThermalV3SlotIn buildThermalV3SlotIn(uint32_t now, bool permit, bool shadow = false) const {
     ThermalV3SlotIn si;
     si.slopeFine = (fineFresh(now) && sensorUsable_) ? fineSlopeEst_.slopePerS() : NAN;
-    si.nowMs = now; si.pv = fineControlValue(now); si.sp = config_.targetTemp; si.permit = permit; si.shadow = shadow && !permit;
+    si.nowMs = now; si.pv = fineControlValue(now); si.sp = config_.targetTemp; si.newSample = newSensorSample_; si.permit = permit; si.shadow = shadow && !permit;
     si.capPct = static_cast<float>(config_.maxHeaterPower);
+    const float offsetDown = std::max(0.0f, -config_.tempOffset);
+    si.headroomC = std::min(config_.highTempAlarm, config_.ventOnTemp) - offsetDown - config_.targetTemp;
+    si.alarmHeadroomC = config_.emergencyTemp - offsetDown - config_.targetTemp;
     const auto &st = outputs_.state();
+    si.deliveredPct = (st.heaterSsr && st.heatMaster) ? 100.0f : 0.0f;
     const float stuckLimitMs = static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f;
     si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterWatch_.accumOnMs()) / stuckLimitMs : 0.0f;
-    si.e115LimitS = stuckLimitMs * 0.001f;
-    {   // the day profile of the fan, for the compensation of the controller: seconds to the next run (0 while one runs) and to the end of the running one
-      float onIn = NAN, offIn = NAN;
-      if (ventProfileTiming(now, onIn, offIn)) {
-        si.fanOnInS = onIn;
-        si.fanOffInS = onIn > 0.0f ? static_cast<float>(NAN) : offIn;
-      }
-    }
     si.dQ = thermalV3SensorStepC();
     si.ventFan = st.ventFan;                                                // the fan that really runs
     return si;
   }
   float thermalV3Command(uint32_t now, bool permit, bool shadow) {
-    serviceThermalGain(now);
-    serviceThermalHold(now);
     const uint32_t t0 = static_cast<uint32_t>(esp_timer_get_time());
     const float u = thermalV3_.step(buildThermalV3SlotIn(now, permit, shadow));
     slotLastUs_ = static_cast<uint32_t>(esp_timer_get_time()) - t0;
@@ -5553,12 +5374,9 @@ class MachineController {
     return false;
   }
 
-  // startDay: the day the batch starts from (0 or 1 = a new batch; N = the eggs have already been incubated N-1 days - a batch ended by mistake and started again).
-  bool startBatch(uint32_t now, const char *&message, uint8_t startDay = 1U) {
+  bool startBatch(uint32_t now, const char *&message) {
     if (!mayapBootOperationsReady()) { message = "DANG KHOI DONG"; return false; }
     if (mayapFirmwareMaintenanceActive()) { message = "DANG CAP NHAT FIRMWARE"; return false; }
-    if (startDay == 0U) startDay = 1U;
-    if (!batchday::valid(startDay, config_.totalIncubationDays)) { message = "NGAY AP > SO NGAY"; return false; }
     const InputState &in = inputs_.state();
     if (testModeActive_) { message = "HAY THOAT TEST TRUOC"; return false; }
     if (batchRunning_) { message = "ME DANG CHAY"; return false; }
@@ -5600,7 +5418,7 @@ class MachineController {
     batchPhase_ = BatchPhase::Prestart;
     batchStartedAt_ = now;
     phaseStartedAt_ = now;
-    elapsedBeforeStartSec_ = batchday::startElapsed(startDay);   // a batch started from day N has already run N-1 whole days
+    elapsedBeforeStartSec_ = 0;
     savedElapsedAtCheckpoint_ = 0U;
     lastCheckpointEpoch_ = 0U;
     resumeClockAdjusted_ = true;
@@ -5639,7 +5457,7 @@ class MachineController {
     message = "DA BAT DAU ME";
     eventLog_.push(now, EventType::BatchStart,
                    static_cast<uint16_t>(EventCode::BatchStart));
-    mayapSerialPrintf(false, "[BATCH] START day=%u\n", static_cast<unsigned>(startDay));
+    mayapSerialPrintf(false, "[BATCH] START\n");
     // Bao mat dien qua ATtiny13A: kiem tra con song (ping) truoc khi bat dau
     // me, theo dung yeu cau nguoi lap dat - KHONG chan viec bat dau me neu
     // khong phan hoi (mach dinh khong nen tri hoan ca me ap chi vi 1 mach
@@ -5649,27 +5467,6 @@ class MachineController {
     (void)mayapAttinyBusRequest(ATTINY_MSG_BATCH_START);
     (void)mayapAttinyBusRequest(ATTINY_MSG_STATUS_QUERY);
     attinyLastStatusQueryAt_ = now;
-    return true;
-  }
-
-  // Moves the day counter of the RUNNING batch to `day` (1 .. total days): whole days are replaced and the time of the day stays, so the turning schedule and the
-  // daily counters do not jump. It is written to the EEPROM at once (a power cut a second later still counts from the new day). The overdue confirmation of the old
-  // count is forgotten, like at a new batch: updateBatchOverdue() judges the new count.
-  bool setBatchDay(uint32_t now, uint32_t day, const char *&message) {
-    if (!batchRunning_) { message = "KHONG CO ME DANG CHAY"; return false; }
-    if (resumePending_) { message = "DANG CHO TIEP TUC ME"; return false; }
-    if (!batchday::valid(day, config_.totalIncubationDays)) { message = "NGAY AP > SO NGAY"; return false; }
-    const uint32_t before = elapsedBatchSec(now);
-    const uint32_t after = batchday::setElapsed(before, day);
-    if (after == before) { message = "NGAY AP KHONG DOI"; return true; }
-    elapsedBeforeStartSec_ = after;
-    batchStartedAt_ = now;                                   // elapsedBatchSec() = elapsedBeforeStartSec_ + time since batchStartedAt_
-    batchOverdueAcknowledged_ = false;
-    (void)safetyJournal_.setBatchOverdueAcknowledged(false);
-    lastTurnCounterDay_ = 0U;                                // updateBatchTime() takes the new day as its reference at the next tick
-    if (!saveBatchRecord()) { message = "LOI LUU NGAY AP"; return false; }
-    mayapSerialPrintf(false, "[BATCH] DAY SET %lu -> %lu\n", static_cast<unsigned long>(batchday::dayOf(before)), static_cast<unsigned long>(day));
-    message = "DA DOI NGAY AP";
     return true;
   }
 
@@ -5979,8 +5776,6 @@ class MachineController {
     // roi 1 canh bao qua nhiet dang active).
     const bool tempAlarmEligible = config_.highTempAlarmWithoutBatch || batchRunning_ ||
                                     testModeActive_;
-    tempAlarmEligible_ = tempAlarmEligible;
-    overSetpointC_ = (safetySampleValid_ && isfinite(temperature_)) ? temperature_ - config_.targetTemp : NAN;
 
     // Cap 3 vao ngay bang mau hop le dau tien, sau do giu qua mat cam bien.
     if (tempAlarmEligible && validSafety && safetyTemp >= config_.emergencyTemp) {
@@ -6034,12 +5829,7 @@ class MachineController {
       vc.fanRunning = outputs_.state().ventFan;                                   // the fans run now, for any reason (the day profile, the Web ...)
       float onIn = NAN, offIn = NAN;
       if (ventProfileTiming(now, onIn, offIn) && onIn > 0.0f) vc.profileOnInS = onIn;
-      // The line looks at the FILTERED reading (max(raw, filtered) is +0.1 degC high on a sensor that steps, the fans ran on a temperature that stood on SV) and never
-      // below SV + VENT_LINE_MIN_OVER_C: a temperature that holds the setpoint is not an overheat. It stops at the setpoint at the latest.
-      const bool validVent = safetySampleValid_ && isfinite(temperature_);
-      const float ventOn = std::max(config_.ventOnTemp, config_.targetTemp + VENT_LINE_MIN_OVER_C);
-      const float ventOff = std::max(config_.ventOffTemp, config_.targetTemp);
-      ventTemperatureActive_ = ventLine_.update(now, validVent, temperature_, ventOn, ventOff, vp, vc);
+      ventTemperatureActive_ = ventLine_.update(now, validSafety, safetyTemp, config_.ventOnTemp, config_.ventOffTemp, vp, vc);
     }
 
     // The heater is blocked only when the reading runs well past SV (a safety margin, not a fan rule): it comes back 0.1 degC lower. "Well past"
@@ -6144,9 +5934,6 @@ class MachineController {
     // Moc so sanh la DAY nhiet do thap nhat da thay (khong phai gia tri luc bat dau cua so): sau khi mo cua / them
     // khay trung lanh nhiet tut xuong, thanh nhiet khoe dang keo nhiet len lai khong con bi tinh la "khong tang".
     // Quy tac nam trong heater_response_watch.h de test host chay dung ma nay.
-    // E115 itself (3.0.1) is the simple rule of HeaterFallWatch: the request has been at least 85 % of the ceiling for two hours and the temperature has fallen 1 degC from its highest
-    // value of those two hours. The accumulated on-time (HeaterResponseWatch, below) no longer raises the alarm: a heavy load kept the rise under 0.3 degC longer than 900 s of
-    // on-time in healthy ovens, and a dead heater is a fall, which this rule sees.
     const bool responseDemand = batchRunning_ && inputs_.state().heaterEnable &&
         sensorUsable_ && isfinite(temperature_) &&
         temperature_ < config_.targetTemp - config_.tempHysteresis;
@@ -6159,8 +5946,7 @@ class MachineController {
     if (!responseDemand || heaterWatch_.riseC(temperature_) >= config_.heaterStuckMinRiseC) doorSuspected_ = false;
     heaterWatch_.update(responseDemand, temperature_, now, outputs_.state().heaterSsr,
                         config_.heaterStuckMinRiseC, responseRequiredOnMs, doorSuspected_);
-    heaterFallWatch_.update(responseDemand, temperature_, now, runtime_.heaterPower, static_cast<float>(config_.maxHeaterPower));
-    heaterNotHeatingActive_ = heaterFallWatch_.active();      // E115 (3.0.1): simple rule, see heater_response_watch.h
+    heaterNotHeatingActive_ = heaterWatch_.active();
     // The warning goes up when a third of the E115 evidence is in (a third of the configured window, nothing typed) with the door suspected, so it comes
     // two thirds of a window BEFORE E115 would have.
     const bool doorWarning = doorSuspected_ && !heaterNotHeatingActive_ && heaterWatch_.accumOnMs() + heaterWatch_.pausedMs() >= responseRequiredOnMs / 3UL;
@@ -6193,7 +5979,7 @@ class MachineController {
     faults_.set(FaultCode::TemperatureUnstable, temperatureUnstableActive_, now,
                 static_cast<int16_t>(tempOscillationLastWindowCrossCount_));
     faults_.set(FaultCode::HeaterNotHeating, heaterNotHeatingActive_, now,
-                static_cast<int16_t>(lroundf(heaterFallWatch_.fallC() * 10.0f)));
+                static_cast<int16_t>(lroundf(heaterWatch_.riseC(temperature_) * 10.0f)));
     // F-08: cam bien "dung hinh" - chi canh bao trong luc dang co me (giong
     // cach LowTemperature/HumidityLow chi xet trong batch), vi ngoai me gia
     // tri on dinh dai han la binh thuong (khong dieu nhiet chu dong).
@@ -6903,8 +6689,7 @@ class MachineController {
       else if (webOverrideLive(webVentUntil_, now) && webVentValue_) why = 6U;
       else if (profileVentActive) why = 7U;
       else if (scheduledVentActive) why = 8U;
-      // the fan relay keeps running for its minimum on-time after the request ended: it keeps the reason it was started for
-      ventReason_ = (why != 0U || !outputs_.state().ventFan) ? why : ventReason_;
+      ventReason_ = why;
     }               // a Web override replaces the automatic vent, never a forced one
 
     // "Nhiet ngoai me" da bo khoi HMI (khong con cach nao nguoi dung tat lai
@@ -6949,6 +6734,7 @@ class MachineController {
     const bool v3Shadow = normalMasterPermit && heaterPidConditions && !faults_.ssrInhibited() && ventHeaterBlock_ && actuatorReady;   // blocked ONLY by the heater block line
     float commandedPower = thermalV3Command(now, normalSsrPermit && actuatorReady, v3Shadow);
     // ====================================================================================================
+    newSensorSample_ = false;
 
     const bool masterPermit = normalMasterPermit;
     const bool ssrPermit = normalSsrPermit && masterPermit;
@@ -7241,7 +7027,7 @@ class MachineController {
     req.ventFanForceOn = req.ventFan;
     req.ventFanBypassTiming = true;
     req.light = pulseOn(TestOutputId::Light);
-    req.siren = pulseOn(TestOutputId::Siren) || sirenWanted_;        // a real over-temperature siren is not cut by a test pulse that is off
+    req.siren = pulseOn(TestOutputId::Siren);
     // CTHT la interlock cuoi cung ngay tai output request, ngoai logic stop/
     // latch o updateTestMode(): du 1 chu ky state chua kip clear cung khong
     // the tiep tuc day motor vao dung dau hanh trinh.
@@ -8066,6 +7852,11 @@ class MachineController {
       mayapSerialPrintf(false, "[SER] BATCH %s: %s - %s\n", arg1,
                        ok ? "OK" : "FAIL", message ? message : "SAI LENH");
     } else if (cmd && !strcmp(cmd, "ACK")) {
+      if (emergencyActive_) {
+        emergencyLoud_.ack(now, safetyTempLast_);
+        highLoud_.ack(now, safetyTempLast_);
+        mayapSerialPrintf(false, "[SER] SIREN MUTE (until the reading stands or rises)\n");
+      }
       if (abnormalResetLatched_) {
         abnormalResetLatched_ = false;
         power_.acknowledge();
@@ -8377,6 +8168,7 @@ class MachineController {
   bool safetySampleValid_ = false;
   uint32_t sensorStartupGraceUntil_ = 0U;
   uint8_t goodSensorStreak_ = 0;
+  bool newSensorSample_ = false;
   float temperature_ = NAN;
   float rawTemperature_ = NAN;
   float humidity_ = NAN;
@@ -8513,9 +8305,7 @@ class MachineController {
   bool otaCheckpointDone_ = false;                   // the batch was checkpointed for the update that is downloading now
   bool ventHeaterBlock_ = false;                     // the heater is held off well above SV (see updateAlarms); the fan has its own line
   uint8_t ventReason_ = 0U;
-  alarmsound::OverSetpointSiren overSiren_{};
-  float overSetpointC_ = NAN;                       // filtered reading - SV, NAN when the reading is not valid
-  bool tempAlarmEligible_ = false;
+  alarmsound::LoudVoice highLoud_{}, emergencyLoud_{};
   alarmsound::Reminder chimeReminder_{};
   bool sirenWanted_ = false;                        // the siren (external + ATtiny mirror) is wanted now
   uint32_t audibleMask_ = AlarmNone, outputConflictMutedUntil_ = 0U;
@@ -8538,8 +8328,7 @@ class MachineController {
   uint8_t tempOscillationLastWindowCrossCount_ = 0U;
   uint32_t tempOscillationWindowStart_ = 0U;
   bool temperatureUnstableActive_ = false;
-  HeaterResponseWatch heaterWatch_;       // evidence of the heater's response (door warning, frozen-sensor check, the controller's push of the hold)
-  HeaterFallWatch heaterFallWatch_;       // the alarm: the heater asked for (nearly) everything for two hours and the temperature still falls
+  HeaterResponseWatch heaterWatch_;
   bool heaterNotHeatingActive_ = false;
   bool doorSuspected_ = false;                      // the temperature fell the way an open door makes it fall (see the E115 watch)
 

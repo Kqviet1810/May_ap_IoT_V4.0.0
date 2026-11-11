@@ -53,12 +53,10 @@ test('Web request is only parked; every safety condition is re-checked when the 
   assert.match(execute, /RequestTtlMs|timeReached\(now, request\.deadline\)/);
   assert.match(execute, /webAllowed\(\) \|\| !techGate_\.webSessionActive\(now\)/);
   const apply = body(machine, 'bool applyAdvancedSnapshot(');
-  assert.ok(apply.indexOf('techEditBlocked(message, calibrationOnly)') >= 0 && apply.indexOf('techEditBlocked(message, calibrationOnly)') < apply.indexOf('store_.saveConfig'));
-  assert.match(apply, /offsetStepTooBig\(current, target\)/, 'the step limit of the offsets is checked again at yes');
+  assert.ok(apply.indexOf('techEditBlocked(message)') < apply.indexOf('store_.saveConfig'));
   assert.ok(apply.indexOf('pushHistory(current)') < apply.indexOf('store_.saveConfig'), 'undo record is written before the new values');
   assert.doesNotMatch(apply, /mayapPidHasAuthority/, 'Thermal Control V2.0.0: no PID-law validation is left');
-  // a running batch locks every technical field except the two sensor offsets; a pending resume locks all of them
-  assert.match(body(machine, 'bool techEditBlocked('), /resumePending_ \|\| \(batchRunning_ && !calibrationOnly\)/);
+  assert.match(body(machine, 'bool techEditBlocked('), /batchRunning_ \|\| resumePending_/);
   assert.match(access, /WebSessionMs = 600000/);
   assert.match(fw('tech_request.h'), /RequestTtlMs = 60000UL/);
 });

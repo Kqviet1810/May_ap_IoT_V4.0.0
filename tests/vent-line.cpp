@@ -3,7 +3,6 @@
 // chatter, must not start the fans for a reading that is already coming down, must not be blinded by a reading that flickers between two sensor
 // steps, and must start them when the heater has nothing left to give up.
 #include "../MAYAP_INDUSTRIAL_v1_0_0/vent_line.h"
-#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -212,43 +211,6 @@ int main() {
     assert(q.firstOn < 0);
   }
 
-  // N. Field log of 2026-11-09 (SP 37.4, the fan ran 3 times in 40 min on a temperature that stood on SV). The old input (max of raw and filtered, vent on 37.5)
-  //    starts the fans; the 2.9.11 input (the filtered reading, never under SV + 0.2, off at SV) does not.
-  {
-    std::FILE *f = std::fopen("tests/fixtures/real-logs/vent-fan-at-setpoint-2026-11-09.csv", "r");
-    assert(f);
-    static float pv[400], sf[400], pr[400], ssr[400], tauv[400];
-    int n = 0;
-    char line[256];
-    while (std::fgets(line, sizeof line, f) && n < 400) {
-      double t, a, b, c, d, e; int fan, why;
-      if (line[0] == '#') continue;
-      if (std::sscanf(line, "%lf,%lf,%lf,%lf,%lf,%d,%d,%lf", &t, &a, &b, &c, &d, &fan, &why, &e) == 8) {
-        pv[n] = static_cast<float>(a); sf[n] = static_cast<float>(b); pr[n] = static_cast<float>(c); ssr[n] = static_cast<float>(d); tauv[n] = static_cast<float>(e); ++n;
-      }
-    }
-    std::fclose(f);
-    assert(n > 250);
-    const float sp = 37.4f;
-    auto replay = [&](bool filtered, float on, float off) {
-      VentLine v; int starts = 0; bool was = false;
-      for (int i = 0; i < n; ++i) {
-        VentLine::Ctx c; c.tauS = tauv[i]; c.heaterAvgPct = ssr[i]; c.predictedC = pr[i]; c.fanRunning = false;
-        for (int k = 0; k < 10; ++k) {                                                  // the log has a sample every 10 s, the line a second
-          const uint32_t ms = static_cast<uint32_t>(i * 10 + k) * 1000UL;
-          const bool a = v.update(ms, true, filtered ? pv[i] : sf[i], on, off, p, c);
-          if (a && !was) ++starts;
-          was = a;
-        }
-      }
-      return starts;
-    };
-    const int before = replay(false, 37.5f, 37.4f);
-    const int after = replay(true, std::max(37.5f, sp + 0.2f), std::max(37.4f, sp));
-    std::printf("field log: fan starts before %d, after %d\n", before, after);
-    assert(before >= 2);
-    assert(after == 0);
-  }
   std::printf("vent-line: OK\n");
   return 0;
 }
