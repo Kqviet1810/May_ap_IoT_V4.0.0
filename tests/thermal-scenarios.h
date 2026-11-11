@@ -67,6 +67,8 @@ class RigT {
   static constexpr bool fineInput = fineOf<Ctl>(0);
   template <class C> static auto carry(C &fresh, const C &old, int) -> decltype(C::carryOver(fresh, old), void()) { C::carryOver(fresh, old); }
   template <class C> static void carry(C &, const C &, long) {}
+  template <class W> static auto feedWatch(W &w, double u, int) -> decltype(w.feed(u), void()) { w.feed(u); }
+  template <class W> static void feedWatch(W &, double, long) {}
   template <class C> static auto skip(C &c, double s, int) -> decltype(c.skipClock(s), void()) { c.skipClock(s); }
   template <class C> static void skip(C &, double, long) {}
  public:
@@ -91,6 +93,8 @@ class RigT {
   }
 
   double now() const { return t_; }
+  int protectionCuts() const { return cuts_; }
+  double protectOverC = 0.0;      // > 0: emulate the protection of the machine
   double lastU() const { return lastU_; }
   bool tripped() const { return tripped_; }
   double tripTime() const { return tripT_; }
@@ -125,7 +129,12 @@ class RigT {
     }
     in.pv = chain.value();
     if (fineInput && pvEst_.ready()) { in.pv = pvEst_.valueAt(static_cast<float>(t_ - lastSample_)); setSlope(in, slopeEst_.slopePerS(), 0); }
-    in.permit = !tripped_ && t_ >= startS_;
+    if (protectOverC > 0.0) {                                   // the protection of the machine (E111): the heater is cut while the reading is over SV + protectOverC
+      const double over = chain.value() - in.sp;
+      if (!prot_ && over >= protectOverC) { prot_ = true; ++cuts_; }
+      else if (prot_ && over <= protectOverC - 0.05) prot_ = false;
+    }
+    in.permit = !tripped_ && t_ >= startS_ && !prot_;
     in.ventFan = vent;
     const auto o = ctl.step(in);
     const double u = tripped_ ? 0.0 : o.powerPct;
@@ -138,6 +147,7 @@ class RigT {
     t_ = static_cast<double>(tick_) * 0.1;
     if (!tripped_) {
       const bool demand = chain.value() < in.sp - static_cast<float>(HYST_C);
+      feedWatch(watch, u, 0);
       watch.update(demand, chain.value(), static_cast<uint32_t>(t_ * 1000.0 + 0.5), on, static_cast<float>(MIN_RISE_C), E115_ON_MS);
       if (watch.active()) { tripped_ = true; tripT_ = t_; }
     }
@@ -149,11 +159,27 @@ class RigT {
   double gauss() { auto u = [&]() { rng_ ^= rng_ << 13; rng_ ^= rng_ >> 17; rng_ ^= rng_ << 5; return (rng_ + 1.0) / 4294967297.0; }; return std::sqrt(-2.0 * std::log(u())) * std::cos(6.283185307179586 * u()); }
   long tick_ = 0;
   double t_ = 0.0, t0_ = 0.0, duty_ = 0.0, lastU_ = 0.0, tripT_ = -1.0, startS_ = 0.0;
-  bool tripped_ = false;
+  bool tripped_ = false, prot_ = false;
+  int cuts_ = 0;
   std::vector<float> ta_, pv_, u_;
 };
 
-using Rig = RigT<thermalv3::Controller, thermalv3::Input, HeaterResponseWatch>;
+// What the machine runs: the evidence counter (door warning, frozen sensor, the controller's push of the hold) and the rule that raises E115 (HeaterFallWatch: the request at
+// 85 % of the ceiling or more for two hours and the temperature 1 degC under its highest value of those two hours).
+struct HeaterWatchPair {
+  HeaterResponseWatch evidence;
+  HeaterFallWatch fall;
+  void feed(double requestPct) { requestPct_ = requestPct; }
+  void update(bool demand, float temperatureC, uint32_t now, bool ssrOn, float minRiseC, uint32_t requiredOnMs) {
+    evidence.update(demand, temperatureC, now, ssrOn, minRiseC, requiredOnMs);
+    fall.update(demand, temperatureC, now, static_cast<float>(requestPct_), 100.0f);
+  }
+  bool active() const { return fall.active(); }
+  uint32_t accumOnMs() const { return evidence.accumOnMs(); }
+ private:
+  double requestPct_ = 0.0;
+};
+using Rig = RigT<thermalv3::Controller, thermalv3::Input, HeaterWatchPair>;
 #ifdef THERMAL_SCENARIOS_WITH_LEGACY
 using LegacyRig = RigT<thermalv3_v234::Controller, thermalv3_v234::Input, LegacyHeaterWatch>;
 #endif

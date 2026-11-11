@@ -504,18 +504,26 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
     // The log ring, a few samples per snapshot, cycling from the oldest to the newest and around again: "h" = how many samples the machine ever took
     // (the newest has index h-1, 10 s apart), "s" = index of the first sample here, "d" = 7 numbers per sample. Only while the frame has room.
     if (measureJson(doc) < 1300U) {
-      // Two chunk kinds share the room one chunk used to have: the plain samples ("d") and, on every other snapshot, the diagnostics of the same
-      // ring ("x", 8 numbers per sample, with their own start index "xs"). The frame never grows beyond what it was; an older Web ignores "x".
-      static uint32_t pidLogCursor = 0U, pidLogCursorX = 0U;
-      static bool sendDiagnostics = false;
-      sendDiagnostics = !sendDiagnostics;
+      // Three chunk kinds share the room one chunk used to have, one per snapshot in turn: the plain samples ("d"), the diagnostics of the same ring ("x", 8 numbers per
+      // sample, own start index "xs") and, from 3.0.1, what the hold writers did ("y", 4 numbers per sample, own start index "ys"). The frame never grows beyond what it was;
+      // an older Web ignores "x" and "y".
+      static uint32_t pidLogCursor = 0U, pidLogCursorX = 0U, pidLogCursorY = 0U;
+      static uint8_t pidLogTurn = 0U;
+      pidLogTurn = static_cast<uint8_t>((pidLogTurn + 1U) % 3U);
+      const bool sendDiagnostics = pidLogTurn == 1U, sendThermal = pidLogTurn == 2U;
       MayapPidLog::Sample chunk[MayapPidLog::CHUNK];
       uint32_t first = 0U;
-      const uint8_t n = MayapPidLog::ring().fetch(sendDiagnostics ? pidLogCursorX : pidLogCursor, chunk, first);
+      const uint8_t n = MayapPidLog::ring().fetch(sendThermal ? pidLogCursorY : (sendDiagnostics ? pidLogCursorX : pidLogCursor), chunk, first);
       if (n > 0U) {
         JsonObject lg = m["lg"].to<JsonObject>();
         lg["h"] = MayapPidLog::ring().head();
-        if (sendDiagnostics) {
+        if (sendThermal) {
+          lg["ys"] = first;
+          JsonArray y = lg["y"].to<JsonArray>();
+          for (uint8_t i = 0U; i < n; ++i) {
+            y.add(chunk[i].ff2); y.add(chunk[i].lead2); y.add(chunk[i].e115); y.add(chunk[i].thermal);
+          }
+        } else if (sendDiagnostics) {
           lg["xs"] = first;
           JsonArray x = lg["x"].to<JsonArray>();
           for (uint8_t i = 0U; i < n; ++i) {

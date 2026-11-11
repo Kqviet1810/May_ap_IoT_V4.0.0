@@ -149,13 +149,13 @@ test('PID log: chunks of the machine ring are assembled by index and saved as CS
   const lines = csv.trim().split('\n');
   assert.match(lines[0], /^# mayap pid log device=MAP-TEST boot=7/);
   assert.equal(lines[1], 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,trust_pct,source,' +
-    'safety_c,hold_pct,kair_e5,tau_s,lift_pct,vent_why,vent_line,door,identified,fan_tokens,vent_reason,kair_src,lift_on,stall_s,time_vn');
+    'safety_c,hold_pct,kair_e5,tau_s,lift_pct,vent_why,vent_line,door,identified,fan_tokens,vent_reason,kair_src,lift_on,stall_s,fan_comp_pct,fan_lead_s,e115_pct,thermal_writers,time_vn');
   assert.equal(lines.length, 5);
   const second = lines[3].split(',');
   assert.equal(second[1], '21'); assert.equal(second[7], '1'); assert.equal(second[8], '1'); assert.equal(second[14], 'frozen'); assert.equal(second[15], '53'); assert.equal(second[16], 'machine');   // phase 1, suspect flag
-  assert.equal(second.length, 32);                                                                               // an older machine sends no diagnostics: the new columns stay empty
-  assert.equal(second.slice(17, 31).join(''), '');                                                              // diagnostics empty
-  assert.match(second[31], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);                                          // time_vn: the Vietnam wall clock, the last column
+  assert.equal(second.length, 36);                                                                               // an older machine sends no diagnostics: the new columns stay empty
+  assert.equal(second.slice(17, 35).join(''), '');                                                              // diagnostics and thermal writers empty
+  assert.match(second[35], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);                                          // time_vn: the Vietnam wall clock, the last column
 });
 
 test('PID log: the diagnostics chunk (firmware 2.5.5) merges into the samples it belongs to, in either order', () => {
@@ -172,7 +172,7 @@ test('PID log: the diagnostics chunk (firmware 2.5.5) merges into the samples it
   const lines = h.pmCsv({ id: 'MAP-TEST', bootId: 7 }).trim().split('\n');
   assert.equal(lines.length, 4);
   const a = lines[2].split(',');
-  assert.equal(a.length, 32);                                                                                   // 31 columns + time_vn (Vietnam time) appended last
+  assert.equal(a.length, 36);                                                                                   // 35 columns + time_vn (Vietnam time) appended last
   assert.equal(a[17], '37.6'); assert.equal(a[18], '2'); assert.equal(a[19], '40'); assert.equal(a[20], '150'); assert.equal(a[21], '-3');
   assert.equal(a[22], 'floor'); assert.equal(a[23], 'watch+on'); assert.equal(a[24], '1'); assert.equal(a[25], '1'); assert.equal(a[26], '2'); assert.equal(a[27], '3');
   assert.equal(a[28], '2'); assert.equal(a[29], '1'); assert.equal(a[30], '105');
@@ -181,6 +181,23 @@ test('PID log: the diagnostics chunk (firmware 2.5.5) merges into the samples it
   h.pmIngestLog({ h: 50, xs: 40, x: [3760, 4, 40, 150, -6, 0, 0] });                                                                   // a short or broken chunk changes nothing
   h.pmIngestLog({ h: 50, xs: 'q', x: [1, 2, 3, 4, 5, 6, 7] });
   assert.equal(h.pmCsv({ id: 'MAP-TEST', bootId: 7 }).trim().split('\n').length, 4);
+});
+
+test('PID log: the thermal-writers chunk (firmware 3.0.1) merges into its samples and shows in the CSV', () => {
+  const h = browser();
+  h.pidMon.log = new Map(); h.pidMon.series = []; h.pidMon.logHead = 0;
+  h.pmIngestLog({ h: 60, s: 50, d: [3730, 3740, 3735, 70, 60, 0x41, 0, 3720, 3740, 3730, 134, 120, 0x49, 0] });
+  // per sample: fan compensation added x2, lead / 2, heater-stuck evidence in percent, writer bits (1 fan_comp, 2 probe_round, 4 landing, 8 cold_start, 16 fan_wait, 32 e115_push, 64 probe_armed)
+  h.pmIngestLog({ h: 60, ys: 50, y: [0, 52, 3, 64, 40, 52, 12, 1 | 64] });
+  h.pmIngestLog({ h: 60, ys: 50, y: [1, 2, 3] });                                                                // a short chunk changes nothing
+  h.pmIngestLog({ h: 60, ys: 'q', y: [1, 2, 3, 4] });
+  const lines = h.pmCsv({ id: 'MAP-TEST', bootId: 7 }).trim().split('\n');
+  assert.equal(lines.length, 4);
+  const a = lines[2].split(','), b = lines[3].split(',');
+  assert.equal(a.length, 36);
+  assert.equal(a[31], '0'); assert.equal(a[32], '104'); assert.equal(a[33], '3'); assert.equal(a[34], 'probe_armed');
+  assert.equal(b[31], '20'); assert.equal(b[32], '104'); assert.equal(b[33], '12'); assert.equal(b[34], 'fan_comp+probe_armed');
+  assert.match(b[35], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
 });
 
 test('fan config requires complete capabilities and preserves legacy schedules', () => {

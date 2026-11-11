@@ -176,6 +176,11 @@ jobs:
           g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-stall-log.cpp -o /tmp/mayap-thermal-stall-log
           /tmp/mayap-thermal-stall-log
 
+      - name: "Real night of 10/11 replayed into the controller: a door and a tray of cold mass must not move kAir or the transit time (3.0.0 read kAir 3..80e-5)"
+        run: |
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-replay-tray.cpp -o /tmp/mayap-thermal-replay-tray
+          /tmp/mayap-thermal-replay-tray
+
       - name: "Fine temperature from a 0.1 degC sensor (sensor_fine.h): sliding least-squares value and slope, follows a fall, restarts after a gap, bounded on hostile input"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/sensor-fine.cpp -o /tmp/mayap-sensor-fine
@@ -183,6 +188,9 @@ jobs:
 
       - name: "Fleet bench builds (210 random ovens x 10 situations with the real vent line and the restored state)"
         run: g++ -O2 -std=c++17 -Wall -Wextra -Werror tools/thermal-research/fleet-bench.cpp -o /tmp/mayap-fleet-bench
+
+      - name: "Pass-rate tool builds (the yardstick of every change of thermal_v3.h: fan, weather, climb, restart)"
+        run: g++ -O2 -std=c++17 -Wall -Wextra -Werror -DTHERMAL_SENSOR_NOISE_K=0.02 tools/thermal-research/pass-rates.cpp -o /tmp/mayap-pass-rates
 
       - name: "E115 evidence (heater_response_watch.h): unit tests of the rule MachineController runs"
         run: |

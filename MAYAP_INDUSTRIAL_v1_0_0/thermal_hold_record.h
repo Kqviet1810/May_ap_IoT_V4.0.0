@@ -18,7 +18,7 @@
 
 namespace thermalhold {
 
-constexpr uint32_t MAGIC = 0x4D4B4831UL;                 // "MKH1"
+constexpr uint32_t MAGIC = 0x4D4B4832UL;                 // "MKH2" (3.0.1: the record also keeps the learned compensation of the fan; a "MKH1" record is not read)
 constexpr uint32_t SETTLED_MIN_MS = 600000UL;            // settled this long before a save
 constexpr uint32_t SAVE_MIN_MS = 600000UL;               // at most one write every 10 minutes
 constexpr float SAVE_MOVE_PCT = 0.5f;                    // ... and only when the level moved by this much (or the batch changed)
@@ -28,6 +28,7 @@ constexpr float RESTORE_PV_MOVE_C = 0.5f;                // ... and within this 
 constexpr float RESTORE_SP_MOVE_C = 0.05f;               // the set-point must be the one of the record
 constexpr float RESTORE_FACTOR = 0.9f;
 constexpr float HOLD_MAX_PCT = 100.0f;                    // what the heater can give: a cold day needs 50 - 60 % and must be kept (a cap of 40 % kept a stale 38 % for ever)
+constexpr float FAN_COMP_MAX_PCT = 40.0f, FAN_LEAD_MAX_S = 360.0f;   // the limits thermal_v3.h puts on them
 constexpr float START_HOLD_PCT = 12.0f;                       // the controller's own start (HOLD_PRIOR_OF_CAP in thermal_v3.h)
 
 struct Record {
@@ -38,17 +39,20 @@ struct Record {
   float sp;
   uint32_t epoch;       // RTC epoch at the save, 0 = no usable clock
   uint32_t batchId;     // the batch start epoch: another batch is another set of eggs
+  float fanComp;        // the learned compensation of the scheduled fan [percent of the heater] (thermal_v3.h fanComp)
+  float fanLead;        // ... and how many seconds before the fan it starts (fanLeadS)
   uint32_t crc;
 };
 
 inline uint32_t recordCrc(const Record &r) { return thermalgain::crc32(reinterpret_cast<const uint8_t *>(&r), offsetof(Record, crc)); }
 inline bool valid(const Record &r) {
   return r.magic == MAGIC && r.crc == recordCrc(r) && std::isfinite(r.hold) && r.hold >= 0.0f && r.hold <= HOLD_MAX_PCT &&
-         std::isfinite(r.pv) && r.pv > 20.0f && r.pv < 50.0f && std::isfinite(r.sp) && r.sp > 20.0f && r.sp < 50.0f && r.batchId != 0U;
+         std::isfinite(r.pv) && r.pv > 20.0f && r.pv < 50.0f && std::isfinite(r.sp) && r.sp > 20.0f && r.sp < 50.0f && r.batchId != 0U &&
+         std::isfinite(r.fanComp) && r.fanComp >= 0.0f && r.fanComp <= FAN_COMP_MAX_PCT && std::isfinite(r.fanLead) && r.fanLead >= 0.0f && r.fanLead <= FAN_LEAD_MAX_S;
 }
-inline Record make(uint32_t sequence, float hold, float pv, float sp, uint32_t epoch, uint32_t batchId) {
+inline Record make(uint32_t sequence, float hold, float pv, float sp, uint32_t epoch, uint32_t batchId, float fanComp = 0.0f, float fanLead = 0.0f) {
   Record r{};
-  r.magic = MAGIC; r.sequence = sequence; r.hold = hold; r.pv = pv; r.sp = sp; r.epoch = epoch; r.batchId = batchId;
+  r.magic = MAGIC; r.sequence = sequence; r.hold = hold; r.pv = pv; r.sp = sp; r.epoch = epoch; r.batchId = batchId; r.fanComp = fanComp; r.fanLead = fanLead;
   r.crc = recordCrc(r);
   return r;
 }
@@ -59,19 +63,19 @@ inline uint8_t pick(const Record &a, bool readA, const Record &b, bool readB, Re
   if (vb) { out = b; return 2U; }
   return 0U;
 }
-inline Record nextToWrite(const Record &a, bool readA, const Record &b, bool readB, float hold, float pv, float sp, uint32_t epoch, uint32_t batchId, bool &toA) {
+inline Record nextToWrite(const Record &a, bool readA, const Record &b, bool readB, float hold, float pv, float sp, uint32_t epoch, uint32_t batchId, float fanComp, float fanLead, bool &toA) {
   Record newest{};
   const uint8_t have = pick(a, readA, b, readB, newest);
   toA = have != 1U;
-  return make(have ? newest.sequence + 1UL : 1UL, hold, pv, sp, epoch, batchId);
+  return make(have ? newest.sequence + 1UL : 1UL, hold, pv, sp, epoch, batchId, fanComp, fanLead);
 }
 
 // Should the level be written now? `settledMs` = how long the oven has been settled, `sinceLastSaveMs` since the last write of this run.
-inline bool wanted(uint32_t settledMs, uint32_t sinceLastSaveMs, bool haveSaved, float savedHold, uint32_t savedBatch, float hold, uint32_t batchId) {
+inline bool wanted(uint32_t settledMs, uint32_t sinceLastSaveMs, bool haveSaved, float savedHold, uint32_t savedBatch, float hold, uint32_t batchId, float savedFan = 0.0f, float fan = 0.0f) {
   if (settledMs < SETTLED_MIN_MS || sinceLastSaveMs < SAVE_MIN_MS || batchId == 0U) return false;
   if (!std::isfinite(hold) || hold < 0.0f || hold > HOLD_MAX_PCT) return false;
   if (!haveSaved || savedBatch != batchId) return true;
-  return std::fabs(hold - savedHold) >= SAVE_MOVE_PCT;
+  return std::fabs(hold - savedHold) >= SAVE_MOVE_PCT || (std::isfinite(fan) && std::fabs(fan - savedFan) >= SAVE_MOVE_PCT);
 }
 
 // The level to start the controller at after a restart, or a negative number: no restore (the 12 % start).
