@@ -5190,9 +5190,9 @@ class MachineController {
   void updateSoundPolicy(uint32_t now) {
     const alarmsound::LoudVoice::Params lp;
     const bool valid = std::isfinite(safetyTempLast_);
-    // Both over-temperature lines are LOUD while their alarm is on and silent the moment it is off: the alarm itself is a plain comparison with the line.
-    highLoud_.update(now, valid, safetyTempLast_, highTemperatureActive_, lp);
-    emergencyLoud_.update(now, valid, safetyTempLast_, emergencyActive_, lp);
+    // Both over-temperature lines are LOUD at once and stop when the reading is 0.2 degC under the line (the protective actions keep their own hysteresis).
+    highLoud_.update(now, valid, safetyTempLast_, config_.highTempAlarm, highTemperatureActive_, lp);
+    emergencyLoud_.update(now, valid, safetyTempLast_, config_.emergencyTemp, emergencyActive_, lp);
     const bool conflict = faults_.live(FaultCode::OutputConflict);
     if (!conflict) outputConflictMutedUntil_ = 0U;
     const bool conflictSiren = conflict && timeReached(now, outputConflictMutedUntil_);
@@ -5740,30 +5740,11 @@ class MachineController {
   }
 
   // ----------------------------- Alarm ---------------------------------------
-  // Mean of the last 5 s of the safety reading (five 1 s buckets). Empty or invalid input restarts it, so a stale mean never trips an alarm.
-  float highMean5s(uint32_t now, bool valid, float v) {
-    if (!valid) { for (uint8_t i = 0U; i < 5U; ++i) hmCnt_[i] = 0U; return NAN; }
-    const uint32_t sec = now / 1000UL;
-    uint8_t slot = static_cast<uint8_t>(sec % 5UL);
-    if (hmSec_[slot] != sec) { hmSec_[slot] = sec; hmSum_[slot] = 0.0f; hmCnt_[slot] = 0U; }
-    hmSum_[slot] += v; ++hmCnt_[slot];
-    float sum = 0.0f; uint32_t n = 0U;
-    for (uint8_t i = 0U; i < 5U; ++i) {
-      if (hmCnt_[i] != 0U && sec - hmSec_[i] < 5UL) { sum += hmSum_[i]; n += hmCnt_[i]; }
-    }
-    return n ? sum / static_cast<float>(n) : NAN;
-  }
-  float hmSum_[5] = {0, 0, 0, 0, 0};
-  uint32_t hmSec_[5] = {0, 0, 0, 0, 0};
-  uint16_t hmCnt_[5] = {0, 0, 0, 0, 0};
   void updateAlarms(uint32_t now) {
     const float safetyTemp = isfinite(rawTemperature_)
         ? (isfinite(temperature_) ? std::max(rawTemperature_, temperature_) : rawTemperature_)
         : temperature_;
     const bool validSafety = safetySampleValid_ && isfinite(safetyTemp);
-    // An alarm TRIPS on the higher of the raw and the filtered reading (the fast one), and is CLEARED on the filtered one alone: the raw reading flickers by a
-    // sensor step (0.1 degC) and a clear that needed every raw sample under the line never came while PV stood on it.
-    const float clearTemp = isfinite(temperature_) ? temperature_ : safetyTemp;
     safetyTempLast_ = validSafety ? safetyTemp : NAN;                        // for the PID log
     const bool wasHigh = highTemperatureActive_;
     const bool wasEmergency = emergencyActive_;
@@ -5782,7 +5763,8 @@ class MachineController {
       emergencyActive_ = true;
       emergencyClearTimer_.reset();
     } else if (emergencyActive_) {
-      const bool safeToClear = validSafety && clearTemp < config_.emergencyTemp - EMERGENCY_CLEAR_HYSTERESIS_C;
+      const bool safeToClear = validSafety &&
+          safetyTemp <= config_.emergencyTemp - EMERGENCY_CLEAR_HYSTERESIS_C;
       if (emergencyClearTimer_.update(now, safeToClear,
                                      EMERGENCY_CLEAR_CONFIRM_MS)) {
         emergencyActive_ = false;
@@ -5792,17 +5774,15 @@ class MachineController {
 
     // Cap 2 co xac nhan vao va xac nhan thoat rieng, khong chap chon contactor.
     if (!highTemperatureActive_) {
-      // E111 trips on the 5 s mean of the reading, not on one sample: a single raw sample that touches the line while the screen (filtered) shows less
-      // is a sensor step, not an overheat. E112 keeps its immediate trip on the higher of raw and filtered.
-      const float highMean = highMean5s(now, validSafety, safetyTemp);
-      const bool highTrip = tempAlarmEligible && validSafety && isfinite(highMean) &&
-                            highMean >= config_.highTempAlarm;
+      const bool highTrip = tempAlarmEligible && validSafety &&
+                            safetyTemp >= config_.highTempAlarm;
       if (highTripTimer_.update(now, highTrip, HIGH_TEMP_CONFIRM_MS)) {
         highTemperatureActive_ = true;
         highClearTimer_.reset();
       }
     } else if (!emergencyActive_) {
-      const bool safeToClear = validSafety && clearTemp < config_.highTempAlarm - HIGH_TEMP_CLEAR_HYSTERESIS_C;
+      const bool safeToClear = validSafety &&
+          safetyTemp <= config_.highTempAlarm - HIGH_TEMP_CLEAR_HYSTERESIS_C;
       if (highClearTimer_.update(now, safeToClear,
                                 HIGH_TEMP_CLEAR_CONFIRM_MS)) {
         highTemperatureActive_ = false;
@@ -5863,7 +5843,7 @@ class MachineController {
     const bool lowCondition = lowEligible && temperature_ <= config_.lowTempAlarm;
     lowTemperatureActive_ = lowTempTimer_.update(now, lowCondition,
                                                  LOW_TEMP_CONFIRM_MS);
-    if (lowTemperatureActive_ && temperature_ > config_.lowTempAlarm) {
+    if (lowTemperatureActive_ && temperature_ >= config_.lowTempAlarm + 0.2f) {
       lowTemperatureActive_ = false;
       lowTempTimer_.reset();
     }

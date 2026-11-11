@@ -1,6 +1,6 @@
 {
-  "release": "3.0.22",
-  "firmware": "3.0.22",
+  "release": "3.0.23",
+  "firmware": "3.0.23",
   "hmi": "1.0.0",
   "web": "1.1.29",
   "web_storage_schema": 10,

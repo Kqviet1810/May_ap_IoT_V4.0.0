@@ -48,7 +48,7 @@ tr:target td:first-child strong{color:#8a5a00}
 @media screen { body { background:#e9efef; } .sheet { box-shadow:0 4px 18px rgba(0,0,0,.12); min-height:210mm; } }
 </style></head><body><div class="toolbar"><a class="tb" href="../">&larr; Quay lại MAYAP</a><a class="tb" href="#danh-sach-ma-loi">Danh sách mã lỗi</a><a class="tb" href="./MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.pdf">Mở PDF</a><button onclick="window.print()">In / Lưu PDF</button></div><main class="sheet"><h1>MÁY ẤP TRỨNG MAYAP - HƯỚNG DẪN VẬN HÀNH VÀ MÃ LỖI</h1>
 <p><strong>Phiên bản tài liệu:</strong> v1.4 (tên file giữ nguyên để các liên kết cũ vẫn mở được)<br />
-<strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - bản <strong>2.9.6</strong> (Web 1.1.29)<br />
+<strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - bản <strong>2.9.0</strong> (Web 1.1.29)<br />
 <strong>Ngày cập nhật:</strong> 03/11/2026<br />
 <strong>Nguồn chuẩn mã lỗi:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0/machine_control.h</code></p>
 <blockquote>
@@ -159,14 +159,14 @@ tr:target td:first-child strong{color:#8a5a00}
 <td><strong>E111</strong></td>
 <td><code>HighTemperature</code></td>
 <td>STOP</td>
-<td>Nhiệt độ cao. Báo khi <strong>trung bình 5 giây</strong> của nhiệt độ chạm ngưỡng (một mẫu đo thô chạm ngưỡng không đủ để báo). Cấm SSR, cắt contactor nhiệt, dừng đảo và bật thông gió/tuần hoàn bảo vệ. <strong>Còi kêu ngay khi báo và tắt ngay khi hết báo</strong> (nhiệt đã lọc dưới ngưỡng liên tục 5 giây); kêu liên tục 5 phút, sau đó 5 giây kêu / 25 giây nghỉ.</td>
+<td>Nhiệt độ cao. Cấm SSR, cắt contactor nhiệt, dừng đảo và bật thông gió/tuần hoàn bảo vệ ngay khi chạm ngưỡng. <strong>Còi chỉ kêu nếu sau 3 phút quạt hút chạy mà nhiệt vẫn không xuống dưới ngưỡng</strong> (hoặc vượt ngưỡng từ 0,5 °C trở lên thì kêu ngay); nhiệt xuống dưới ngưỡng là còi tắt.</td>
 <td>Kiểm tra SSR dính, contactor, cảm biến, luồng khí; xác nhận nhiệt giảm an toàn trước khi chạy lại.</td>
 </tr>
 <tr id="E112">
 <td><strong>E112</strong></td>
 <td><code>EmergencyTemperature</code></td>
 <td>EMERGENCY</td>
-<td>Quá nhiệt khẩn cấp. Cắt gia nhiệt ngay, dừng đảo, bật quạt bảo vệ. Báo ngay khi một mẫu chạm ngưỡng khẩn cấp. Còi theo cùng quy tắc với E111: kêu ngay, tắt ngay khi hết báo.</td>
+<td>Quá nhiệt khẩn cấp. Cắt gia nhiệt ngay, dừng đảo, bật quạt bảo vệ. Còi theo cùng quy tắc với E111: chờ 3 phút nếu nhiệt chưa xuống dưới ngưỡng khẩn cấp, kêu ngay khi vượt ngưỡng từ 0,5 °C, tắt khi nhiệt xuống dưới ngưỡng.</td>
 <td>Cắt nguồn gia nhiệt nếu cần, kiểm tra SSR/contactor và nhiệt độ thực tế. Không reset liên tục khi nhiệt còn cao.</td>
 </tr>
 <tr id="E113">
@@ -567,4 +567,4 @@ tr:target td:first-child strong{color:#8a5a00}
 <li>Trên Web: chỉ khi máy đang bật <strong>Chế độ nhà phát triển</strong>, nút <em>Quay lại phần mềm trước đó</em> trong Cài đặt gửi lệnh sau khi bạn xác nhận. Cả hai cách yêu cầu đã dừng mẻ, công tắc nhiệt tắt và còn bản cũ trong máy (chỉ lùi được một bậc).</li>
 </ul>
 <hr />
-<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 2.9.6</strong></p></main></body></html>
+<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 2.9.0</strong></p></main></body></html>

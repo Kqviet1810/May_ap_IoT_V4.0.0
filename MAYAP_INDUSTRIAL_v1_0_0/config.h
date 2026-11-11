@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "3.0.22";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "3.0.23";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -616,17 +616,17 @@ constexpr float VENT_LINE_EPS_C = 0.005f;
 constexpr float VENT_HEATER_BLOCK_MIN_C = 0.3f;
 constexpr float VENT_HEATER_BLOCK_STEPS = 3.0f;
 constexpr float VENT_HEATER_BLOCK_RELEASE_C = 0.1f;
-constexpr uint32_t LOW_TEMP_STARTUP_GRACE_MS = 60000UL;  // 1 phut
-constexpr uint32_t LOW_TEMP_CONFIRM_MS = 120000UL;       // thap lien tuc 2 phut
+constexpr uint32_t LOW_TEMP_STARTUP_GRACE_MS = 300000UL; // 5 phut
+constexpr uint32_t LOW_TEMP_CONFIRM_MS = 300000UL;       // thap lien tuc 5 phut
 // Lan len nhiet dau cua me: nhiet thap la DUONG DI (khong phai su co) nen E110 chua duoc xet. "Da len nhiet" khi PV cham
 // SV - LOW_TEMP_WARMUP_DONE_ERR_C; neu qua LOW_TEMP_WARMUP_MAX_MS ma chua toi thi E110 duoc xet nhu cu (lo khong len nhiet duoc).
 constexpr float LOW_TEMP_WARMUP_DONE_ERR_C = 0.3f;
 constexpr uint32_t LOW_TEMP_WARMUP_MAX_MS = 7200000UL;   // 120 phut
 constexpr uint32_t HIGH_TEMP_CONFIRM_MS = 1000UL;
-constexpr float HIGH_TEMP_CLEAR_HYSTERESIS_C = 0.0f;
-constexpr uint32_t HIGH_TEMP_CLEAR_CONFIRM_MS = 5000UL;
-constexpr float EMERGENCY_CLEAR_HYSTERESIS_C = 0.0f;
-constexpr uint32_t EMERGENCY_CLEAR_CONFIRM_MS = 5000UL;
+constexpr float HIGH_TEMP_CLEAR_HYSTERESIS_C = 0.2f;
+constexpr uint32_t HIGH_TEMP_CLEAR_CONFIRM_MS = 10000UL;
+constexpr float EMERGENCY_CLEAR_HYSTERESIS_C = 0.3f;
+constexpr uint32_t EMERGENCY_CLEAR_CONFIRM_MS = 30000UL;
 // Tam tat coi khan cap khi ACK. Truoc la 5 phut - qua dai cho muc "khan cap"
 // neu khong co ai o gan may luc do; rut xuong 1 phut, coi se tu keu lai neu
 // dieu kien qua nhiet khan cap van con (khong lien quan viec cat nhiet - cat
