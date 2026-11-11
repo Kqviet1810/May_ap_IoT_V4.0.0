@@ -466,11 +466,11 @@ static void reference(const char *name, const Stats &st) {
 }
 
 // Pins of the cold-room block: measured on the fixed sample of 35 ovens, plus a margin (set from the first run, see the numbers printed by the test).
-static const size_t COLD_CAPABLE_MIN = 21;                           // of the 35 (the others have a heater that cannot take the oven to SP at 10 degC)
+static const size_t COLD_CAPABLE_MIN = 26;                           // of the 35 (the others have a heater that cannot take the oven to SP at 10 degC)
 static const int COLD_CLIMB_TRIPS_MAX = 0;                           // E115 of 3.0.1 (two hours at the ceiling and a fall) stops no oven on a first climb from 20 degC at 10 degC (3.0.0: 4 of 35, the 900 s of on-time without a 0.3 degC rise)
 static const double COLD_DOOR3_OVER = 1.10, COLD_DOOR5_OVER = 1.10, COLD_TRAY_OVER = 0.50, COLD_RESTART_OVER = 0.45, COLD_BAND = 0.40, COLD_PP = 0.30, COLD_UNUSED = 0.0;
 static const int NEWBATCH_TRIPS_MAX[4] = {0, 0, 0, 0};   // measured 0/0/0/0 of 21 ovens (3.0.0: 1/1/0/0: the weakest oven on a 10 degC day needed more than 900 s of on-time for a 0.3 degC rise)
-static const double NEWBATCH_OVER_MAX[4] = {0.85, 0.95, 0.50, 0.50};
+static const double NEWBATCH_OVER_MAX[4] = {0.75, 0.55, 0.35, 0.80};   // measured 0.66 / 0.48 / 0.29 / 0.75 of 26 ovens (3.0.0: 0.67 / 0.81 / 0.48 / 0.43 of the 21 that could settle; the other five now settle too)
 
 static void testFamily(bool everything) {
   strictLimits = !everything;
@@ -493,8 +493,10 @@ static void testFamily(bool everything) {
     const Stats old = before.firstClimbEmpty();
     st.print("first climb, empty oven");
     reference("first climb, empty oven", old);
-    expectHealthy(st, "first climb, empty oven", {0.5, 0.30, 0.4, 0.0, false});
-    CHECK(st.maxReachS <= old.maxReachS + 60.0, "empty oven: reached SP only after %.0f s (2.3.4: %.0f s)", st.maxReachS, old.maxReachS);
+    expectHealthy(st, "first climb, empty oven", {0.20, 0.30, 0.4, 0.0, false});   // 3.0.1: over <= 0.11 (3.0.0: 0.26) with the landing band limited to 3 kn
+    // The price of that landing: the slowest empty oven reaches SP 587 s later than at 3.0.0 (2386 -> 2973 s), 10 minutes after the 2.3.4 pair; in exchange the overshoot of the
+    // first climbs of the family falls to a third (over <= 0.3: 82 -> 95 % of the ovens) and a first climb in the cold no longer swings (2.41 -> 0.83 degC peak to peak).
+    CHECK(st.maxReachS <= old.maxReachS + 600.0, "empty oven: reached SP only after %.0f s (2.3.4: %.0f s)", st.maxReachS, old.maxReachS);
   }
 
   // The same climb after the controller has been idle (permit off) for a while: on the machine the controller runs from power-up and every
@@ -660,6 +662,7 @@ static void testFamily(bool everything) {
     climbCold.print("cold room 10 degC: first climb from 20");
     std::printf("  cold room 10 degC: %zu of %zu ovens can hold SP\n", idx.size(), coldAll.size());
     CHECK(climbCold.trips <= COLD_CLIMB_TRIPS_MAX, "cold room: E115 stopped %d ovens on the first climb (pin %d)", climbCold.trips, COLD_CLIMB_TRIPS_MAX);
+    CHECK(climbCold.maxOver <= 0.70 && climbCold.maxPp <= 1.0, "cold room: first climb over %.2f, swing %.2f degC (pins 0.70 / 1.0; 3.0.0: 2.56 / 2.41)", climbCold.maxOver, climbCold.maxPp);
     CHECK(idx.size() >= COLD_CAPABLE_MIN, "cold room: only %zu of %zu ovens can hold SP at 10 degC (pin %zu)", idx.size(), coldAll.size(), static_cast<size_t>(COLD_CAPABLE_MIN));
     auto scenario = [&](const char *name, const Limits &l, bool door, double minutes, double tray, bool restart) {
       Stats st;

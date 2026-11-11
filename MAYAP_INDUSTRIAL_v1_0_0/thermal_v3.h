@@ -15,7 +15,7 @@
 // the measurement that fixed each.
 //
 //   power  u = hold + f(el),  el = (SV - PV) - inflight,  inflight = kAir * sum over the last tau seconds of (u - hold)
-//   f: full power while el >= far (a door, cold eggs, a start), linear landing down to kn * near at el = near, kn * el below, 3 kn * el above SV.
+//   f: full power while el >= far (a door, cold eggs, a start), linear landing down to kn * near at el = near (the band is widened where its gain would pass 3 kn), kn * el below, 3 kn * el above SV.
 //   hold has ONE writer (observe): a disturbance observer on the measured PV (see there).
 //   kAir is measured at every saturated climb, tau by the stopwatch of a clean start.
 //   The exhaust fan: the controller is told only that it runs, and holds the load estimate meanwhile. The vent line (vent_line.h) alone decides when the fan
@@ -51,6 +51,7 @@ constexpr float ZERO_ZONE_HOLD_PCT = 3.0f, ZERO_ZONE_RELEASE_HOLD_PCT = 4.5f, ZE
 // with the gain measured on the oven; direction reversals 1.7 -> 0 per hour; offset unchanged). A SHIFTED dead band (error - 0.03) was tried and dropped: +0.02 overshoot on the
 // first climb and 127 s slower set-point step on the closed-loop family; the zone without a shift costs neither.
 constexpr float PROP_DEADBAND_C = 0.03f;
+constexpr float GAIN_MAX_OF_KN = 3.0f;      // the largest gain of the power law: above SV, and across the landing band (see step)
 // The stall lift (stallLift): the shortfall of the measured rise is paid into the hold with an integral time of one transit time (LIFT_TI_OF_TAU). Only the measured rise counts: PV must
 // close the gap in LIFT_CLOSE_TAU transit times, and what is missing of that slope is paid in. The first minutes of a start that has not reached SV (cold eggs, a heavy load that nobody
 // has measured) use a faster law (LIFT_FAST_*); once PV has been at SV, or after LIFT_START_S, a stall is more likely a door, a tray or the fan, and the slow law applies.
@@ -172,12 +173,16 @@ class Controller {
     elLast_ = el;
     const float span = std::max(1.0f, cap_ - hold_);
     float d;
-    if (el >= farBand_) d = span;
-    else if (el >= nearBand_) d = kn_ * nearBand_ + (span - kn_ * nearBand_) * (el - nearBand_) / std::max(1.0e-6f, farBand_ - nearBand_);
+    // The landing band is as wide as the gain across it allows: at most GAIN_MAX_OF_KN x kn, the gain the law already has above SV. With farBand alone the slope across the band was
+    // 5-7 kn in the ovens with a high kAir; an integrator with a transit delay of 100-200 s cannot be closed at that gain, and a recovery that stays in the band (a tray of cold
+    // mass, a first climb in the cold) swung the power between 20 and 100 % every two minutes and wound the hold up. farBand itself (the gates of the observer, the lift, the door) is unchanged.
+    const float farEff = std::max(farBand_, nearBand_ + (span - kn_ * nearBand_) / (GAIN_MAX_OF_KN * kn_));
+    if (el >= farEff) d = span;
+    else if (el >= nearBand_) d = kn_ * nearBand_ + (span - kn_ * nearBand_) * (el - nearBand_) / std::max(1.0e-6f, farEff - nearBand_);
     else {
       const float elp = (el > -PROP_DEADBAND_C && el < PROP_DEADBAND_C) ? 0.0f : el;     // dead zone around SV (no shift: beyond it the law is unchanged)
       if (elp >= 0.0f) d = kn_ * elp;
-      else d = std::max(-hold_, 3.0f * kn_ * elp);                       // above SV: three times the gain
+      else d = std::max(-hold_, GAIN_MAX_OF_KN * kn_ * elp);             // above SV: three times the gain
     }
     float cmd = hold_ + d;
     if (!in.shadow) {                                                      // the zero zone (see ZERO_ZONE_HOLD_PCT)
