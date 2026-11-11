@@ -741,23 +741,26 @@ static void testFanProfile() {
   std::printf("\n[F] The exhaust fan on a day profile, at every season (learned, nothing fixed)\n");
   const double PERIOD = 2400.0, ON = 432.0;
   struct Day { double tamb; double dipMax, overMax; };
-  const Day days[] = {{4.0, 0.25, 0.20}, {14.0, 0.20, 0.15}, {24.0, 0.20, 0.15}, {34.0, 0.15, 0.15}};   // measured on the sixteenth run; the 2.9.11 controller: 0.73 / 0.61 / 0.36 / 0.11 under SV
+  const Day days[] = {{4.0, 0.12, 0.12}, {14.0, 0.08, 0.08}, {24.0, 0.10, 0.10}, {34.0, 0.08, 0.08}};   // measured on the sixteenth run: 0.08/0.08, 0.02/0.04, 0.06/0.06, 0.00/0.03 (3.0.0: 0.25/0.20, 0.20/0.15, 0.20/0.15, 0.15/0.15; the 2.9.11 controller: 0.73 / 0.61 / 0.36 / 0.11 under SV)
   for (const Day &d : days) {
     thermalsim::PlantParams p = thermalsim::u29Oven(); p.Tamb = d.tamb;
     Rig r(p, 25.0, 25.0); r.advance(5 * 3600.0);
     const double base = r.now();
     double dipLast = 0.0, overLast = 0.0;
     for (int c = 0; c < 16; ++c) {
-      double mn = 99.0, mx = -99.0;
+      double mn = 99.0, mx = -99.0, holdAtStart = 0.0, holdMoved = 0.0;
       for (int s = 0; s < static_cast<int>(PERIOD); ++s) {
         const double ph = std::fmod(r.now() - base, PERIOD);
         const bool vent = ph < ON;
         r.in.fanOnInS = vent ? 0.0f : static_cast<float>(PERIOD - ph);
         r.in.fanOffInS = vent ? static_cast<float>(ON - ph) : static_cast<float>(NAN);
+        if (s == 0) holdAtStart = r.ctl.pHold();
         r.advance(1.0, false, vent);
         const double a = r.plant.air(); mn = std::min(mn, a); mx = std::max(mx, a);
+        if (ph < ON + 2.0 * r.ctl.tauTransit()) holdMoved = std::max(holdMoved, std::fabs(static_cast<double>(r.ctl.pHold()) - holdAtStart));   // the run and the two transit times after it
       }
       dipLast = thermalsim::SP_C - mn; overLast = mx - thermalsim::SP_C;
+      if (c == 15) CHECK(holdMoved <= 0.5, "room %.0f: the load estimate moved %.2f points inside the sixteenth fan run (it must stay where it was: the compensation's own transient is not a load)", d.tamb, holdMoved);
     }
     std::printf("  room %4.0f degC: sixteenth run: dip %.2f, rise %.2f degC (hold %.1f %%)\n", d.tamb, dipLast, overLast, static_cast<double>(r.ctl.pHold()));
     CHECK(!r.tripped(), "room %.0f: E115 must not trip on a healthy oven with the fan on its profile", d.tamb);
@@ -773,7 +776,7 @@ static void testRestartFan() {
   std::printf("\n[R] A restart in the middle of the fan profile: the compensation of the fan is restored with the hold\n");
   const double PERIOD = 2400.0, ON = 432.0;
   struct Day { double tamb, dipMax, overMax; };
-  const Day days[] = {{12.0, 0.25, 0.20}, {22.0, 0.25, 0.20}, {30.0, 0.20, 0.20}};
+  const Day days[] = {{12.0, 0.12, 0.10}, {22.0, 0.10, 0.10}, {30.0, 0.10, 0.10}};
   for (const Day &d : days) {
     double dip[2] = {0.0, 0.0}, over[2] = {0.0, 0.0};
     for (int restore = 0; restore < 2; ++restore) {
@@ -813,6 +816,59 @@ static void testRestartFan() {
   }
 }
 
+
+// A protection at SV + 0.1 (the owner's E111 margin) cuts the heater now and then. The compensation of the fan must not run away from it (3.0.0: a cut inside a run truncated the
+// compensation, the run looked like a dip, the learner raised it, the next run overshot): on the sixteenth run the air is again within a few hundredths and the cuts have stopped.
+static void testFanWithProtection() {
+  std::printf("\n[P] The fan compensation with the protection at SV + 0.1 degC\n");
+  const double PERIOD = 2400.0, ON = 432.0;
+  for (double tamb : {4.0, 14.0, 24.0}) {
+    thermalsim::PlantParams p = thermalsim::u29Oven(); p.Tamb = tamb;
+    Rig r(p, 25.0, 25.0); r.protectOverC = 0.1; r.advance(5 * 3600.0);
+    const double base = r.now(); int cutsAt11 = 0; double dipLast = 0.0, overLast = 0.0;
+    for (int c = 0; c < 16; ++c) {
+      double mn = 99.0, mx = -99.0;
+      for (int s = 0; s < static_cast<int>(PERIOD); ++s) {
+        const double ph = std::fmod(r.now() - base, PERIOD); const bool vent = ph < ON;
+        r.in.fanOnInS = vent ? 0.0f : static_cast<float>(PERIOD - ph);
+        r.in.fanOffInS = vent ? static_cast<float>(ON - ph) : static_cast<float>(NAN);
+        r.advance(1.0, false, vent);
+        mn = std::min(mn, static_cast<double>(r.plant.air())); mx = std::max(mx, static_cast<double>(r.plant.air()));
+      }
+      if (c == 11) cutsAt11 = r.protectionCuts();
+      dipLast = thermalsim::SP_C - mn; overLast = mx - thermalsim::SP_C;
+    }
+    const int cutsLate = r.protectionCuts() - cutsAt11;
+    std::printf("  room %4.0f degC: %d cuts in 16 runs, %d of them in the last four; sixteenth run: dip %.2f, rise %.2f degC (compensation %.1f %%)\n", tamb, r.protectionCuts(), cutsLate, dipLast, overLast, static_cast<double>(r.ctl.fanComp()));
+    CHECK(!r.tripped(), "room %.0f: E115 must not trip", tamb);
+    CHECK(cutsLate <= 2, "room %.0f: %d protection cuts in the last four runs (limit 2)", tamb, cutsLate);
+    CHECK(dipLast <= 0.15 && overLast <= 0.15, "room %.0f: sixteenth run dip %.2f rise %.2f (limit 0.15)", tamb, dipLast, overLast);
+    CHECK(r.ctl.fanComp() < 0.4f * 100.0f - 1.0f, "room %.0f: the compensation sits at its ceiling (%.1f %%)", tamb, static_cast<double>(r.ctl.fanComp()));
+  }
+}
+
+// After a door and a tray of cold mass the climb back is loaded with that mass; its slope says how much the load takes, not what the heater gives. kAir (and with it every threshold) must
+// stay where the cold start measured it (log of 10/11: 22e-5 -> 3e-5 -> 80e-5 on one oven in two hours), and so must the transit time.
+static void testTrayKeepsTheOvenNumbers() {
+  std::printf("\n[T] A tray of cold mass after a door: the numbers of the oven stay\n");
+  auto fleet = thermalsim::family(4343u, 6, true); fleet.push_back(thermalsim::u29Oven());
+  double kLo = 1e9, kHi = 0.0, tLo = 1e9, tHi = 0.0;
+  for (thermalsim::PlantParams p : fleet) {
+    p.Tamb = 20.0;
+    Rig r(p, 25.0, 25.0); r.advance(5 * 3600.0);
+    const double k0 = r.ctl.kAir(), t0 = r.ctl.tauTransit();
+    r.advance(180.0, true, false); r.plant.insertColdMass(1.0, 12.0);
+    for (int s = 0; s < 3 * 3600; ++s) {
+      r.advance(1.0);
+      kLo = std::min(kLo, r.ctl.kAir() / k0); kHi = std::max(kHi, r.ctl.kAir() / k0);
+      tLo = std::min(tLo, r.ctl.tauTransit() / t0); tHi = std::max(tHi, r.ctl.tauTransit() / t0);
+    }
+  }
+  std::printf("  kAir after / before: %.2f .. %.2f   transit time after / before: %.2f .. %.2f   (%zu ovens)\n", kLo, kHi, tLo, tHi, fleet.size());
+  CHECK(kLo >= 0.9 && kHi <= 1.1, "kAir moved to %.2f .. %.2f of its value after a tray (limit 0.9 .. 1.1)", kLo, kHi);
+  CHECK(tLo >= 0.9 && tHi <= 1.1, "the transit time moved to %.2f .. %.2f of its value after a tray (limit 0.9 .. 1.1)", tLo, tHi);
+}
+
 int main() {
   std::printf("=== Thermal closed-loop tests ===\n");
   test29();
@@ -820,6 +876,8 @@ int main() {
   testFamily(std::getenv("THERMAL_FULL_FAMILY") != nullptr);
   testFanProfile();
   testRestartFan();
+  testFanWithProtection();
+  testTrayKeepsTheOvenNumbers();
   if (failures) {
     std::printf("THERMAL CLOSED-LOOP: %d FAILED\n", failures);
     return 1;
