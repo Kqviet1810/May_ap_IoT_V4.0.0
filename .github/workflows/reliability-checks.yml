@@ -176,6 +176,11 @@ jobs:
           g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-stall-log.cpp -o /tmp/mayap-thermal-stall-log
           /tmp/mayap-thermal-stall-log
 
+      - name: "Real night of 10/11 replayed into the controller: a door and a tray of cold mass must not move kAir or the transit time (3.0.0 read kAir 3..80e-5)"
+        run: |
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/thermal-replay-tray.cpp -o /tmp/mayap-thermal-replay-tray
+          /tmp/mayap-thermal-replay-tray
+
       - name: "Fine temperature from a 0.1 degC sensor (sensor_fine.h): sliding least-squares value and slope, follows a fall, restarts after a gap, bounded on hostile input"
         run: |
           g++ -std=c++11 -Wall -Wextra -Werror tests/sensor-fine.cpp -o /tmp/mayap-sensor-fine
