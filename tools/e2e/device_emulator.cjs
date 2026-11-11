@@ -30,7 +30,7 @@ const CONFIG_DEFAULTS = {
 
 const COMMANDS = new Set(['batch_start', 'batch_stop', 'resume_yes', 'resume_no',
   'firmware_check_now', 'firmware_rollback', 'light_toggle', 'alarm_ack',
-  'batch_overdue_continue', 'vent_toggle', 'circ_toggle', 'heater_toggle', 'siren_toggle', 'turn_hold']);
+  'batch_overdue_continue', 'vent_toggle', 'circ_toggle', 'heater_toggle', 'siren_toggle', 'turn_hold', 'batch_set_day']);
 
 // transaction_bridge.h ackCode()/ackFriendlyMessage() for the codes this emulator emits.
 function ackCode(result, message) {

@@ -48,8 +48,8 @@ tr:target td:first-child strong{color:#8a5a00}
 @media screen { body { background:#e9efef; } .sheet { box-shadow:0 4px 18px rgba(0,0,0,.12); min-height:210mm; } }
 </style></head><body><div class="toolbar"><a class="tb" href="../">&larr; Quay lại MAYAP</a><a class="tb" href="#danh-sach-ma-loi">Danh sách mã lỗi</a><a class="tb" href="./MAYAP_Huong_dan_van_hanh_A5_v1.3_E503.pdf">Mở PDF</a><button onclick="window.print()">In / Lưu PDF</button></div><main class="sheet"><h1>MÁY ẤP TRỨNG MAYAP - HƯỚNG DẪN VẬN HÀNH VÀ MÃ LỖI</h1>
 <p><strong>Phiên bản tài liệu:</strong> v1.4 (tên file giữ nguyên để các liên kết cũ vẫn mở được)<br />
-<strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - bản <strong>2.9.0</strong> (Web 1.1.29)<br />
-<strong>Ngày cập nhật:</strong> 03/11/2026<br />
+<strong>Firmware đối chiếu:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0</code> - bản <strong>3.1.0</strong> (Web 1.1.36)<br />
+<strong>Ngày cập nhật:</strong> 07/11/2026<br />
 <strong>Nguồn chuẩn mã lỗi:</strong> <code>MAYAP_INDUSTRIAL_v1_0_0/machine_control.h</code></p>
 <blockquote>
 <p>Tài liệu này thay thế danh sách mã lỗi cũ chỉ cập nhật tới E502. Firmware hiện tại có <strong>41 mã lỗi thực</strong>, không tính <code>None = 0</code>.</p>
@@ -159,14 +159,14 @@ tr:target td:first-child strong{color:#8a5a00}
 <td><strong>E111</strong></td>
 <td><code>HighTemperature</code></td>
 <td>STOP</td>
-<td>Nhiệt độ cao. Cấm SSR, cắt contactor nhiệt, dừng đảo và bật thông gió/tuần hoàn bảo vệ ngay khi chạm ngưỡng. <strong>Còi chỉ kêu nếu sau 3 phút quạt hút chạy mà nhiệt vẫn không xuống dưới ngưỡng</strong> (hoặc vượt ngưỡng từ 0,5 °C trở lên thì kêu ngay); nhiệt xuống dưới ngưỡng là còi tắt.</td>
+<td>Nhiệt độ cao. Báo khi <strong>trung bình 5 giây</strong> của nhiệt độ chạm ngưỡng (một mẫu đo thô chạm ngưỡng không đủ để báo). Cấm SSR, cắt contactor nhiệt, dừng đảo và bật thông gió/tuần hoàn bảo vệ. <strong>Còi kêu ngay khi báo và tắt ngay khi hết báo</strong> (nhiệt đã lọc dưới ngưỡng liên tục 5 giây); kêu liên tục 5 phút, sau đó 5 giây kêu / 25 giây nghỉ.</td>
 <td>Kiểm tra SSR dính, contactor, cảm biến, luồng khí; xác nhận nhiệt giảm an toàn trước khi chạy lại.</td>
 </tr>
 <tr id="E112">
 <td><strong>E112</strong></td>
 <td><code>EmergencyTemperature</code></td>
 <td>EMERGENCY</td>
-<td>Quá nhiệt khẩn cấp. Cắt gia nhiệt ngay, dừng đảo, bật quạt bảo vệ. Còi theo cùng quy tắc với E111: chờ 3 phút nếu nhiệt chưa xuống dưới ngưỡng khẩn cấp, kêu ngay khi vượt ngưỡng từ 0,5 °C, tắt khi nhiệt xuống dưới ngưỡng.</td>
+<td>Quá nhiệt khẩn cấp. Cắt gia nhiệt ngay, dừng đảo, bật quạt bảo vệ. Báo ngay khi một mẫu chạm ngưỡng khẩn cấp. Còi theo cùng quy tắc với E111: kêu ngay, tắt ngay khi hết báo.</td>
 <td>Cắt nguồn gia nhiệt nếu cần, kiểm tra SSR/contactor và nhiệt độ thực tế. Không reset liên tục khi nhiệt còn cao.</td>
 </tr>
 <tr id="E113">
@@ -194,7 +194,7 @@ tr:target td:first-child strong{color:#8a5a00}
 <td><strong>E115</strong></td>
 <td><code>HeaterNotHeating</code></td>
 <td>STOP</td>
-<td>Có yêu cầu gia nhiệt nhưng nhiệt không tăng đủ. Lỗi có tính giữ; cắt SSR/contactor và bật hỗ trợ bảo vệ.</td>
+<td>Máy đã yêu cầu thanh nhiệt từ 85 % trần công suất trở lên suốt 2 giờ mà nhiệt độ vẫn tụt từ 1 °C trở lên so với đỉnh của 2 giờ đó. Thanh nhiệt còn làm việc thì nhiệt không bao giờ tụt khi công suất ở trần, dù tải nặng (trứng lạnh, khay, trời lạnh). Lỗi có tính giữ; cắt SSR/contactor và bật hỗ trợ bảo vệ.</td>
 <td>Kiểm tra heater, SSR, contactor, CB/cầu chì, dây công suất và nguồn AC.</td>
 </tr>
 </tbody>
@@ -502,7 +502,7 @@ tr:target td:first-child strong{color:#8a5a00}
 <li><strong>E112 - EmergencyTemperature:</strong> ưu tiên cao nhất; cắt gia nhiệt ngay.</li>
 <li><strong>E111 - HighTemperature:</strong> cắt SSR + contactor và tăng thông gió/tuần hoàn.</li>
 <li><strong>E101/E102/E103/E104:</strong> khi không thể tin cậy cảm biến, hệ thống không được phép tiếp tục gia nhiệt.</li>
-<li><strong>E115:</strong> có yêu cầu nhiệt nhưng buồng không tăng nhiệt; kiểm tra đường công suất trước khi reset.</li>
+<li><strong>E115:</strong> máy yêu cầu gần hết công suất suốt 2 giờ mà nhiệt vẫn tụt; kiểm tra đường công suất trước khi reset.</li>
 <li>Không dùng ACK để ép máy chạy khi nguyên nhân vật lý chưa được xử lý.</li>
 </ol>
 <hr />
@@ -559,7 +559,7 @@ tr:target td:first-child strong{color:#8a5a00}
 </ol>
 <hr />
 <h1>9. Chỉnh thông số khi đang ấp</h1>
-<p>Từ 2.9.0 các thông số sau chỉnh và lưu được cả khi đang có mẻ (trên máy và trên Web): nhiệt độ đặt, ba ngưỡng cảnh báo nhiệt (thấp, cao, khẩn cấp; máy giữ đúng thứ tự thấp &lt; đặt &lt; cao &lt; khẩn cấp), công tắc cảnh báo ngoài mẻ, cảnh báo ẩm thấp, tổng số ngày ấp, tự áp lại sau mất điện, ngưỡng quạt hút, chu kỳ đảo. Hiệu chuẩn (offset), PID, bảo vệ, thời gian chờ cảm biến và chuyển Offline→Online vẫn bị khóa khi đang ấp.</p>
+<p>Từ 2.9.0 các thông số sau chỉnh và lưu được cả khi đang có mẻ (trên máy và trên Web): nhiệt độ đặt, ba ngưỡng cảnh báo nhiệt (thấp, cao, khẩn cấp; máy giữ đúng thứ tự thấp &lt; đặt &lt; cao &lt; khẩn cấp), công tắc cảnh báo ngoài mẻ, cảnh báo ẩm thấp, tổng số ngày ấp, tự áp lại sau mất điện, ngưỡng quạt hút, chu kỳ đảo. PID, bảo vệ, thời gian chờ cảm biến và chuyển Offline→Online vẫn bị khóa khi đang ấp. Từ 2.9.7 thêm hai mục hiệu chuẩn: <strong>Bù nhiệt độ</strong> và <strong>Bù độ ẩm</strong> (Nâng cao, cần mã kỹ thuật). Trên Web hai mục này nằm trong thẻ Nâng cao, vẫn phải bấm CÓ trên máy trong 60 giây; mỗi lần chỉ đổi tối đa 0,5 °C và 5 %RH để cảm biến không bị đọc như một bước nhảy. Các mục Nâng cao khác (công suất, bảo vệ nhiệt) vẫn bị khóa khi đang ấp.</p>
 <hr />
 <h1>10. Quay lại phần mềm cũ</h1>
 <ul>
@@ -567,4 +567,62 @@ tr:target td:first-child strong{color:#8a5a00}
 <li>Trên Web: chỉ khi máy đang bật <strong>Chế độ nhà phát triển</strong>, nút <em>Quay lại phần mềm trước đó</em> trong Cài đặt gửi lệnh sau khi bạn xác nhận. Cả hai cách yêu cầu đã dừng mẻ, công tắc nhiệt tắt và còn bản cũ trong máy (chỉ lùi được một bậc).</li>
 </ul>
 <hr />
-<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 2.9.0</strong></p></main></body></html>
+<h1>11. Hệ số heater của lò (Nâng cao)</h1>
+<p>Từ 2.9.7 máy nhớ <strong>hệ số heater</strong> (độ nóng lên của lò trên mỗi 1% công suất) và thời gian trễ mà nó đo được ở lần lên nhiệt hết ga gần nhất. Hai số này được lưu trong bộ nhớ EEPROM ngoài (hai bản có kiểm tra CRC, mất điện giữa lúc ghi vẫn còn một bản đọc được), và được nạp lại sau mỗi lần khởi động. Nhờ đó khi khởi động lại gần nhiệt độ đặt rồi mở cửa, lò lên lại nhanh và không dao động như khi máy phải đoán số này.</p>
+<ul>
+<li>Máy chưa từng có lần lên nhiệt nguội nào (mới nạp phần mềm, hoặc vừa xóa học nhiệt) dùng số mặc định cho đến lần lên nhiệt nguội đầu tiên.</li>
+<li>Ghi tối đa một lần trong 10 phút và chỉ khi số đo đổi hơn 3%: vài lần mỗi ngày là cùng, trên chip chịu một triệu lần ghi.</li>
+<li><strong>Nhập tay:</strong> Cài đặt chung → Hệ thống → Nâng cao (cần mã kỹ thuật) → <em>Gia nhiet</em> → <em>He so heater</em>. Mặc định <em>TU DONG</em>; hoặc chọn một trong 7 mức 0,6 / 0,8 / 1,0 / 1,4 / 2,0 / 3,0 / 5,0 (×10<sup>-4</sup> °C/giây cho mỗi 1% công suất). Lò chậm, nhiều xe đầy trứng: mức thấp (lò của chủ máy đo được khoảng 1,0); lò nhỏ, nhanh: mức cao.</li>
+<li>Giá trị nhập tay là giá trị bắt đầu: lần lên nhiệt hết ga kế tiếp đo lại và thay thế nó. Chọn lại <em>TU DONG</em> thì máy dùng lại số đã nhớ.</li>
+<li><em>Xoa du lieu hoc nhiet</em> (Nâng cao) xóa cả số đã nhớ trong EEPROM; mức nhập tay là một cài đặt nên được giữ.</li>
+</ul>
+<hr />
+<h1>12. Ngày ấp của mẻ (đồng bộ máy - HMI - Web)</h1>
+<p>Từ 2.9.8 số ngày ấp là số <strong>máy thật sự đếm</strong> và lưu vào bộ nhớ máy (giữ qua mất điện), không còn là ghi chú trên Web. HMI, Web và các việc theo ngày (đảo trứng, cảnh báo quá hạn, tự dừng mẻ quá hạn) đều dùng cùng số đó.</p>
+<ul>
+<li><strong>Bắt đầu mẻ từ ngày N</strong> (ví dụ ngày 2 đã ấp, ngày 5 lỡ kết thúc mẻ và phải bắt đầu lại): trên Web đặt ô <em>Ngày ấp hiện tại</em> = N (hoặc chọn <em>Ngày bắt đầu</em> là ngày thật bắt đầu, ô kia tự đổi theo), bấm <em>Lưu</em> rồi <em>Bắt đầu</em>. Trên máy: Trang chủ → trang <em>Cài đặt mẻ</em> → chọn ô thứ 5 <em>Bắt đầu từ ngày</em>, xoay chọn N, nhấn lưu, rồi bắt đầu mẻ như mọi lần (hộp xác nhận ghi “Từ ngày N/tổng”). Lần bắt đầu sau lại tính từ ngày 1.</li>
+<li><strong>Đổi ngày khi mẻ đang chạy</strong>: ô <em>Ngày ấp hiện tại</em> trên Web (có hộp xác nhận) hoặc ô thứ 5 <em>Ngày ấp hiện tại</em> trên máy. Máy đổi số ngày đã đếm và giữ nguyên giờ trong ngày, nên lịch đảo và bộ đếm trong ngày không bị nhảy; ghi vào bộ nhớ ngay.</li>
+<li>Ngày phải từ 1 đến <em>Tổng số ngày ấp</em>; vượt thì máy từ chối (“NGAY AP &gt; SO NGAY”). Đang chờ tiếp tục mẻ sau mất điện thì chưa đổi ngày được; hãy xác nhận tiếp tục mẻ trước.</li>
+<li>Trên Web, <em>Ngày bắt đầu</em> chỉ là cách hiển thị khác của ngày ấp (hôm nay trừ số ngày đã ấp), tính theo giờ Việt Nam; khi mẻ đang chạy nó luôn theo số ngày của máy.</li>
+</ul>
+<hr />
+<h1>13. Trưa nóng: cắt về 0, nhớ mức giữ nhiệt, còi báo cao (2.9.9)</h1>
+<ul>
+<li><strong>Cắt về 0 khi lò tự đủ nhiệt:</strong> khi mức giữ nhiệt máy ước lượng dưới 3 % (trưa nắng, trứng tự sinh nhiệt) và nhiệt độ vượt SV 0,05 °C, thanh nhiệt tắt hẳn cho tới khi nhiệt độ xuống dưới SV 0,02 °C. 1–3 % công suất không làm đổi nhiệt độ mà chỉ giữ nhiệt độ ở phía trên SV.</li>
+<li><strong>Quạt hút không làm mức giữ nhiệt tăng:</strong> khi quạt hút chạy, mức giữ nhiệt chỉ được giảm, không tăng (trước đây máy đứng yên và giữ 5 % suốt đợt quạt).</li>
+<li><strong>Vùng chết 0,03 °C quanh SV:</strong> sai lệch dưới 0,03 °C không làm công suất nhấp nhả.</li>
+<li><strong>Nhớ mức giữ nhiệt qua khởi động lại:</strong> khi lò đã ổn định, máy lưu mức giữ nhiệt vào EEPROM (hai ô luân phiên, có CRC). Sau cập nhật phần mềm hay mất điện ngắn (dưới 30 phút, nhiệt độ và SV gần như cũ, cùng một mẻ) máy bật lại đúng mức đã nhớ (90 %) thay vì mức mặc định 12 %. Quá lâu, khác mẻ, hay nhiệt độ lệch thì bỏ qua. <em>Xoa du lieu hoc nhiet</em> xóa cả mức này.</li>
+<li><strong>Còi báo cao (đã thay bằng quy tắc ở mục 15):</strong> nhiệt độ chạm rồi hạ rồi chạm lại quanh ngưỡng không còn làm còi bật tắt liên tục: còi kêu khi tổng thời gian vượt ngưỡng đủ 60 giây (vượt từ 0,1 °C thì kêu ngay) và chỉ tắt khi đã yên 30 giây. Việc cắt thanh nhiệt và contactor khi quá nhiệt không đổi.</li>
+<li><strong>Tắt tiếng (ACK) khi thanh nhiệt đã về 0 (đã bỏ ở 2.9.11, mục 15):</strong> máy không thể hạ nhiệt thêm nên còi không kêu lại sau 2 phút; còi chỉ kêu lại nếu nhiệt độ tăng thêm 0,2 °C hoặc sau 10 phút.</li>
+</ul>
+<hr />
+<h1>14. Khởi động chậm và mẻ mới (2.9.10)</h1>
+<ul>
+<li><strong>Bộ nâng khi nhiệt đứng yên dưới SV:</strong> khi nhiệt độ cách SV hơn 0,5 °C mà không tăng đủ nhanh (trứng lạnh, thanh nhiệt yếu), máy tăng mức giữ nhiệt theo tốc độ tăng đo được, không đợi bộ quan sát tự trườn lên. Trong 30 phút đầu của lần khởi động chưa tới gần SV, bộ nâng chờ 1 lần thời gian trễ rồi mới cộng; sau đó chờ 2 lần. Khi nhiệt độ vượt SV 0,03 °C, phần đã cộng được trả lại.</li>
+<li><strong>Mẻ mới bắt đầu từ mức đã học:</strong> khi bắt đầu mẻ mới (hoặc khởi động lại sau khi dừng lâu), mức giữ nhiệt khởi điểm bằng 0,9 mức lần ổn định gần nhất, nếu cùng điểm đặt và bản lưu không quá 1 ngày, và không thấp hơn mức mặc định 12 %. Máy ghi dòng <code>[THERMAL] new batch starts at ...</code> trên cổng serial.</li>
+<li><strong>Log PID mới:</strong> các cột <code>lift_pct</code> (phần bộ nâng đã cộng), <code>kair_src</code> (độ mạnh thanh nhiệt lấy từ đâu: 0 mặc định, 1 khôi phục hoặc nhập tay, 2 đo được), <code>lift_on</code> (bộ nâng đang cộng) và <code>stall_s</code> (số giây nhiệt độ đã tăng thiếu, bước 15 giây) thay cho các cột cũ <code>integral_pct</code>, <code>learn_src</code>, <code>learn_saved</code>, <code>stable_min</code> (luôn bằng 0 từ bản 2.5.5).</li>
+<li><strong>Không đổi:</strong> các ngưỡng bảo vệ, cảnh báo thanh nhiệt không nóng (E115), còi, đảo trứng. Kết quả trên lò mô phỏng: khởi động chậm của thanh nhiệt yếu nhanh hơn 10–40 % ở lò thiếu hơn 0,5 °C; ca thiếu chỉ 0,3–0,5 °C vẫn như bản 2.9.9.</li>
+</ul>
+<hr />
+<h1>15. Còi quá nhiệt và quạt hút theo điểm đặt (2.9.11)</h1>
+<ul>
+<li><strong>Còi quá nhiệt, một quy tắc duy nhất:</strong> tính theo nhiệt độ đã lọc trừ điểm đặt (SV). Vượt SV từ 0,2 °C liên tục 60 giây thì còi kêu; vượt từ 0,3 °C thì kêu ngay. Còi kêu liên tục (không ngắt quãng), chỉ tắt khi nhiệt độ không quá SV + 0,1 °C trong 60 giây liên tục. Vượt lại thì kêu lại theo cùng quy tắc.</li>
+<li><strong>Không còn nút tắt tiếng (ACK) cho còi này</strong> và không còn quyền còi riêng cho mức khẩn cấp: còi chỉ tắt khi điều kiện vượt đã hết. Một mẫu cảm biến lỗi không làm còi đang kêu im đi; chế độ thử đầu ra không cắt còi thật.</li>
+<li><strong>Quạt hút theo nhiệt độ:</strong> quạt nhìn nhiệt độ đã lọc (không còn dùng giá trị cao hơn giữa nhiệt thô và nhiệt lọc, vốn cao hơn thật khoảng 0,1 °C), chỉ bắt đầu khi nhiệt độ vượt SV ít nhất 0,2 °C, và tắt muộn nhất khi nhiệt độ về SV. Nhiệt độ đứng đúng điểm đặt không còn làm quạt bật (log thực tế 09/11: 3 lần bật trong 40 phút, nay 0 lần).</li>
+<li><strong>Web:</strong> bỏ ô "Ngày ấp hiện tại" (ngày ấp tính từ "Ngày bắt đầu", huy hiệu NGÀY n giữ nguyên); bỏ khung phát lại của PID Monitor.</li>
+<li><strong>Không đổi:</strong> các bảo vệ E111/E112 (cắt thanh nhiệt, nhả contactor, quạt khẩn), E115, đảo trứng.</li>
+</ul>
+<hr />
+<h1>16. Bản 3.1.0: bộ điều khiển nhiệt gọn lại</h1>
+<ul>
+<li><strong>Bỏ hẳn việc lưu:</strong> máy không còn lưu độ mạnh thanh nhiệt, thời gian trễ hay mức giữ qua lần khởi động lại (các bản 2.9.7–3.0.x có lưu và nạp lại mà không kiểm tra). Sau khi khởi động lại, bộ điều khiển bắt đầu từ giá trị khởi điểm và tự học. Phần nói về mức giữ nhiệt "khởi điểm từ lần ổn định trước" và về bộ nâng ở mục 14 không còn áp dụng.</li>
+<li><strong>Một bộ đánh giá tiến bộ duy nhất:</strong> cứ mỗi khoảng 5 phút máy so sai số đo được với SV. Nếu sai số không giảm đủ (20 %) thì tốc độ học của bộ quan sát mức giữ tăng gấp đôi (tối đa 4 lần), sau 1 khoảng nếu cách SV hơn 1 °C, sau 2 khoảng nếu gần hơn (trên 0,3 °C). Về lại bình thường khi lò tiến tới SV. Không làm gì khi mở cửa. Quạt hút coi là nhiễu, máy không được báo về quạt.</li>
+<li><strong>Bảo vệ đọc nhiệt độ đã bù offset:</strong> ngưỡng báo cao, khẩn cấp và chặn thanh nhiệt tính theo đúng nhiệt độ hiển thị (nhiệt thô cộng Bù nhiệt độ). Trước đây offset âm bị bỏ qua nên báo cao kêu sớm hơn mức cài.</li>
+<li><strong>E115 chỉ còn một quy tắc:</strong> yêu cầu từ 85 % trần suốt 2 giờ và nhiệt tụt từ 1 °C. Hai mục "Mức tăng nhiệt tối thiểu" và "Thời gian xác nhận không tăng nhiệt" chỉ còn dùng cho cảnh báo cửa E116.</li>
+<li><strong>Chế độ nhà phát triển:</strong> mọi yêu cầu kỹ thuật từ Web (cả hiệu chuẩn cảm biến và bảo vệ) được áp dụng ngay, không hỏi lại ở máy. Ngoài chế độ này vẫn phải bấm CÓ trên HMI. Web có nút "Xóa dữ liệu học nhiệt" (đưa bộ điều khiển về khởi điểm, chỉ khi không có mẻ).</li>
+<li><strong>"Hệ số heater" nhập tay</strong> vẫn là giá trị khởi điểm của độ mạnh thanh nhiệt (mục NÂNG CAO &gt; GIA NHIỆT trên HMI); lần leo bão hòa kế tiếp sẽ đo lại giá trị thật.</li>
+<li><strong>Log PID:</strong> các cột đổi tên: <code>obs_gain</code> (hệ số học hiện tại của bộ quan sát, 1 = bình thường), <code>obs_boost</code> (đang tăng), <code>stalled_windows</code> (số khoảng liên tiếp lò không tiến). <code>kair_src</code>: 0 mặc định, 1 nhập tay, 2 đo được từ lần leo.</li>
+<li><strong>Chưa kiểm chứng trên máy thật:</strong> mọi số của bản này là từ mô phỏng. So với 2.9.11 trong mô phỏng: khởi động chậm với thanh nhiệt yếu chậm hơn (40 so với 28 phút ở ca 25 %, 29 so với 18–20 phút ở hai ca còn lại), quạt hút gây vọt lớn hơn (0,26 so với 0,06 °C), khởi động lại trong phòng lạnh có thể dao động vì không còn số lưu. Đổi lại không còn nơi nào nạp lại số hỏng.</li>
+</ul>
+<hr />
+<p><strong>Kết thúc tài liệu - v1.4 / 41 mã lỗi / firmware 3.1.0</strong></p></main></body></html>

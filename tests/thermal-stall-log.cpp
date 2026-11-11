@@ -31,7 +31,7 @@ int main() {
   float maxCmd = 0.0f;
   for (int k = 0; k + 1 < 170; ++k) for (int i = 0; i < 100; ++i) {
     const float a = static_cast<float>(i) / 100.0f;
-    in.pv = all[k].pv * (1.0f - a) + all[k + 1].pv * a; in.ventFan = all[k].fan != 0;
+    in.pv = all[k].pv * (1.0f - a) + all[k + 1].pv * a;
     const float u = c.step(in).powerPct;
     if (u > maxCmd) maxCmd = u;
   }

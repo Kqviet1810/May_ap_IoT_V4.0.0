@@ -1,8 +1,8 @@
 {
-  "release": "3.0.23",
-  "firmware": "3.0.23",
+  "release": "3.1.0",
+  "firmware": "3.1.0",
   "hmi": "1.0.0",
-  "web": "1.1.29",
+  "web": "1.1.36",
   "web_storage_schema": 10,
   "attiny_protocol": 4,
   "esp32_core": "3.3.11",

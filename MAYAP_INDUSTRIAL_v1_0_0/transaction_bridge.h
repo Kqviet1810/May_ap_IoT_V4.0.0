@@ -520,7 +520,7 @@ inline bool publishSnapshot(const MachineRuntime &rt, uint32_t revision) {
           JsonArray x = lg["x"].to<JsonArray>();
           for (uint8_t i = 0U; i < n; ++i) {
             x.add(chunk[i].safe100); x.add(chunk[i].hold2); x.add(chunk[i].kair); x.add(chunk[i].tau);
-            x.add(chunk[i].integ4); x.add(chunk[i].vent); x.add(chunk[i].ctl); x.add(chunk[i].learn);
+            x.add(chunk[i].lift2); x.add(chunk[i].vent); x.add(chunk[i].ctl); x.add(chunk[i].learn);
           }
         } else {
           lg["s"] = first;
@@ -756,6 +756,7 @@ inline HmiCommandType mapCommandAction(const char *action) {
   if (!action) return HmiCommandType::None;
   if (!strcmp(action, "batch_start")) return HmiCommandType::BatchStart;
   if (!strcmp(action, "batch_stop")) return HmiCommandType::BatchStop;
+  if (!strcmp(action, "batch_set_day")) return HmiCommandType::BatchSetDay;
   if (!strcmp(action, "resume_yes")) return HmiCommandType::ResumeYes;
   if (!strcmp(action, "resume_no")) return HmiCommandType::ResumeNo;
   // Technical access: the PIN is verified on the ESP32 (shared with the HMI); a request only PARKS values until the HMI answers Yes/No.
@@ -768,6 +769,8 @@ inline HmiCommandType mapCommandAction(const char *action) {
   if (!strcmp(action, "firmware_check_now")) return HmiCommandType::FirmwareWebCheckNow;
   // CD nha phat trien (Developer Mode) cho phep tai va ap dung OTA ngay lap tuc tu xa:
   if (!strcmp(action, "apply_firmware_now")) return HmiCommandType::FirmwareWebApply;
+  // Clear what the thermal controller started from again (and the old NVS blob): developer mode only, refused while a batch runs.
+  if (!strcmp(action, "thermal_learn_clear")) return HmiCommandType::ClearThermalLearn;
   // Quay lai firmware truoc do (xem ota_rollback.h) - KHAC voi cap nhat
   // (chi "kiem tra", phai xac nhan vat ly tren HMI), lenh nay ap dung
   // NGAY qua web vi ban chat la doi ve firmware DA TUNG chay on dinh
@@ -1009,7 +1012,7 @@ inline void handleCommandMessage(const JsonDocument &doc) {
 
   // Cap nhat va quay lai ban cu tu Web chi duoc phep khi may dang o Che do nha phat trien (Developer Mode); ngoai che do do quay lai
   // chi lam duoc tren HMI voi man hinh xac nhan CO/HUY. May van tu kiem tra (dung me/test, tat cong tac nhiet, con ban cu) truoc khi doi.
-  if (type == HmiCommandType::FirmwareWebApply || type == HmiCommandType::FirmwareRollback) {
+  if (type == HmiCommandType::FirmwareWebApply || type == HmiCommandType::FirmwareRollback || type == HmiCommandType::ClearThermalLearn) {
     bool devAllowed = false;
     portENTER_CRITICAL(&realtimeMux);
     devAllowed = knownRuntimeValid && knownRuntime.tech.devMode;
@@ -1052,6 +1055,14 @@ inline void handleCommandMessage(const JsonDocument &doc) {
       if (lease > 3000U) lease = 3000U;
       alarmMaskParam = dir | (lease << 8U);
     }
+  }
+  if (type == HmiCommandType::BatchStart || type == HmiCommandType::BatchSetDay) {
+    // The day the batch starts from (batch_start, 1 when absent) or is moved to (batch_set_day): arg0, 1 .. 255. The machine checks it against the
+    // total days again (batch_day.h valid()) before it moves anything.
+    const uint32_t day = static_cast<uint32_t>(doc["arg0"] | 0U);
+    if (type == HmiCommandType::BatchSetDay && (day < 1U || day > 255U)) { publishAck(requestId, "invalid", "DAY"); return; }
+    if (day > 255U) { publishAck(requestId, "invalid", "DAY"); return; }
+    alarmMaskParam = day;
   }
   if (type == HmiCommandType::AlarmAck) {
     portENTER_CRITICAL(&realtimeMux);
