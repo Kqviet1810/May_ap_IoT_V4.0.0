@@ -43,6 +43,7 @@ constexpr float KAIR_START = 1.6e-4f;      // kAir before any climb has been mea
 constexpr float DOOR_LATCH_TAU = 6.0f;      // a door is "open" for the load estimate for at most 6 transit times
 constexpr float DOOR_LOAD = 0.1f;           // ... and only when the fall is worth a load of 10 % of the headroom (a real door is 5-10 times that; the dip of a landing is not)
 constexpr float HOLD_PRIOR_OF_CAP = 0.12f;
+constexpr float HOLD_SEED_MIN = 3.0f, HOLD_SEED_MAX = 90.0f;   // the range a restored / seeded hold may have
 // Hold level under which the oven has more heat than it loses (a hot noon, the eggs' own heat): 1-3 % of the heater or nothing changes the temperature by
 // less than the sensor can tell, but it keeps the reading on the wrong side of SV. PV ZERO_ZONE_ENTER_C over SV with the hold estimate under ZERO_ZONE_HOLD_PCT: the heater
 // is simply off until PV is ZERO_ZONE_EXIT_C under SV (or the estimate rose over ZERO_ZONE_RELEASE_HOLD_PCT). Rig of the log of 05/11 (tests/thermal-closed-loop.cpp,
@@ -98,7 +99,7 @@ class Controller {
 
   void reset() {
     state_ = StIdle; pv_ = NAN; sp_ = 37.5f; cap_ = 100.0f;
-    kAir_ = KAIR_START; tau_ = TAU_PRIOR; hold_ = HOLD_PRIOR_OF_CAP * 100.0f;
+    kAir_ = KAIR_START; tau_ = TAU_PRIOR; hold_ = HOLD_PRIOR_OF_CAP * 100.0f; holdSrc_ = 0U;
     identified_ = tauMeasured_ = door_ = wasLive_ = doorLatch_ = nearSeen_ = kAirMeasured_ = false; latchT_ = 0.0f;
     lead_ = slope_ = lsSlope_ = lsSigma_ = 0.0f; sigma_ = 0.02f; boostOff();
     histHead_ = histCount_ = 0U; liveS_ = secAcc_ = lastCmd_ = 0.0f;
@@ -201,6 +202,14 @@ class Controller {
     if (std::isfinite(kAir) && kAir >= KAIR_PRIOR * KAIR_LO && kAir <= KAIR_PRIOR * KAIR_HI) { kAir_ = kAir; identified_ = true; }
     derive();
   }
+  // The hold the oven needed a few minutes ago (hold_keep.h decides when that is still true). Only before the first live step; the observer stays the one writer
+  // of hold afterwards. src: 1 = the one-time seed of an update, 2 = restored from the record.
+  void seedHold(float holdPct, uint8_t src) {
+    if (wasLive_ || !std::isfinite(holdPct)) return;
+    hold_ = std::max(HOLD_SEED_MIN, std::min(HOLD_SEED_MAX, holdPct));
+    holdSrc_ = src;
+  }
+  uint8_t holdSource() const { return holdSrc_; }
   bool hasRun() const { return wasLive_ || liveS_ > 0.0f; }
   bool zeroZone() const { return zz_; }
   uint8_t batchesDone() const { return identified_ ? 2U : 0U; }
@@ -354,6 +363,7 @@ class Controller {
   uint8_t state_ = StIdle;
   float pv_ = NAN, sp_ = 37.5f, cap_ = 100.0f;
   float kAir_ = KAIR_PRIOR, tau_ = TAU_PRIOR, hold_ = 12.0f;
+  uint8_t holdSrc_ = 0U;
   float epMax_ = 0.0f; bool epFresh_ = true; float latchT_ = 0.0f; bool doorLatch_ = false, nearSeen_ = false; float pm_ = NAN, rate_ = 0.0f;
   bool zz_ = false, ventFan_ = false;
   float g_ = 1.0f, eWin0_ = NAN, winT_ = 0.0f; uint8_t stalls_ = 0U;

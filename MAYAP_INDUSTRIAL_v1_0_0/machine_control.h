@@ -18,6 +18,7 @@
 #include "thermal_v3_adapter.h"
 #include "batch_day.h"
 #include "sensor_fine.h"
+#include "hold_keep.h"
 #include "heater_response_watch.h"
 #include "vent_line.h"
 #include "alarm_sound.h"
@@ -2210,6 +2211,10 @@ constexpr uint16_t EEPROM_ADDR_TECH_AUTH_A = 0x3000U;
 constexpr uint16_t EEPROM_ADDR_TECH_AUTH_B = 0x3080U;
 constexpr uint16_t EEPROM_ADDR_ADV_HISTORY = 0x3100U;      // three CRC slots, one record each
 constexpr uint16_t EEPROM_ADV_HISTORY_SLOT_BYTES = 0x0040U;
+constexpr uint16_t EEPROM_ADDR_HOLD_RING = 0x4000U;        // 512 slots x 16 bytes (hold_keep.h)
+static_assert(EEPROM_ADDR_HOLD_RING >= EEPROM_ADDR_ADV_HISTORY + 3U * EEPROM_ADV_HISTORY_SLOT_BYTES, "hold ring overlaps the advanced history");
+static_assert(static_cast<uint32_t>(EEPROM_ADDR_HOLD_RING) + HoldKeep::SLOTS * HoldKeep::RECORD_BYTES <= EEPROM_CAPACITY_BYTES, "hold ring does not fit the chip");
+static_assert(EEPROM_ADDR_HOLD_RING % EEPROM_PAGE_SIZE == 0U && EEPROM_PAGE_SIZE % HoldKeep::RECORD_BYTES == 0U, "a hold record must sit inside one EEPROM page");
 static_assert(EEPROM_ADDR_TECH_AUTH_A >= EEPROM_ADDR_TEMP_HISTORY + TEMP_HISTORY_STORAGE_BYTES, "tech records overlap the temperature history");
 static_assert(EEPROM_ADDR_TECH_AUTH_A + sizeof(TechAccess::AuthRecord) <= EEPROM_ADDR_TECH_AUTH_B, "auth A overlaps auth B");
 static_assert(EEPROM_ADDR_TECH_AUTH_B + sizeof(TechAccess::AuthRecord) <= EEPROM_ADDR_ADV_HISTORY, "auth B overlaps the advanced history");
@@ -2305,6 +2310,10 @@ class PersistentStore {
     readback = unpackConfig(verify.payload);
     return true;
   }
+
+  // Raw access for the hold ring (hold_keep.h); the ring checks its own CRC.
+  bool readRaw(uint16_t address, void *destination, size_t length) const { return ready_ && eeprom_.readBytes(address, destination, length); }
+  bool writeRaw(uint16_t address, const void *source, size_t length) const { return ready_ && eeprom_.writeBytes(address, source, length); }
 
   bool loadBatch(PackedBatchV1 &out) {
     if (!ready_ || !refreshBatchCache()) return false;
@@ -3889,6 +3898,7 @@ class MachineController {
 
     PackedBatchV1 batch{};
     const bool hasBatchRecord = storeReady && store_.loadBatch(batch);
+    if (storeReady) (void)holdRing_.begin();                      // the hold of the last minutes (hold_keep.h); read here, not in the control loop
     const bool stopIntentPending = safetyJournal_.stopIntentPending();
     if (stopIntentPending) {
       if (hasBatchRecord && !batch.wasRunning) {
@@ -4049,7 +4059,7 @@ class MachineController {
       // Whoever starts an update (HMI, Web, or the automatic path), a running batch is checkpointed once when the download begins.
       const bool downloading = mayapFirmwareApplyPhase() == 1U;
       if (downloading && batchRunning_ && !otaCheckpointDone_) {
-        checkpointBatch();
+        checkpointBatch(true);
         mayapSerialPrintf(false, "[OTA] Chot checkpoint me ap truoc khi nap firmware\n");
       }
       otaCheckpointDone_ = downloading;
@@ -5205,8 +5215,8 @@ class MachineController {
       }
       {
         const uint8_t src = v3.kAirMeasured() ? 2U : (v3.identified() ? 1U : 0U);
-        const uint8_t stalled = std::min<uint8_t>(v3.stalledWindows(), 31U);
-        s.learn = static_cast<uint8_t>(src | (v3.boosting() ? 0x04U : 0U) | static_cast<uint8_t>(stalled << 3));
+        const uint8_t stalled = std::min<uint8_t>(v3.stalledWindows(), 7U);
+        s.learn = static_cast<uint8_t>(src | (v3.boosting() ? 0x04U : 0U) | static_cast<uint8_t>(stalled << 3) | static_cast<uint8_t>((v3.holdSource() & 3U) << 6));
       }
       MayapPidLog::ring().push(s);
     }
@@ -5242,6 +5252,9 @@ class MachineController {
     const bool ok = eraseLearnedBlob();
     gainAppliedMode_ = 0xFFU;
     thermalV3_.reset();
+    (void)holdRing_.clear();          // "start again from the priors" also forgets the kept hold, and does not restore it
+    holdDecided_ = true;
+    holdKeeper_.restarted();
     return ok;
   }
 
@@ -5313,6 +5326,7 @@ class MachineController {
   }
   float thermalV3Command(uint32_t now, bool permit, bool shadow) {
     serviceOvenGain();
+    serviceHold(now, permit, shadow);
     const uint32_t t0 = static_cast<uint32_t>(esp_timer_get_time());
     const float u = thermalV3_.step(buildThermalV3SlotIn(now, permit, shadow));
     slotLastUs_ = static_cast<uint32_t>(esp_timer_get_time()) - t0;
@@ -7463,9 +7477,45 @@ class MachineController {
         runtime_.heaterPower, static_cast<uint16_t>(runtime_.stateCode), flags);
     if (!ok) batchLogFaultActive_ = true;
   }
-  void checkpointBatch() {
+  void checkpointBatch(bool planned = false) {
     if (!batchRunning_ && !resumePending_) return;
     (void)saveBatchRecord();
+    saveHoldIfDue(planned);
+  }
+  // The hold of a quiet oven, next to the batch checkpoint (the same 5-minute gate); a planned stop (an update) asks for one more.
+  void saveHoldIfDue(bool planned) {
+    if (!batchRunning_ || !holdRing_.ready()) return;
+    const uint32_t nowS = millis() / 1000U;
+    if (!holdKeeper_.due(nowS, planned)) return;
+    HoldKeep::Record r;
+    r.cap = static_cast<uint8_t>(config_.maxHeaterPower); r.epoch = rtc_.epoch();
+    r.hold = thermalV3_.controller().pHold(); r.sp = config_.targetTemp;
+    if (r.epoch != 0U && holdRing_.append(r)) holdKeeper_.saved(nowS);
+  }
+  // At the first live step of the controller: the hold of a few minutes ago if it is still true, else the one-time seed of the update that brought this feature.
+  // Afterwards, once a second, the keeper watches whether the oven is quiet enough to be written. Nothing here writes hold while the controller runs.
+  void serviceHold(uint32_t now, bool permit, bool shadow) {
+    thermalv3::Controller &c = thermalV3_.controller();
+    const bool live = permit || shadow;
+    if (!holdDecided_ && live) {
+      holdDecided_ = true;
+      if (!c.hasRun() && holdRing_.ready()) {
+        float h = 0.0f;
+        const float sp = config_.targetTemp, pv = fineControlValue(now);
+        if (HoldKeep::decideRestore(holdRing_.hasRecord(), holdRing_.latest(), rtc_.valid(), rtc_.epoch(), sp, static_cast<uint8_t>(config_.maxHeaterPower), h) == HoldKeep::Why::Ok) {
+          c.seedHold(h, 2U);
+        } else if (HoldKeep::oneTimeSeed(holdRing_.hasRecord(), batchRunning_, rtc_.valid(), rtc_.epoch(), lastCheckpointEpoch_, sp - pv)) {
+          c.seedHold(HoldKeep::ONE_TIME_SEED_PCT, 1U);
+        }
+      }
+    }
+    if (static_cast<uint32_t>(now - holdTickMs_) >= 1000U) {
+      holdTickMs_ = now;
+      const bool running = permit && !shadow;
+      const float e = running ? config_.targetTemp - fineControlValue(now) : NAN;
+      holdKeeper_.tick(e, c.doorDetected(), outputs_.state().ventFan, !c.boosting() && c.stalledWindows() == 0U, c.pHold(),
+                       heaterNotHeatingActive_ || heaterWatch_.active(), rtc_.valid());
+    }
   }
   bool saveBatchRecord() {
     PackedBatchV1 p{};
@@ -8196,6 +8246,16 @@ class MachineController {
   PowerManager power_{};
   RtcDs3231 rtc_{};
   PersistentStore store_{};
+  struct HoldStoreAdapter {
+    PersistentStore *store;
+    bool read(uint16_t a, void *d, size_t n) { return store->readRaw(a, d, n); }
+    bool write(uint16_t a, const void *s, size_t n) { return store->writeRaw(a, s, n); }
+  };
+  HoldStoreAdapter holdAdapter_{&store_};
+  HoldKeep::Ring<HoldStoreAdapter> holdRing_{holdAdapter_, EEPROM_ADDR_HOLD_RING};
+  HoldKeep::Keeper holdKeeper_{};
+  bool holdDecided_ = false;
+  uint32_t holdTickMs_ = 0U;
   TechAuthStorage techAuthStorage_{store_};
   TechAccess::Gate<TechAuthStorage> techGate_{techAuthStorage_};
   AdvHistoryStorage advHistoryStorage_{store_};

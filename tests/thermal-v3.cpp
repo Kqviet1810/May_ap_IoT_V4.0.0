@@ -513,6 +513,25 @@ void testProgressJudge() {
   printf("  -> Pass\n");
 }
 
+void testSeedHold() {
+  printf("[TEST] Seeded hold (restored after a restart / one-time seed of an update)...\n");
+  thermalv3::Input in;
+  in.pv = 37.5f; in.sp = 37.5f; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f;
+  {
+    thermalv3::Controller prior; thermalv3::Output o = prior.step(in);
+    assert(o.powerPct > 11.0f && o.powerPct < 13.5f && prior.holdSource() == 0);          // the prior: 12 %
+  }
+  {
+    thermalv3::Controller c; c.seedHold(43.0f, 2U); thermalv3::Output o = c.step(in);
+    assert(o.powerPct > 42.0f && o.powerPct < 44.5f);                                      // the oven starts at the hold it needed
+    assert(c.holdSource() == 2U && c.pHold() > 42.9f);
+    c.seedHold(80.0f, 1U); assert(c.pHold() < 50.0f && c.holdSource() == 2U);              // once it has run, nothing but the observer changes hold
+  }
+  { thermalv3::Controller c; c.seedHold(1.0f, 1U); assert(c.pHold() >= 3.0f); c.seedHold(95.0f, 1U); assert(c.pHold() <= 90.0f); c.seedHold(NAN, 2U); assert(c.pHold() <= 90.0f); }
+  { thermalv3::Controller c; c.seedHold(43.0f, 2U); c.reset(); assert(c.holdSource() == 0U && c.pHold() > 11.0f && c.pHold() < 13.0f); }
+  printf("  -> Pass: seedHold only before the first live step, clamped, cleared by reset\n");
+}
+
 int main() {
   printf("=========================================\n");
   printf("RUNNING THERMAL V3 CONTROLLER UNIT TESTS\n");
@@ -531,6 +550,7 @@ int main() {
   testSensorFallback();
   testZeroZoneDeadZoneAndFan();
   testProgressJudge();
+  testSeedHold();
   printf("=========================================\n");
   printf("ALL THERMAL V3 TESTS PASSED SUCCESSFULLY!\n");
   printf("=========================================\n");

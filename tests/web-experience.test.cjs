@@ -149,13 +149,13 @@ test('PID log: chunks of the machine ring are assembled by index and saved as CS
   const lines = csv.trim().split('\n');
   assert.match(lines[0], /^# mayap pid log device=MAP-TEST boot=7/);
   assert.equal(lines[1], 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,trust_pct,source,' +
-    'safety_c,hold_pct,kair_e5,tau_s,obs_gain,vent_why,vent_line,door,identified,fan_tokens,vent_reason,kair_src,obs_boost,stalled_windows,time_vn');
+    'safety_c,hold_pct,kair_e5,tau_s,obs_gain,vent_why,vent_line,door,identified,fan_tokens,vent_reason,kair_src,obs_boost,stalled_windows,hold_src,time_vn');
   assert.equal(lines.length, 5);
   const second = lines[3].split(',');
   assert.equal(second[1], '21'); assert.equal(second[7], '1'); assert.equal(second[8], '1'); assert.equal(second[14], 'frozen'); assert.equal(second[15], '53'); assert.equal(second[16], 'machine');   // phase 1, suspect flag
-  assert.equal(second.length, 32);                                                                               // an older machine sends no diagnostics: the new columns stay empty
+  assert.equal(second.length, 33);                                                                               // an older machine sends no diagnostics: the new columns stay empty
   assert.equal(second.slice(17, 31).join(''), '');                                                              // diagnostics empty
-  assert.match(second[31], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);                                          // time_vn: the Vietnam wall clock, the last column
+  assert.match(second[32], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);                                          // time_vn: the Vietnam wall clock, the last column
 });
 
 test('PID log: the diagnostics chunk (firmware 2.5.5) merges into the samples it belongs to, in either order', () => {
@@ -172,7 +172,7 @@ test('PID log: the diagnostics chunk (firmware 2.5.5) merges into the samples it
   const lines = h.pmCsv({ id: 'MAP-TEST', bootId: 7 }).trim().split('\n');
   assert.equal(lines.length, 4);
   const a = lines[2].split(',');
-  assert.equal(a.length, 32);                                                                                   // 31 columns + time_vn (Vietnam time) appended last
+  assert.equal(a.length, 33);                                                                                   // 32 columns + time_vn (Vietnam time) appended last
   assert.equal(a[17], '37.6'); assert.equal(a[18], '2'); assert.equal(a[19], '40'); assert.equal(a[20], '150'); assert.equal(a[21], '-3');
   assert.equal(a[22], 'floor'); assert.equal(a[23], 'watch+on'); assert.equal(a[24], '1'); assert.equal(a[25], '1'); assert.equal(a[26], '2'); assert.equal(a[27], '3');
   assert.equal(a[28], '2'); assert.equal(a[29], '1'); assert.equal(a[30], '7');
