@@ -386,6 +386,7 @@ void testBoundsUnderHostileInput() {
     if (step % 600 == 0) pv = 30.0f + static_cast<float>(x % 1000U) * 0.01f;      // jumps anywhere in 30 .. 40 degC
     else pv += (static_cast<int>(x % 5U) - 2) * 0.01f;
     in.pv = pv;
+    in.ventFan = (step / 3000) % 3 == 0;
     in.shadow = (step / 5000) % 7 == 3;
     in.permit = !in.shadow && (step / 7000) % 11 != 5;
     if (step % 9001 == 0) in.pv = NAN;                                                // a lost sample now and then
@@ -399,8 +400,8 @@ void testBoundsUnderHostileInput() {
 }
 
 // 2.9.9: the zero zone and the dead zone around SV.
-void testZeroZoneAndDeadZone() {
-  printf("[TEST] Zero zone, dead zone...\n");
+void testZeroZoneDeadZoneAndFan() {
+  printf("[TEST] Zero zone, dead zone, the fan holds the hold...\n");
   {   // low hold, PV a step over SV: the heater is off until PV is back under SV
     thermalv3::Controller c; thermalv3::Input in;
     in.sp = 37.5f; in.pv = 37.5f; in.permit = true; in.dtS = 0.1f;
@@ -432,6 +433,15 @@ void testZeroZoneAndDeadZone() {
     const float a = cmdAt(37.495f), b = cmdAt(37.505f);
     assert(a > 4.0f);
     assert(std::fabs(a - b) < 0.05f);
+  }
+  {   // the fan: while it runs the controller learns nothing and judges nothing (the hold stays where it was)
+    thermalv3::Controller c; thermalv3::Input in;
+    in.sp = 37.5f; in.pv = 37.3f; in.permit = true; in.dtS = 0.1f;
+    for (int i = 0; i < 6000; ++i) c.step(in);
+    const float h0 = c.pHold();
+    in.ventFan = true;
+    for (int i = 0; i < 12000; ++i) { in.pv = 36.4f + 0.0005f * (i % 200); c.step(in); }   // 20 minutes of a flat PV 1 degC under SV (a stall) with the fan on
+    assert(std::fabs(c.pHold() - h0) < 1e-3f && !c.boosting() && c.stalledWindows() == 0U);
   }
   printf("  -> Pass\n");
 }
@@ -519,7 +529,7 @@ int main() {
   testShadowHold();
   testResumeAfterHold();
   testSensorFallback();
-  testZeroZoneAndDeadZone();
+  testZeroZoneDeadZoneAndFan();
   testProgressJudge();
   printf("=========================================\n");
   printf("ALL THERMAL V3 TESTS PASSED SUCCESSFULLY!\n");

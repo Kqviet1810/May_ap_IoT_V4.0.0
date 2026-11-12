@@ -115,6 +115,7 @@ static Res run(const PlantParams &p0, int scen) {
     }
     const bool paused = scen == 9 && t >= tEv && t < tEv + 120;                  // batch cancelled, started again at once: the controller is frozen, not reset
     in.shadow = block && !hc; in.permit = !block && !paused && !hc;
+    in.ventFan = vline || sched;   // the controller is told only that the fan runs
     if (scen == 6 && t >= tEv) pl.setAmbient(tamb0 + (getenv("AMB") ? atof(getenv("AMB")) : 7.0) * std::min(1.0, (t - tEv) / 7200.0));   // AMB=-5: the room cools instead
     float u = 0; if (!down) { auto o = c.step(in); u = (block || hc) ? 0.0f : o.powerPct; }
     lastU = u;

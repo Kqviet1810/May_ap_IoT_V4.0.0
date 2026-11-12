@@ -552,7 +552,7 @@ static void testFamily(bool everything) {
     const Stats st = now.ventFan();
     st.print("settled, vent fan 3 x 5 min");
     reference("settled, vent fan 3 x 5 min", before.ventFan());
-    expectHealthy(st, "vent fan", {0.30, 0.60, 0.5, 36.2, false});   // over 0.12 -> 0.30 (3.1.0: the fan is noise, nobody tells the controller; measured 0.26)
+    expectHealthy(st, "vent fan", {0.12, 0.60, 0.5, 36.2, false});
   }
 
   // Set-point +0.5 degC (a programme step): no overshoot beyond the owner's R7 limit (0.2) and there within 17 minutes.

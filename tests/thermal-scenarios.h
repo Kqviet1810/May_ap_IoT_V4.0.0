@@ -124,6 +124,7 @@ class RigT {
       pvEst_.update(q, static_cast<float>(t_), 0.1f, pvPar_); slopeEst_.update(q, static_cast<float>(t_), 0.1f, slopePar_); lastSample_ = t_;
     }
     in.pv = chain.value();
+    in.ventFan = vent;
     if (fineInput && pvEst_.ready()) { in.pv = pvEst_.valueAt(static_cast<float>(t_ - lastSample_)); setSlope(in, slopeEst_.slopePerS(), 0); }
     in.permit = !tripped_ && t_ >= startS_;
     const auto o = ctl.step(in);

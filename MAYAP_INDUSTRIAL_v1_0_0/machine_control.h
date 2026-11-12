@@ -5308,6 +5308,7 @@ class MachineController {
     const float stuckLimitMs = static_cast<float>(config_.heaterStuckDurationSec) * 1000.0f;
     si.e115Frac = stuckLimitMs > 0.0f ? static_cast<float>(heaterWatch_.accumOnMs()) / stuckLimitMs : 0.0f;
     si.dQ = thermalV3SensorStepC();
+    si.ventFan = st.ventFan;                                                // the fan that really runs
     return si;
   }
   float thermalV3Command(uint32_t now, bool permit, bool shadow) {

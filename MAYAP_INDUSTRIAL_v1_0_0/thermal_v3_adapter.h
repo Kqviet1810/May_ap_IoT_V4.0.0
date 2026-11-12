@@ -14,6 +14,7 @@ struct ThermalV3SlotIn {
   bool newSample = false;             // A new accepted sensor sample arrived since last call
   bool permit = false;                // Production decided SSR may conduct (all protections green)
   bool shadow = false;                // Permit is false only because vent line blocks heater
+  bool ventFan = false;               // Exhaust fan is running
   float capPct = 0.0f;                // Configured heater power ceiling [%]
   float headroomC = 0.0f;             // Headroom from target to High line
   float alarmHeadroomC = 0.0f;        // Headroom from target to Emergency line
@@ -62,6 +63,7 @@ class ThermalV3Slot {
     i.newSample = in.newSample;
     i.permit = in.permit;
     i.shadow = in.shadow;
+    i.ventFan = in.ventFan;
 
     last_ = ctl_.step(i);
     held_ = clampOut(last_.powerPct, in.capPct);

@@ -18,7 +18,8 @@
 //   f: full power while el >= far (a door, cold eggs, a start), linear landing down to kn * near at el = near, kn * el below, 3 kn * el above SV.
 //   hold has ONE writer (observe): a disturbance observer on the measured PV (see there).
 //   kAir is measured at every saturated climb, tau by the stopwatch of a clean start.
-//   The exhaust fan is noise: the controller is not told about it, it is a load like any other. The vent line (vent_line.h) alone decides when the fan runs.
+//   The exhaust fan: the controller is told only that it runs, and holds the load estimate meanwhile (nothing is learned or judged while it runs). The vent line
+//   (vent_line.h) alone decides when the fan runs (over temperature, a minimum run so the contactor is not burnt, off again at SV).
 //   One judge of "does the oven follow": progress(), the measured error against the error a window ago. While the error is not shrinking, the observer learns
 //   faster (g), so hold finds the real load and the heat "in flight" (derived from hold) disappears with the phantom surplus. Nothing else raises or lowers hold.
 // What the machine does around the controller (protections, vent line) can only cut; the one rule that reaches into the state: a protection cut
@@ -80,6 +81,7 @@ struct Input {
   bool newSample = false;        // unused
   bool permit = false;
   bool shadow = false;           // vent line holds the heater at 0 %
+  bool ventFan = false;          // the exhaust fan runs (the only thing the controller is told about it)
   float headroomC = 0.7f, alarmHeadroomC = 0.7f, e115Frac = 0.0f;   // unused
 };
 
@@ -131,7 +133,8 @@ class Controller {
     slope_ = std::isfinite(in.slopeFine) ? in.slopeFine : lsSlope_;
     const float e = sp_ - pv_;
 
-    // The exhaust fan needs no rule of its own: it is a load like any other and the observer below sees it.
+    // The exhaust fan takes heat out for a few minutes and stops: that load is not a hold level to learn (the observer and the progress judge below are held while it runs).
+    ventFan_ = in.ventFan;
 
     // --- power: hold plus a saturating function of the PREDICTED error (the heat on its way is counted before it arrives)
     updateInflight();
@@ -275,12 +278,12 @@ class Controller {
   // the error between the measured and the model PV corrects the model, the load (hold) and the load's rate of change. Three poles at 1/(1.5 tau)
   // (a ramp of load - cold eggs, the walls giving back heat - is followed without a standing error), the rate leaks away over 8 tau so that it does not
   // wander when nothing supports it. The estimate is held while the door is open or PV is far from SV (the load is then not what the error is about: a cold tray
-  // learned as hold is an overshoot of several degrees when it has warmed up - closed-loop rig). While the oven does not follow (g > 1) it learns g times as fast.
-  // The exhaust fan is not special: it is a load.
+  // learned as hold is an overshoot of several degrees when it has warmed up - closed-loop rig), or the exhaust fan runs. While the oven does not follow (g > 1) it
+  // learns g times as fast.
   void observe() {
     const uint16_t delay = static_cast<uint16_t>(tau_ + 0.5f);
     if (histCount_ < static_cast<uint16_t>(delay + 2U) || !std::isfinite(pv_)) { pm_ = pv_; return; }
-    if (!std::isfinite(pm_) || door_ || doorLatch_ || std::fabs(sp_ - pv_) > 2.0f * farBand_) { pm_ = pv_; rate_ = 0.0f; return; }
+    if (!std::isfinite(pm_) || door_ || doorLatch_ || ventFan_ || std::fabs(sp_ - pv_) > 2.0f * farBand_) { pm_ = pv_; rate_ = 0.0f; return; }
     const float u = uAge(delay);
     const float w = 1.0f / (OBS_POLE_TAU * tau_);
     const float err = pv_ - pm_;
@@ -297,7 +300,7 @@ class Controller {
   void progress(float e) {
     const float eNow = meanErr();
     const bool heading = e > 0.0f ? lsSlope_ * (tau_ + 60.0f) >= e : -lsSlope_ * (tau_ + 60.0f) >= -e;
-    if (door_ || doorLatch_ || !std::isfinite(e) || !std::isfinite(eNow) || std::fabs(e) <= PROG_NEAR_C || heading) { boostOff(); return; }
+    if (door_ || doorLatch_ || ventFan_ || !std::isfinite(e) || !std::isfinite(eNow) || std::fabs(e) <= PROG_NEAR_C || heading) { boostOff(); return; }
     if (!std::isfinite(eWin0_)) { eWin0_ = eNow; winT_ = 0.0f; return; }
     winT_ += 1.0f;
     if (winT_ < std::max(PROG_WIN_MIN_S, PROG_WIN_TAU * tau_)) return;
@@ -352,7 +355,7 @@ class Controller {
   float pv_ = NAN, sp_ = 37.5f, cap_ = 100.0f;
   float kAir_ = KAIR_PRIOR, tau_ = TAU_PRIOR, hold_ = 12.0f;
   float epMax_ = 0.0f; bool epFresh_ = true; float latchT_ = 0.0f; bool doorLatch_ = false, nearSeen_ = false; float pm_ = NAN, rate_ = 0.0f;
-  bool zz_ = false;
+  bool zz_ = false, ventFan_ = false;
   float g_ = 1.0f, eWin0_ = NAN, winT_ = 0.0f; uint8_t stalls_ = 0U;
   bool identified_ = false, tauMeasured_ = false, door_ = false, wasLive_ = false, kAirMeasured_ = false;
   float lead_ = 0.0f, slope_ = 0.0f, lsSlope_ = 0.0f, lsSigma_ = 0.0f, sigma_ = 0.02f;
