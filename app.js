@@ -3547,16 +3547,16 @@
         diag ? r.safe : '', diag ? r.hold : '', diag ? r.kair : '', diag ? r.tau : '', diag ? r.lift : '',
         diag ? ((r.vent & 7) < PM_VENT_WHY.length ? PM_VENT_WHY[r.vent & 7] : String(r.vent & 7)) : '', diag ? pmVentState(r.vent) : '',
         diag ? (r.ctl & 1) : '', diag ? ((r.ctl >> 1) & 1) : '', diag ? ((r.ctl >> 2) & 3) : '', diag ? ((r.ctl >> 4) & 15) : '',
-        diag ? (r.learn & 3) : '', diag ? ((r.learn >> 2) & 1) : '', diag ? (r.learn >> 3) : '']);
+        diag ? (r.learn & 3) : '', diag ? ((r.learn >> 2) & 1) : '', diag ? ((r.learn >> 3) & 7) : '', diag ? (r.learn >> 6) : '']);
     }
-    for (const r of pidMon.series) rows.push([r.t, '', r.pv, r.sp, '', r.req, r.act, '', '', r.vent, '', '', '', '', '', '', 'page', '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
+    for (const r of pidMon.series) rows.push([r.t, '', r.pv, r.sp, '', r.req, r.act, '', '', r.vent, '', '', '', '', '', '', 'page', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
     rows.sort((a, b) => a[0] - b[0]);
     // The first 17 columns keep their place; the diagnostics are appended (safety reading, learned hold, heater gain x1e5, transit time, the learning gain of the
     // hold observer [1 = the oven follows; raised while the error does not shrink], why the overheat fan started, the state of that line, door guard, transit time
     // measured, fan-budget tokens, ventReason, where kAir came from [0 prior, 1 typed by hand, 2 measured since power-up], whether the observer gain is raised,
-    // how many windows in a row the oven did not follow).
+    // how many windows in a row the oven did not follow [0..7], where the starting hold came from [0 prior, 1 the one-time seed of an update, 2 restored]).
     const head = 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,trust_pct,source,' +
-      'safety_c,hold_pct,kair_e5,tau_s,obs_gain,vent_why,vent_line,door,identified,fan_tokens,vent_reason,kair_src,obs_boost,stalled_windows,time_vn';
+      'safety_c,hold_pct,kair_e5,tau_s,obs_gain,vent_why,vent_line,door,identified,fan_tokens,vent_reason,kair_src,obs_boost,stalled_windows,hold_src,time_vn';
     const cell = (v) => (typeof v === 'number' ? (Number.isFinite(v) ? String(v) : '') : String(v));
     return [`# mayap pid log device=${device?.id || ''} boot=${device?.bootId || ''} exported=${iso(Date.now())}`, head,
       ...rows.map((r) => [iso(r[0]), ...r.slice(1), vnDateTimeIso(r[0])].map(cell).join(','))].join('\n') + '\n';
