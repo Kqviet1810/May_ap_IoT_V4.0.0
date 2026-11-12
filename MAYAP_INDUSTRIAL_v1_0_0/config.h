@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "3.0.23";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "3.1.0";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -612,21 +612,22 @@ constexpr uint8_t VENT_LINE_BUCKET_CAP = 3U;              // ... and start at mo
 constexpr uint32_t VENT_LINE_BUCKET_REFILL_MS = 1800000UL;
 constexpr uint32_t VENT_LINE_COALESCE_MS = 300000UL;      // a day-profile block due within this time is waited for (unless the overshoot is decisive)
 constexpr float VENT_LINE_EPS_C = 0.005f;
+constexpr float VENT_LINE_MIN_OVER_C = 0.2f;              // the line starts only this far over SV (the same margin as the siren): holding the setpoint is not an overheat
 // Heater block line: max(vent ON, SV + max(MIN, STEPS * sensor step)); released RELEASE degC lower.
 constexpr float VENT_HEATER_BLOCK_MIN_C = 0.3f;
 constexpr float VENT_HEATER_BLOCK_STEPS = 3.0f;
 constexpr float VENT_HEATER_BLOCK_RELEASE_C = 0.1f;
-constexpr uint32_t LOW_TEMP_STARTUP_GRACE_MS = 300000UL; // 5 phut
-constexpr uint32_t LOW_TEMP_CONFIRM_MS = 300000UL;       // thap lien tuc 5 phut
+constexpr uint32_t LOW_TEMP_STARTUP_GRACE_MS = 60000UL;  // 1 phut
+constexpr uint32_t LOW_TEMP_CONFIRM_MS = 120000UL;       // thap lien tuc 2 phut
 // Lan len nhiet dau cua me: nhiet thap la DUONG DI (khong phai su co) nen E110 chua duoc xet. "Da len nhiet" khi PV cham
 // SV - LOW_TEMP_WARMUP_DONE_ERR_C; neu qua LOW_TEMP_WARMUP_MAX_MS ma chua toi thi E110 duoc xet nhu cu (lo khong len nhiet duoc).
 constexpr float LOW_TEMP_WARMUP_DONE_ERR_C = 0.3f;
 constexpr uint32_t LOW_TEMP_WARMUP_MAX_MS = 7200000UL;   // 120 phut
 constexpr uint32_t HIGH_TEMP_CONFIRM_MS = 1000UL;
-constexpr float HIGH_TEMP_CLEAR_HYSTERESIS_C = 0.2f;
-constexpr uint32_t HIGH_TEMP_CLEAR_CONFIRM_MS = 10000UL;
-constexpr float EMERGENCY_CLEAR_HYSTERESIS_C = 0.3f;
-constexpr uint32_t EMERGENCY_CLEAR_CONFIRM_MS = 30000UL;
+constexpr float HIGH_TEMP_CLEAR_HYSTERESIS_C = 0.0f;
+constexpr uint32_t HIGH_TEMP_CLEAR_CONFIRM_MS = 5000UL;
+constexpr float EMERGENCY_CLEAR_HYSTERESIS_C = 0.0f;
+constexpr uint32_t EMERGENCY_CLEAR_CONFIRM_MS = 5000UL;
 // Tam tat coi khan cap khi ACK. Truoc la 5 phut - qua dai cho muc "khan cap"
 // neu khong co ai o gan may luc do; rut xuong 1 phut, coi se tu keu lai neu
 // dieu kien qua nhiet khan cap van con (khong lien quan viec cat nhiet - cat
@@ -1035,6 +1036,9 @@ struct MachineConfig {
   // Sensor resolution (HMI NANG CAO): 0 = automatic format detection (default, as before), 1 = 0.1 C, 2 = 0.01 C. Stored in bits 1-2 of the
   // schema-13 adaptive byte, so records and old firmware stay compatible.
   uint8_t sensorResolutionMode = 0;
+  // Heater gain of the oven (HMI NANG CAO > GIA NHIET): 0 = automatic (the prior until a climb measures it), 1..7 = the value typed
+  // by hand (see thermal_v3.h manualKAir), used as the starting value; nothing is kept across a restart. Stored in bits 5-7 of the same schema-13 byte (old records read automatic).
+  uint8_t ovenGainMode = 0;
   // Smart Thermal (HMI NANG CAO, default OFF): startup heat-in-flight brake + faster hold convergence. Only acts while the adaptive balance above is ON
   // and never changes during a batch. Stored in bit 3 of the same schema-13 byte (old records read OFF).
   bool smartThermalEnabled = false;
@@ -1198,7 +1202,7 @@ struct TechStatus {
   uint16_t webSessionRemainingS = 0;
   uint8_t pendingKind = 0;            // 0 none, 1 config change (2 was Smart AutoTune: retired)
   uint8_t pendingRemainingS = 0;      // of the 60 s the HMI has to answer
-  uint16_t pendingMask = 0;           // which snapshot fields the Web asked to change
+  uint32_t pendingMask = 0;           // which snapshot fields the Web asked to change
   uint8_t webCtlMask = 0;             // WebCtl* permission bits set on the HMI (read-only for the Web)
   uint8_t webCtlActive = 0;           // WebCtl* bits whose output is currently overridden from the Web (heater: switched OFF remotely)
   uint8_t historyCount = 0;           // advanced-config records available on the HMI (0..3)
@@ -1337,7 +1341,8 @@ enum class HmiCommandType : uint8_t {
   FactoryReset,       // Local only: khoi phuc cai dat goc (MachineConfig, NVS, EEPROM) va khoi dong lai
   DeveloperModeSet,   // Local only: alarmMask 1 = bat CD nha phat trien (full quyen tu xa), 0 = tat
   ClearThermalLearn,  // Local only: erase what the thermal controller learned (NVS) and start it from its priors; refused while a batch runs
-  TurnMechanicalCheck // Local only: the machine turns the tray to both sides to test the limit switches and the gear (E205); clears E205 when both sides are reached
+  TurnMechanicalCheck, // Local only: the machine turns the tray to both sides to test the limit switches and the gear (E205); clears E205 when both sides are reached
+  BatchSetDay         // Local or Remote: alarmMask = the day (1 .. total days) the RUNNING batch is on; the machine moves its day counter (batch_day.h) and keeps it in the EEPROM
 };
 // Permission bits of the Web output control (HMI Advanced). Heater, vent, circulation, light, siren, egg turning.
 enum : uint8_t { WebCtlHeater = 1, WebCtlVent = 2, WebCtlCirc = 4, WebCtlLight = 8, WebCtlSiren = 16, WebCtlTurn = 32, WebCtlAutoUpdate = 64, WebCtlAll = 127 };

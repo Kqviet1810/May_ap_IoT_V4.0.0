@@ -53,10 +53,12 @@ test('Web request is only parked; every safety condition is re-checked when the 
   assert.match(execute, /RequestTtlMs|timeReached\(now, request\.deadline\)/);
   assert.match(execute, /webAllowed\(\) \|\| !techGate_\.webSessionActive\(now\)/);
   const apply = body(machine, 'bool applyAdvancedSnapshot(');
-  assert.ok(apply.indexOf('techEditBlocked(message)') < apply.indexOf('store_.saveConfig'));
+  assert.ok(apply.indexOf('techEditBlocked(message, calibrationOnly)') >= 0 && apply.indexOf('techEditBlocked(message, calibrationOnly)') < apply.indexOf('store_.saveConfig'));
+  assert.match(apply, /offsetStepTooBig\(current, target\)/, 'the step limit of the offsets is checked again at yes');
   assert.ok(apply.indexOf('pushHistory(current)') < apply.indexOf('store_.saveConfig'), 'undo record is written before the new values');
   assert.doesNotMatch(apply, /mayapPidHasAuthority/, 'Thermal Control V2.0.0: no PID-law validation is left');
-  assert.match(body(machine, 'bool techEditBlocked('), /batchRunning_ \|\| resumePending_/);
+  // a running batch locks every technical field except the two sensor offsets; a pending resume locks all of them
+  assert.match(body(machine, 'bool techEditBlocked('), /resumePending_ \|\| \(batchRunning_ && !calibrationOnly\)/);
   assert.match(access, /WebSessionMs = 600000/);
   assert.match(fw('tech_request.h'), /RequestTtlMs = 60000UL/);
 });
@@ -80,7 +82,7 @@ test('old-record snapshot excludes PIN, Web permission, batch data and independe
   const snapshot = history.slice(history.indexOf('struct Snapshot {'), history.indexOf('};', history.indexOf('struct Snapshot {')));
   const members = [...snapshot.matchAll(/\b(?:float|uint8_t|uint16_t)\s+([^;]+);/g)].flatMap((m) => m[1].split(',').map((n) => n.split('=')[0].trim()));
   assert.deepEqual(members.sort(), ['adaptiveThermalBalanceEnabled', 'autotuneBandC', 'autotuneRelayPowerPercent', 'heaterStuckDurationSec', 'heaterStuckMinRiseC',
-    'humidityOffset', 'kd', 'ki', 'kp', 'maxHeaterPower', 'pidCycleSec', 'tempOffset', 'tempOscillationCrossLimit', 'tempOscillationWindowSec',
+    'humidityOffset', 'kd', 'ki', 'kp', 'maxHeaterPower', 'ovenGainMode', 'pidCycleSec', 'sensorResolutionMode', 'tempOffset', 'tempOscillationCrossLimit', 'tempOscillationWindowSec',
     'tempRateLimitC', 'tempRateWindowSec'].sort());
   for (const forbidden of ['highTempAlarm', 'emergencyTemp', 'lowTempAlarm', 'sensorTimeout', 'pin', 'webAllowed', 'batch'])
     assert.doesNotMatch(snapshot, new RegExp(forbidden, 'i'));

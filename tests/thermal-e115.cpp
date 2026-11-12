@@ -1,4 +1,5 @@
-// Execute the actual E115 full-bank energy accounting body from MachineController (the evidence rule itself is heater_response_watch.h).
+// Execute the actual E115 body from MachineController: the full-bank on-time accounting of the evidence counter (door warning, frozen sensor, push of the hold) and, since 3.0.1, the
+// rule that raises E115 (HeaterFallWatch: two hours at the ceiling and a fall of 1 degC). Both rules themselves are in heater_response_watch.h.
 #include "thermal-fixture.h"
 #include <deque>
 #include <cstddef>
@@ -38,7 +39,8 @@ struct E115Harness {
   FaultStub faults_;
   bool doorSuspected_=false;
   struct { float targetTemp=37.5f,tempHysteresis=0.2f,heaterStuckMinRiseC=0.2f;
-           uint16_t heaterStuckDurationSec=900; } config_;
+           uint16_t heaterStuckDurationSec=900; uint8_t maxHeaterPower=100; } config_;
+  struct { float heaterPower=0; } runtime_;
   struct Input { bool heaterEnable=true; };
   struct Inputs { Input input;
            const Input &state() const { return input; } } inputs_;
@@ -48,6 +50,7 @@ struct E115Harness {
   bool heaterNotHeatingActive_=false;
   float temperature_=30;
   HeaterResponseWatch heaterWatch_;
+  HeaterFallWatch heaterFallWatch_;
   uint32_t onMs() const { return heaterWatch_.accumOnMs(); }
   void update(uint32_t now) {
 #include "actual-heater-evidence.inc"
@@ -55,6 +58,7 @@ struct E115Harness {
 };
 static void actuate(E115Harness &h,uint32_t now,float percent,bool permit=true) {
   clockMs=now;
+  h.runtime_.heaterPower=percent;
   OutputRequest request{};request.heatMaster=true;request.circulationFan=true;
   request.heaterSsr=h.heaterBurst_.update(now,percent,permit).groupA;
   h.outputs_.update(now,request);
@@ -67,17 +71,17 @@ int main() {
   for(float power:{5.f,10.f,30.f,50.f,100.f}) {
     E115Harness h;prepare(h);uint32_t actualOn=0,last=10000;
     actuate(h,last,power);
-    while(!h.heaterNotHeatingActive_ && last<20000000) {
+    while(h.onMs()<900000 && last<20000000) {
       const uint32_t now=last+5;
       if(levels[PIN_OUT_HEATER_SSR]==HIGH)actualOn+=5;
       // Production order: updateAlarms accounts prior GPIO state, then heating.
       h.update(now);
       assert(h.onMs()==actualOn);
-      assert(h.heaterNotHeatingActive_==(actualOn>=900000));
+      assert(!h.heaterNotHeatingActive_);                      // E115 no longer comes from the on-time: a flat temperature at a low request is nothing for it
       actuate(h,now,power);last=now;
     }
-    assert(h.heaterNotHeatingActive_ && actualOn==900000);
-    std::printf("E115 cadence=5ms quantum=300ms request=%.0f%% actual_on=%u elapsed=%u PASS\n",power,actualOn,last-10000);
+    assert(actualOn==900000 && h.onMs()==900000);
+    std::printf("on-time evidence cadence=5ms quantum=300ms request=%.0f%% actual_on=%u elapsed=%u PASS\n",power,actualOn,last-10000);
     h.sensorUsable_=false;h.update(last+5);
     assert(!h.heaterNotHeatingActive_ && h.onMs()==0);
   }
@@ -104,10 +108,10 @@ int main() {
       if(warnAt<0&&d.faults_.doorWarning)warnAt=sec;
       if(d.heaterNotHeatingActive_)tripAt=sec;
     }
-    // The scheduler's start-up ramp shifts both by the same amount; what counts is the distance: warning at a third of the evidence, E115 one window later.
+    assert(tripAt<0);                                                          // a flat temperature is not E115 any more (3.0.1): the heater would have to be falling at the ceiling for two hours
+    // The scheduler's start-up ramp shifts the warning a little: it comes at a third of the evidence.
     assert(warnAt>=290&&warnAt<=520);
-    assert(tripAt-warnAt>=1490&&tripAt-warnAt<=1510);
-    std::printf("door suspected, flat temperature: warning 116 at %d s, E115 at %d s PASS\n",warnAt,tripAt);
+    std::printf("door suspected, flat temperature: warning 116 at %d s, no E115 PASS\n",warnAt);
     E115Harness r;r.temperature_=34.0f;prepare(r);r.thermalV3_.c.door=true;t=10000;bool warned=false;
     for(int sec=1;sec<=1200;++sec){
       if(sec==400)r.thermalV3_.c.door=false;                                  // the door is closed: the controller's inference ends
@@ -119,5 +123,23 @@ int main() {
     assert(warned&&!r.faults_.doorWarning&&!r.doorSuspected_);
     std::puts("door suspected, then recovery: warning goes up, clears on the rise, no E115 PASS");
   }
-  std::puts("Actual E115: 5ms/300ms, 5/10/30/50/100% -> 900s actual GPIO ON; midburst cut140ms/no credit/resume PASS");
+  // The rule that raises E115 through the actual body: the request at the ceiling (100 %), the temperature falling 10 degC an hour (a dead heater): E115 after two hours;
+  // the same request over a flat or rising temperature: never.
+  {
+    E115Harness f;f.temperature_=36.0f;prepare(f);uint32_t t=10000;int tripAt=-1;
+    for(int sec=1;sec<=4*3600&&tripAt<0;++sec){
+      f.temperature_=36.0f-10.0f/3600.0f*static_cast<float>(sec);
+      for(int k=0;k<200;++k){t+=5;f.update(t);actuate(f,t,100);}
+      if(f.heaterNotHeatingActive_)tripAt=sec;
+    }
+    assert(tripAt>=7200&&tripAt<=7200+300);
+    E115Harness g;g.temperature_=34.0f;prepare(g);t=10000;
+    for(int sec=1;sec<=3*3600;++sec){
+      g.temperature_=34.0f+0.0003f*static_cast<float>(sec);
+      for(int k=0;k<200;++k){t+=5;g.update(t);actuate(g,t,100);}
+      assert(!g.heaterNotHeatingActive_);
+    }
+    std::printf("E115 through the actual body: request 100 %% and a fall of 10 degC/h: at %d s; a creeping rise for 3 h: none PASS\n",tripAt);
+  }
+  std::puts("Actual E115: 5ms/300ms, 5/10/30/50/100% -> 900s actual GPIO ON counted; midburst cut140ms/no credit/resume; two hours at the ceiling and a fall -> E115 PASS");
 }

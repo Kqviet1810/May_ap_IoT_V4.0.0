@@ -71,6 +71,7 @@ jobs:
             echo "$AVR_BIN" >> "$GITHUB_PATH"
           fi
 
+
       - name: Cai loi ESP32
         run: |
           for attempt in 1 2 3; do

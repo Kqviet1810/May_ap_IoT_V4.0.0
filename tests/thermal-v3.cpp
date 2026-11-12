@@ -1,10 +1,15 @@
+#include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <vector>
+#define private public   // tests only: the hold level is set directly (the controller has no way to be given one - nothing is kept across a restart)
 #include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_v3.h"
+#undef private
 #include "../MAYAP_INDUSTRIAL_v1_0_0/thermal_v3_adapter.h"
 using std::isfinite;
+static void setHold(thermalv3::Controller &c, float h) { c.hold_ = h; c.derive(); }
 #include "../MAYAP_INDUSTRIAL_v1_0_0/sensor_format.h"
 
 // Simple FOPDT Plant model for testing
@@ -394,6 +399,120 @@ void testBoundsUnderHostileInput() {
   printf("  -> Pass\n");
 }
 
+// 2.9.9: the zero zone and the dead zone around SV.
+void testZeroZoneDeadZoneAndFan() {
+  printf("[TEST] Zero zone, dead zone, the fan holds the hold...\n");
+  {   // low hold, PV a step over SV: the heater is off until PV is back under SV
+    thermalv3::Controller c; thermalv3::Input in;
+    in.sp = 37.5f; in.pv = 37.5f; in.permit = true; in.dtS = 0.1f;
+    setHold(c, 2.0f);
+    in.pv = 37.56f;
+    thermalv3::Output o = c.step(in);
+    assert(c.zeroZone() && o.powerPct == 0.0f);
+    in.pv = 37.49f; o = c.step(in);                      // below SV - 0.02 is not yet reached: still off
+    assert(o.powerPct == 0.0f);
+    in.pv = 37.45f; o = c.step(in);                      // under SV - 0.02: the zone ends
+    assert(!c.zeroZone());
+  }
+  {   // a high hold never enters the zone
+    thermalv3::Controller c; thermalv3::Input in;
+    in.sp = 37.5f; in.pv = 37.56f; in.permit = true; in.dtS = 0.1f;
+    setHold(c, 10.0f);
+    c.step(in);
+    assert(!c.zeroZone());
+  }
+  {   // the dead zone: two readings a hundredth apart, both inside it, give the same command
+    auto cmdAt = [](float pv) {
+      thermalv3::Controller c; thermalv3::Input in;
+      in.sp = 37.5f; in.pv = pv; in.permit = true; in.dtS = 0.1f;
+      setHold(c, 8.0f);
+      float o = 0.0f;
+      for (int i = 0; i < 20; ++i) o = c.step(in).powerPct;
+      return o;
+    };
+    const float a = cmdAt(37.495f), b = cmdAt(37.505f);
+    assert(a > 4.0f);
+    assert(std::fabs(a - b) < 0.05f);
+  }
+  {   // the fan: while it runs the controller learns nothing and judges nothing (the hold stays where it was)
+    thermalv3::Controller c; thermalv3::Input in;
+    in.sp = 37.5f; in.pv = 37.3f; in.permit = true; in.dtS = 0.1f;
+    for (int i = 0; i < 6000; ++i) c.step(in);
+    const float h0 = c.pHold();
+    in.ventFan = true;
+    for (int i = 0; i < 12000; ++i) { in.pv = 36.4f + 0.0005f * (i % 200); c.step(in); }   // 20 minutes of a flat PV 1 degC under SV (a stall) with the fan on
+    assert(std::fabs(c.pHold() - h0) < 1e-3f && !c.boosting() && c.stalledWindows() == 0U);
+  }
+  printf("  -> Pass\n");
+}
+
+// The progress judge (progress): PV stands still far from SV. After one window (two when it is nearer than PROG_FAR_C) the learning gain g of the observer is raised.
+// Nothing happens near SV, while PV is heading to SV by itself, or with a door open; g falls back when the oven follows.
+void testProgressJudge() {
+  printf("[TEST] The progress judge answers a stall, and only a stall...\n");
+  const long WIN = 330L * 10L;                                               // one window (300 s) and a margin, at 0.1 s steps
+  {   // flat 1.1 degC under SV: before the first window nothing changes, after it the learning gain is raised and the oven is pumped harder
+    thermalv3::Controller c; thermalv3::Input in;
+    in.sp = 37.5f; in.pv = 36.4f; in.dQ = 0.1f; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f;
+    setHold(c, 18.0f);
+    float cmdEarly = 0.0f;
+    thermalv3::Output o;
+    for (long i = 0; i < 2400; ++i) cmdEarly = c.step(in).powerPct;           // 4 minutes
+    assert(!c.boosting());
+    for (long i = 0; i < WIN; ++i) o = c.step(in);
+    assert(c.boosting() && c.stalledWindows() >= 1U && c.boost() >= thermalv3::GAIN_STEP);
+    for (long i = 0; i < 2L * WIN; ++i) o = c.step(in);
+    assert(c.boost() == thermalv3::GAIN_MAX);
+    assert(c.pHold() > 30.0f);                                                // the observer has learned that the oven needs more (the model said it would rise, it did not)
+    printf("  -> Pass: command %.0f %% before the first window, %.0f %% after three, g=%.0f, hold %.1f %%\n", cmdEarly, o.powerPct, c.boost(), c.pHold());
+  }
+  {   // 0.5 under SV (nearer than PROG_FAR_C): one stalled window is not enough, two are
+    thermalv3::Controller c; thermalv3::Input in;
+    in.sp = 37.5f; in.pv = 37.0f; in.dQ = 0.1f; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f;
+    setHold(c, 18.0f);
+    for (long i = 0; i < WIN + 600L; ++i) c.step(in);                        // a minute to start measuring, one window
+    assert(!c.boosting() && c.stalledWindows() == 1U);
+    for (long i = 0; i < WIN; ++i) c.step(in);
+    assert(c.boosting() && c.stalledWindows() >= 2U);
+  }
+  {   // next to SV (inside the near band) nothing is ever judged
+    thermalv3::Controller c; thermalv3::Input in;
+    in.sp = 37.5f; in.pv = 37.45f; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f;
+    for (long i = 0; i < 4L * WIN; ++i) c.step(in);
+    assert(!c.boosting() && c.stalledWindows() == 0U);
+  }
+  {   // PV climbing so that it reaches SV by itself in a transit time and a minute: no stall
+    thermalv3::Controller c; thermalv3::Input in;
+    in.sp = 37.5f; in.pv = 36.5f; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f;
+    for (long i = 0; i < 2L * WIN; ++i) { in.pv += 0.0000004f * 10.0f; c.step(in); }   // 0.04 degC/min is NOT heading there in 210 s ...
+    // ... so make the climb brisk enough: slope x (tau + 60 s) >= the error
+    thermalv3::Controller d; thermalv3::Input id;
+    id.sp = 37.5f; id.pv = 36.5f; id.permit = true; id.capPct = 100.0f; id.dtS = 0.1f;
+    for (long i = 0; i < 3000; ++i) { id.pv += 0.0004f; d.step(id); }          // 0.004 degC/s: 1.0 degC in 250 s
+    assert(!d.boosting());
+  }
+  {   // a door open: no judgement (the door has its own rule)
+    thermalv3::Controller c; thermalv3::Input in;
+    in.sp = 37.5f; in.pv = 37.5f; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f;
+    for (long i = 0; i < 6000; ++i) c.step(in);
+    float pv = 37.5f;
+    bool boosted = false;
+    for (long i = 0; i < 2L * WIN; ++i) { pv = std::max(34.0f, pv - 0.003f); in.pv = pv; c.step(in); boosted = boosted || c.boosting(); }   // 11 minutes: inside the door latch (6 transit times)
+    assert(!boosted);
+  }
+  {   // when the oven follows again g falls back to 1
+    thermalv3::Controller c; thermalv3::Input in;
+    in.sp = 37.5f; in.pv = 36.4f; in.permit = true; in.capPct = 100.0f; in.dtS = 0.1f;
+    setHold(c, 18.0f);
+    for (long i = 0; i < 2L * WIN; ++i) c.step(in);
+    assert(c.boosting());
+    for (long i = 0; i < 1500; ++i) { in.pv = std::min(37.5f, in.pv + 0.0006f); c.step(in); }
+    for (long i = 0; i < 4L * WIN; ++i) c.step(in);
+    assert(!c.boosting());
+  }
+  printf("  -> Pass\n");
+}
+
 int main() {
   printf("=========================================\n");
   printf("RUNNING THERMAL V3 CONTROLLER UNIT TESTS\n");
@@ -410,6 +529,8 @@ int main() {
   testShadowHold();
   testResumeAfterHold();
   testSensorFallback();
+  testZeroZoneDeadZoneAndFan();
+  testProgressJudge();
   printf("=========================================\n");
   printf("ALL THERMAL V3 TESTS PASSED SUCCESSFULLY!\n");
   printf("=========================================\n");

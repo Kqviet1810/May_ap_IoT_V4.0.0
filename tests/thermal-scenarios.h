@@ -4,6 +4,9 @@
 //
 // The same rig can also drive the controller and the E115 rule of firmware 2.3.4 (kept frozen in tests/fixtures/thermal-v3-2.3.4/): the
 // 29/10 failure is reproduced on the old code and shown fixed on the new one on the SAME simulated oven.
+#ifndef THERMAL_SENSOR_NOISE_K
+#define THERMAL_SENSOR_NOISE_K 0.0   // gaussian noise on the physical reading [degC]; 0 keeps the repository tests exactly as they were
+#endif
 #include "thermal-sim.h"
 #include "../MAYAP_INDUSTRIAL_v1_0_0/sensor_fine.h"
 #include <type_traits>
@@ -59,7 +62,13 @@ class RigT {
   // (short window for the value the controller regulates, long window for the slope). The frozen 2.3.4 controller keeps the filtered chain.
   template <class I> static auto setSlope(I &i, float s, int) -> decltype(i.slopeFine, void()) { i.slopeFine = s; }
   template <class I> static void setSlope(I &, float, long) {}
-  static constexpr bool fineInput = std::is_same<Ctl, thermalv3::Controller>::value;
+  template <class C> static constexpr auto fineOf(int) -> decltype(C::kFineInput) { return C::kFineInput; }
+  template <class C> static constexpr bool fineOf(long) { return std::is_same<C, thermalv3::Controller>::value; }
+  static constexpr bool fineInput = fineOf<Ctl>(0);
+  template <class C> static auto carry(C &fresh, const C &old, int) -> decltype(C::carryOver(fresh, old), void()) { C::carryOver(fresh, old); }
+  template <class C> static void carry(C &, const C &, long) {}
+  template <class C> static auto skip(C &c, double s, int) -> decltype(c.skipClock(s), void()) { c.skipClock(s); }
+  template <class C> static void skip(C &, double, long) {}
  public:
   RigT(const PlantParams &p, double airC, double eggC, double sensorStepC = 0.1) : plant(p, airC, eggC), chain(sensorStepC) {
     for (int i = 0; i < 8; ++i) chain.sample(plant.sensor());
@@ -88,7 +97,9 @@ class RigT {
   float setpoint() const { return in.sp; }
   void setSetpoint(double sp) { in.sp = static_cast<float>(sp); }
   // A reboot (an update, a power blip): everything the controller and the E115 rule had learned or counted is gone.
-  void restartControllers() { ctl = Ctl(); watch = Watch(); }
+  void restartControllers() { Ctl old = ctl; ctl = Ctl(); carry(ctl, old, 0); watch = Watch(); }
+  // seconds the machine was off (the clock of the ledger keeps counting through them)
+  void skipClock(double s) { skip(ctl, s, 0); }
   // The controller runs from power-up but the batch starts later: until `seconds` the permit is off (the controller pushes zeros into its
   // ring and the heater is not asked for anything), which is how every first start of a power cycle reaches the controller on the machine.
   void startAt(double seconds) { startS_ = seconds; }
@@ -107,14 +118,15 @@ class RigT {
  private:
   void one(bool door, bool vent) {
     if (tick_ % 20 == 0) {
-      chain.sample(plant.sensor());
-      const float q = static_cast<float>(std::lround(plant.sensor() * 10.0) / 10.0);
+      const double nz = THERMAL_SENSOR_NOISE_K > 0.0 ? THERMAL_SENSOR_NOISE_K * gauss() : 0.0;   // real sensor: about 0.02-0.04 K (tools/thermal-research/calib-noon.cpp)
+      chain.sample(plant.sensor() + nz);
+      const float q = static_cast<float>(std::lround((plant.sensor() + nz) * 10.0) / 10.0);
       pvEst_.update(q, static_cast<float>(t_), 0.1f, pvPar_); slopeEst_.update(q, static_cast<float>(t_), 0.1f, slopePar_); lastSample_ = t_;
     }
     in.pv = chain.value();
+    in.ventFan = vent;
     if (fineInput && pvEst_.ready()) { in.pv = pvEst_.valueAt(static_cast<float>(t_ - lastSample_)); setSlope(in, slopeEst_.slopePerS(), 0); }
     in.permit = !tripped_ && t_ >= startS_;
-    in.ventFan = vent;
     const auto o = ctl.step(in);
     const double u = tripped_ ? 0.0 : o.powerPct;
     lastU_ = u;
@@ -133,6 +145,8 @@ class RigT {
   }
   static sensorfine::Params shortPar() { sensorfine::Params p; p.minWindowS = 10.0f; p.maxWindowS = 30.0f; return p; }
   sensorfine::Estimator pvEst_, slopeEst_; sensorfine::Params pvPar_ = shortPar(), slopePar_; double lastSample_ = 0.0;
+  uint32_t rng_ = 12345u;
+  double gauss() { auto u = [&]() { rng_ ^= rng_ << 13; rng_ ^= rng_ >> 17; rng_ ^= rng_ << 5; return (rng_ + 1.0) / 4294967297.0; }; return std::sqrt(-2.0 * std::log(u())) * std::cos(6.283185307179586 * u()); }
   long tick_ = 0;
   double t_ = 0.0, t0_ = 0.0, duty_ = 0.0, lastU_ = 0.0, tripT_ = -1.0, startS_ = 0.0;
   bool tripped_ = false;

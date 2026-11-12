@@ -3,89 +3,59 @@
 // very same code.
 //
 //   Sound classes (decided per fault code in machine_control.h, faultSoundClass):
-//     Siren  - the external siren and the buzzer: the two over-temperature lines (LoudVoice) and an output that does not obey
+//     Siren  - the external siren and the buzzer: the over-temperature siren (OverSetpointSiren) and an output that does not obey
 //     Alert  - the HMI buzzer until ACK or until the condition is gone: the faults that stop the heater (sensor, heater not heating, storage ...)
 //     Chime  - three short beeps when it appears, a thin reminder while it lasts, no ACK: warnings that need someone, not now
 //     Silent - shown on the HMI / Web / push only: diagnostics
 //   Every sound follows the LIVE condition, never the stored record: a latched fault that is gone is silent at once (the record stays for ACK).
 //
-//   The over-temperature lines (High, Emergency) are not loud at once: crossing a line starts a grace time (the exhaust fan is forced on by the line and
-//   normally brings the reading back, e.g. the overshoot of a first climb). The siren sounds only if the reading is STILL at or over the line when the
-//   grace time ends, or at once when it is far over (panicC). It stops as soon as the reading is under the line (2 s to confirm), so the battery is not
-//   spent on a siren that has nothing left to say. The protective actions (heater cut, forced fans) never wait for this: only the noise does.
+//   2.9.11: the over-temperature siren is ONE rule measured from the setpoint (OverSetpointSiren below): 0.2 degC over SV for 60 s, or 0.3 degC over at
+//   once; continuous; silent when the reading has been within 0.1 degC over SV for 60 s. No ACK, no mute, no pulsing, no special level. (Before: a gate on
+//   the E111 line with a 60 s dwell, a 5 min continuous / 5 s on / 25 s off voice, an ACK that muted it for up to 10 min, a lost sample that reset it.)
 #include <cmath>
 #include <cstdint>
 
 namespace alarmsound {
 
-class LoudVoice {
+// The siren of the over-temperature: ONE rule, measured from the SETPOINT (over = filtered reading - SV), nothing else.
+//   on : over >= onC for onDelayMs without a break, or over >= immediateC at once
+//   off: over <= offC for offDelayMs without a break
+//   Continuous while on. No ACK, no mute, no pulsing, no special level: it stops only when the condition has ended (ISA-18.2 style on-delay / off-delay / deadband).
+//   A sample that is not valid (sensor) neither starts nor stops anything: the state is kept (a siren that sounds does not fall silent because one reading was lost).
+//   Not eligible (no batch and the alarm without batch is off): silent.
+// The protective actions of E111 / E112 (heater, contactor, fans) do not go through here.
+class OverSetpointSiren {
  public:
   struct Params {
-    uint32_t steadyMs = 300000UL;         // the siren is continuous this long, then pulsed (a reading stuck over the line for hours must not be a wall of noise)
-    uint32_t onMs = 5000UL, offMs = 25000UL;
-    uint32_t graceMs = 180000UL;          // the siren waits this long after the line is crossed (the fan has had its time to bring the reading down) ...
-    float panicC = 0.5f;                  // ... unless the reading is this far over the line: then it sounds at once
-    float offBelowC = 0.0f;               // sound ends when the reading is this far under the line ...
-    uint32_t offConfirmMs = 2000UL;       // ... for this long (the lock of the heater has its own, longer, hysteresis)
-    float ackRiseC = 0.2f;                // ACK mutes; the siren is back when the reading rose this much since the ACK ...
-    uint32_t ackCheckMs = 120000UL;       // ... or when, at every check of this length, it has not fallen by ackFallC ...
-    float ackFallC = 0.1f;
-    uint32_t ackMaxMs = 600000UL;         // ... and in any case after this long
+    float onC = 0.2f, immediateC = 0.3f, offC = 0.1f;
+    uint32_t onDelayMs = 60000UL, offDelayMs = 60000UL;
+    float epsC = 0.005f;                    // a sensor step of 0.1 compared as a float: 0.2 means 0.2
   };
-
-  void reset() { sounding_ = false; armed_ = false; muted_ = false; offOn_ = false; }
-  // Every cycle. `active` = the line itself (High: highTemperatureActive_; Emergency: emergencyActive_); `line` = its threshold.
-  void update(uint32_t now, bool valid, float pv, float line, bool active, const Params &p) {
-    if (!valid || !std::isfinite(pv) || !active) { reset(); return; }
-    if (pv < line - p.offBelowC) {
-      if (!offOn_) { offOn_ = true; offSince_ = now; }
+  void reset() { on_ = false; overSince_ = calmSince_ = 0U; haveOver_ = haveCalm_ = false; }
+  // `over` is NAN when the reading is not valid.
+  bool update(uint32_t now, float over, bool eligible, const Params &p) {
+    if (!eligible) { reset(); return false; }
+    if (!std::isfinite(over)) return on_;
+    if (over >= p.immediateC - p.epsC) { on_ = true; }
+    if (over >= p.onC - p.epsC) {
+      if (!haveOver_) { haveOver_ = true; overSince_ = now; }
+      if (static_cast<uint32_t>(now - overSince_) >= p.onDelayMs) on_ = true;
     } else {
-      offOn_ = false;
+      haveOver_ = false;
     }
-    if (offOn_ && static_cast<uint32_t>(now - offSince_) >= p.offConfirmMs) {      // fell under the line: silence now, grace time starts again next crossing
-      sounding_ = false; armed_ = false; muted_ = false; offOn_ = false;
-      return;
+    if (over <= p.offC + p.epsC) {
+      if (!haveCalm_) { haveCalm_ = true; calmSince_ = now; }
+      if (on_ && static_cast<uint32_t>(now - calmSince_) >= p.offDelayMs) { on_ = false; haveOver_ = false; }
+    } else {
+      haveCalm_ = false;
     }
-    if (!armed_) {
-      if (pv < line) return;                                                         // not over the line yet
-      armed_ = true; overSince_ = now;                                               // the grace time starts when the line is crossed
-    }
-    if (!sounding_) {
-      if (pv >= line + p.panicC || static_cast<uint32_t>(now - overSince_) >= p.graceMs) { sounding_ = true; muted_ = false; soundAt_ = now; }
-      return;
-    }
-    if (muted_) {
-      if (pv >= ackPv_ + p.ackRiseC) {
-        muted_ = false;
-      } else if (static_cast<uint32_t>(now - muteStart_) >= p.ackMaxMs) {
-        muted_ = false;
-      } else if (static_cast<uint32_t>(now - ackAt_) >= p.ackCheckMs) {
-        if (pv > ackPv_ - p.ackFallC) muted_ = false;                              // not falling: it speaks again
-        else { ackPv_ = pv; ackAt_ = now; }                                        // falling: stay quiet, look again later
-      }
-    }
+    return on_;
   }
-  // The owner pressed ACK at the machine.
-  void ack(uint32_t now, float pv) {
-    if (!sounding_ || muted_) return;
-    muted_ = true; muteStart_ = ackAt_ = now; ackPv_ = pv;
-  }
-  bool sounding() const { return sounding_; }
-  bool audible() const { return sounding_ && !muted_; }
-  bool muted() const { return muted_; }
-  // The external siren at this moment (continuous at first, then pulsed).
-  bool siren(uint32_t now, const Params &p) const {
-    if (!audible()) return false;
-    const uint32_t el = static_cast<uint32_t>(now - soundAt_);
-    if (el < p.steadyMs) return true;
-    const uint32_t period = p.onMs + p.offMs;
-    return period == 0U || ((el - p.steadyMs) % period) < p.onMs;
-  }
+  bool on() const { return on_; }
 
  private:
-  bool sounding_ = false, armed_ = false, muted_ = false, offOn_ = false;
-  uint32_t soundAt_ = 0U, overSince_ = 0U, offSince_ = 0U, muteStart_ = 0U, ackAt_ = 0U;
-  float ackPv_ = 0.0f;
+  bool on_ = false, haveOver_ = false, haveCalm_ = false;
+  uint32_t overSince_ = 0U, calmSince_ = 0U;
 };
 
 // The Chime class: a chime for every code that appears, a thin reminder while any of them lasts.

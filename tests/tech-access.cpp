@@ -194,7 +194,7 @@ static void storagePowerCut() {
 struct FakeConfig {
   float kp = 18, ki = 0.8f, kd = 45, tempOffset = 0, humidityOffset = 0, heaterStuckMinRiseC = 0.5f, tempRateLimitC = 2, autotuneBandC = 0.2f;
   uint16_t pidCycleSec = 10, heaterStuckDurationSec = 600, tempRateWindowSec = 300, tempOscillationWindowSec = 900;
-  uint8_t maxHeaterPower = 100, tempOscillationCrossLimit = 8, autotuneRelayPowerPercent = 30;
+  uint8_t maxHeaterPower = 100, tempOscillationCrossLimit = 8, autotuneRelayPowerPercent = 30, sensorResolutionMode = 0, ovenGainMode = 0;
   bool adaptiveThermalBalanceEnabled = true;
   float targetTemp = 37.5f, highTempAlarm = 38.2f, emergencyTemp = 39.0f;   // NOT part of the snapshot
 };
@@ -250,7 +250,7 @@ static void historyTests() {
     }
   }
   // a snapshot carries nothing safety-independent
-  static_assert(sizeof(Snapshot) == 44, "");
+  static_assert(sizeof(Snapshot) == 48, "");
 }
 
 // Developer mode is ON by default: the firmware applies it once to a record that never recorded a choice; an explicit HMI choice is final.

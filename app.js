@@ -52,9 +52,21 @@
   ]);
   const CONFIG_KEYS = Object.freeze([...REQUIRED_CONFIG_KEYS, ...VENT_PROFILE_KEYS, 'adaptiveThermalBalanceEnabled']);
 
+  // Vietnam time everywhere: the pages, the machine log and the exported log show the same wall clock whatever the time zone of the phone or the PC is.
+  const VN_TZ = 'Asia/Ho_Chi_Minh';
+  // The machine's clock (DS3231, set from NTP with the +7 offset) holds the Vietnam wall clock, and its epoch counts that wall clock as if it were UTC:
+  // a machine event of 14:00 in Vietnam arrives as 14:00 "UTC". Subtract the offset to get the real instant, then show it in Vietnam time.
+  const DEVICE_CLOCK_OFFSET_S = 7 * 3600;
+  const deviceEpochToMs = (epoch) => (Number(epoch) - DEVICE_CLOCK_OFFSET_S) * 1000;
+  const vnDateIso = (ms = Date.now()) => new Date(ms).toLocaleDateString('sv-SE', { timeZone: VN_TZ });      // YYYY-MM-DD
+  const vnDateTimeIso = (ms) => new Date(ms).toLocaleString('sv-SE', { timeZone: VN_TZ });                    // YYYY-MM-DD HH:mm:ss
+  const vnTime = (date, options) => date.toLocaleTimeString('vi-VN', { ...options, timeZone: VN_TZ });
+  const vnDate = (date, options) => date.toLocaleDateString('vi-VN', { ...options, timeZone: VN_TZ });
+  const vnDateTime = (date) => date.toLocaleString('vi-VN', { timeZone: VN_TZ });
+
   const DEFAULT_BATCH_META = Object.freeze({
     name: 'Mẻ ấp 01',
-    startDate: new Date().toISOString().slice(0, 10)
+    startDate: vnDateIso()
   });
 
   // Chu thich giu NGAN (~30 ky tu) de luon vua DUNG 1 DONG - CSS con chan
@@ -790,7 +802,7 @@
       ? epochOrDate
       : new Date(Number(epochOrDate) > 1000000000000 ? Number(epochOrDate) : Number(epochOrDate) * 1000);
     if (Number.isNaN(date.getTime())) return '--:--';
-    return date.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+    return vnTime(date, { hour: '2-digit', minute: '2-digit' });
   }
 
   function confirmAction({ title, message, accept = 'Xác nhận', danger = false }) {
@@ -1026,7 +1038,7 @@
       banner.append(line);
     }
     const note = document.createElement('small');
-    note.textContent = `Theo máy chủ lúc ${new Date(info.at).toLocaleTimeString('vi-VN')} · không phải dữ liệu realtime`;
+    note.textContent = `Theo máy chủ lúc ${vnTime(new Date(info.at))} · không phải dữ liệu realtime`;
     banner.append(note);
   }
 
@@ -1039,7 +1051,7 @@
 
   function freshnessText(device) {
     if (!device?.snapshotAt) return 'Đang chờ dữ liệu từ máy';
-    const time = new Date(device.snapshotAt).toLocaleString('vi-VN');
+    const time = vnDateTime(new Date(device.snapshotAt));
     if (device.dataSource === 'bootstrap' && !device.bootstrapTimeKnown)
       return `Bản lưu trên máy chủ · chưa biết tuổi dữ liệu · nhận lúc ${time}`;
     return connectionStatus(device) === 'online' ? `Dữ liệu live · ${time}` :
@@ -1049,10 +1061,10 @@
   function freshnessLabel(device) {
     if (!device?.snapshotAt) return '';
     const date = new Date(device.snapshotAt);
-    const clock = date.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const clock = vnTime(date, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     if (connectionStatus(device) === 'online') return `Live · ${clock}`;
     if (device.dataSource === 'bootstrap' && !device.bootstrapTimeKnown) return 'Máy chủ · tuổi chưa rõ';
-    const day = date.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: '2-digit' });
+    const day = vnDate(date, { day: '2-digit', month: '2-digit', year: '2-digit' });
     return `${device.dataSource === 'bootstrap' ? 'Máy chủ' : 'Lưu'} · ${day} ${clock.slice(0, 5)}`;
   }
 
@@ -1656,6 +1668,7 @@
 
     $('batchPill').textContent = runtime.batchRunning ? `NGÀY ${runtime.currentDay || 1}` : 'CHƯA BẮT ĐẦU';
     $('batchPill').className = runtime.batchRunning ? 'pill online' : 'pill soft';
+    syncBatchDayFields(currentDevice());
 
     // The total number of days can be changed during a batch too (the machine and the HMI allow it).
     const totalDaysInput = $('totalDays');
@@ -1874,6 +1887,26 @@
     window.addEventListener('resize', cancel, { passive: true });
   }
 
+  // The day of the batch and its start date are one thing seen two ways (the machine counts the days, see batch_day.h): the start date is today minus the days
+  // already incubated. Editing either one moves the other.
+  function isoToDayNumber(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+    return m ? Math.floor(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86400000) : NaN;
+  }
+  function dayNumberToIso(n) { return new Date(n * 86400000).toISOString().slice(0, 10); }
+  function startIsoFromBatchDay(day) { return dayNumberToIso(isoToDayNumber(vnDateIso()) - (Number(day) - 1)); }
+  function batchDayFromStartIso(iso) { return isoToDayNumber(vnDateIso()) - isoToDayNumber(iso) + 1; }
+  // The day of the batch comes from the start date alone (there is no separate day field): NaN when the date is not a valid day.
+  function batchDayInput() { const v = batchDayFromStartIso($('startDate')?.value); return Number.isInteger(v) ? v : NaN; }
+  // A running batch: the form shows the machine's own day and the date it implies (unless the user is editing the form).
+  function syncBatchDayFields(device) {
+    const runtime = device?.snapshot?.runtime;
+    if (!runtime || hasDirtyForm('batchForm')) return;
+    if (runtime.batchRunning && Number(runtime.currentDay) >= 1) {
+      $('startDate').value = startIsoFromBatchDay(runtime.currentDay);
+    }
+  }
+
   function hasDirtyForm(formId) {
     return Boolean(state.formFlags.get(formId)?.dirty);
   }
@@ -1925,6 +1958,7 @@
     if (!hasDirtyForm('batchForm') || force) {
       $('batchName').value = device.batchMeta.name;
       $('startDate').value = device.batchMeta.startDate;
+      syncBatchDayFields(device);
     }
 
     assign('temperatureForm', 'targetTemp', config.targetTemp);
@@ -1957,6 +1991,8 @@
     check('lightAlarmForm', 'lightAfterBatchAlarmEnabled', config.lightAfterBatchAlarmEnabled);
 
     assign('advancedForm', 'advMaxHeaterPower', config.maxHeaterPower);
+    assign('advancedForm', 'advSensorResolutionMode', config.sensorResolutionMode);
+    assign('advancedForm', 'advOvenGainMode', config.ovenGainMode);
     assign('advancedForm', 'advTempRateLimitC', config.tempRateLimitC);
     assign('advancedForm', 'advTempRateWindowSec', config.tempRateWindowSec);
     assign('advancedForm', 'advTempOscillationCrossLimit', config.tempOscillationCrossLimit);
@@ -2236,21 +2272,47 @@
     // gi ca - giong HMI (xem commitSetting() trong hmi.h). "batch" la hanh
     // dong BAT DAU ME (khong phai chi luu thong so) nen luon phai gui du
     // config trung, khong ap dung guard nay.
-    if (group !== 'batch' && configEquals(config, device.config)) return;
+    if (group !== 'batch' && configEquals(config, device.config)) {
+      setFormState(formId, 'saved', 'Không có thay đổi');
+      toast('Không có thay đổi để gửi tới máy');
+      return;
+    }
 
+    let daySent = false;
     if (group === 'batch') {
       device.batchMeta = {
         name: $('batchName').value.trim(),
         startDate: $('startDate').value
       };
       saveDeviceRuntime(device);
+      // A running batch: the day is the machine's own counter, so a changed day goes to the machine (kept in its EEPROM, shown on the HMI too).
+      const running = device.snapshot?.runtime;
+      const day = batchDayInput();
+      if (running?.batchRunning && Number.isInteger(day) && day !== Number(running.currentDay)) {
+        const ok = await confirmAction({
+          title: 'Đổi ngày ấp?',
+          message: `Máy đang ở ngày ${running.currentDay}. Máy sẽ đếm tiếp từ ngày ${day} (giờ trong ngày giữ nguyên) và lưu vào bộ nhớ máy.`,
+          accept: 'Đổi ngày ấp'
+        });
+        if (!ok) return;
+        daySent = await sendCommand('batch_set_day', { arg0: day });
+        if (!daySent) return;
+        setFormState(formId, 'pending', 'Đang gửi ngày ấp tới máy…');
+      }
     }
 
     const revision = nextRevision(device);
     const id = requestId('cfg');
     const patch = Object.fromEntries(Object.entries(config).filter(([key, value]) =>
       CONFIG_KEYS.includes(key) && !Object.is(value, device.config?.[key])));
-    if (!Object.keys(patch).length) return;
+    if (!Object.keys(patch).length) {
+      // Nothing the machine keeps changed (for the batch form: only the name or the start date, which live on the Web): say so and clear the "unsaved" mark
+      // instead of leaving the button looking dead.
+      if (daySent) return;                                          // the answer of the machine to the day command closes the form state
+      setFormState(formId, 'saved', 'Không có thay đổi');
+      toast(group === 'batch' ? 'Đã lưu tên mẻ trên Web · ngày bắt đầu sẽ gửi tới máy khi bấm Bắt đầu' : 'Không có thay đổi để gửi tới máy');
+      return;
+    }
     const payload = { v: Number(device.presence?.proto || 0) >= 2 ? 2 : PROTOCOL_VERSION,
       revision, requestId: id, config: patch };
     setFormState(formId, 'pending', 'Đang gửi tới máy…');
@@ -2499,6 +2561,9 @@
         addBatchLog(device, message);
       } else if (device.id === state.selectedId) setFormError('batchForm', '');
     }
+    if (pending.action === 'batch_set_day' && device.id === state.selectedId) {
+      setFormState('batchForm', ok ? 'saved' : 'error', ok ? 'Máy đã đổi ngày ấp' : message);
+    }
     if (pending.action === 'light_toggle') {
       if (ok && device.snapshot?.runtime) {
         device.snapshot.runtime.lightOn = !device.snapshot.runtime.lightOn;
@@ -2550,10 +2615,14 @@
     'STORAGE_ERROR': 'Máy không đọc được bộ nhớ mã kỹ thuật',
     'NOT_UNLOCKED': 'Chưa mở khóa kỹ thuật',
     'PENDING_HMI': 'Đã gửi · chờ xác nhận CÓ/KHÔNG trên màn hình máy (60 giây)',
+    'DA XOA DU LIEU HOC NHIET': 'Đã xóa dữ liệu học nhiệt, máy học lại từ đầu',
+    'DUNG ME TRUOC KHI XOA': 'Hãy dừng mẻ đang chạy trước khi xóa dữ liệu học nhiệt',
+    'LOI XOA DU LIEU HOC': 'Máy không xóa được dữ liệu học nhiệt',
     'BUSY_PENDING': 'Đang có một yêu cầu kỹ thuật chờ xác nhận trên máy',
     'TECH_BUSY': 'Đang có một yêu cầu kỹ thuật chờ xác nhận trên máy',
     'NO_NETWORK': 'Máy đang mất kết nối mạng',
-    'BATCH_LOCKED': 'Đang có mẻ ấp (hoặc đang chờ phục hồi mẻ) nên không đổi được thông số kỹ thuật',
+    'BATCH_LOCKED': 'Đang có mẻ ấp (hoặc đang chờ phục hồi mẻ): chỉ đổi được Bù nhiệt độ và Bù độ ẩm',
+    'OFFSET_STEP': 'Đang ấp: mỗi lần chỉ đổi Bù nhiệt độ tối đa 0,5 °C và Bù độ ẩm tối đa 5 %RH',
     'NO_CHANGE': 'Không có giá trị nào khác so với trên máy',
     'UNSUPPORTED': 'Firmware chưa hỗ trợ yêu cầu này',
     'INVALID_TECH_FIELD': 'Một thông số kỹ thuật nằm ngoài giới hạn cho phép',
@@ -2605,6 +2674,11 @@
     'DA HUY ME CU': 'Đã hủy mẻ cũ',
     'DA HUY - CHO XOA BO NHO': 'Đã hủy - đang chờ xóa bộ nhớ',
     'DA DUNG ME': 'Đã dừng mẻ ấp',
+    'NGAY AP > SO NGAY': 'Ngày ấp lớn hơn tổng số ngày ấp của mẻ',
+    'DA DOI NGAY AP': 'Đã đổi ngày ấp trên máy',
+    'NGAY AP KHONG DOI': 'Ngày ấp không đổi',
+    'DANG CHO TIEP TUC ME': 'Máy đang chờ tiếp tục mẻ sau mất điện, hãy xác nhận trên máy trước',
+    'LOI LUU NGAY AP': 'Máy không lưu được ngày ấp vào bộ nhớ',
     'DA DUNG - CHO XOA BO NHO': 'Đã dừng - đang chờ xóa bộ nhớ',
     'LOI HE THONG CHUA XOA': 'Còn lỗi hệ thống chưa được xóa',
     // F-12 (audit truoc phat hanh v3.7.1): chuoi nay gio duoc firmware sinh
@@ -2872,7 +2946,7 @@
     112: 'Nhiệt độ vượt ngưỡng khẩn cấp — mức nghiêm trọng nhất.',
     113: 'Tốc độ thay đổi nhiệt độ vượt ngưỡng bình thường.',
     114: 'Nhiệt độ dao động vượt biên độ cho phép quanh mức đặt.',
-    115: 'Thanh nhiệt đang bật nhưng nhiệt độ không tăng đủ.',
+    115: 'Máy đã yêu cầu thanh nhiệt gần hết công suất suốt 2 giờ mà nhiệt độ vẫn tụt (từ 1 °C trở lên).',
     116: 'Nhiệt độ rơi như khi cửa mở và chưa lên lại. Đóng cửa buồng ấp. Nếu cửa đã đóng mà nhiệt vẫn không lên thì kiểm tra thanh nhiệt (E115 sẽ báo).',
     120: 'Độ ẩm đang dưới ngưỡng cấu hình.',
     121: 'Độ ẩm đang vượt ngưỡng cấu hình.',
@@ -2968,7 +3042,7 @@
   function handleLog(device, event) {
     const entry = {
       sequence: Number(event.sequence || 0),
-      time: Number(event.epoch || 0) > 1700000000 ? Number(event.epoch) * 1000 : Date.now(),
+      time: Number(event.epoch || 0) > 1700000000 ? deviceEpochToMs(event.epoch) : Date.now(),
       message: eventText(event),
       duration: ''
     };
@@ -3271,7 +3345,9 @@
     ['heaterStuckMinRiseC', 'advHeaterStuckMinRiseC'], ['heaterStuckDurationSec', 'advHeaterStuckDurationSec'],
     ['tempRateLimitC', 'advTempRateLimitC'], ['tempRateWindowSec', 'advTempRateWindowSec'],
     ['tempOscillationCrossLimit', 'advTempOscillationCrossLimit'], ['tempOscillationWindowSec', 'advTempOscillationWindowSec'],
-    ['tempOffset', 'tempOffset'], ['humidityOffset', 'humidityOffset']]);
+    ['tempOffset', 'tempOffset'], ['humidityOffset', 'humidityOffset'],
+    ['sensorResolutionMode', 'advSensorResolutionMode'], ['ovenGainMode', 'advOvenGainMode']]);
+  const TECH_OFFSET_KEYS = Object.freeze(['tempOffset', 'humidityOffset']);
   const techUi = { requestId: '' };
 
   // What the device allows the Web to do. Unknown / old firmware => nothing technical is offered.
@@ -3306,13 +3382,17 @@
     const runtime = device?.snapshot?.runtime;
     if (!techSession(runtime)) return toast('Cần mở khóa bằng mã kỹ thuật trước');
     if (runtime?.tech?.pending) return toast('Đang có yêu cầu chờ xác nhận trên máy');
-    if (runtime?.batchRunning) return toast('Đang có mẻ chạy · không đổi được thông số kỹ thuật');
     if (!validateAdvancedForm()) return;
     const fields = buildTechFields(device);
     if (!Object.keys(fields).length) { $('techRequestStatus').textContent = 'Không có giá trị nào khác so với trên máy.'; return; }
+    // While a batch runs only the two sensor offsets may change (the machine still shows old/new and waits for CÓ).
+    if (runtime?.batchRunning && Object.keys(fields).some((key) => !TECH_OFFSET_KEYS.includes(key)))
+      return toast('Đang ấp · chỉ đổi được Bù nhiệt độ và Bù độ ẩm');
     const ok = await confirmAction({
       title: 'Gửi yêu cầu đổi thông số?',
-      message: `${Object.keys(fields).length} thông số sẽ được gửi. Máy hiện giá trị cũ/mới và chờ bạn bấm CÓ hoặc KHÔNG trong 60 giây.`,
+      message: runtime?.tech?.devMode === true
+        ? `${Object.keys(fields).length} thông số sẽ được gửi và áp dụng ngay (Chế độ nhà phát triển).`
+        : `${Object.keys(fields).length} thông số sẽ được gửi. Máy hiện giá trị cũ/mới và chờ bạn bấm CÓ hoặc KHÔNG trong 60 giây.`,
       accept: 'Gửi yêu cầu'
     });
     if (!ok) return;
@@ -3346,7 +3426,9 @@
     $('techLocked').hidden = !(gate.allowed && !gate.session);
     $('techActions').hidden = !gate.session;
     // the light tiles are the ones the Web may write: they open for editing only inside an unlocked technician session
-    for (const input of card.querySelectorAll('#advancedForm .advGrid:not(#advOverview) input')) input.disabled = !gate.session;
+    // while a batch runs only the two sensor offsets stay open
+    for (const input of card.querySelectorAll('#advancedForm .advGrid:not(#advOverview) input, #advancedForm .advGrid:not(#advOverview) select'))
+      input.disabled = !gate.session || (Boolean(runtime?.batchRunning) && !TECH_OFFSET_KEYS.includes(input.id));
     if (!gate.allowed) $('techPin').value = '';
     const mmss = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
     $('techSummary').textContent = !gate.allowed ? 'Mọi mục Nâng cao của máy'
@@ -3360,7 +3442,7 @@
     const mine = !techUi.requestId || tech.resultId === techUi.requestId;
     if (pending) $('techRequestStatus').textContent = `Đang chờ bạn bấm CÓ/KHÔNG trên màn hình máy · còn ${tech.pendingS || 0} giây`;
     else if (mine && TECH_RESULTS[Number(tech.result)] && techUi.requestId) $('techRequestStatus').textContent = TECH_RESULTS[Number(tech.result)];
-    $('techSendBtn').disabled = Boolean(pending) || !controlReady(device) || Boolean(runtime?.batchRunning);
+    $('techSendBtn').disabled = Boolean(pending) || !controlReady(device);
   }
 
   // Heater monitor: read-only. Only measured numbers; a missing value stays "—".
@@ -3439,7 +3521,7 @@
       const first = Number(lg.xs);
       for (let i = 0; i + 7 < lg.x.length; i += 8) {
         const idx = first + i / 8;
-        pidMon.log.set(idx, { ...pidMon.log.get(idx), safe: lg.x[i] / 100, hold: lg.x[i + 1] / 2, kair: lg.x[i + 2], tau: lg.x[i + 3], integ: lg.x[i + 4] / 4, vent: lg.x[i + 5], ctl: lg.x[i + 6], learn: lg.x[i + 7] });
+        pidMon.log.set(idx, { ...pidMon.log.get(idx), safe: lg.x[i] / 100, hold: lg.x[i + 1] / 2, kair: lg.x[i + 2], tau: lg.x[i + 3], lift: lg.x[i + 4] / 2, vent: lg.x[i + 5], ctl: lg.x[i + 6], learn: lg.x[i + 7] });
       }
     }
     while (pidMon.log.size > PM_LOG_MAX) pidMon.log.delete(pidMon.log.keys().next().value);
@@ -3462,21 +3544,22 @@
       const t = pidMon.logHeadAt - (pidMon.logHead - 1 - idx) * 10000;
       const diag = Number.isFinite(r.safe);
       rows.push([t, idx, r.pv, r.sp, r.pred, r.req, r.act, r.fl & 3, (r.fl & 4) ? 1 : 0, (r.fl & 8) ? 1 : 0, (r.fl & 16) ? 1 : 0, (r.fl & 32) ? 1 : 0, (r.fl & 64) ? 1 : 0, (r.fl & 128) ? 1 : 0, PM_STATES[r.st & 15] || '', Math.round(((r.st >> 4) & 15) * 100 / 15), 'machine',
-        diag ? r.safe : '', diag ? r.hold : '', diag ? r.kair : '', diag ? r.tau : '', diag ? r.integ : '',
+        diag ? r.safe : '', diag ? r.hold : '', diag ? r.kair : '', diag ? r.tau : '', diag ? r.lift : '',
         diag ? ((r.vent & 7) < PM_VENT_WHY.length ? PM_VENT_WHY[r.vent & 7] : String(r.vent & 7)) : '', diag ? pmVentState(r.vent) : '',
         diag ? (r.ctl & 1) : '', diag ? ((r.ctl >> 1) & 1) : '', diag ? ((r.ctl >> 2) & 3) : '', diag ? ((r.ctl >> 4) & 15) : '',
-        diag ? (r.learn & 3) : '', diag ? ((r.learn >> 2) & 1) : '', diag ? (r.learn >> 3) * 4 : '']);
+        diag ? (r.learn & 3) : '', diag ? ((r.learn >> 2) & 1) : '', diag ? (r.learn >> 3) : '']);
     }
     for (const r of pidMon.series) rows.push([r.t, '', r.pv, r.sp, '', r.req, r.act, '', '', r.vent, '', '', '', '', '', '', 'page', '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
     rows.sort((a, b) => a[0] - b[0]);
-    // The first 17 columns keep their place; the diagnostics are appended (safety reading, learned hold, heater gain x1e5, transit time, integral,
-    // why the overheat fan started, the state of that line, door guard, transit time measured, fan-budget tokens, ventReason, where the controller's
-    // numbers came from [0 priors, 1 oven restored, 2 oven + hold restored], whether a snapshot is stored, stable minutes so far in steps of 4).
+    // The first 17 columns keep their place; the diagnostics are appended (safety reading, learned hold, heater gain x1e5, transit time, the learning gain of the
+    // hold observer [1 = the oven follows; raised while the error does not shrink], why the overheat fan started, the state of that line, door guard, transit time
+    // measured, fan-budget tokens, ventReason, where kAir came from [0 prior, 1 typed by hand, 2 measured since power-up], whether the observer gain is raised,
+    // how many windows in a row the oven did not follow).
     const head = 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,trust_pct,source,' +
-      'safety_c,hold_pct,kair_e5,tau_s,integral_pct,vent_why,vent_line,door,identified,fan_tokens,vent_reason,learn_src,learn_saved,stable_min';
+      'safety_c,hold_pct,kair_e5,tau_s,obs_gain,vent_why,vent_line,door,identified,fan_tokens,vent_reason,kair_src,obs_boost,stalled_windows,time_vn';
     const cell = (v) => (typeof v === 'number' ? (Number.isFinite(v) ? String(v) : '') : String(v));
     return [`# mayap pid log device=${device?.id || ''} boot=${device?.bootId || ''} exported=${iso(Date.now())}`, head,
-      ...rows.map((r) => [iso(r[0]), ...r.slice(1)].map(cell).join(','))].join('\n') + '\n';
+      ...rows.map((r) => [iso(r[0]), ...r.slice(1), vnDateTimeIso(r[0])].map(cell).join(','))].join('\n') + '\n';
   }
 
   function pmDownload() {
@@ -3509,19 +3592,247 @@
     $('pmSummary').textContent = runtime?.pidMon?.valid
       ? `PV ${numberVi(values.pv, 2)}°C · SP ${numberVi(values.sp, 2)}°C · yêu cầu ${numberVi(values.req, 0)}%`
       : 'Chưa có số liệu (cảm biến chưa sẵn sàng hoặc firmware cũ)';
+
     const now = Date.now();
     if (runtime?.pidMon?.valid && now - pidMon.lastAt >= PM_SAMPLE_MS) {
       pidMon.lastAt = now;
-      pidMon.series.push({ t: now, pv: values.pv, sp: values.sp, req: values.req, act: values.act, vent: runtime.ventFanOn ? 1 : 0 });
+      const sPt = { t: now, pv: values.pv, sp: values.sp, req: values.req, act: values.act, vent: runtime.ventFanOn ? 1 : 0, ventWhy: (Number(runtime?.pidMon?.stt || 0) & 15), pred: values.pred };
+      pidMon.series.push(sPt);
       if (pidMon.series.length > PM_MAX_POINTS) pidMon.series.shift();
+      if (pmRecorder.active) pmRecorder.ingest(sPt);
     }
     if (!pidMon.raf && typeof requestAnimationFrame === 'function') {
       pidMon.raf = requestAnimationFrame(() => { pidMon.raf = 0; drawPidMonitorCharts(); });
     }
   }
 
-  function drawPmChart(canvas, series, layers, range) {
+  // --- Independent Zoom/Pan State for Charts ---
+  const pmCharts = {
+    temp: { zLo: 0, zHi: 1, isDrag: false, dragX: 0, dragLo: 0, dragHi: 1, hoverX: -1 },
+    power: { zLo: 0, zHi: 1, isDrag: false, dragX: 0, dragLo: 0, dragHi: 1, hoverX: -1 }
+  };
+
+  // --- 5-Slot Storage Manager (FIFO) ---
+  const PM_STORAGE_KEY = 'mayap.pid_records.v1';
+  const PM_MAX_SAVED = 5;
+  const pmStorage = {
+    list(deviceId) {
+      try {
+        const all = JSON.parse(localStorage.getItem(PM_STORAGE_KEY) || '[]');
+        return Array.isArray(all) ? (deviceId ? all.filter((r) => r.deviceId === deviceId) : all) : [];
+      } catch (_) { return []; }
+    },
+    get(id) {
+      return this.list().find((r) => r.id === id) || null;
+    },
+    save(record) {
+      try {
+        let list = this.list();
+        list = list.filter((r) => r.id !== record.id);
+        while (list.length >= PM_MAX_SAVED) list.shift();
+        list.push(record);
+        localStorage.setItem(PM_STORAGE_KEY, JSON.stringify(list));
+        pmUpdateRecordCount();
+        return true;
+      } catch (_) {
+        toast('Bộ nhớ lưu trữ trình duyệt đầy, vui lòng dọn bớt bản ghi');
+        return false;
+      }
+    },
+    delete(id) {
+      try {
+        let list = this.list().filter((r) => r.id !== id);
+        localStorage.setItem(PM_STORAGE_KEY, JSON.stringify(list));
+        pmUpdateRecordCount();
+      } catch (_) {}
+    },
+    clearAll(deviceId) {
+      try {
+        let list = deviceId ? this.list().filter((r) => r.deviceId !== deviceId) : [];
+        localStorage.setItem(PM_STORAGE_KEY, JSON.stringify(list));
+        pmUpdateRecordCount();
+      } catch (_) {}
+    }
+  };
+
+  function pmUpdateRecordCount() {
+    const el = $('pmRecordCount');
+    if (el) el.textContent = String(pmStorage.list(currentDevice()?.id).length);
+  }
+
+  // --- 24-Hour Recorder Controller ---
+  const PM_REC_KEY = 'mayap.pid_rec_active';
+  const PM_MAX_REC_SAMPLES = 8640; // 24 hours @ 10s
+  const pmRecorder = {
+    active: false,
+    deviceId: '',
+    startedAt: 0,
+    samples: [],
+    timer: null,
+    init() {
+      try {
+        const raw = localStorage.getItem(PM_REC_KEY);
+        if (raw) {
+          const st = JSON.parse(raw);
+          if (st && st.active && st.deviceId) {
+            this.active = true;
+            this.deviceId = st.deviceId;
+            this.startedAt = Number(st.startedAt || Date.now());
+            this.samples = Array.isArray(st.samples) ? st.samples : [];
+            this.startTimer();
+          }
+        }
+      } catch (_) {}
+      this.updateBtn();
+    },
+    start(device) {
+      if (!device) { toast('Chưa chọn máy để ghi'); return; }
+      this.active = true;
+      this.deviceId = device.id;
+      this.startedAt = Date.now();
+      this.samples = [];
+      this.saveState();
+      this.startTimer();
+      toast('Đã bắt đầu ghi log 24h. Hệ thống lưu tự động.');
+    },
+    startTimer() {
+      if (this.timer) clearInterval(this.timer);
+      this.timer = setInterval(() => this.tick(), 1000);
+      this.updateBtn();
+    },
+    tick() {
+      if (!this.active) return;
+      const elapsed = Date.now() - this.startedAt;
+      if (elapsed >= 24 * 3600 * 1000 || this.samples.length >= PM_MAX_REC_SAMPLES) {
+        this.stop(true);
+        toast('Đã ghi đủ 24h dữ liệu! Bản ghi đã được lưu an toàn.');
+        return;
+      }
+      this.updateBtn();
+    },
+    ingest(s) {
+      if (!this.active || !s) return;
+      this.samples.push(s);
+      if (this.samples.length % 6 === 0) this.saveState();
+      if (this.samples.length >= PM_MAX_REC_SAMPLES) this.stop(true);
+    },
+    saveState() {
+      try {
+        localStorage.setItem(PM_REC_KEY, JSON.stringify({
+          active: this.active,
+          deviceId: this.deviceId,
+          startedAt: this.startedAt,
+          samples: this.samples
+        }));
+      } catch (_) {}
+    },
+    stop(auto = false) {
+      if (!this.active) return;
+      if (this.timer) { clearInterval(this.timer); this.timer = null; }
+      const duration = Date.now() - this.startedAt;
+      const startStr = `${vnTime(new Date(this.startedAt), { hour: '2-digit', minute: '2-digit' })} ${vnDate(new Date(this.startedAt))}`;
+      if (this.samples.length > 0) {
+        const record = {
+          id: 'rec_' + Date.now(),
+          name: `Bản ghi ${startStr} (${this.samples.length} mẫu)`,
+          deviceId: this.deviceId,
+          startedAt: this.startedAt,
+          endedAt: Date.now(),
+          sampleCount: this.samples.length,
+          durationMs: duration,
+          samples: [...this.samples]
+        };
+        pmStorage.save(record);
+        if (!auto) toast(`Đã lưu bản ghi: ${this.samples.length} mẫu`);
+      } else if (!auto) {
+        toast('Bản ghi rỗng, không lưu');
+      }
+      this.active = false;
+      this.samples = [];
+      try { localStorage.removeItem(PM_REC_KEY); } catch (_) {}
+      this.updateBtn();
+    },
+    updateBtn() {
+      const btn = $('pmRecordBtn'), text = $('pmRecordBtnText');
+      if (!btn || !text) return;
+      if (this.active) {
+        btn.classList.add('isRecording');
+        const elapsedSec = Math.floor((Date.now() - this.startedAt) / 1000);
+        const h = String(Math.floor(elapsedSec / 3600)).padStart(2, '0');
+        const m = String(Math.floor((elapsedSec % 3600) / 60)).padStart(2, '0');
+        const s = String(elapsedSec % 60).padStart(2, '0');
+        text.textContent = `⏹ Dừng & Lưu (${h}:${m}:${s} | ${this.samples.length} mẫu)`;
+      } else {
+        btn.classList.remove('isRecording');
+        text.textContent = 'Bắt đầu ghi 24h';
+      }
+    }
+  };
+
+  function pmDownloadRecordCsv(record) {
+    if (!record || !record.samples || record.samples.length === 0) {
+      toast('Bản ghi không có số liệu');
+      return;
+    }
+    const iso = (t) => new Date(t).toISOString();
+    const head = 'time_utc,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,vent_fan,vent_why,time_vn';
+    const rows = record.samples.map((s) => [
+      iso(s.t), s.pv, s.sp, s.pred != null ? s.pred : '', s.req, s.act, s.vent ? 1 : 0, s.ventWhy || 0, vnDateTimeIso(s.t)
+    ].join(','));
+    const content = `# mayap pid 24h log device=${record.deviceId || ''} name="${record.name}"\n${head}\n${rows.join('\n')}\n`;
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `mayap-log-24h-${record.deviceId || 'device'}-${new Date(record.startedAt).toISOString().replace(/[-:]/g, '').slice(0, 15)}.csv`;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+
+  function pmOpenHistoryDialog() {
+    const dialog = $('pmHistoryDialog'), listEl = $('pmHistoryList');
+    if (!dialog || !listEl) return;
+    const records = pmStorage.list(currentDevice()?.id);
+    listEl.innerHTML = '';
+    if (records.length === 0) {
+      listEl.innerHTML = '<div class="pmHistoryEmpty">Chưa có bản ghi nào. Bấm "Bắt đầu ghi 24h" để tạo bản ghi.</div>';
+    } else {
+      records.slice().reverse().forEach((r) => {
+        const card = document.createElement('div');
+        card.className = 'pmHistoryCard';
+        const durMins = Math.max(1, Math.round((r.durationMs || 0) / 60000));
+        const hours = Math.floor(durMins / 60), mins = durMins % 60;
+        const durText = hours > 0 ? `${hours}h ${mins}m` : `${mins} phút`;
+        card.innerHTML = `
+          <div class="pmHistoryCardInfo">
+            <strong>${r.name}</strong>
+            <small>Thời lượng: ${durText} · ${r.sampleCount || 0} mẫu</small>
+          </div>
+          <div class="pmHistoryCardActions">
+            <button class="ghost small pmHistCsvBtn" type="button">📥 CSV</button>
+            <button class="ghost small danger pmHistDelBtn" type="button">🗑</button>
+          </div>
+        `;
+        card.querySelector('.pmHistCsvBtn')?.addEventListener('click', () => {
+          pmDownloadRecordCsv(r);
+        });
+        card.querySelector('.pmHistDelBtn')?.addEventListener('click', () => {
+          if (confirm(`Xóa "${r.name}"?`)) {
+            pmStorage.delete(r.id);
+            pmOpenHistoryDialog();
+          }
+        });
+        listEl.appendChild(card);
+      });
+    }
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    else dialog.setAttribute('open', '');
+  }
+
+  function drawPmChart(canvas, series, layers, range, chartKey) {
     if (!canvas) return;
+    const key = chartKey || (canvas.id === 'pmPowerChart' ? 'power' : 'temp');
+    const cState = pmCharts[key] || { zLo: 0, zHi: 1, hoverX: -1 };
     const wrap = canvas.parentElement;
     const w = Math.max(1, Math.floor(wrap?.clientWidth || 300)), h = 150;
     const dpr = Math.max(1, Math.min(2, Number(window.devicePixelRatio) || 1));
@@ -3534,45 +3845,224 @@
     const left = 34, right = 6, top = 6, bottom = 16;
     const color = getComputedStyle(canvas).color || '#888';
     ctx.font = '10px system-ui, sans-serif'; ctx.fillStyle = color; ctx.strokeStyle = color; ctx.globalAlpha = 1;
-    if (series.length < 2) { ctx.fillText('Đang thu thập số liệu từ máy…', left, h / 2); return; }
+    if (!series || series.length < 2) { ctx.fillText('Đang thu thập số liệu từ máy…', left, h / 2); return; }
+
     const t0 = series[0].t, t1 = series[series.length - 1].t;
-    const x = (t) => left + (w - left - right) * ((t - t0) / Math.max(1, t1 - t0));
+    const totalSpan = Math.max(1, t1 - t0);
+    const tStart = t0 + totalSpan * (cState.zLo || 0);
+    const tEnd = t0 + totalSpan * (cState.zHi == null ? 1 : cState.zHi);
+    const visibleSpan = Math.max(1, tEnd - tStart);
+
+    const visible = [];
+    for (let i = 0; i < series.length; ++i) {
+      const p = series[i];
+      if (p.t >= tStart && p.t <= tEnd) {
+        if (visible.length === 0 && i > 0) visible.push(series[i - 1]);
+        visible.push(p);
+      } else if (p.t > tEnd) {
+        visible.push(p);
+        break;
+      }
+    }
+    if (visible.length < 2) {
+      visible.length = 0;
+      visible.push(series[0], series[series.length - 1]);
+    }
+
+    const x = (t) => left + (w - left - right) * ((t - tStart) / visibleSpan);
     let lo = range.lo, hi = range.hi;
     if (range.auto) {
-      const vals = layers.flatMap((l) => series.map((p) => p[l.key])).filter(Number.isFinite);
-      lo = Math.min(...vals) - 0.1; hi = Math.max(...vals) + 0.1;
+      const vals = layers.flatMap((l) => visible.map((p) => p[l.key])).filter(Number.isFinite);
+      lo = vals.length > 0 ? Math.min(...vals) - 0.1 : 36.5;
+      hi = vals.length > 0 ? Math.max(...vals) + 0.1 : 38.5;
       if (hi - lo < 0.6) { const mid = (hi + lo) / 2; lo = mid - 0.3; hi = mid + 0.3; }
     }
     const y = (v) => top + (h - top - bottom) * (1 - (v - lo) / Math.max(1e-6, hi - lo));
+
     ctx.globalAlpha = 0.25; ctx.beginPath();
     for (let i = 0; i <= 3; i += 1) { const gy = top + (h - top - bottom) * i / 3; ctx.moveTo(left, gy); ctx.lineTo(w - right, gy); }
     ctx.stroke(); ctx.globalAlpha = 1;
     for (let i = 0; i <= 3; i += 1) ctx.fillText((hi - (hi - lo) * i / 3).toFixed(range.auto ? 1 : 0), 2, top + (h - top - bottom) * i / 3 + 3);
+
     if (range.vent) {
       ctx.fillStyle = 'rgba(128,128,128,0.28)';
       let start = null;
-      for (const p of series) {
+      for (const p of visible) {
         if (p.vent && start === null) start = p.t;
-        if ((!p.vent || p === series[series.length - 1]) && start !== null) { ctx.fillRect(x(start), top, Math.max(1, x(p.t) - x(start)), h - top - bottom); start = null; }
+        if ((!p.vent || p === visible[visible.length - 1]) && start !== null) {
+          const x0 = Math.max(left, x(start)), x1 = Math.min(w - right, x(p.t));
+          if (x1 > x0) ctx.fillRect(x0, top, x1 - x0, h - top - bottom);
+          start = null;
+        }
       }
     }
+
     for (const layer of layers) {
       ctx.strokeStyle = layer.color; ctx.lineWidth = 1.6; ctx.setLineDash(layer.dash || []); ctx.beginPath();
       let moved = false;
-      for (const p of series) { const v = p[layer.key]; if (!Number.isFinite(v)) { moved = false; continue; }
-        if (moved) ctx.lineTo(x(p.t), y(v)); else { ctx.moveTo(x(p.t), y(v)); moved = true; } }
+      for (const p of visible) {
+        const v = p[layer.key];
+        if (!Number.isFinite(v)) { moved = false; continue; }
+        const px = Math.max(left, Math.min(w - right, x(p.t)));
+        if (moved) ctx.lineTo(px, y(v));
+        else { ctx.moveTo(px, y(v)); moved = true; }
+      }
       ctx.stroke();
     }
     ctx.setLineDash([]); ctx.fillStyle = color;
-    const minutes = Math.max(1, Math.round((t1 - t0) / 60000));
-    ctx.fillText(`${minutes} phút gần nhất`, left, h - 3);
+
+    // Hover tooltip & Crosshair
+    if (cState.hoverX != null && cState.hoverX >= left && cState.hoverX <= w - right) {
+      const hoverTime = tStart + visibleSpan * ((cState.hoverX - left) / (w - left - right));
+      let closestPt = null, minDt = Infinity;
+      for (const p of visible) {
+        const dt = Math.abs(p.t - hoverTime);
+        if (dt < minDt) { minDt = dt; closestPt = p; }
+      }
+
+      if (closestPt) {
+        const cx = Math.max(left, Math.min(w - right, x(closestPt.t)));
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 1; ctx.setLineDash([2, 2]);
+        ctx.beginPath(); ctx.moveTo(cx, top); ctx.lineTo(cx, h - bottom); ctx.stroke();
+        ctx.setLineDash([]);
+
+        const lines = [`${vnTime(new Date(closestPt.t))} ${vnDate(new Date(closestPt.t))}`];
+        if (key === 'temp') {
+          lines.push(`PV: ${numberVi(closestPt.pv, 2)}°C  SP: ${numberVi(closestPt.sp, 2)}°C`);
+          if (Number.isFinite(closestPt.pred)) lines.push(`Dự đoán: ${numberVi(closestPt.pred, 2)}°C  Lệch: ${numberVi(closestPt.sp - closestPt.pv, 2)}°C`);
+        } else {
+          lines.push(`Yêu cầu: ${numberVi(closestPt.req, 1)}%  SSR TB: ${numberVi(closestPt.act, 1)}%`);
+          if (closestPt.vent) {
+            const whyText = PM_VENT_WHY[closestPt.ventWhy & 7] || '';
+            const ventLabel = whyText === 'stuck' ? 'Quá nhiệt: Đứng nhiệt' :
+              whyText === 'fast' ? 'Quá nhiệt: Tăng tốc' :
+              whyText === 'floor' ? 'Quá nhiệt: Sưởi sàn min' :
+              whyText === 'predicted' ? 'Quá nhiệt: Dự đoán vọt' : 'Quạt hút hoạt động';
+            lines.push(`Quạt hút: ${ventLabel}`);
+          }
+        }
+
+        const boxW = 168, boxH = 14 + lines.length * 13;
+        const boxX = cx + 8 + boxW > w - right ? cx - 8 - boxW : cx + 8;
+        const boxY = top + 4;
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+        ctx.fillRect(boxX, boxY, boxW, boxH);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+        ctx.strokeRect(boxX, boxY, boxW, boxH);
+        ctx.font = '9px system-ui, sans-serif';
+        for (let li = 0; li < lines.length; ++li) {
+          ctx.fillStyle = li === 0 ? '#94a3b8' : (li === lines.length - 1 && lines[li].startsWith('Quạt hút') ? '#f6c343' : '#f8fafc');
+          ctx.fillText(lines[li], boxX + 6, boxY + 12 + li * 13);
+        }
+      }
+    }
+
+    const minutes = Math.max(1, Math.round(visibleSpan / 60000));
+    ctx.font = '10px system-ui, sans-serif'; ctx.fillStyle = color;
+    const isZoomed = (cState.zLo || 0) > 0 || (cState.zHi == null ? 1 : cState.zHi) < 1;
+    ctx.fillText(isZoomed ? `${minutes} phút đang xem (cuộn để zoom, kéo trượt)` : `${minutes} phút gần nhất`, left, h - 3);
+  }
+
+  function bindPmChartCanvas(canvas, chartKey) {
+    if (!canvas || canvas._pmBound) return;
+    canvas._pmBound = true;
+    const cState = pmCharts[chartKey];
+
+    canvas.addEventListener?.('wheel', (e) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const xRatio = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+      const factor = e.deltaY < 0 ? 0.75 : 1.33;
+      const span = (cState.zHi || 1) - (cState.zLo || 0);
+      const newSpan = Math.max(0.01, Math.min(1, span * factor));
+      const center = (cState.zLo || 0) + span * xRatio;
+      cState.zLo = Math.max(0, center - newSpan * xRatio);
+      cState.zHi = Math.min(1, cState.zLo + newSpan);
+      if (cState.zHi === 1) cState.zLo = Math.max(0, 1 - newSpan);
+      drawPidMonitorCharts();
+    }, { passive: false });
+
+    canvas.addEventListener?.('pointerdown', (e) => {
+      cState.isDrag = true;
+      cState.dragX = e.clientX;
+      cState.dragLo = cState.zLo || 0;
+      cState.dragHi = cState.zHi == null ? 1 : cState.zHi;
+      try { canvas.setPointerCapture?.(e.pointerId); } catch (_) {}
+    });
+
+    canvas.addEventListener?.('pointermove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      cState.hoverX = e.clientX - rect.left;
+      if (cState.isDrag) {
+        const dx = (e.clientX - cState.dragX) / Math.max(1, rect.width);
+        const span = cState.dragHi - cState.dragLo;
+        cState.zLo = Math.max(0, Math.min(1 - span, cState.dragLo - dx));
+        cState.zHi = cState.zLo + span;
+      }
+      drawPidMonitorCharts();
+    });
+
+    const endDrag = () => { cState.isDrag = false; };
+    canvas.addEventListener?.('pointerup', endDrag);
+    canvas.addEventListener?.('pointercancel', endDrag);
+    canvas.addEventListener?.('mouseleave', () => {
+      cState.isDrag = false;
+      cState.hoverX = -1;
+      drawPidMonitorCharts();
+    });
+
+    canvas.addEventListener?.('dblclick', () => {
+      cState.zLo = 0; cState.zHi = 1;
+      drawPidMonitorCharts();
+    });
+  }
+
+  function bindPmChartToolbars() {
+    document.querySelectorAll?.('.pmChartToolbar button')?.forEach((btn) => {
+      btn.addEventListener?.('click', () => {
+        const toolbar = btn.closest('.pmChartToolbar');
+        const chartKey = toolbar?.dataset.chart;
+        if (!chartKey || !pmCharts[chartKey]) return;
+        const cState = pmCharts[chartKey];
+        const action = btn.dataset.action;
+        const series = pidMon.series;
+        if (!series || series.length < 2) return;
+        const t0 = series[0].t, t1 = series[series.length - 1].t;
+        const totalSpan = Math.max(1, t1 - t0);
+
+        if (action === 'in') {
+          const span = (cState.zHi - cState.zLo) * 0.7;
+          const mid = (cState.zLo + cState.zHi) / 2;
+          cState.zLo = Math.max(0, mid - span / 2);
+          cState.zHi = Math.min(1, cState.zLo + span);
+        } else if (action === 'out') {
+          const span = Math.min(1, (cState.zHi - cState.zLo) * 1.4);
+          const mid = (cState.zLo + cState.zHi) / 2;
+          cState.zLo = Math.max(0, mid - span / 2);
+          cState.zHi = Math.min(1, cState.zLo + span);
+        } else if (action === 'reset') {
+          cState.zLo = 0; cState.zHi = 1;
+        } else if (action === '1h') {
+          const target = Math.min(1, (3600 * 1000) / totalSpan);
+          cState.zLo = Math.max(0, 1 - target); cState.zHi = 1;
+        } else if (action === '6h') {
+          const target = Math.min(1, (6 * 3600 * 1000) / totalSpan);
+          cState.zLo = Math.max(0, 1 - target); cState.zHi = 1;
+        } else if (action === '24h') {
+          const target = Math.min(1, (24 * 3600 * 1000) / totalSpan);
+          cState.zLo = Math.max(0, 1 - target); cState.zHi = 1;
+        }
+        drawPidMonitorCharts();
+      });
+    });
   }
 
   function drawPidMonitorCharts() {
     if (!pidMon.open) return;
-    drawPmChart($('pmTempChart'), pidMon.series, [{ key: 'pv', color: '#d9534f' }, { key: 'sp', color: '#2f80ed' }], { auto: true });
-    drawPmChart($('pmPowerChart'), pidMon.series, [{ key: 'req', color: '#f2994a' }, { key: 'act', color: '#9b51e0', dash: [4, 3] }],
-      { lo: 0, hi: 100, vent: true });
+    const series = pidMon.series;
+    drawPmChart($('pmTempChart'), series, [{ key: 'pv', color: '#d9534f' }, { key: 'sp', color: '#2f80ed' }], { auto: true }, 'temp');
+    drawPmChart($('pmPowerChart'), series, [{ key: 'req', color: '#f2994a' }, { key: 'act', color: '#9b51e0', dash: [4, 3] }],
+      { lo: 0, hi: 100, vent: true }, 'power');
   }
 
   function sendSession(deviceId, active = true, sync = false) {
@@ -3876,6 +4366,9 @@
     if (!$('batchName').value.trim()) return invalidate('batchForm', 'batchName', 'Hãy nhập tên mẻ ấp.');
     if (!$('startDate').value) return invalidate('batchForm', 'startDate', 'Hãy chọn ngày bắt đầu.');
     const days = Number($('totalDays').value);
+    const day = batchDayInput();
+    if (!(day >= 1)) return invalidate('batchForm', 'startDate', 'Ngày bắt đầu không được ở tương lai.');
+    if (!(day <= days)) return invalidate('batchForm', 'startDate', `Ngày bắt đầu quá xa: ngày ấp hiện tại sẽ lớn hơn tổng số ngày ấp (${days}).`);
     const temperature = Number($('batchTarget').value);
     const humidity = Number($('lowHumidityAlarm').value);
     if (!(days >= 1 && days <= 40)) return invalidate('batchForm', 'totalDays', 'Tổng số ngày ấp phải từ 1 đến 40 ngày.');
@@ -4341,7 +4834,8 @@
         if (!validateBatchForm()) return;
         const ok = await confirmAction({
           title: 'Bắt đầu mẻ ấp?',
-          message: `Máy sẽ bắt đầu mẻ “${$('batchName').value.trim()}” theo cấu hình đã được máy xác nhận.`,
+          message: `Máy sẽ bắt đầu mẻ “${$('batchName').value.trim()}” theo cấu hình đã được máy xác nhận` +
+            (batchDayInput() > 1 ? `, tính từ ngày ${batchDayInput()}/${$('totalDays').value} (đã ấp ${batchDayInput() - 1} ngày).` : '.'),
           accept: 'Bắt đầu mẻ'
         });
         if (!ok) return;
@@ -4355,7 +4849,7 @@
         }
         setFormError('batchForm', '');
         beginBatchActionPending(device, 'running');
-        if (!await sendCommand('batch_start')) {
+        if (!await sendCommand('batch_start', batchDayInput() > 1 ? { arg0: batchDayInput() } : {})) {
           clearBatchActionPending(device);
           renderBatchAction(device);
         }
@@ -4453,9 +4947,41 @@
     });
 
     $('advancedForm').addEventListener('submit', (event) => { event.preventDefault(); submitTechRequest(); });
+    $('thermalLearnClearBtn')?.addEventListener('click', async () => {
+      // Developer mode only (the machine checks it again, and refuses while a batch runs). Otherwise it is done on the machine: Nâng cao → Xóa dữ liệu học nhiệt.
+      const isDev = device?.snapshot?.runtime?.tech?.devMode === true;
+      if (!isDev) { toast('Xóa dữ liệu học nhiệt từ Web cần Chế độ nhà phát triển. Hoặc làm trên máy: Nâng cao → Xóa dữ liệu học nhiệt.', 8000); return; }
+      const ok = await confirmAction({
+        title: 'Xóa dữ liệu học nhiệt?',
+        message: 'Bộ điều khiển nhiệt quay về giá trị khởi đầu và học lại từ đầu. Chỉ làm được khi đã dừng mẻ.',
+        accept: 'Xóa',
+        danger: true,
+      });
+      if (ok) { sendCommand('thermal_learn_clear'); toast('Đã gửi lệnh xóa dữ liệu học nhiệt.', 6000); }
+    });
     $('techUnlockForm').addEventListener('submit', (event) => { event.preventDefault(); submitTechUnlock(); });
     $('techLockBtn').addEventListener('click', () => { sendCommand('tech_lock'); });
     $('pmDownload')?.addEventListener('click', pmDownload);
+    $('pmRecordBtn')?.addEventListener('click', () => {
+      if (pmRecorder.active) pmRecorder.stop();
+      else pmRecorder.start(currentDevice());
+    });
+    $('pmHistoryBtn')?.addEventListener('click', pmOpenHistoryDialog);
+    $('pmHistoryClose')?.addEventListener('click', () => $('pmHistoryDialog')?.close());
+    $('pmHistoryCloseBtn')?.addEventListener('click', () => $('pmHistoryDialog')?.close());
+    $('pmHistoryClearAll')?.addEventListener('click', () => {
+      if (confirm('Xóa toàn bộ các bản ghi đã lưu của máy này?')) {
+        pmStorage.clearAll(currentDevice()?.id);
+        pmOpenHistoryDialog();
+      }
+    });
+
+    bindPmChartCanvas($('pmTempChart'), 'temp');
+    bindPmChartCanvas($('pmPowerChart'), 'power');
+    bindPmChartToolbars();
+    pmRecorder.init();
+    pmUpdateRecordCount();
+
     $('pidMonitorCard').addEventListener('toggle', () => {
       pidMon.open = $('pidMonitorCard').open;
       if (state.selectedId) sendSession(state.selectedId, true, pidMon.open);

@@ -33,7 +33,7 @@ typedef int portMUX_TYPE;
 #include "tech_request.h"
 struct MachineConfig{float kp=5,ki=0.1f,kd=30,tempOffset=0,humidityOffset=0,heaterStuckMinRiseC=0.3f,tempRateLimitC=2,autotuneBandC=0.2f;
  uint16_t pidCycleSec=2,heaterStuckDurationSec=600,tempRateWindowSec=300,tempOscillationWindowSec=900;
- uint8_t maxHeaterPower=100,tempOscillationCrossLimit=6,autotuneRelayPowerPercent=40;bool adaptiveThermalBalanceEnabled=false,humidifierInstalled=false;};
+ uint8_t maxHeaterPower=100,tempOscillationCrossLimit=6,autotuneRelayPowerPercent=40,sensorResolutionMode=0,ovenGainMode=0;bool adaptiveThermalBalanceEnabled=false,humidifierInstalled=false;};
 static HmiCommand commandQueue[4];static uint8_t commandTail=0,commandHead=0,commandCount=0,commandOutstandingCount=0;static uint32_t nextCommandId=1;
 bool commandConflictLocked(HmiCommandType){return false;}void showToast(const char*,bool){}void buzzerPlayCue(BuzzerCue){}
 #include "actual-transaction-hmi.inc"
@@ -130,6 +130,11 @@ static void techTests(){
  { JsonDocument d=techCommand("firmware_rollback");handleCommandMessage(d);assert(acks.back()=="rejected"&&commandCount==0); }
  reset();knownRuntime.tech.devMode=true;
  { JsonDocument d=techCommand("firmware_rollback");handleCommandMessage(d);assert(acks.back()!="rejected"&&commandCount==1&&lastQueued().type==HmiCommandType::FirmwareRollback); }
+ // "clear the thermal learning data" from the Web (3.0.21): developer mode only; the machine refuses while a batch runs
+ reset();knownRuntime.tech.devMode=false;
+ { JsonDocument d=techCommand("thermal_learn_clear");handleCommandMessage(d);assert(acks.back()=="rejected"&&commandCount==0); }
+ reset();knownRuntime.tech.devMode=true;
+ { JsonDocument d=techCommand("thermal_learn_clear");handleCommandMessage(d);assert(acks.back()!="rejected"&&commandCount==1&&lastQueued().type==HmiCommandType::ClearThermalLearn); }
  knownRuntime.tech.webCtlMask=63;knownRuntime.tech.devMode=false;
  // saturation: a full tracker / full queue leaves nothing parked
  reset();techState(true,true);for(auto &p:pendingCommands)p.used=true;

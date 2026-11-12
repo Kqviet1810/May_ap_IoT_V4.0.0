@@ -14,7 +14,7 @@ constexpr uint8_t RequestIdCapacity = 40;
 struct Staged {
   bool used = false;
   Kind kind = Kind::None;
-  uint16_t mask = 0;
+  uint32_t mask = 0;
   AdvancedHistory::Snapshot values;
   char requestId[RequestIdCapacity] = "";
 };
@@ -22,7 +22,7 @@ inline Staged &staged() { static Staged s; return s; }
 inline portMUX_TYPE &stagedMux() { static portMUX_TYPE m = portMUX_INITIALIZER_UNLOCKED; return m; }
 
 // false = a previous request is still waiting to be taken (the caller answers "busy").
-inline bool stage(Kind kind, uint16_t mask, const AdvancedHistory::Snapshot &values, const char *requestId) {
+inline bool stage(Kind kind, uint32_t mask, const AdvancedHistory::Snapshot &values, const char *requestId) {
   bool ok = false;
   portENTER_CRITICAL(&stagedMux());
   if (!staged().used) {
