@@ -273,32 +273,49 @@ async function claim(request, env, auth, data) {
     .bind(auth.user_sub,id,now,id).run();
   const owner=await env.DB.prepare("SELECT user_sub FROM user_devices WHERE device_id=? AND role='owner'").bind(id).first();
   if (owner?.user_sub!==auth.user_sub) {
-    // A second account: only while the machine itself (HMI, Nang cao) has switched "Che do 2 tai khoan" on, only one slot, only once.
+    // Another account: only while the machine itself (HMI, Nang cao) has switched "Che do tai khoan" on, only as many as it allows (1 or 2 more), only once each.
     const member=await env.DB.prepare('SELECT role FROM user_devices WHERE device_id=? AND user_sub=?').bind(id,auth.user_sub).first();
     if (!member) {
       await env.DB.prepare(`INSERT OR IGNORE INTO user_devices(user_sub,device_id,role,created_at)
-        SELECT ?,?,'operator',? WHERE EXISTS(SELECT 1 FROM device_guest_mode WHERE device_id=? AND enabled=1 AND join_until>?)
-        AND NOT EXISTS(SELECT 1 FROM user_devices WHERE device_id=? AND role!='owner')`)
-        .bind(auth.user_sub,id,now,id,now,id).run();
+        SELECT ?,?,'operator',? WHERE EXISTS(SELECT 1 FROM device_guest_mode g WHERE g.device_id=? AND g.enabled=1 AND g.join_until>?
+          AND (SELECT COUNT(*) FROM user_devices u WHERE u.device_id=g.device_id AND u.role!='owner') < g.slots)`)
+        .bind(auth.user_sub,id,now,id,now).run();
       const joined=await env.DB.prepare('SELECT role FROM user_devices WHERE device_id=? AND user_sub=?').bind(id,auth.user_sub).first();
       if (!joined) return json({success:false,error:'GUEST_MODE_OFF',
-        message:'Máy đã có chủ. Muốn thêm tài khoản thứ hai: trên HMI vào Nâng cao > Chế độ 2 tài khoản, bật rồi thử lại.'},409);
+        message:'Máy đã có chủ. Muốn thêm tài khoản: trên HMI vào Nâng cao > Chế độ tài khoản, chọn 2 hoặc 3 tài khoản rồi thử lại. Nếu đã đủ số tài khoản thì không thêm được nữa.'},409);
     }
   }
   return json({success:true,device_id:id,device_name:device.device_name || id});
 }
 
-// "Che do 2 tai khoan" - authenticated by the machine's device key (physical presence: the HMI is the only switch), like reset-pin.
+// "Che do tai khoan" - authenticated by the machine's device key (physical presence: the HMI is the only switch), like reset-pin.
+// slots = how many MORE accounts may join (1 or 2: two or three accounts in all); a firmware that does not send it keeps the one slot it always had.
 const GUEST_JOIN_WINDOW_MS = 15 * 60 * 1000;
 async function guestState(env, id, now) {
-  const row = await env.DB.prepare('SELECT enabled, join_until FROM device_guest_mode WHERE device_id=?').bind(id).first();
-  const joined = Number((await env.DB.prepare("SELECT COUNT(*) AS n FROM user_devices WHERE device_id=? AND role!='owner'").bind(id).first())?.n || 0) > 0;
+  const row = await env.DB.prepare('SELECT enabled, join_until, slots FROM device_guest_mode WHERE device_id=?').bind(id).first();
+  const joinedN = Number((await env.DB.prepare("SELECT COUNT(*) AS n FROM user_devices WHERE device_id=? AND role!='owner'").bind(id).first())?.n || 0);
   let enabled = Boolean(row && row.enabled === 1);
-  if (enabled && !joined && now >= Number(row.join_until)) {   // nobody came in time: the slot closes by itself
+  if (enabled && joinedN === 0 && now >= Number(row.join_until)) {   // nobody came in time: the slots close by themselves
     await env.DB.prepare('UPDATE device_guest_mode SET enabled=0, join_until=0, updated_at=? WHERE device_id=?').bind(now, id).run();
     enabled = false;
   }
-  return { enabled, joined, window_left_s: enabled && !joined ? Math.max(0, Math.ceil((Number(row.join_until) - now) / 1000)) : 0 };
+  const slots = row && Number(row.slots) === 2 ? 2 : 1;
+  return { enabled, joined: joinedN > 0, joined_n: joinedN, slots, window_left_s: enabled && joinedN === 0 ? Math.max(0, Math.ceil((Number(row.join_until) - now) / 1000)) : 0 };
+}
+// on: the slots open for 15 minutes (a lower number never removes an account that is already in); off: the other accounts leave (access, push links), the first never.
+async function guestSet(env, id, action, slots, now) {
+  if (action === 'on') {
+    await env.DB.prepare(`INSERT INTO device_guest_mode(device_id,enabled,join_until,updated_at,slots) VALUES(?,1,?,?,?)
+      ON CONFLICT(device_id) DO UPDATE SET enabled=1, join_until=excluded.join_until, updated_at=excluded.updated_at, slots=excluded.slots`)
+      .bind(id, now + GUEST_JOIN_WINDOW_MS, now, slots === 2 ? 2 : 1).run();
+  } else if (action === 'off') {
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO device_guest_mode(device_id,enabled,join_until,updated_at) VALUES(?,0,0,?)
+        ON CONFLICT(device_id) DO UPDATE SET enabled=0, join_until=0, updated_at=excluded.updated_at`).bind(id, now),
+      env.DB.prepare('DELETE FROM push_subscriptions WHERE device_id=? AND user_sub IN (SELECT user_sub FROM user_devices WHERE device_id=? AND role!=\'owner\')').bind(id, id),
+      env.DB.prepare("DELETE FROM user_devices WHERE device_id=? AND role!='owner'").bind(id),
+    ]);
+  }
 }
 async function handleGuestMode(request, env) {
   let data = null;
@@ -309,19 +326,7 @@ async function handleGuestMode(request, env) {
   const device = await env.DB.prepare('SELECT device_key_hash FROM devices WHERE device_id=?').bind(id).first();
   if (!device || !await verifyDeviceKey(key, env.DEVICE_KEY_PEPPER, device.device_key_hash)) return json({ success:false, error:'DEVICE_AUTH' }, 401);
   const now = Date.now();
-  if (action === 'on') {
-    await env.DB.prepare(`INSERT INTO device_guest_mode(device_id,enabled,join_until,updated_at) VALUES(?,1,?,?)
-      ON CONFLICT(device_id) DO UPDATE SET enabled=1, join_until=excluded.join_until, updated_at=excluded.updated_at`)
-      .bind(id, now + GUEST_JOIN_WINDOW_MS, now).run();
-  } else if (action === 'off') {
-    // The second account leaves the machine (its access, its push links); the first account is never touched.
-    await env.DB.batch([
-      env.DB.prepare(`INSERT INTO device_guest_mode(device_id,enabled,join_until,updated_at) VALUES(?,0,0,?)
-        ON CONFLICT(device_id) DO UPDATE SET enabled=0, join_until=0, updated_at=excluded.updated_at`).bind(id, now),
-      env.DB.prepare('DELETE FROM push_subscriptions WHERE device_id=? AND user_sub IN (SELECT user_sub FROM user_devices WHERE device_id=? AND role!=\'owner\')').bind(id, id),
-      env.DB.prepare("DELETE FROM user_devices WHERE device_id=? AND role!='owner'").bind(id),
-    ]);
-  }
+  await guestSet(env, id, action, Number(data?.slots), now);
   return json({ success:true, ...await guestState(env, id, now) });
 }
 
@@ -367,18 +372,7 @@ async function handleInternalMgmt(request, env) {
     const action = String(data?.action || 'status');
     if (!['status', 'on', 'off'].includes(action)) return json({ success: false, type: 'guest_mode', error: 'INVALID_REQUEST' }, 400);
     const now = Date.now();
-    if (action === 'on') {
-      await env.DB.prepare(`INSERT INTO device_guest_mode(device_id,enabled,join_until,updated_at) VALUES(?,1,?,?)
-        ON CONFLICT(device_id) DO UPDATE SET enabled=1, join_until=excluded.join_until, updated_at=excluded.updated_at`)
-        .bind(id, now + GUEST_JOIN_WINDOW_MS, now).run();
-    } else if (action === 'off') {
-      await env.DB.batch([
-        env.DB.prepare(`INSERT INTO device_guest_mode(device_id,enabled,join_until,updated_at) VALUES(?,0,0,?)
-          ON CONFLICT(device_id) DO UPDATE SET enabled=0, join_until=0, updated_at=excluded.updated_at`).bind(id, now),
-        env.DB.prepare('DELETE FROM push_subscriptions WHERE device_id=? AND user_sub IN (SELECT user_sub FROM user_devices WHERE device_id=? AND role!=\'owner\')').bind(id, id),
-        env.DB.prepare("DELETE FROM user_devices WHERE device_id=? AND role!='owner'").bind(id),
-      ]);
-    }
+    await guestSet(env, id, action, Number(data?.slots), now);
     const st = await guestState(env, id, now);
     return json({ success: true, type: 'guest_mode', ...st });
   }
@@ -487,7 +481,7 @@ async function fetchAccount(request, env, ctx) {
     }
     return json(base);
   }
-  // Nobody removes another account from the Web: the machine decides (HMI, Nang cao > Che do 2 tai khoan). An account may leave by itself.
+  // Nobody removes another account from the Web: the machine decides (HMI, Nang cao > Che do tai khoan). An account may leave by itself.
   if (path==='/api/device/revoke-access' && method==='POST') return json({success:false,error:'HMI_ONLY'},403);
   if (path==='/api/device/leave' && method==='POST') {
     const member=await permission(env,auth.user_sub,id,false);

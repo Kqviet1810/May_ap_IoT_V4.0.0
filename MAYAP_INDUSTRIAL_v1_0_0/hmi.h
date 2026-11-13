@@ -927,11 +927,13 @@ uint32_t memberPolledAt = 0U;
 uint8_t memberRemovePending = 0U;     // row the user asked to unlink (confirmation in flight)
 uint8_t memberShownResult = 0U;
 MemberListSnapshot memberView;
-// "Che do 2 tai khoan" (Nang cao): status comes from the Worker, the choice is local until confirmed with the knob.
+// "Che do tai khoan" (Nang cao): status comes from the Worker, the choice (1, 2 or 3 accounts in all) is local until confirmed with the knob.
 GuestModeSnapshot guestView;
+// Accounts in all that the snapshot says the machine allows now: 1 when the mode is off, else the owner plus the open slots.
+static uint8_t guestAccountsNow(const GuestModeSnapshot &g) { return g.enabled ? static_cast<uint8_t>(1U + g.slots) : 1U; }
 uint32_t guestSeenSeq = 0xFFFFFFFFU;
 uint32_t guestPolledAt = 0U;
-bool guestChoice = false;
+uint8_t guestChoice = 1U;       // accounts in all: 1 (the owner only), 2 or 3
 bool guestChoiceTouched = false;
 uint8_t guestShownResult = 0U;
 // Thoi gian ngu: HMI-only preference (NVS), 0 = khong bao gio ngu. Khong thuoc cau hinh may.
@@ -2897,7 +2899,7 @@ const char *advItemLabel(uint8_t i) {
     case ADV_RESET: return "Reset may";
     case ADV_LEARN: return "Xoa du lieu hoc nhiet";
     case ADV_DEV_MODE: return currentRuntime.tech.devMode ? "CD Nha phat trien: BAT" : "CD Nha phat trien: TAT";
-    case ADV_GUEST: return "Che do 2 tai khoan";
+    case ADV_GUEST: return "Che do tai khoan";
     case ADV_PINCHG: return "Doi ma ky thuat";
     default: return "Thoat (luu)";
   }
@@ -3407,10 +3409,13 @@ void handleInput() {
 
     case View::GuestMode: {
       const bool ready = guestView.state == GuestModeState::Ready;
-      if (ready && rotary.step) { guestChoice = !guestChoice; guestChoiceTouched = true; dirty = true; }
+      if (ready && rotary.step) {
+        guestChoice = rotary.step > 0 ? static_cast<uint8_t>(guestChoice % 3U + 1U) : static_cast<uint8_t>((guestChoice + 1U) % 3U + 1U);   // 1 -> 2 -> 3 -> 1 (and back)
+        guestChoiceTouched = true; dirty = true;
+      }
       if (rotary.button == ButtonEvent::ShortPress) {
-        if (!ready || guestChoice == guestView.enabled) goBack();
-        else mayapRequestGuestMode(guestChoice ? 1U : 2U);   // the answer (new state) arrives through the snapshot
+        if (!ready || guestChoice == guestAccountsNow(guestView)) goBack();
+        else mayapRequestGuestMode(guestChoice == 1U ? 2U : guestChoice == 2U ? 1U : 3U);   // 2 = one account (off), 1 = two, 3 = three; the answer arrives through the snapshot
       }
       break;
     }
@@ -5290,7 +5295,7 @@ void drawDevMode() {
 }
 
 void drawGuestMode() {
-  drawHeader("2 TAI KHOAN", false);
+  drawHeader("TAI KHOAN", false);
   const GuestModeSnapshot &g = guestView;
   if (g.state != GuestModeState::Ready) {
     const char *msg = g.state == GuestModeState::Offline ? "CAN ONLINE DE DUNG"
@@ -5300,13 +5305,14 @@ void drawGuestMode() {
     drawCenteredFit(63, "NHAN:LUI  GIU:LUI", u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
     return;
   }
-  char line[28];
-  if (g.enabled && g.joined) snprintf(line, sizeof(line), "HIEN TAI: BAT - DA CO TK 2");
-  else if (g.enabled) snprintf(line, sizeof(line), "HIEN TAI: BAT - CON %um", static_cast<unsigned>((g.windowLeftS + 59U) / 60U));
-  else snprintf(line, sizeof(line), "HIEN TAI: TAT");
+  char line[32], big[8];
+  if (g.enabled && g.joinedN > 0U) snprintf(line, sizeof(line), "HIEN TAI: %u TK - DA CO %u", static_cast<unsigned>(guestAccountsNow(g)), static_cast<unsigned>(1U + g.joinedN));
+  else if (g.enabled) snprintf(line, sizeof(line), "HIEN TAI: %u TK - CON %um", static_cast<unsigned>(guestAccountsNow(g)), static_cast<unsigned>((g.windowLeftS + 59U) / 60U));
+  else snprintf(line, sizeof(line), "HIEN TAI: 1 TK");
   drawCenteredFit(24, line, u8g2_font_6x12_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
-  drawCenteredFit(44, guestChoice ? "BAT" : "TAT", u8g2_font_helvB14_tf, u8g2_font_helvB12_tf, u8g2_font_6x12_tf);
-  drawCenteredFit(54, guestChoice ? "TK THU 2 VAO BANG ID + PIN" : "TAT: TK THU 2 BI XOA KHOI MAY",
+  snprintf(big, sizeof(big), "%u TK", static_cast<unsigned>(guestChoice));
+  drawCenteredFit(44, big, u8g2_font_helvB14_tf, u8g2_font_helvB12_tf, u8g2_font_6x12_tf);
+  drawCenteredFit(54, guestChoice > 1U ? "TK MOI VAO BANG ID + PIN" : "1 TK: TK THEM BI XOA KHOI MAY",
                   u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
   drawCenteredFit(63, "XOAY:DOI  NHAN:LUU  GIU:LUI", u8g2_font_5x8_tf, u8g2_font_5x8_tf, u8g2_font_5x8_tf);
 }
@@ -6365,18 +6371,18 @@ void hmiUpdate(uint32_t now) {
     }
   }
 
-  // Che do 2 tai khoan: same rule, the snapshot is read only while this screen is open.
+  // Che do tai khoan: same rule, the snapshot is read only while this screen is open.
   if (view == View::GuestMode && now - guestPolledAt >= 200UL) {
     guestPolledAt = now;
     const GuestModeSnapshot snap = mayapGuestSnapshot();
     if (snap.seq != guestSeenSeq) {
       guestSeenSeq = snap.seq;
       guestView = snap;
-      if (snap.state == GuestModeState::Ready && (!guestChoiceTouched || snap.result == 1U)) { guestChoice = snap.enabled; guestChoiceTouched = false; }
+      if (snap.state == GuestModeState::Ready && (!guestChoiceTouched || snap.result == 1U)) { guestChoice = guestAccountsNow(snap); guestChoiceTouched = false; }
       dirty = true;
       if (snap.result != guestShownResult) {
         guestShownResult = snap.result;
-        if (snap.result == 1U) showToast(snap.enabled ? "TK THU 2: DA BAT" : "TK THU 2: DA TAT");
+        if (snap.result == 1U) { char msg[24]; snprintf(msg, sizeof(msg), "CHE DO: %u TAI KHOAN", static_cast<unsigned>(guestAccountsNow(snap))); showToast(msg); }
         else if (snap.result == 2U) showToast("KHONG DOI DUOC", true);
       }
     }

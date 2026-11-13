@@ -1051,6 +1051,9 @@ inline void handleCommandMessage(const JsonDocument &doc) {
       portEXIT_CRITICAL(&realtimeMux);
       if (!granted) { publishAck(requestId, "rejected", "WEB_CTL_NOT_ALLOWED"); return; }
     }
+    // The value the sender wants (arg0: 1 off, 2 on, 3 automatic; absent = the old flip of what the machine shows). The light keeps its own flip.
+    if (type == HmiCommandType::WebVentToggle || type == HmiCommandType::WebCircToggle || type == HmiCommandType::WebHeaterToggle ||
+        type == HmiCommandType::WebSirenToggle) alarmMaskParam = static_cast<uint32_t>(doc["arg0"] | 0U) & 3U;
     if (type == HmiCommandType::WebTurnHold) {
       const uint32_t dir = static_cast<uint32_t>(doc["arg0"] | 0U) & 3U;
       uint32_t lease = static_cast<uint32_t>(doc["leaseMs"] | 0U);

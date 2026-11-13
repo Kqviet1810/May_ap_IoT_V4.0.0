@@ -149,13 +149,28 @@ test('PID log: chunks of the machine ring are assembled by index and saved as CS
   const lines = csv.trim().split('\n');
   assert.match(lines[0], /^# mayap pid log device=MAP-TEST boot=7/);
   assert.equal(lines[1], 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,trust_pct,source,' +
-    'safety_c,hold_pct,kair_e5,tau_s,obs_gain,vent_why,vent_line,door,identified,fan_tokens,vent_reason,kair_src,obs_boost,stalled_windows,hold_src,time_vn');
+    'safety_c,hold_pct,kair_e5,tau_s,obs_gain,vent_why,vent_line,door,identified,fan_tokens,vent_reason,kair_src,obs_boost,stalled_windows,hold_src,vent_min_60,time_vn');
   assert.equal(lines.length, 5);
   const second = lines[3].split(',');
   assert.equal(second[1], '21'); assert.equal(second[7], '1'); assert.equal(second[8], '1'); assert.equal(second[14], 'frozen'); assert.equal(second[15], '53'); assert.equal(second[16], 'machine');   // phase 1, suspect flag
-  assert.equal(second.length, 33);                                                                               // an older machine sends no diagnostics: the new columns stay empty
+  assert.equal(second.length, 34);                                                                               // an older machine sends no diagnostics: the new columns stay empty
   assert.equal(second.slice(17, 31).join(''), '');                                                              // diagnostics empty
-  assert.match(second[32], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);                                          // time_vn: the Vietnam wall clock, the last column
+  assert.match(second[33], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);                                          // time_vn: the Vietnam wall clock, the last column
+});
+
+test('PID log: vent_min_60 counts the minutes the exhaust fan ran in the last hour, per machine sample', () => {
+  const h = browser();
+  h.pidMon.log = new Map(); h.pidMon.series = []; h.pidMon.logHead = 0;
+  // 7 samples 10 s apart: the fan flag (bit 8 of the flag byte) is on for samples 2..5 (4 samples = 40 s of fan counted at the sample that ends each interval)
+  const fl = (on) => 0x41 | (on ? 8 : 0);
+  h.pmIngestLog({ h: 7, s: 0, d: [3750, 3750, 3750, 40, 22, fl(false), 0, 3750, 3750, 3750, 40, 22, fl(false), 0, 3750, 3750, 3750, 40, 22, fl(true), 0, 3750, 3750, 3750, 40, 22, fl(true), 0,
+    3750, 3750, 3750, 40, 22, fl(true), 0, 3750, 3750, 3750, 40, 22, fl(true), 0, 3750, 3750, 3750, 40, 22, fl(false), 0] });
+  const rows = h.pmCsv({ id: 'MAP-TEST', bootId: 7 }).trim().split('\n').slice(2).map((l) => l.split(','));
+  assert.equal(rows.length, 7);
+  const col = rows.map((r) => Number(r[32]));
+  assert.equal(col[0], 0); assert.equal(col[1], 0); assert.equal(col[2], 0.2);                                  // 10 s of fan = 0.2 minutes (rounded to 0.1)
+  assert.ok(col[5] > col[2] && col[5] <= 0.7, 'grows while the fan runs: ' + col.join(','));
+  assert.equal(col[6], col[5]);                                                                                  // the fan stopped: the last hour keeps what ran
 });
 
 test('PID log: the diagnostics chunk (firmware 2.5.5) merges into the samples it belongs to, in either order', () => {
@@ -172,7 +187,7 @@ test('PID log: the diagnostics chunk (firmware 2.5.5) merges into the samples it
   const lines = h.pmCsv({ id: 'MAP-TEST', bootId: 7 }).trim().split('\n');
   assert.equal(lines.length, 4);
   const a = lines[2].split(',');
-  assert.equal(a.length, 33);                                                                                   // 32 columns + time_vn (Vietnam time) appended last
+  assert.equal(a.length, 34);                                                                                   // 32 columns + vent_min_60 + time_vn (Vietnam time) appended last
   assert.equal(a[17], '37.6'); assert.equal(a[18], '2'); assert.equal(a[19], '40'); assert.equal(a[20], '150'); assert.equal(a[21], '-3');
   assert.equal(a[22], 'floor'); assert.equal(a[23], 'watch+on'); assert.equal(a[24], '1'); assert.equal(a[25], '1'); assert.equal(a[26], '2'); assert.equal(a[27], '3');
   assert.equal(a[28], '2'); assert.equal(a[29], '1'); assert.equal(a[30], '7');
@@ -384,7 +399,7 @@ test('Web output control: buttons exist, are gated by the HMI permissions, and o
   assert.match(src, /granted\s*&&\s*manual/);
   // every item of the machine's Advanced menu is listed with its access
   assert.match(html, /id="advOverview"/);
-  for (const label of ['PID Monitor', 'Bản ghi cũ', 'Quyền Web', 'Chế độ 2 tài khoản', 'Đổi mã kỹ thuật'])
+  for (const label of ['PID Monitor', 'Bản ghi cũ', 'Quyền Web', 'Chế độ tài khoản (1, 2 hoặc 3)', 'Đổi mã kỹ thuật'])
     assert.ok(src.includes(`'${label}'`) || src.includes(`['${label}'`) || src.includes(label), label);
   for (const label of ['Gia nhiệt', 'Bảo vệ nhiệt', 'Hiệu chuẩn cảm biến', 'Trần công suất nhiệt'])
     assert.ok(html.includes(label), label);                                                                          // the editable tiles are in the same card

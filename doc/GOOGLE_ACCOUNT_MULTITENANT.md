@@ -208,3 +208,11 @@ Mục đích: một máy có thể được dùng bởi **hai** tài khoản Goo
 * **Tắt**: trên HMI. Tài khoản thứ hai bị xóa khỏi máy cùng liên kết thông báo đẩy của nó; tài khoản đầu tiên không bị chạm. Không ai gỡ ai trên Web (`/api/device/revoke-access` trả `HMI_ONLY`); tài khoản thứ hai tự rời được (`/api/device/leave`), chủ không rời được.
 * **Giới hạn đã biết**: (1) lệnh điều khiển đã cấp cho tài khoản bị gỡ còn hiệu lực tối đa 5 phút; (2) thẻ MQTT đọc dữ liệu của Web là thẻ không trạng thái sống 1 giờ nên tài khoản vừa bị gỡ còn đọc được telemetry tối đa 1 giờ (không còn điều khiển được); (3) máy mất mạng thì chưa gỡ được tài khoản thứ hai cho tới khi nối lại (HMI báo lỗi/Offline); (4) Gmail thứ hai phải được thêm vào danh sách người dùng thử khi màn hình đồng ý OAuth còn ở chế độ Testing.
 * Triển khai: Worker + migration `0008_guest_mode.sql` **trước**, Web, rồi mới OTA firmware 1.1.14 (Worker mới tương thích ngược: chế độ mặc định tắt).
+
+### Chế độ tài khoản 1 / 2 / 3 (firmware 3.1.2, Web 1.1.38, migration 0009)
+
+* HMI Nâng cao > "Che do tai khoan": chọn **1** (chỉ chủ máy, như tắt), **2** hoặc **3** tài khoản. Núm xoay đổi 1 → 2 → 3, nhấn để lưu.
+* Worker: bảng `device_guest_mode` có thêm cột `slots` (1 hoặc 2 tài khoản **thêm**, mặc định 1). `POST /api/device/guest-mode` nhận `slots` khi `action = on`; mọi giá trị khác 2 được coi là 1 (không bao giờ vô hạn). Tài khoản thêm vào được khi chế độ bật, còn trong 15 phút, và số tài khoản thêm hiện có nhỏ hơn `slots`. Phản hồi có thêm `slots` và `joined_n`.
+* Hạ số tài khoản (ví dụ từ 3 xuống 2) chỉ chặn người mới, **không đuổi** ai đang có. Chọn 1 thì mọi tài khoản thêm bị xóa khỏi máy cùng liên kết thông báo đẩy của họ; tài khoản đầu tiên không bị chạm.
+* Tương thích: firmware cũ không gửi `slots` nên vẫn có đúng một chỗ như trước. Worker chưa có migration 0009 thì firmware mới chỉ dùng được một chỗ.
+* Triển khai: Worker + migration `0009_guest_slots.sql` **trước**, Web, rồi mới OTA firmware 3.1.2.

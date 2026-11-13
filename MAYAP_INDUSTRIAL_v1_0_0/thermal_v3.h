@@ -203,7 +203,7 @@ class Controller {
     derive();
   }
   // The hold the oven needed a few minutes ago (hold_keep.h decides when that is still true). Only before the first live step; the observer stays the one writer
-  // of hold afterwards. src: 1 = the one-time seed of an update, 2 = restored from the record.
+  // of hold afterwards. src: 2 = restored from the record (1 was the one-time seed of 3.1.1, retired in 3.1.2).
   void seedHold(float holdPct, uint8_t src) {
     if (wasLive_ || !std::isfinite(holdPct)) return;
     hold_ = std::max(HOLD_SEED_MIN, std::min(HOLD_SEED_MAX, holdPct));

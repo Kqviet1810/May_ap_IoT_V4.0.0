@@ -1092,7 +1092,7 @@
     renderLeaveDevice();
   }
 
-  // The second account of a machine (HMI "Che do 2 tai khoan") may leave by itself; nobody removes an account from the Web.
+  // An extra account of a machine (HMI "Che do tai khoan": 2 or 3 accounts in all) may leave by itself; nobody removes an account from the Web.
   function renderLeaveDevice() {
     const device = state.devices.find((item) => item.id === state.selectedId);
     const show = Boolean(device && device.accountRole === 'operator');
@@ -1445,7 +1445,7 @@
         }
         return [label, (mask & bit) ? (webCtlActive(device, bit) ? 'CHO PHÉP · ĐANG GHI ĐÈ' : 'CHO PHÉP') : 'KHÔNG'];
       }),
-      ['Chế độ 2 tài khoản', 'Đổi trên máy'],
+      ['Chế độ tài khoản (1, 2 hoặc 3)', 'Đổi trên máy'],
       ['Đổi mã kỹ thuật', 'Đổi trên máy'],
     ];
     for (const [label, value] of rows) {
@@ -1456,6 +1456,9 @@
     }
   }
 
+  // What a Web button asks for is a VALUE (arg0: 1 off, 2 on, 3 automatic), computed from what this page shows, never "flip whatever the machine has now":
+  // two accounts that both press "on" leave it on. A machine on firmware older than 3.1.2 ignores arg0 and flips, as it always did.
+  const WANT = { off: 1, on: 2, auto: 3 };
   function bindWebControls() {
     const guard = (device) => { device.webCtlBusyUntil = Date.now() + 1500; renderWebControls(device, device.snapshot?.runtime); };
     $('outputHeaterBtn')?.addEventListener('click', async () => {
@@ -1468,25 +1471,26 @@
         if (!ok) return;
       }
       guard(device);
-      await sendCommand('heater_toggle', { device });
+      await sendCommand('heater_toggle', { device, arg0: webCtlActive(device, WEBCTL.heater) ? WANT.on : WANT.off });
     });
     $('outputVentBtn')?.addEventListener('click', async () => {
       const device = currentDevice();
       if (!webCtlGranted(device, WEBCTL.vent)) return;
       guard(device);
-      await sendCommand('vent_toggle', { device });
+      await sendCommand('vent_toggle', { device, arg0: webCtlActive(device, WEBCTL.vent) ? WANT.auto : (device.snapshot?.runtime?.ventFanOn ? WANT.off : WANT.on) });
     });
     $('outputCircBtn')?.addEventListener('click', async () => {
       const device = currentDevice();
       if (!webCtlGranted(device, WEBCTL.circ)) return;
-      if (device.snapshot?.runtime?.batchRunning && device.snapshot?.runtime?.circulationFanOn) {
+      const circWant = webCtlActive(device, WEBCTL.circ) ? WANT.auto : (device.snapshot?.runtime?.circulationFanOn ? WANT.off : WANT.on);
+      if (circWant === WANT.off && device.snapshot?.runtime?.batchRunning) {
         const ok = await confirmAction({ title: 'Tắt quạt tuần hoàn khi đang ấp?',
           message: 'Máy sẽ ngừng gia nhiệt khi quạt tắt. Sau 15 phút máy tự quay lại chế độ tự động.',
           accept: 'Tắt quạt', danger: true });
         if (!ok) return;
       }
       guard(device);
-      await sendCommand('circ_toggle', { device });
+      await sendCommand('circ_toggle', { device, arg0: circWant });
     });
     // Egg turning: two halves, held to run, released to stop. The machine stops by itself when the 1.5 s lease is not renewed.
     const holdState = { dir: 0, timer: 0, inflight: false };
@@ -3551,15 +3555,25 @@
     }
     for (const r of pidMon.series) rows.push([r.t, '', r.pv, r.sp, '', r.req, r.act, '', '', r.vent, '', '', '', '', '', '', 'page', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
     rows.sort((a, b) => a[0] - b[0]);
+    // vent_min_60: minutes the exhaust fan ran in the 60 minutes up to each machine sample (a gap between samples counts at most 30 s), to compare the ventilation of different batches.
+    const ventMin = new Map(), ventWin = [];
+    let ventPrevT = null, ventSumMs = 0;
+    for (const r of rows) {
+      if (r[16] !== 'machine') continue;
+      const dt = ventPrevT === null ? 0 : Math.min(r[0] - ventPrevT, 30000), on = r[9] === 1 ? dt : 0;
+      ventPrevT = r[0]; ventWin.push({ t: r[0], on }); ventSumMs += on;
+      while (ventWin.length && ventWin[0].t < r[0] - 3600000) ventSumMs -= ventWin.shift().on;
+      ventMin.set(r, Math.round(ventSumMs / 6000) / 10);
+    }
     // The first 17 columns keep their place; the diagnostics are appended (safety reading, learned hold, heater gain x1e5, transit time, the learning gain of the
     // hold observer [1 = the oven follows; raised while the error does not shrink], why the overheat fan started, the state of that line, door guard, transit time
     // measured, fan-budget tokens, ventReason, where kAir came from [0 prior, 1 typed by hand, 2 measured since power-up], whether the observer gain is raised,
-    // how many windows in a row the oven did not follow [0..7], where the starting hold came from [0 prior, 1 the one-time seed of an update, 2 restored]).
+    // how many windows in a row the oven did not follow [0..7], where the starting hold came from [0 prior, 2 restored; 1 was the one-time seed of 3.1.1], minutes of fan in the last 60 minutes).
     const head = 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,trust_pct,source,' +
-      'safety_c,hold_pct,kair_e5,tau_s,obs_gain,vent_why,vent_line,door,identified,fan_tokens,vent_reason,kair_src,obs_boost,stalled_windows,hold_src,time_vn';
+      'safety_c,hold_pct,kair_e5,tau_s,obs_gain,vent_why,vent_line,door,identified,fan_tokens,vent_reason,kair_src,obs_boost,stalled_windows,hold_src,vent_min_60,time_vn';
     const cell = (v) => (typeof v === 'number' ? (Number.isFinite(v) ? String(v) : '') : String(v));
     return [`# mayap pid log device=${device?.id || ''} boot=${device?.bootId || ''} exported=${iso(Date.now())}`, head,
-      ...rows.map((r) => [iso(r[0]), ...r.slice(1), vnDateTimeIso(r[0])].map(cell).join(','))].join('\n') + '\n';
+      ...rows.map((r) => [iso(r[0]), ...r.slice(1), ventMin.has(r) ? ventMin.get(r) : '', vnDateTimeIso(r[0])].map(cell).join(','))].join('\n') + '\n';
   }
 
   function pmDownload() {
@@ -4757,7 +4771,7 @@
       event.preventDefault();
       const device = currentDevice();
       if (!device || device.accountRole !== 'operator') return;
-      if (!window.confirm('Rời khỏi máy "' + device.name + '"? Bạn chỉ vào lại được khi máy bật «Chế độ 2 tài khoản».')) return;
+      if (!window.confirm('Rời khỏi máy "' + device.name + '"? Bạn chỉ vào lại được khi máy bật «Chế độ tài khoản» (2 hoặc 3 tài khoản).')) return;
       const result = await postCloudJson('/api/device/leave', { device_id: device.id });
       if (!result.success) return toast(result.error || 'Không rời được máy');
       controlSessions.delete(device.id);
@@ -4885,7 +4899,7 @@
       if (!runtime) return;
       // The siren ringing for a real alarm: the tile mutes it (acknowledge). Otherwise, with the HMI's permission, it sounds the siren for 30 s (or stops that).
       if (runtime.sirenOn && !webCtlActive(device, WEBCTL.siren)) { await sendCommand('alarm_ack'); return; }
-      if (webCtlGranted(device, WEBCTL.siren)) await sendCommand('siren_toggle', { device });
+      if (webCtlGranted(device, WEBCTL.siren)) await sendCommand('siren_toggle', { device, arg0: webCtlActive(device, WEBCTL.siren) ? WANT.off : WANT.on });
     });
 
     $('temperatureForm').addEventListener('submit', async (event) => {

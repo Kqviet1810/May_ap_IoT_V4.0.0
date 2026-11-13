@@ -29,7 +29,7 @@ struct Sample {
   int8_t lift2 = 0;                             // the learning gain g of the hold observer * 2 (1 = the oven follows; raised while the error does not shrink; the byte was the stall lift's)
   uint8_t vent = 0;                             // vent line: bits0-2 why (VentLine::Why), bits3-7 its state bits (VentLine::Bit*)
   uint8_t ctl = 0;
-  uint8_t learn = 0;                            // bits0-1 where kAir came from (0 prior, 1 typed by hand, 2 measured since power-up), bit2 the observer gain is raised, bits3-5 windows in a row the oven did not follow (0..7), bits6-7 where the starting hold came from (0 prior, 1 the one-time seed of an update, 2 restored from the record, hold_keep.h)
+  uint8_t learn = 0;                            // bits0-1 where kAir came from (0 prior, 1 typed by hand, 2 measured since power-up), bit2 the observer gain is raised, bits3-5 windows in a row the oven did not follow (0..7), bits6-7 where the starting hold came from (0 prior, 2 restored from the record, hold_keep.h; 1 was the one-time seed of 3.1.1)
 };
 
 inline uint16_t toC100(float v) {

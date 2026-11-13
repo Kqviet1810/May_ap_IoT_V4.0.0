@@ -111,7 +111,7 @@ static volatile uint8_t pinResetRequestFlag = 0U;
 static volatile uint8_t memberListRequestFlag = 0U;
 static volatile int8_t memberRemoveIndex = -1;   // pending removal from the HMI (-1 none)
 static MemberListSnapshot memberSnap;            // guarded by cloudMux
-static volatile uint8_t guestRequest = 0xFFU;   // pending "Che do 2 tai khoan" action from the HMI (0xFF none)
+static volatile uint8_t guestRequest = 0xFFU;   // pending "Che do tai khoan" action from the HMI (0xFF none)
 static GuestModeSnapshot guestSnap;              // guarded by cloudMux
 static uint32_t guestReqSentAt = 0U;
 static uint32_t memberReqSentAt = 0U;
@@ -1252,7 +1252,7 @@ inline void serviceMembers() {
   }
 }
 
-// HMI "Nang cao > Che do 2 tai khoan": status / on / off, authenticated by the device key like reset-pin (the HMI is the only switch).
+// HMI "Nang cao > Che do tai khoan": status / on (2 or 3 accounts) / off (1 account), authenticated by the device key like reset-pin (the HMI is the only switch).
 // One-shot HTTPS on the same admission path; a deferred request keeps the user's intent, an HTTP error is shown and never replayed.
 inline void guestSetState(GuestModeState state, uint8_t result = 0xFFU) {
   portENTER_CRITICAL(&cloudMux);
@@ -1265,7 +1265,8 @@ inline bool sendGuestMode(uint8_t action) {
   JsonDocument doc;
   doc["device_id"] = mayapDeviceIdText();
   doc["device_key"] = mayapDeviceSecret();
-  doc["action"] = action == 1U ? "on" : action == 2U ? "off" : "status";
+  doc["action"] = (action == 1U || action == 3U) ? "on" : action == 2U ? "off" : "status";
+  if (action == 1U || action == 3U) doc["slots"] = action == 3U ? 2 : 1;
   String response;
   int code = 0;
   if (!postJson("/api/device/guest-mode", doc, "guest-mode", &response, &code, true)) return false;
@@ -1275,6 +1276,8 @@ inline bool sendGuestMode(uint8_t action) {
   guestSnap.state = GuestModeState::Ready;
   guestSnap.enabled = parsed["enabled"].as<bool>();
   guestSnap.joined = parsed["joined"].as<bool>();
+  guestSnap.slots = static_cast<uint8_t>(constrain(parsed["slots"] | 1, 1, 2));
+  guestSnap.joinedN = static_cast<uint8_t>(constrain(parsed["joined_n"] | (guestSnap.joined ? 1 : 0), 0, 2));
   guestSnap.windowLeftS = static_cast<uint16_t>(constrain(parsed["window_left_s"] | 0, 0, 65535));
   if (action != 0U) guestSnap.result = 1U;
   ++guestSnap.seq;
@@ -1295,8 +1298,9 @@ inline void serviceGuestMode() {
     return;
   }
   if (MayapUplink::linkUp()) {
-    char buf[64];
-    snprintf(buf, sizeof(buf), "{\"type\":\"guest_mode\",\"action\":\"%s\"}", action == 1U ? "on" : action == 2U ? "off" : "status");
+    char buf[80];
+    if (action == 1U || action == 3U) snprintf(buf, sizeof(buf), "{\"type\":\"guest_mode\",\"action\":\"on\",\"slots\":%u}", action == 3U ? 2U : 1U);
+    else snprintf(buf, sizeof(buf), "{\"type\":\"guest_mode\",\"action\":\"%s\"}", action == 2U ? "off" : "status");
     if (MayapUplink::offer(MayapUplink::Kind::Mgmt, buf, strlen(buf), millis()) >= 0) {
       guestReqSentAt = millis();
       return;
@@ -1321,6 +1325,8 @@ inline void mayapHandleMgmtResponse(const JsonDocument &doc) {
       guestSnap.state = GuestModeState::Ready;
       guestSnap.enabled = doc["enabled"].as<bool>();
       guestSnap.joined = doc["joined"].as<bool>();
+      guestSnap.slots = static_cast<uint8_t>(constrain(doc["slots"] | 1, 1, 2));
+      guestSnap.joinedN = static_cast<uint8_t>(constrain(doc["joined_n"] | (guestSnap.joined ? 1 : 0), 0, 2));
       guestSnap.windowLeftS = static_cast<uint16_t>(constrain(doc["window_left_s"] | 0, 0, 65535));
       guestSnap.result = 1U;
     } else {
@@ -1404,7 +1410,7 @@ inline void mayapRequestMemberRemove(uint8_t index) {
 inline void mayapRequestGuestMode(uint8_t action) {
   { portENTER_CRITICAL(&MayapCloudInternal::cloudMux); MayapCloudInternal::guestSnap.state = GuestModeState::Loading;
     MayapCloudInternal::guestSnap.result = 0U; ++MayapCloudInternal::guestSnap.seq; portEXIT_CRITICAL(&MayapCloudInternal::cloudMux); }
-  __atomic_store_n(&MayapCloudInternal::guestRequest, static_cast<uint8_t>(action > 2U ? 0U : action), __ATOMIC_RELEASE);
+  __atomic_store_n(&MayapCloudInternal::guestRequest, static_cast<uint8_t>(action > 3U ? 0U : action), __ATOMIC_RELEASE);
 }
 inline GuestModeSnapshot mayapGuestSnapshot() {
   portENTER_CRITICAL(&MayapCloudInternal::cloudMux);

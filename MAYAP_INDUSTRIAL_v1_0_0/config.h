@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "3.1.1";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "3.1.2";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -588,11 +588,14 @@ constexpr uint32_t SENSOR_STARTUP_GRACE_MS = 20000UL; // chua bao coi trong 20 s
 // nhieu/troi nen it khi giu nguyen tuyet doi lau nhu vay).
 constexpr float SENSOR_FROZEN_EPSILON_C = 0.01f;
 constexpr uint32_t SENSOR_FROZEN_TIMEOUT_MS = 1200000UL; // 20 phut
-// Warm-up: profile / scheduled ventilation waits while PV is more than this far below SP (the fan takes heat away while the oven climbs);
-// released at the second threshold or after the maximum. Forced vents (High, sensor fault) are untouched.
-constexpr float WARMUP_VENT_HOLD_ERR_C = 1.0f;
-constexpr float WARMUP_VENT_RELEASE_ERR_C = 0.5f;
-constexpr uint32_t WARMUP_VENT_HOLD_MAX_MS = 1800000UL;   // 30 phut
+// Vent hold (3.1.2): the profile / scheduled ventilation waits while the oven climbs, recovers from a door or stands far under SP, at the start of a batch and at any
+// time of it: the fan takes heat out exactly when the heater already works at its ceiling (log of 13/11 09:12: the fan ran through a door and its recovery).
+// It starts when PV is more than ENTER under SP or the controller sees a door, ends at RELEASE (door gone) or after MAX (a weak heater must not keep the oven
+// without air for ever: after MAX it waits for PV to come back to RELEASE once before it can hold again). Forced vents (High, sensor fault, Emergency, the vent
+// line) and a Web command are untouched.
+constexpr float VENT_HOLD_ENTER_ERR_C = 0.3f;
+constexpr float VENT_HOLD_RELEASE_ERR_C = 0.2f;
+constexpr uint32_t VENT_HOLD_MAX_MS = 1800000UL;   // 30 phut
 // Vent line (the exhaust fans of the overheat, a last resort; see vent_line.h and updateAlarms). The fans never cut the heater.
 constexpr uint32_t VENT_LINE_CONFIRM_MS = 20000UL;        // a decisive overshoot (FAST / PRED) must stand this long
 constexpr float VENT_LINE_FALL_C = 0.05f;                 // a fall of the mean this far restarts the watch ("the controller is bringing it down")
@@ -1379,17 +1382,19 @@ struct MemberListSnapshot {
   uint32_t seq = 0;
   MemberEntry entry[MEMBER_LIST_MAX] = {};
 };
-// HMI "Nang cao > Che do 2 tai khoan": the machine (and only the machine) lets ONE more account claim it. State lives on the Worker.
+// HMI "Nang cao > Che do tai khoan": the machine (and only the machine) lets one or two more accounts claim it (2 or 3 accounts in all). State lives on the Worker.
 enum class GuestModeState : uint8_t { Idle, Loading, Ready, Error, Offline };
 struct GuestModeSnapshot {
   GuestModeState state = GuestModeState::Idle;
-  bool enabled = false;          // the second slot is open / in use
-  bool joined = false;           // a second account is linked
-  uint16_t windowLeftS = 0;      // seconds the slot stays open while nobody has joined
+  bool enabled = false;          // the extra slots are open / in use
+  bool joined = false;           // at least one more account is linked
+  uint8_t slots = 1;             // how many MORE accounts may join (1 or 2)
+  uint8_t joinedN = 0;           // how many more accounts are linked
+  uint16_t windowLeftS = 0;      // seconds the slots stay open while nobody has joined
   uint8_t result = 0;            // 0 none, 1 done, 2 failed (cleared by the next request)
   uint32_t seq = 0;
 };
-void mayapRequestGuestMode(uint8_t action);   // 0 status, 1 on, 2 off
+void mayapRequestGuestMode(uint8_t action);   // 0 status, 1 on (2 accounts), 2 off (1 account), 3 on (3 accounts)
 GuestModeSnapshot mayapGuestSnapshot();
 void mayapRequestMemberList();
 void mayapRequestMemberRemove(uint8_t index);

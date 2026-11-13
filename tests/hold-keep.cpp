@@ -74,12 +74,6 @@ int main() {
     CHECK(decideRestore(true, r, true, now, 37.9f, 100, h) == Why::SpChanged, "set point moved 0.4"); CHECK(decideRestore(true, r, true, now, 37.7f, 100, h) == Why::Ok, "set point moved 0.2 is fine");
     CHECK(decideRestore(true, r, true, now, 37.5f, 80, h) == Why::CapChanged, "ceiling changed");
     CHECK(decideRestore(true, rec(95.0f, 10000), true, now, 37.5f, 100, h) == Why::Range, "hold out of range"); CHECK(decideRestore(true, rec(1.0f, 10000), true, now, 37.5f, 100, h) == Why::Range, "hold too small"); }
-  // the one-time seed of the update
-  { const uint32_t now = 50000;
-    CHECK(oneTimeSeed(false, true, true, now, now - 300, 0.2f), "running batch, checkpoint 5 min old, near SV: seed");
-    CHECK(!oneTimeSeed(true, true, true, now, now - 300, 0.2f), "a record exists: never"); CHECK(!oneTimeSeed(false, false, true, now, now - 300, 0.2f), "no running batch");
-    CHECK(!oneTimeSeed(false, true, true, now, now - 1300, 0.2f), "checkpoint 21+ min old"); CHECK(!oneTimeSeed(false, true, true, now, 0, 0.2f), "no checkpoint: a fresh batch");
-    CHECK(!oneTimeSeed(false, true, false, now, now - 300, 0.2f), "rtc invalid"); CHECK(!oneTimeSeed(false, true, true, now, now - 300, 0.8f), "oven not near SV"); CHECK(!oneTimeSeed(false, true, true, now, now + 5, 0.2f), "clock went back"); }
   // 20 years at the real rate (every 5 min) and at the cap (400 a day): the busiest cell
   { for (int mode = 0; mode < 2; ++mode) { Fake f; Ring<Fake> r(f, 0x4000); r.begin(); const long writes = mode == 0 ? 20L * 365L * 288L : 20L * 365L * 400L;
       for (long i = 0; i < writes; ++i) r.append(rec(43.0f, 1000000U + (uint32_t)i));

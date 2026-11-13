@@ -286,7 +286,7 @@ test('Thermal Control V2.0.0: Smart Thermal and Nhiet du doan switches are hidde
   assert.doesNotMatch(bridge, /smartThermalEnabled|predictiveThermalEnabled/);
 });
 
-test('Che do 2 tai khoan: only in HMI Nang cao, needs Online, the machine asks the Worker with its own key, back returns to the Advanced list', () => {
+test('Che do tai khoan (1, 2 or 3 accounts): only in HMI Nang cao, needs Online, the machine asks the Worker with its own key, back returns to the Advanced list', () => {
   const cloud = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'cloud_alert_link.h'), 'utf8');
   // Advanced list: the item sits after "CD Nha phat trien" and before "Doi ma ky thuat"; the screen belongs to the Advanced session (PIN keep-alive, lock on leave)
   assert.match(hmi, /enum AdvItem : uint8_t \{[^}]*ADV_DEV_MODE, ADV_GUEST, ADV_PINCHG, ADV_EXIT \}/);
@@ -298,12 +298,12 @@ test('Che do 2 tai khoan: only in HMI Nang cao, needs Online, the machine asks t
   assert.match(bodyOf('void goBack()'), /case View::GuestMode: view = View::AdvMenu; advIndex = ADV_GUEST;/);
   assert.match(bodyOf('void openGuestMode('), /CHI DUNG DUOC KHI ONLINE/);
   // not reachable from the normal menus (no GroupExtra / ConnItem entry)
-  assert.doesNotMatch(bodyOf('const char *groupExtraLabelFor('), /GuestMode|2 tai khoan/);
-  assert.doesNotMatch(bodyOf('const char *connItemLabel('), /GuestMode|2 tai khoan/);
-  // the knob toggles, a changed choice is sent (1 = on, 2 = off), an unchanged one just leaves; the answer arrives through the snapshot
+  assert.doesNotMatch(bodyOf('const char *groupExtraLabelFor('), /GuestMode|tai khoan/);
+  assert.doesNotMatch(bodyOf('const char *connItemLabel('), /GuestMode|tai khoan/);
+  // the knob steps 1 -> 2 -> 3 accounts, a changed choice is sent (2 = one account, 1 = two, 3 = three), an unchanged one just leaves; the answer arrives through the snapshot
   const input = bodyOf('void handleInput()');
-  assert.match(input, /case View::GuestMode: \{[\s\S]*?mayapRequestGuestMode\(guestChoice \? 1U : 2U\)/);
-  assert.match(bodyOf('void drawGuestMode('), /TK THU 2 BI XOA KHOI MAY/);                               // the consequence of "off" is on the screen
+  assert.match(input, /case View::GuestMode: \{[\s\S]*?mayapRequestGuestMode\(guestChoice == 1U \? 2U : guestChoice == 2U \? 1U : 3U\)/);
+  assert.match(bodyOf('void drawGuestMode('), /1 TK: TK THEM BI XOA KHOI MAY/);                               // the consequence of "off" is on the screen
   // firmware side: device key + action to the Worker, same admission path as reset-PIN / members, no new task
   assert.match(cloud, /"\/api\/device\/guest-mode"/);
   assert.match(cloud, /doc\["device_key"\] = mayapDeviceSecret\(\);\s*doc\["action"\]/);

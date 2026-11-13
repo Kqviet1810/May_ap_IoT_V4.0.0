@@ -19,6 +19,7 @@
 #include "batch_day.h"
 #include "sensor_fine.h"
 #include "hold_keep.h"
+#include "vent_hold.h"
 #include "heater_response_watch.h"
 #include "vent_line.h"
 #include "alarm_sound.h"
@@ -5276,7 +5277,7 @@ class MachineController {
   // The day profile of the exhaust fans: seconds until the next block starts (onInS; 0 while a block runs) and until the running block ends (offInS).
   // false (the outputs untouched) when no profile runs now.
   bool ventProfileTiming(uint32_t now, float &onInS, float &offInS) const {
-    if (!(config_.ventAutoEnabled && batchRunning_ && !warmupVentHold_)) return false;
+    if (!(config_.ventAutoEnabled && batchRunning_ && !ventHold_.holding())) return false;
     const uint32_t cycleSec = static_cast<uint32_t>(config_.ventCycleMinutes) * 60UL;
     if (cycleSec == 0UL) return false;
     const uint32_t elapsedSec = elapsedBatchSec(now);
@@ -5374,37 +5375,43 @@ class MachineController {
     if (need == 0U || (techGate_.webCtlMask() & need) == 0U) { message = "WEB CHUA DUOC CHO PHEP"; return false; }
     if (testModeActive_ || mayapFirmwareMaintenanceActive()) { message = "MAY DANG O CHE DO KHAC"; return false; }
     const OutputState &o = outputs_.state();
+    // What the sender wants (3.1.2): 1 off, 2 on, 3 automatic (release the override); 0 = the old "flip what you see", still understood from an older Web page.
+    // A value is idempotent: two accounts that both press "on" leave it on, where two flips would put it back.
+    const uint8_t want = static_cast<uint8_t>(command.alarmMask & 3U);
     switch (command.type) {
       case HmiCommandType::WebVentToggle: {
         if (!gapOk(lastWebVentCmdAt_, false)) return false;
         lastWebVentCmdAt_ = now;
-        if (webOverrideLive(webVentUntil_, now)) { webVentUntil_ = 0U; message = "QUAT HUT: TU DONG"; return true; }
-        webVentValue_ = !o.ventFan;
+        if (want == 3U || (want == 0U && webOverrideLive(webVentUntil_, now))) { webVentUntil_ = 0U; message = "QUAT HUT: TU DONG"; return true; }
+        webVentValue_ = want == 0U ? !o.ventFan : (want == 2U);
         webVentUntil_ = now + WEB_OVERRIDE_MS; if (webVentUntil_ == 0U) webVentUntil_ = 1U;
         message = webVentValue_ ? "DA BAT QUAT HUT (15 PHUT)" : "DA TAT QUAT HUT (15 PHUT)";
         return true;
       }
       case HmiCommandType::WebCircToggle: {
         if (!gapOk(lastWebCircCmdAt_, false)) return false;
-        if (webOverrideLive(webCircUntil_, now)) { webCircUntil_ = 0U; message = "QUAT TUAN HOAN: TU DONG"; lastWebCircCmdAt_ = now; return true; }
-        if (o.circulationFan && (o.heaterSsr || o.heatMaster || temperature_ > 38.0f)) {
+        if (want == 3U || (want == 0U && webOverrideLive(webCircUntil_, now))) { webCircUntil_ = 0U; message = "QUAT TUAN HOAN: TU DONG"; lastWebCircCmdAt_ = now; return true; }
+        const bool circWanted = want == 0U ? !o.circulationFan : (want == 2U);
+        if (!circWanted && o.circulationFan && (o.heaterSsr || o.heatMaster || temperature_ > 38.0f)) {
           message = "NGUY HIEM: THANH NHIET NONG, KHONG THE TAT QUAT";
           return false;
         }
-        webCircValue_ = !o.circulationFan;
+        webCircValue_ = circWanted;
         webCircUntil_ = now + WEB_OVERRIDE_MS; if (webCircUntil_ == 0U) webCircUntil_ = 1U;
         message = webCircValue_ ? "DA BAT QUAT TUAN HOAN (15 PHUT)" : "DA TAT QUAT TUAN HOAN (15 PHUT)";
         lastWebCircCmdAt_ = now;
         return true;
       }
-      case HmiCommandType::WebHeaterToggle:
-        if (!gapOk(lastWebHeaterCmdAt_, webHeaterOff_)) return false;   // switching the heater back ON is never delayed
-        webHeaterOff_ = !webHeaterOff_;
+      case HmiCommandType::WebHeaterToggle: {
+        const bool heaterOff = want == 0U ? !webHeaterOff_ : (want == 1U);   // 2 and 3: let the heater work again
+        if (!gapOk(lastWebHeaterCmdAt_, !heaterOff)) return false;   // switching the heater back ON is never delayed
+        webHeaterOff_ = heaterOff;
         lastWebHeaterCmdAt_ = now;
         message = webHeaterOff_ ? "DA NGAT THANH NHIET TU XA" : "DA CHO THANH NHIET HOAT DONG LAI";
         return true;
+      }
       case HmiCommandType::WebSirenToggle:
-        if (webOverrideLive(webSirenUntil_, now)) { webSirenUntil_ = 0U; message = "DA TAT COI"; return true; }
+        if (want == 1U || want == 3U || (want == 0U && webOverrideLive(webSirenUntil_, now))) { webSirenUntil_ = 0U; message = "DA TAT COI"; return true; }
         webSirenUntil_ = now + WEB_SIREN_MS; if (webSirenUntil_ == 0U) webSirenUntil_ = 1U;
         message = "DA BAT COI (30 GIAY)";
         return true;
@@ -6728,19 +6735,13 @@ class MachineController {
       profileVentActive = (elapsedSec % cycleSec) < onSec;
     }
 
-    // Warm-up: no profile / scheduled ventilation while PV is still far below SP (the fan takes heat away while the oven is climbing).
-    // Forced vents (High / sensor fault) are untouched. Ends at SP - 0.5 C or after WARMUP_VENT_HOLD_MAX_MS.
-    // (until the first usable sample decides, the batch start counts as a warm-up: the first minutes of the sensor filter must not open the fan)
-    if (!batchRunning_) { warmupVentChecked_ = false; warmupVentHold_ = false; warmupVentHoldSince_ = now; }
-    else if (!warmupVentChecked_) {
-      if (sensorUsable_) {
-        warmupVentChecked_ = true;
-        warmupVentHold_ = (config_.targetTemp - temperature_) > WARMUP_VENT_HOLD_ERR_C;
-        warmupVentHoldSince_ = now;
-      } else warmupVentHold_ = elapsedMs(now, warmupVentHoldSince_) < WARMUP_VENT_HOLD_MAX_MS;
-    } else if (warmupVentHold_ && ((config_.targetTemp - temperature_) <= WARMUP_VENT_RELEASE_ERR_C ||
-               elapsedMs(now, warmupVentHoldSince_) >= WARMUP_VENT_HOLD_MAX_MS || !sensorUsable_)) warmupVentHold_ = false;
-    if (warmupVentHold_) { scheduledVentActive = false; profileVentActive = false; }
+    // Vent hold (vent_hold.h): no profile / scheduled ventilation while the oven climbs, recovers from a door or stands far under SP, at any time of the batch.
+    // Forced vents (High / sensor fault / Emergency / the vent line) and a Web command are untouched.
+    {
+      VentHoldRule::Params hp; hp.enterC = VENT_HOLD_ENTER_ERR_C; hp.releaseC = VENT_HOLD_RELEASE_ERR_C; hp.maxMs = VENT_HOLD_MAX_MS;
+      ventHold_.update(now, batchRunning_, sensorUsable_, config_.targetTemp - temperature_, thermalV3_.controller().doorDetected(), hp);
+    }
+    if (ventHold_.holding()) { scheduledVentActive = false; profileVentActive = false; }
     const bool safetyForcesCirculation = faults_.circulationForced() ||
         ventTemperatureActive_ || scheduledVentActive || profileVentActive ||
         sensorFaultNeedsFan || postCooling;
@@ -7492,7 +7493,7 @@ class MachineController {
     r.hold = thermalV3_.controller().pHold(); r.sp = config_.targetTemp;
     if (r.epoch != 0U && holdRing_.append(r)) holdKeeper_.saved(nowS);
   }
-  // At the first live step of the controller: the hold of a few minutes ago if it is still true, else the one-time seed of the update that brought this feature.
+  // At the first live step of the controller: the hold of a few minutes ago if it is still true, else the prior of the controller.
   // Afterwards, once a second, the keeper watches whether the oven is quiet enough to be written. Nothing here writes hold while the controller runs.
   void serviceHold(uint32_t now, bool permit, bool shadow) {
     thermalv3::Controller &c = thermalV3_.controller();
@@ -7501,11 +7502,8 @@ class MachineController {
       holdDecided_ = true;
       if (!c.hasRun() && holdRing_.ready()) {
         float h = 0.0f;
-        const float sp = config_.targetTemp, pv = fineControlValue(now);
-        if (HoldKeep::decideRestore(holdRing_.hasRecord(), holdRing_.latest(), rtc_.valid(), rtc_.epoch(), sp, static_cast<uint8_t>(config_.maxHeaterPower), h) == HoldKeep::Why::Ok) {
+        if (HoldKeep::decideRestore(holdRing_.hasRecord(), holdRing_.latest(), rtc_.valid(), rtc_.epoch(), config_.targetTemp, static_cast<uint8_t>(config_.maxHeaterPower), h) == HoldKeep::Why::Ok) {
           c.seedHold(h, 2U);
-        } else if (HoldKeep::oneTimeSeed(holdRing_.hasRecord(), batchRunning_, rtc_.valid(), rtc_.epoch(), lastCheckpointEpoch_, sp - pv)) {
-          c.seedHold(HoldKeep::ONE_TIME_SEED_PCT, 1U);
         }
       }
     }
@@ -8509,8 +8507,7 @@ class MachineController {
   bool previousFanCommand_ = false;
   uint32_t fanOnSince_ = 0;
   uint32_t cycleLastUs_ = 0, cycleMaxUs_ = 0;       // control-task cycle time, reported to the PID monitor (set by the control task)
-  bool warmupVentHold_ = false, warmupVentChecked_ = false;
-  uint32_t warmupVentHoldSince_ = 0;
+  VentHoldRule::Hold ventHold_;
   // Contactor nhiet tong PHAI dong tuc thi cung cong tac (yeu cau nguoi lap
   // dat, xem comment tai normalMasterPermit) nen KHONG duoc tri hoan no. De
   // 2 relay (quat tuan hoan + contactor) khong dong DIEN CUNG 1 thoi diem
