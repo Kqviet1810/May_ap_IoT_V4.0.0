@@ -7493,7 +7493,7 @@ class MachineController {
     r.hold = thermalV3_.controller().pHold(); r.sp = config_.targetTemp;
     if (r.epoch != 0U && holdRing_.append(r)) holdKeeper_.saved(nowS);
   }
-  // At the first live step of the controller: the hold of a few minutes ago if it is still true, else the prior of the controller.
+  // At the first live step of the controller: the hold of a few minutes ago if it is still true, else the one-time starting value of an update (no record yet), else the prior of the controller.
   // Afterwards, once a second, the keeper watches whether the oven is quiet enough to be written. Nothing here writes hold while the controller runs.
   void serviceHold(uint32_t now, bool permit, bool shadow) {
     thermalv3::Controller &c = thermalV3_.controller();
@@ -7502,8 +7502,11 @@ class MachineController {
       holdDecided_ = true;
       if (!c.hasRun() && holdRing_.ready()) {
         float h = 0.0f;
-        if (HoldKeep::decideRestore(holdRing_.hasRecord(), holdRing_.latest(), rtc_.valid(), rtc_.epoch(), config_.targetTemp, static_cast<uint8_t>(config_.maxHeaterPower), h) == HoldKeep::Why::Ok) {
+        const float sp = config_.targetTemp, pv = fineControlValue(now);
+        if (HoldKeep::decideRestore(holdRing_.hasRecord(), holdRing_.latest(), rtc_.valid(), rtc_.epoch(), sp, static_cast<uint8_t>(config_.maxHeaterPower), h) == HoldKeep::Why::Ok) {
           c.seedHold(h, 2U);
+        } else if (HoldKeep::oneTimeSeed(holdRing_.hasRecord(), batchRunning_, rtc_.valid(), rtc_.epoch(), lastCheckpointEpoch_, sp - pv)) {
+          c.seedHold(HoldKeep::ONE_TIME_SEED_PCT, 1U);
         }
       }
     }

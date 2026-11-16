@@ -3568,7 +3568,7 @@
     // The first 17 columns keep their place; the diagnostics are appended (safety reading, learned hold, heater gain x1e5, transit time, the learning gain of the
     // hold observer [1 = the oven follows; raised while the error does not shrink], why the overheat fan started, the state of that line, door guard, transit time
     // measured, fan-budget tokens, ventReason, where kAir came from [0 prior, 1 typed by hand, 2 measured since power-up], whether the observer gain is raised,
-    // how many windows in a row the oven did not follow [0..7], where the starting hold came from [0 prior, 2 restored; 1 was the one-time seed of 3.1.1], minutes of fan in the last 60 minutes).
+    // how many windows in a row the oven did not follow [0..7], where the starting hold came from [0 prior, 1 the one-time starting value of an update (0 % from 3.1.2), 2 restored], minutes of fan in the last 60 minutes).
     const head = 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,trust_pct,source,' +
       'safety_c,hold_pct,kair_e5,tau_s,obs_gain,vent_why,vent_line,door,identified,fan_tokens,vent_reason,kair_src,obs_boost,stalled_windows,hold_src,vent_min_60,time_vn';
     const cell = (v) => (typeof v === 'number' ? (Number.isFinite(v) ? String(v) : '') : String(v));

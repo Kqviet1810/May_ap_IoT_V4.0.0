@@ -527,7 +527,8 @@ void testSeedHold() {
     assert(c.holdSource() == 2U && c.pHold() > 42.9f);
     c.seedHold(80.0f, 1U); assert(c.pHold() < 50.0f && c.holdSource() == 2U);              // once it has run, nothing but the observer changes hold
   }
-  { thermalv3::Controller c; c.seedHold(1.0f, 1U); assert(c.pHold() >= 3.0f); c.seedHold(95.0f, 1U); assert(c.pHold() <= 90.0f); c.seedHold(NAN, 2U); assert(c.pHold() <= 90.0f); }
+  { thermalv3::Controller c; c.seedHold(-5.0f, 1U); assert(c.pHold() >= 0.0f && c.pHold() < 0.001f); c.seedHold(95.0f, 1U); assert(c.pHold() <= 90.0f); c.seedHold(NAN, 2U); assert(c.pHold() <= 90.0f); }
+  { thermalv3::Controller c; c.seedHold(0.0f, 1U); assert(c.holdSource() == 1U && c.pHold() < 0.001f); thermalv3::Output o = c.step(in); assert(o.powerPct < 1.0f); }   // the one-time start value of 3.1.2: hold 0, the oven at SP: no power from the hold
   { thermalv3::Controller c; c.seedHold(43.0f, 2U); c.reset(); assert(c.holdSource() == 0U && c.pHold() > 11.0f && c.pHold() < 13.0f); }
   printf("  -> Pass: seedHold only before the first live step, clamped, cleared by reset\n");
 }
