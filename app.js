@@ -3457,7 +3457,7 @@
   const PM_PHASES = Object.freeze(['Nhìn/đo', 'Đã nhận dạng', 'Đã khớp lần 1', 'Đã khớp lần 2']);
   const PM_STATES = Object.freeze({ 0: 'idle', 1: 'climb', 2: 'track', 3: 'door', 4: 'frozen' });
   const PM_STATE_TEXT = Object.freeze({ 3: ' · MỞ CỬA (giới hạn công suất)', 4: ' · BỊ CHẶN SƯỞI (quạt hút / chưa cho phép)' });
-  const PM_LOG_MAX = 1500;
+  const PM_LOG_MAX = 8640;                 // 24 hours of the machine ring at 10 s a sample (3.1.2: was 1500, 4 h 10 min)
   const PM_MAX_POINTS = 900;
   const PM_SAMPLE_MS = 2000;
   const pidMon = { open: false, deviceId: '', bootId: 0, series: [], lastAt: 0, cells: null, raf: 0, log: new Map(), logHead: 0, logHeadAt: 0 };
@@ -3530,7 +3530,7 @@
     }
     while (pidMon.log.size > PM_LOG_MAX) pidMon.log.delete(pidMon.log.keys().next().value);
     const info = $('pmLogInfo');
-    if (info) info.textContent = `Đã nhận ${pidMon.log.size} mẫu (10 s một mẫu). Máy giữ 30 phút gần nhất; trang này giữ cả phần đã nhận trước đó khi mục đang mở. Giữ mục này mở vài phút để nhận đủ.`;
+    if (info) info.textContent = `Đã nhận ${pidMon.log.size} mẫu (10 s một mẫu). Máy giữ 30 phút gần nhất; trang này giữ tối đa 24 giờ (8.640 mẫu) đã nhận khi mục đang mở. Giữ mục này mở thì mới nhận thêm, tải CSV trước khi đóng trang.`;
     if ($('pmDownload')) $('pmDownload').disabled = pidMon.log.size === 0 && pidMon.series.length === 0;
   }
 
