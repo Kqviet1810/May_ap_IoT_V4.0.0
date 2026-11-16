@@ -43,7 +43,7 @@ constexpr float KAIR_START = 1.6e-4f;      // kAir before any climb has been mea
 constexpr float DOOR_LATCH_TAU = 6.0f;      // a door is "open" for the load estimate for at most 6 transit times
 constexpr float DOOR_LOAD = 0.1f;           // ... and only when the fall is worth a load of 10 % of the headroom (a real door is 5-10 times that; the dip of a landing is not)
 constexpr float HOLD_PRIOR_OF_CAP = 0.12f;
-constexpr float HOLD_SEED_MIN = 3.0f, HOLD_SEED_MAX = 90.0f;   // the range a restored / seeded hold may have
+constexpr float HOLD_SEED_MIN = 0.0f, HOLD_SEED_MAX = 90.0f;   // the range a restored / seeded hold may have
 // Hold level under which the oven has more heat than it loses (a hot noon, the eggs' own heat): 1-3 % of the heater or nothing changes the temperature by
 // less than the sensor can tell, but it keeps the reading on the wrong side of SV. PV ZERO_ZONE_ENTER_C over SV with the hold estimate under ZERO_ZONE_HOLD_PCT: the heater
 // is simply off until PV is ZERO_ZONE_EXIT_C under SV (or the estimate rose over ZERO_ZONE_RELEASE_HOLD_PCT). Rig of the log of 05/11 (tests/thermal-closed-loop.cpp,
@@ -203,7 +203,7 @@ class Controller {
     derive();
   }
   // The hold the oven needed a few minutes ago (hold_keep.h decides when that is still true). Only before the first live step; the observer stays the one writer
-  // of hold afterwards. src: 1 = the one-time seed of an update, 2 = restored from the record.
+  // of hold afterwards. src: 1 = the one-time starting value of an update (hold_keep.h ONE_TIME_SEED_PCT: 43 % in 3.1.1, 0 % from 3.1.2), 2 = restored from the record.
   void seedHold(float holdPct, uint8_t src) {
     if (wasLive_ || !std::isfinite(holdPct)) return;
     hold_ = std::max(HOLD_SEED_MIN, std::min(HOLD_SEED_MAX, holdPct));

@@ -161,10 +161,15 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror tests/thermal-v3.cpp -o /tmp/mayap-thermal-v3-test
           /tmp/mayap-thermal-v3-test
 
-      - name: "Hold keeper (hold_keep.h): the record, the ring of the EEPROM (torn write, wrap, clear, failures), when a quiet oven is written, when the hold is used again (20 minutes), the one-time seed of an update, and the wear of the busiest cell in 20 years"
+      - name: "Hold keeper (hold_keep.h): the record, the ring of the EEPROM (torn write, wrap, clear, failures), when a quiet oven is written, when the hold is used again (20 minutes), and the wear of the busiest cell in 20 years"
         run: |
           g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/hold-keep.cpp -o /tmp/mayap-hold-keep
           /tmp/mayap-hold-keep
+
+      - name: "Vent hold (vent_hold.h): the profile / scheduled ventilation waits while the oven climbs, recovers from a door or stands far under SP (at the start of a batch and at any time of it), is released when PV is back, cannot hold for ever (30 min), and a skipped run is not caught up"
+        run: |
+          g++ -std=c++11 -O2 -Wall -Wextra -Werror tests/vent-hold.cpp -o /tmp/mayap-vent-hold
+          /tmp/mayap-vent-hold
 
       - name: "Vent line (vent_line.h): the exhaust fans are a last resort - decided on the mean of the reading (not blinded by a flicker between sensor steps), watched for 1.2 transit times while the heater brings it down, started by a stuck / fast / predicted / heater-at-floor reason, run 3-10 min, rest 5 min, paid from a token bucket, never cut the heater"
         run: |

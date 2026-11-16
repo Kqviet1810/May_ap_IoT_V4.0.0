@@ -13,6 +13,7 @@ function database(){
   sql.exec(fs.readFileSync('cloudflare/migrations/0006_cloud_notes_reminders.sql','utf8'));
   sql.exec(fs.readFileSync('cloudflare/migrations/0007_alarm_delivery.sql','utf8'));
   sql.exec(fs.readFileSync('cloudflare/migrations/0008_guest_mode.sql','utf8'));
+  sql.exec(fs.readFileSync('cloudflare/migrations/0009_guest_slots.sql','utf8'));
   const DB={prepare(source){const statement=sql.prepare(source);let args=[];
     return {bind(...a){args=a;return this;},async first(){return statement.get(...args) || null;},
       async all(){return {results:statement.all(...args)};},async run(){
@@ -339,7 +340,7 @@ test('HMI device members: device key lists display names only, removes non-owner
   assert.equal(h.sql.prepare("SELECT role FROM user_devices WHERE device_id=?").get(id).role,'owner');
 });
 
-test('Che do 2 tai khoan: only the machine switches it; one more account joins with Device ID + PIN, equal rights, no Web removal, off removes it',async()=>{
+test('Che do tai khoan: only the machine switches it; one more account joins with Device ID + PIN, equal rights, no Web removal, off removes it',async()=>{
   const h=await setup(), A=await h.login('acct-A'), B=await h.login('acct-B'), C=await h.login('acct-C'), id=await h.device(0xB2);
   const key='c'.repeat(64);
   h.env.MQTT_BROKER_URL='wss://broker.example'; h.env.MQTT_WEB_TOKEN_SECRET='broker-token-secret-test';
@@ -349,13 +350,13 @@ test('Che do 2 tai khoan: only the machine switches it; one more account joins w
   assert.equal((await claim(A)).status,200);
   // off by default: the second account is refused, with the instruction for the HMI
   const refused=await claim(B); assert.equal(refused.status,409);
-  const refusedBody=await refused.json(); assert.equal(refusedBody.error,'GUEST_MODE_OFF'); assert.match(refusedBody.message,/Chế độ 2 tài khoản/);
+  const refusedBody=await refused.json(); assert.equal(refusedBody.error,'GUEST_MODE_OFF'); assert.match(refusedBody.message,/Chế độ tài khoản/);
   // only the machine's key switches it
   assert.equal((await hmi('on','d'.repeat(64))).status,401);
   assert.equal((await hmi('on','short')).status,401);
   assert.equal((await h.call('/api/device/guest-mode',A,{device_id:id,action:'on'})).status,401);   // an account (even the first) cannot
   assert.equal((await hmi('bogus')).status,400);
-  assert.deepEqual(await (await hmi('status')).json(),{success:true,enabled:false,joined:false,window_left_s:0});
+  assert.deepEqual(await (await hmi('status')).json(),{success:true,enabled:false,joined:false,joined_n:0,slots:1,window_left_s:0});
   const on=await (await hmi('on')).json();
   assert.equal(on.enabled,true); assert.equal(on.joined,false); assert.ok(on.window_left_s>800 && on.window_left_s<=900);
   // a wrong PIN still fails, the right one joins as an operator; the first account is unchanged
@@ -365,7 +366,7 @@ test('Che do 2 tai khoan: only the machine switches it; one more account joins w
   assert.equal((await claim(B)).status,200);                                                         // idempotent
   assert.equal(h.sql.prepare('SELECT role FROM user_devices WHERE device_id=? AND user_sub=?').get(id,'acct-A').role,'owner');
   assert.equal(h.sql.prepare('SELECT role FROM user_devices WHERE device_id=? AND user_sub=?').get(id,'acct-B').role,'operator');
-  // only ONE more: a third account is refused while the mode is on
+  // the old firmware sends no slots: only ONE more, a third account is refused while the mode is on
   assert.equal((await claim(C)).status,409);
   assert.equal((await (await hmi('status')).json()).joined,true);
   // equal rights: both read, both get the control grant, both rename / change the PIN
@@ -383,7 +384,7 @@ test('Che do 2 tai khoan: only the machine switches it; one more account joins w
   // OFF on the machine: the second account (and its push links) go, the first stays
   h.sql.prepare('INSERT INTO push_subscriptions(device_id,endpoint,p256dh,auth,user_sub,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').run(id,'https://push.example/b','p','a','acct-B',1,1);
   h.sql.prepare('INSERT INTO push_subscriptions(device_id,endpoint,p256dh,auth,user_sub,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').run(id,'https://push.example/a','p','a','acct-A',1,1);
-  assert.deepEqual(await (await hmi('off')).json(),{success:true,enabled:false,joined:false,window_left_s:0});
+  assert.deepEqual(await (await hmi('off')).json(),{success:true,enabled:false,joined:false,joined_n:0,slots:1,window_left_s:0});
   assert.equal(h.sql.prepare('SELECT COUNT(*) n FROM user_devices WHERE device_id=?').get(id).n,1);
   assert.equal(h.sql.prepare("SELECT COUNT(*) n FROM push_subscriptions WHERE user_sub='acct-B'").get().n,0);
   assert.equal(h.sql.prepare("SELECT COUNT(*) n FROM push_subscriptions WHERE user_sub='acct-A'").get().n,1);
@@ -392,7 +393,7 @@ test('Che do 2 tai khoan: only the machine switches it; one more account joins w
   assert.equal((await claim(B)).status,409);
   assert.equal((await h.call(`/api/device/${id}/status`,A)).status,200);
 });
-test('Che do 2 tai khoan: the slot closes by itself when nobody joins, the second account can leave, a viewer-less machine stays single',async()=>{
+test('Che do tai khoan: the slot closes by itself when nobody joins, the second account can leave, a viewer-less machine stays single',async()=>{
   const h=await setup(), A=await h.login('win-A'), B=await h.login('win-B'), id=await h.device(0xB3);
   const key='e'.repeat(64);
   h.sql.prepare('UPDATE devices SET device_key_hash=? WHERE device_id=?').run(await h.auth.hash(key,{MAYAP_SESSION_PEPPER:h.env.DEVICE_KEY_PEPPER}),id);
@@ -402,7 +403,7 @@ test('Che do 2 tai khoan: the slot closes by itself when nobody joins, the secon
   assert.equal((await hmi('on')).status,200);
   h.sql.prepare('UPDATE device_guest_mode SET join_until=? WHERE device_id=?').run(Date.now()-1,id);   // the 15 minutes pass
   assert.equal((await claim(B)).status,409);                                                           // closed
-  assert.deepEqual(await (await hmi('status')).json(),{success:true,enabled:false,joined:false,window_left_s:0});
+  assert.deepEqual(await (await hmi('status')).json(),{success:true,enabled:false,joined:false,joined_n:0,slots:1,window_left_s:0});
   assert.equal(h.sql.prepare('SELECT enabled FROM device_guest_mode WHERE device_id=?').get(id).enabled,0);
   // on again, join, then the window no longer matters: it stays on until the HMI turns it off; the second account leaves by itself
   assert.equal((await hmi('on')).status,200);
@@ -417,4 +418,34 @@ test('Che do 2 tai khoan: the slot closes by itself when nobody joins, the secon
   assert.equal((await h.call('/api/device/guest-mode',null,{device_id:id2,device_key:'f'.repeat(64),action:'on'},'POST',{Origin:''})).status,401);
   assert.equal((await h.call('/api/account/devices/claim',B,{device_id:id2,pin:'123456'})).status,200);
   assert.equal(h.sql.prepare('SELECT role FROM user_devices WHERE device_id=?').get(id2).role,'owner');
+});
+
+test('Che do tai khoan 1 / 2 / 3: the machine allows 0, 1 or 2 more accounts; a lower number never removes who is in; off removes them all',async()=>{
+  const h=await setup(), A=await h.login('tri-A'), B=await h.login('tri-B'), C=await h.login('tri-C'), D=await h.login('tri-D'), id=await h.device(0xB5);
+  const key='9'.repeat(64);
+  h.sql.prepare('UPDATE devices SET device_key_hash=? WHERE device_id=?').run(await h.auth.hash(key,{MAYAP_SESSION_PEPPER:h.env.DEVICE_KEY_PEPPER}),id);
+  const hmi=(action,slots)=>h.call('/api/device/guest-mode',null,{device_id:id,device_key:key,action,...(slots?{slots}:{})},'POST',{Origin:''});
+  const claim=(sess)=>{h.sql.exec('DELETE FROM auth_rate_limits');return h.call('/api/account/devices/claim',sess,{device_id:id,pin:'123456'});};
+  assert.equal((await claim(A)).status,200);
+  // 3 accounts in all = 2 more
+  const on=await (await hmi('on',2)).json(); assert.equal(on.enabled,true); assert.equal(on.slots,2); assert.equal(on.joined_n,0);
+  assert.equal((await claim(B)).status,200);
+  assert.deepEqual({n:(await (await hmi('status')).json()).joined_n,slots:(await (await hmi('status')).json()).slots},{n:1,slots:2});
+  assert.equal((await claim(C)).status,200);
+  assert.equal((await claim(D)).status,409);                                                           // the third is full
+  assert.equal((await (await hmi('status')).json()).joined_n,2);
+  // a value other than 1 / 2 is the one slot of old (never an unbounded number)
+  assert.equal((await (await hmi('on',7)).json()).slots,1);
+  assert.equal((await claim(D)).status,409);                                                           // already two in, one slot: nobody new
+  assert.equal(h.sql.prepare("SELECT COUNT(*) n FROM user_devices WHERE device_id=? AND role!='owner'").get(id).n,2);   // nobody was removed by the lower number
+  // 2 accounts: one more only
+  assert.equal((await hmi('off')).status,200);
+  assert.equal(h.sql.prepare('SELECT COUNT(*) n FROM user_devices WHERE device_id=?').get(id).n,1);
+  assert.equal((await (await hmi('on',1)).json()).slots,1);
+  assert.equal((await claim(B)).status,200);
+  assert.equal((await claim(C)).status,409);
+  // 1 account (off): everybody else leaves, the first stays
+  assert.equal((await (await hmi('off')).json()).slots,1);
+  assert.equal(h.sql.prepare('SELECT COUNT(*) n FROM user_devices WHERE device_id=?').get(id).n,1);
+  assert.equal((await h.call(`/api/device/${id}/status`,A)).status,200);
 });

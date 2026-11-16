@@ -72,7 +72,7 @@ with tempfile.TemporaryDirectory(prefix='mayap-thermal-') as directory:
     assert initializer == 'HeaterBurstScheduler heaterBurst_{HEATER_GROUP_COUNT, HEATER_BURST_QUANTUM_MS};'
     (out / 'actual-burst-member.inc').write_text(initializer)
     assert re.search(r'uint16_t heaterStuckDurationSec\s*=\s*900;', config), 'E115 test must match production default'
-    constants = ['CIRC_FAN_BATCH_START_STAGGER_MS','POST_COOL_MS','VENT_SCHEDULE_MAX_RUNS','FAN_PRESTART_MS','MANUAL_FAN_CAN_DISABLE_HEATING','HUMIDIFIER_HYSTERESIS_RH','HEATER_BURST_QUANTUM_MS','WARMUP_VENT_HOLD_ERR_C','WARMUP_VENT_RELEASE_ERR_C','WARMUP_VENT_HOLD_MAX_MS']
+    constants = ['CIRC_FAN_BATCH_START_STAGGER_MS','POST_COOL_MS','VENT_SCHEDULE_MAX_RUNS','FAN_PRESTART_MS','MANUAL_FAN_CAN_DISABLE_HEATING','HUMIDIFIER_HYSTERESIS_RH','HEATER_BURST_QUANTUM_MS','VENT_HOLD_ENTER_ERR_C','VENT_HOLD_RELEASE_ERR_C','VENT_HOLD_MAX_MS']
     (out / 'actual-heating-constants.inc').write_text('\n'.join(re.search(r'constexpr [^;\n]*\b'+n+r'\s*=[^;]*;',config)[0] for n in constants))
     start = machine.index('  void updateFilter(')
     end = machine.index('  void completeCycleSuccess(', start)

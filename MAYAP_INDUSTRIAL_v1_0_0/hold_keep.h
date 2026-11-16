@@ -9,8 +9,8 @@
 //  * Writing: every 5 minutes while the oven is quiet (steady()), at most once a minute and 400 times a day. Over 20 years that is at most about
 //    5,700 writes per cell (an AT24C512 is rated for 1,000,000; 100,000 is the cautious figure used here).
 //  * Using: the record is at most 20 minutes old by the RTC, the set point and the heater ceiling are the same, the value is in range.
-//  * Once: the update that brings this feature finds no record. If it restarts a batch that was checkpointed less than 20 minutes ago and the oven is near SV,
-//    the controller starts from ONE_TIME_SEED_PCT instead of the prior (remove in 3.1.2).
+//  * Once: with no record, a batch that was checkpointed less than 20 minutes ago and the oven near SV, the controller starts from ONE_TIME_SEED_PCT instead of
+//    the prior (43 % in 3.1.1; 0 % from 3.1.2, the owner's choice).
 #include <cmath>
 #include <stdint.h>
 #include <string.h>
@@ -25,7 +25,7 @@ constexpr uint32_t MAX_AGE_S = 1200U;
 constexpr float STEADY_BAND_C = 0.15f, STEADY_HOLD_STEP = 1.0f;
 constexpr uint32_t STEADY_S = 600U;
 constexpr float SP_TOL_C = 0.3f;
-constexpr float ONE_TIME_SEED_PCT = 43.0f, SEED_NEAR_C = 0.5f;
+constexpr float ONE_TIME_SEED_PCT = 0.0f, SEED_NEAR_C = 0.5f;
 constexpr uint8_t FAILS_TO_DISABLE = 3U;
 
 struct Record {
@@ -146,7 +146,7 @@ inline Why decideRestore(bool have, const Record &r, bool rtcValid, uint32_t now
   holdOut = r.hold; return Why::Ok;
 }
 
-// The update that brings this feature: no record yet, a batch checkpointed a few minutes ago, the oven near SV.
+// No record yet, a batch checkpointed a few minutes ago, the oven near SV.
 inline bool oneTimeSeed(bool ringHasRecord, bool batchRunning, bool rtcValid, uint32_t nowEpoch, uint32_t checkpointEpoch, float errC) {
   if (ringHasRecord || !batchRunning || !rtcValid || checkpointEpoch == 0U || nowEpoch < checkpointEpoch) return false;
   return nowEpoch - checkpointEpoch <= MAX_AGE_S && std::isfinite(errC) && std::fabs(errC) <= SEED_NEAR_C;
