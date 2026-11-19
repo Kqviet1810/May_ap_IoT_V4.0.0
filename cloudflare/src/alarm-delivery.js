@@ -12,17 +12,19 @@ export async function findAlarmEvent(env, deviceId, eventId) {
 
 // D1 batch is atomic. A successful receipt means the event AND all recipient
 // jobs are durable, not that an OS has displayed a notification.
-export async function queueAlarmEvent(env, { deviceId, eventId, alarmType, notification, now = Date.now() }) {
+// `delayMs` holds the pushes of this event back (a RESOLVED waits its off-delay); `notify:false` stores the event for the history and the
+// status endpoint but creates no push job (a re-activation inside the off-delay: the incident is still open, nobody is told twice).
+export async function queueAlarmEvent(env, { deviceId, eventId, alarmType, notification, now = Date.now(), delayMs = 0, notify = true }) {
   const existing = await findAlarmEvent(env, deviceId, eventId);
   if (existing) return existing;
-  const subscriptions = await getSubscriptionsForDevice(env.DB, deviceId);
+  const subscriptions = notify ? await getSubscriptionsForDevice(env.DB, deviceId) : [];
   const payload = JSON.stringify(notification);
   const statements = [env.DB.prepare(`INSERT INTO alarm_events
     (device_id,event_id,alarm_type,payload,created_at,expires_at) VALUES (?1,?2,?3,?4,?5,?6)
     ON CONFLICT(device_id,event_id) DO NOTHING`).bind(deviceId,eventId,alarmType,payload,now,now+TTL_MS)];
   for (const sub of subscriptions) statements.push(env.DB.prepare(`INSERT OR IGNORE INTO alarm_deliveries
     (event_seq,endpoint,next_attempt_at) SELECT order_seq,?3,?4 FROM alarm_events WHERE device_id=?1 AND event_id=?2`)
-    .bind(deviceId,eventId,sub.endpoint,now));
+    .bind(deviceId,eventId,sub.endpoint,now+delayMs));
   await env.DB.batch(statements);
   const event = await findAlarmEvent(env,deviceId,eventId);
   if (!event) throw new Error('ALARM_PERSIST_FAILED');
@@ -87,13 +89,20 @@ export function scheduleAlarmDelivery(env,ctx) {
   if(ctx?.waitUntil) ctx.waitUntil(work);
   return work;
 }
-export async function maintainAlarmDeliveries(env) {
-  await drainAlarmDeliveries(env);
-  // Retain receipts for seven days, even when jobs expire after one hour.
+// Every minute: push what is due (a held RESOLVED included) and retire the jobs of events past their hour. Cheap by construction: it reads the
+// due jobs through (status, next_attempt_at) and the events through their primary key.
+export async function maintainAlarmDeliveries(env, { now = Date.now() } = {}) {
+  await drainAlarmDeliveries(env, { now });
+  await env.DB.prepare("UPDATE alarm_deliveries SET status='expired',lease_token=NULL,lease_until=0 WHERE status='pending' AND event_seq IN (SELECT order_seq FROM alarm_events WHERE created_at<=?1)")
+    .bind(now - TTL_MS).run();
+}
+
+// Once an hour (the cost of these scans is the size of the tables, so they do not belong to every minute): receipts are kept seven days even
+// though jobs expire after an hour. The events go through created_at (an index); their deliveries leave with them.
+export async function purgeAlarmHistory(env, { now = Date.now() } = {}) {
   await env.DB.batch([
-    env.DB.prepare("UPDATE alarm_deliveries SET status='expired',lease_token=NULL,lease_until=0 WHERE status='pending' AND event_seq IN (SELECT order_seq FROM alarm_events WHERE expires_at<=?1)").bind(Date.now()),
-    env.DB.prepare('DELETE FROM alarm_deliveries WHERE event_seq IN (SELECT order_seq FROM alarm_events WHERE created_at<?1)').bind(Date.now()-7*86400000),
-    env.DB.prepare('DELETE FROM alarm_events WHERE created_at<?1').bind(Date.now()-7*86400000),
+    env.DB.prepare('DELETE FROM alarm_deliveries WHERE event_seq IN (SELECT order_seq FROM alarm_events WHERE created_at<?1)').bind(now - 7 * 86400000),
+    env.DB.prepare('DELETE FROM alarm_events WHERE created_at<?1').bind(now - 7 * 86400000),
   ]);
 }
 

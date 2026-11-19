@@ -6,6 +6,7 @@ async function setup(){
  sql.exec(fs.readFileSync('cloudflare/schema.sql','utf8'));
  sql.exec(fs.readFileSync('cloudflare/migrations/0004_accounts.sql','utf8'));
  sql.exec(fs.readFileSync('cloudflare/migrations/0007_alarm_delivery.sql','utf8'));
+ sql.exec(fs.readFileSync('cloudflare/migrations/0010_alarm_incidents.sql','utf8'));
  const DB={prepare(source){const stmt=sql.prepare(source);let args=[];return{bind(...a){args=a;return this;},
   async first(){return stmt.get(...args)||null;},async all(){return {results:stmt.all(...args)};},
   async run(){return {meta:stmt.run(...args)};}};},async batch(statements){sql.exec('BEGIN');try{const out=[];for(const s of statements)out.push(await s.run());sql.exec('COMMIT');return out;}catch(e){sql.exec('ROLLBACK');throw e;}}};
@@ -23,8 +24,8 @@ async function setup(){
  subscribe('https://push.test/phone1');
  const notification={title:'alarm',body:'off',data:{deviceId,alarmType:'FAULT_130',severity:'critical',state:'active'}};
  const jobs=[];const ctx={waitUntil(p){jobs.push(p);}};
- async function alarm(eventId='boot-0001',state='active',message='off'){
-  return worker.default.fetch(new Request('https://worker.test/api/device/alarm',{method:'POST',body:JSON.stringify({device_id:deviceId,device_key:secret,event_id:eventId,alarm_type:'FAULT_130',state,message,severity:'critical'})}),env,ctx);
+ async function alarm(eventId='boot-0001',state='active',message='off',opts={}){
+  return worker.default.fetch(new Request('https://worker.test/api/device/alarm',{method:'POST',body:JSON.stringify({device_id:deviceId,device_key:secret,event_id:eventId,alarm_type:opts.alarmType||'FAULT_130',state,message,severity:opts.severity||'critical'})}),env,ctx);
  }
  async function batch(events,key=secret){
   return worker.default.fetch(new Request('https://worker.test/api/device/alarms',{method:'POST',body:JSON.stringify({device_id:deviceId,device_key:key,events})}),env,ctx);
@@ -349,4 +350,108 @@ test('D1 fault: a failed write never produces a durable receipt on any channel',
  assert.ok(status>=500||durable===false);assert.notEqual(durable,true);              // broker would not PUBACK -> device keeps the event
  assert.equal((await h.alarm()).status,500);                                         // HTTPS fallback: 500, no receipt
  assert.equal(h.sql.prepare('SELECT COUNT(*) n FROM alarm_events').get().n,0);
+});
+
+test('incident model: the first ACTIVE is pushed at once, a flap inside the hold sends nothing more, the RESOLVED comes after the hold',async()=>{
+ const realTimeout=global.setTimeout;global.setTimeout=(fn)=>realTimeout(fn,0);
+ const h=await setup(),original=global.fetch,calls=[];global.fetch=async(url)=>{calls.push(String(url));return new Response('',{status:201});};
+ const rows=(id)=>h.sql.prepare("SELECT d.status,d.next_attempt_at FROM alarm_deliveries d JOIN alarm_events e ON e.order_seq=d.event_seq WHERE e.event_id=?").all(id);
+ try{
+  assert.equal((await h.alarm('e1','active','hot')).status,200);await Promise.all(h.jobs.splice(0));
+  assert.equal(calls.length,1,'a critical ACTIVE goes out at once');
+  assert.equal((await h.alarm('e2','resolved','ok')).status,200);await Promise.all(h.jobs.splice(0));
+  assert.equal(calls.length,1,'the RESOLVED is held');
+  assert.equal(rows('e2')[0].status,'pending');assert.ok(rows('e2')[0].next_attempt_at>Date.now()+4*60000&&rows('e2')[0].next_attempt_at<=Date.now()+5*60000+1000,'critical hold = 5 minutes');
+  // the alarm comes back inside the hold: the incident never ended
+  assert.equal((await h.alarm('e3','active','hot')).status,200);await Promise.all(h.jobs.splice(0));
+  assert.equal(calls.length,1,'no second ACTIVE push');
+  assert.equal(rows('e2')[0].status,'expired','the held RESOLVED is cancelled');
+  assert.equal(rows('e3').length,0,'the re-activation has no push job');
+  assert.equal(h.sql.prepare('SELECT COUNT(*) n FROM alarm_events').get().n,3,'the history keeps every edge');
+  assert.deepEqual({...h.sql.prepare("SELECT active,resolve_due,held_seq FROM alarm_state WHERE alarm_type='FAULT_130'").get()},{active:1,resolve_due:0,held_seq:0});
+  // it ends for good: the RESOLVED waits, then goes out when the hold has passed (the cron drains it)
+  assert.equal((await h.alarm('e4','resolved','ok')).status,200);await Promise.all(h.jobs.splice(0));
+  assert.equal(calls.length,1);
+  h.sql.exec('UPDATE alarm_deliveries SET next_attempt_at=0');
+  await h.delivery.maintainAlarmDeliveries(h.env);
+  assert.equal(calls.length,2,'one ACTIVE and one RESOLVED for the whole incident');
+  // after the hold a new ACTIVE is a new incident and goes out at once
+  h.sql.exec('UPDATE alarm_state SET resolve_due=0');
+  assert.equal((await h.alarm('e5','active','hot')).status,200);await Promise.all(h.jobs.splice(0));
+  assert.equal(calls.length,3);
+ }finally{global.fetch=original;global.setTimeout=realTimeout;}
+});
+test('incident model: a warning waits 10 minutes before its RESOLVED, a critical alarm 5; the first ACTIVE of a warning is not delayed',async()=>{
+ const realTimeout=global.setTimeout;global.setTimeout=(fn)=>realTimeout(fn,0);
+ const h=await setup(),original=global.fetch,calls=[];global.fetch=async(url)=>{calls.push(String(url));return new Response('',{status:201});};
+ try{
+  const opts={alarmType:'FAULT_116',severity:'warning'};
+  await h.alarm('w1','active','door',opts);await Promise.all(h.jobs.splice(0));assert.equal(calls.length,1);
+  await h.alarm('w2','resolved','door closed',opts);await Promise.all(h.jobs.splice(0));
+  const due=h.sql.prepare("SELECT d.next_attempt_at n FROM alarm_deliveries d JOIN alarm_events e ON e.order_seq=d.event_seq WHERE e.event_id='w2'").get().n;
+  assert.ok(due>Date.now()+9*60000&&due<=Date.now()+10*60000+1000,'warning hold = 10 minutes');
+  assert.equal(calls.length,1);
+ }finally{global.fetch=original;global.setTimeout=realTimeout;}
+});
+test('housekeeping: events leave after 7 days through the created_at index, the cron queries never scan alarm_events, the scans run on the first minute of the hour',async()=>{
+ const h=await setup();const index=await import('../cloudflare/src/index.js');
+ const old=Date.now()-8*86400000;
+ for(const [id,at] of [['old',old],['new',Date.now()]]){
+  h.sql.prepare("INSERT INTO alarm_events(device_id,event_id,alarm_type,payload,created_at,expires_at) VALUES(?,?,?,?,?,?)").run(h.deviceId,id,'FAULT_130','{}',at,at+3600000);
+  h.sql.prepare("INSERT INTO alarm_deliveries(event_seq,endpoint,status,next_attempt_at) SELECT order_seq,'https://push.test/x','sent',0 FROM alarm_events WHERE event_id=?").run(id);
+ }
+ await h.delivery.purgeAlarmHistory(h.env);
+ assert.deepEqual(h.sql.prepare('SELECT event_id FROM alarm_events').all().map(r=>r.event_id),['new']);
+ assert.equal(h.sql.prepare('SELECT COUNT(*) n FROM alarm_deliveries').get().n,1);
+ const plan=(q)=>h.sql.prepare('EXPLAIN QUERY PLAN '+q).all().map(r=>r.detail).join(' | ');
+ const del=plan('DELETE FROM alarm_events WHERE created_at<1');
+ assert.match(del,/SEARCH alarm_events USING (COVERING )?INDEX alarm_events_created/);
+ for(const q of ["UPDATE alarm_deliveries SET status='expired' WHERE status='pending' AND event_seq IN (SELECT order_seq FROM alarm_events WHERE created_at<=1)",
+   'DELETE FROM alarm_deliveries WHERE event_seq IN (SELECT order_seq FROM alarm_events WHERE created_at<1)'])
+  assert.doesNotMatch(plan(q),/SCAN alarm_events(?! USING)/,q);
+ assert.equal(h.sql.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='index' AND name='alarm_events_expiry'").get().n,0,'one index on created_at replaces the expiry one');
+ assert.equal(index.isHourTick({scheduledTime:Date.UTC(2026,10,19,5,0,0)}),true);
+ assert.equal(index.isHourTick({scheduledTime:Date.UTC(2026,10,19,5,1,0)}),false);
+ assert.equal(index.isHourTick({}),true);
+});
+
+test('offline watch (Worker side): the broker\'s report raises the critical alarm once, the first heartbeat after it ends it at once, the cron stays a 15 minute backstop',async()=>{
+ const crypto=require('node:crypto'),realTimeout=global.setTimeout;global.setTimeout=(fn)=>realTimeout(fn,0);
+ const h=await setup(),calls=[],original=global.fetch;global.fetch=async(url)=>{calls.push(String(url));return new Response('',{status:201});};
+ h.env.MQTT_DEVICE_SECRET='uplink-secret';
+ const worker=(await import('../cloudflare/src/index.js')).default;
+ const call=async(message)=>{const ts=Date.now(),body=JSON.stringify(message);
+  const sig=crypto.createHmac('sha256','uplink-secret').update(`mayap-uplink-ingest:v1\n${ts}\n${body}`).digest('hex');
+  return worker.fetch(new Request('https://worker.test/api/internal/uplink',{method:'POST',headers:{'x-mayap-ts':String(ts),'x-mayap-sig':sig},body}),h.env,{waitUntil(p){h.jobs.push(p);}});};
+ const offlineAlarm=()=>h.sql.prepare("SELECT active FROM alarm_state WHERE device_id=? AND alarm_type='DEVICE_OFFLINE'").get(h.deviceId);
+ try{
+  // no batch running: the device is marked offline, nothing to raise
+  const quiet=await (await call({device_id:h.deviceId,kind:'offline',data:{last_rx_at:Date.now()-181000,batch_running:false}})).json();assert.equal(quiet.durable,true);
+  assert.equal(h.sql.prepare('SELECT status FROM devices WHERE device_id=?').get(h.deviceId).status,'offline');
+  assert.equal(offlineAlarm(),undefined);
+  // a batch is running: the critical alarm is raised, once per outage (the same last_rx_at is the same outage)
+  const lost=Date.now()-181000;
+  assert.equal((await (await call({device_id:h.deviceId,kind:'offline',data:{last_rx_at:lost,batch_running:true}})).json()).durable,true);
+  await Promise.all(h.jobs.splice(0));
+  assert.equal(offlineAlarm().active,1);
+  assert.equal(h.sql.prepare("SELECT COUNT(*) n FROM alarm_events WHERE alarm_type='DEVICE_OFFLINE'").get().n,1);
+  assert.equal(calls.length,1,'the critical alarm is pushed at once');
+  await call({device_id:h.deviceId,kind:'offline',data:{last_rx_at:lost,batch_running:true}});
+  assert.equal(h.sql.prepare("SELECT COUNT(*) n FROM alarm_events WHERE alarm_type='DEVICE_OFFLINE'").get().n,1,'a repeat report of the same outage adds nothing');
+  // the machine is back: its first heartbeat ends the alarm at once (no waiting for the cron minute)
+  assert.equal((await (await call({device_id:h.deviceId,kind:'heartbeat',data:{batch_running:true}})).json()).durable,true);
+  await Promise.all(h.jobs.splice(0));
+  assert.equal(offlineAlarm().active,0);assert.equal(calls.length,2,'the RESOLVED goes out at once');
+  assert.equal(h.sql.prepare('SELECT status FROM devices WHERE device_id=?').get(h.deviceId).status,'online');
+  // the cron is a backstop now: a heartbeat ten minutes old is a healthy device (the broker forwards a steady one that rarely), fifteen is not
+  h.sql.prepare('UPDATE devices SET last_seen=?,status=?,batch_running=1 WHERE device_id=?').run(Date.now()-10*60000,'online',h.deviceId);
+  await worker.scheduled({scheduledTime:Date.now()},h.env,{waitUntil(p){h.jobs.push(p);}});await Promise.all(h.jobs.splice(0));
+  assert.equal(h.sql.prepare('SELECT status FROM devices WHERE device_id=?').get(h.deviceId).status,'online');
+  h.sql.prepare('UPDATE devices SET last_seen=? WHERE device_id=?').run(Date.now()-16*60000,h.deviceId);
+  await worker.scheduled({scheduledTime:Date.now()},h.env,{waitUntil(p){h.jobs.push(p);}});await Promise.all(h.jobs.splice(0));
+  assert.equal(h.sql.prepare('SELECT status FROM devices WHERE device_id=?').get(h.deviceId).status,'offline');
+  assert.equal(offlineAlarm().active,1);
+  // a bad kind is still refused
+  assert.equal((await call({device_id:h.deviceId,kind:'nope',data:{}})).status,400);
+ }finally{global.fetch=original;global.setTimeout=realTimeout;}
 });

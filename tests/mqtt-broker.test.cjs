@@ -830,3 +830,93 @@ test('GRACE: PRESENCE_GRACE_MS=0 restores the immediate will', async () => {
   const seen = presencePayloads(await harness.clientReceive(web.client));
   assert.deepEqual(seen, [{ online: false }]);
 });
+
+// ---- Offline watch and sparse heartbeat (backend after 3.1.2) -------------------------------------------------------------------------------------------
+// A steady heartbeat used to cost a Worker request and a D1 write every minute per device; the offline decision used to be the Worker's cron
+// reading last_seen. Now the broker keeps the last heartbeat itself, forwards one only when it has something to say, and reports a device
+// whose link is gone and silent for 180 s exactly once.
+const kinds = (calls, kind) => calls.filter((c) => c.body.kind === kind);
+async function clockedBroker(handler) {
+  const { env, calls } = ingestFixture(handler || (() => durable()));
+  const b = await harness.makeBroker({ env });
+  const clock = { skew: 0 };
+  b.broker._now = () => Date.now() + clock.skew;
+  return { b, calls, clock };
+}
+
+test('sparse heartbeat: the first of a link is forwarded, a steady one is not, a flipped batch flag and the 10 minute refresh are, a new link starts again', async () => {
+  const { b, calls } = await clockedBroker();
+  let dev = await connectDevice(b.broker);
+  // time moves by ageing what the queue remembers (the keep-alive supervision reads the socket clock, which must not run ahead of the packets)
+  const age = async (ms) => { const hb = await b.state.storage.get('uq:hb'); hb.fwdAt -= ms; hb.at -= ms; await b.state.storage.put('uq:hb', hb); };
+  const beat = async (batch, id) => { await publishAlarm(b, dev, id, JSON.stringify({ batch_running: batch }), 'heartbeat'); await b.broker.alarm(); };
+  await beat(false, 1);
+  assert.equal(kinds(calls, 'heartbeat').length, 1, 'the first heartbeat is told to the Worker');
+  await age(60000); await beat(false, 2);
+  await age(60000); await beat(false, 3);
+  assert.equal(kinds(calls, 'heartbeat').length, 1, 'steady heartbeats cost nothing');
+  await age(60000); await beat(true, 4);
+  assert.equal(kinds(calls, 'heartbeat').length, 2, 'a batch flag that flips is told at once');
+  assert.equal(kinds(calls, 'heartbeat')[1].body.data.batch_running, true);
+  await age(11 * 60000); await beat(true, 5);
+  assert.equal(kinds(calls, 'heartbeat').length, 3, 'the refresh: a steady heartbeat is told every 10 minutes');
+  // the link drops and a new one comes: its first heartbeat is told again (the Worker may have been told "offline" meanwhile)
+  dev.server.closed = true;
+  await b.broker.webSocketClose(dev.server, 1006, 'abnormal', false);
+  dev = await connectDevice(b.broker);
+  await age(60000); await beat(true, 1);
+  assert.equal(kinds(calls, 'heartbeat').length, 4, 'a new link starts with a heartbeat the Worker hears');
+});
+
+test('offline watch: a link that stays gone for 180 s is reported once, with the last packet time and the batch flag; before that, nothing', async () => {
+  const { b, calls, clock } = await clockedBroker();
+  const dev = await connectDevice(b.broker);
+  await publishAlarm(b, dev, 1, '{"batch_running":true}', 'heartbeat'); await b.broker.alarm();
+  const lastRx = Date.now();
+  dev.server.closed = true;
+  await b.broker.webSocketClose(dev.server, 1006, 'abnormal', false);
+  const wake = await b.state.storage.getAlarm();
+  assert.ok(wake !== null && wake - Date.now() > 170000 && wake - Date.now() <= 181000, 'the DO wakes at the 180 s deadline: ' + (wake - Date.now()));
+  clock.skew += 120000; await b.broker.alarm();
+  assert.equal(kinds(calls, 'offline').length, 0, 'not silent long enough');
+  clock.skew += 70000; await b.broker.alarm();
+  const reports = kinds(calls, 'offline');
+  assert.equal(reports.length, 1, 'reported once the silence reached 180 s');
+  assert.equal(reports[0].body.data.batch_running, true);
+  assert.ok(Math.abs(reports[0].body.data.last_rx_at - lastRx) < 5000);
+  clock.skew += 600000; await b.broker.alarm(); await b.broker.alarm();
+  assert.equal(kinds(calls, 'offline').length, 1, 'one report per outage');
+});
+
+test('offline watch: the device back before the deadline cancels it; a takeover socket never starts it; a failing Worker is retried', async () => {
+  // back in time
+  let t = await clockedBroker();
+  let dev = await connectDevice(t.b.broker);
+  dev.server.closed = true;
+  await t.b.broker.webSocketClose(dev.server, 1006, 'abnormal', false);
+  t.clock.skew += 100000;
+  dev = await connectDevice(t.b.broker);
+  t.clock.skew += 100000; await t.b.broker.alarm();
+  assert.equal(kinds(t.calls, 'offline').length, 0, 'the device came back inside the 180 s');
+  // a takeover: the new socket is open when the old one closes
+  t = await clockedBroker();
+  const first = await connectDevice(t.b.broker);
+  await connectDevice(t.b.broker);                       // evicts the first
+  first.server.closed = true;
+  await t.b.broker.webSocketClose(first.server, 1000, 'TAKEOVER', true);
+  t.clock.skew += 300000; await t.b.broker.alarm();
+  assert.equal(kinds(t.calls, 'offline').length, 0, 'a takeover is not an outage');
+  // the Worker fails: the report is retried with the backoff and arrives when it recovers
+  let healthy = false;
+  t = await clockedBroker(() => (healthy ? durable() : reply('boom', 500)));
+  dev = await connectDevice(t.b.broker);
+  dev.server.closed = true;
+  await t.b.broker.webSocketClose(dev.server, 1006, 'abnormal', false);
+  t.clock.skew += 181000; await t.b.broker.alarm();
+  assert.equal(kinds(t.calls, 'offline').length, 1);
+  healthy = true;
+  t.clock.skew += 61000; await t.b.broker.alarm();
+  assert.equal(kinds(t.calls, 'offline').length, 2, 'retried after the backoff');
+  t.clock.skew += 600000; await t.b.broker.alarm();
+  assert.equal(kinds(t.calls, 'offline').length, 2, 'and stops once the Worker has it');
+});

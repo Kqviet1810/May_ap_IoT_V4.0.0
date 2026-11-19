@@ -14,6 +14,7 @@ function database(){
   sql.exec(fs.readFileSync('cloudflare/migrations/0007_alarm_delivery.sql','utf8'));
   sql.exec(fs.readFileSync('cloudflare/migrations/0008_guest_mode.sql','utf8'));
   sql.exec(fs.readFileSync('cloudflare/migrations/0009_guest_slots.sql','utf8'));
+  sql.exec(fs.readFileSync('cloudflare/migrations/0010_alarm_incidents.sql','utf8'));
   const DB={prepare(source){const statement=sql.prepare(source);let args=[];
     return {bind(...a){args=a;return this;},async first(){return statement.get(...args) || null;},
       async all(){return {results:statement.all(...args)};},async run(){

@@ -1,4 +1,4 @@
-import { findAlarmEvent, queueAlarmEvent, scheduleAlarmDelivery, maintainAlarmDeliveries } from './alarm-delivery.js';
+import { findAlarmEvent, queueAlarmEvent, scheduleAlarmDelivery, maintainAlarmDeliveries, purgeAlarmHistory } from './alarm-delivery.js';
 import { deriveDevicePassword, verifyUplink } from './broker/acl.js';
 import { hashDeviceKey, verifyDeviceKey, randomToken, isValidDeviceId } from './auth.js';
 import {
@@ -29,6 +29,11 @@ import { sendWebPush, buildNotificationPayload } from './push.js';
 // du firmware co loi va goi lien tuc, worker cung khong ban push nhanh hon
 // muc nay cho CUNG mot (device_id, alarm_type) khi trang thai khong doi.
 const MIN_ALARM_COOLDOWN_MS = 15_000;
+// Incident model (alarm management practice: an off-delay, ISA-18.2; grouping and a repeat interval, Alertmanager). The first ACTIVE of an alarm is
+// always pushed at once, whatever its severity. Its RESOLVED is held back this long; an ACTIVE of the same alarm inside the hold means the incident
+// never ended: the held RESOLVED is cancelled and nobody is told twice. A flapping alarm (E111 at the edge of its line, 76 times a day) becomes one
+// ACTIVE and one RESOLVED per incident instead of a push for every edge. Critical / system alarms wait less than the rest.
+const RESOLVE_HOLD_MS = { critical: 5 * 60_000, system: 5 * 60_000, warning: 10 * 60_000, info: 10 * 60_000 };
 const PIN_RATE_WINDOW_MS = 15 * 60 * 1000;
 const PIN_RATE_BLOCK_MS = 15 * 60 * 1000;
 const PIN_RATE_MAX_FAILURES = 5;
@@ -116,7 +121,11 @@ async function verifyPinGuarded(request, env, device, pin) {
 // do khong the doi trong vai phut do khoi luong nhiet cua tu ap), va van
 // nam trong gioi han Cron Trigger 1 phut/lan cua Cloudflare (khong the
 // nhanh hon du muon).
-const DEVICE_OFFLINE_THRESHOLD_MS = 180 * 1000;
+// The silence after which the BROKER reports a device offline (broker/uplink-queue.js OFFLINE_SILENCE_MS: the same 180 s as before) ...
+const DEVICE_OFFLINE_SILENCE_MS = 180 * 1000;
+// ... and the age of `last_seen` after which the cron does it as a BACKSTOP (the broker forwards a steady heartbeat only every 10 minutes, so
+// `last_seen` is that old on a healthy device; this fires only when the broker could not report: a DO that never saw the link, a failing service binding).
+const DEVICE_OFFLINE_THRESHOLD_MS = 15 * 60 * 1000;
 
 function corsHeaders(env) {
   return {
@@ -300,6 +309,11 @@ async function recordAlarmEvent(env, device, deviceId, body, fields, via = 'http
     return { status: suppliedId?429:200, payload: {success:!suppliedId,durable:false,throttled:true,
       retry_after_ms: Math.max(1000, MIN_ALARM_COOLDOWN_MS-(now-Number(priorState.last_sent_at || 0)))} };
   }
+  const holdMs=RESOLVE_HOLD_MS[severity] ?? RESOLVE_HOLD_MS.warning;
+  const wasActive=Boolean(priorState && priorState.active);
+  const incidentOpen=Boolean(priorState && !wasActive && Number(priorState.resolve_due || 0)>now);   // its RESOLVED is still held
+  const reopened=state==='active' && incidentOpen;
+  const resolving=state==='resolved' && wasActive;
   const notification=buildNotificationPayload({deviceId,deviceName:device.device_name,alarmType,severity,state,message,temperature,humidity});
   notification.data.eventId=eventId;notification.data.message=message;
   notification.data.receivedAt=now;
@@ -308,13 +322,16 @@ async function recordAlarmEvent(env, device, deviceId, body, fields, via = 'http
   // receivedAt this separates detection, device queueing/fallback, Worker receipt and Push in the logs and the status endpoint.
   notification.data.deviceAgeMs=Number.isInteger(body?.age_ms) && body.age_ms>=0 && body.age_ms<=7*86400000 ? body.age_ms : null;
   notification.data.via=via;
-  const event=await queueAlarmEvent(env,{deviceId,eventId,alarmType,notification,now});
+  if (reopened && Number(priorState.held_seq) > 0)
+    await env.DB.prepare("UPDATE alarm_deliveries SET status='expired' WHERE event_seq=?1 AND status='pending'").bind(Number(priorState.held_seq)).run();
+  const event=await queueAlarmEvent(env,{deviceId,eventId,alarmType,notification,now,delayMs:resolving?holdMs:0,notify:!reopened});
   const persisted=JSON.parse(event.payload).data;
   if(persisted.alarmType!==alarmType || persisted.state!==state || persisted.message!==message)
     return { status: 409, payload: {success:false,error:'EVENT_ID_CONFLICT'} };
   // The receipt above remains valid even if ancillary history updates fail.
   try {
-    await upsertAlarmState(env.DB,{deviceId,alarmType,active:state==='active',firstSentAt:now,lastSentAt:now,lastMessage:message});
+    await upsertAlarmState(env.DB,{deviceId,alarmType,active:state==='active',firstSentAt:now,lastSentAt:now,lastMessage:message,
+      resolveDue:resolving?now+holdMs:0,heldSeq:resolving?Number(event.order_seq):0});
     await insertAlarmLog(env.DB,{deviceId,alarmType,severity,state,message,temperature,humidity,notificationSent:false,now});
   } catch(error) {console.error('[alarm] history failed',String(error?.message || error));}
   // `durable`/`stored`: the event and its push jobs are in D1. It says nothing about the push itself (see /status `push`).
@@ -451,6 +468,21 @@ async function handleUplink(request, env, ctx) {
   if (!device) return json(env, { success: true, durable: false, error: 'device chua dang ky' });
   if (message.kind === 'heartbeat') {
     await touchDeviceHeartbeat(env.DB, deviceId, Date.now(), Boolean(data.batch_running));
+    // The machine is back: end a standing "lost connection" alarm at once instead of waiting for the next cron minute.
+    const standing = await getAlarmState(env.DB, deviceId, 'DEVICE_OFFLINE');
+    if (standing && standing.active) {
+      await sendDeviceLifecycleAlarm(env, { ...device, last_seen: Date.now() }, { state: 'resolved', message: 'Đã hết: máy đã có điện/mạng trở lại.' });
+      scheduleAlarmDelivery(env, ctx);
+    }
+    return json(env, { success: true, durable: true });
+  }
+  // The broker watches the device's link (event driven) and reports once when the silence reached OFFLINE_SILENCE_MS: the same alarm the
+  // cron raises as a backstop, with the batch flag the broker holds (the stored one can be ten minutes old, heartbeats are forwarded when they change).
+  if (message.kind === 'offline') {
+    const lastRx = Number(data.last_rx_at);
+    const known = { ...device, last_seen: Number.isFinite(lastRx) && lastRx > 0 ? lastRx : Date.now(), batch_running: data.batch_running ? 1 : 0 };
+    await raiseDeviceOffline(env, known);
+    scheduleAlarmDelivery(env, ctx);
     return json(env, { success: true, durable: true });
   }
   if (message.kind === 'alarm') {   // single-event form kept for older brokers
@@ -820,6 +852,18 @@ async function sendDeviceLifecycleAlarm(env, device, { state, message }) {
   await upsertAlarmState(env.DB,{deviceId:device.device_id,alarmType:'DEVICE_OFFLINE',active:state==='active',firstSentAt:now,lastSentAt:now,lastMessage:message});
 }
 
+// Marks the device offline, and raises the critical alarm when a batch is running (no batch: nothing to lose, no alarm). Used by the broker's
+// event-driven report and by the cron backstop; the alarm event id comes from last_seen, so the same outage is never raised twice.
+async function raiseDeviceOffline(env, device) {
+  if (device.batch_running) {
+    await sendDeviceLifecycleAlarm(env, device, {
+      state: 'active',
+      message: `Mất kết nối trên ${Math.round(DEVICE_OFFLINE_SILENCE_MS / 1000)} giây - kiểm tra nguồn điện hoặc Wi-Fi ngay.`,
+    });
+  }
+  await setDeviceStatus(env.DB, device.device_id, 'offline');
+}
+
 async function checkDeviceConnectivity(env) {
   const staleBefore = Date.now() - DEVICE_OFFLINE_THRESHOLD_MS;
 
@@ -830,13 +874,7 @@ async function checkDeviceConnectivity(env) {
     // (batch_running ghi kem moi heartbeat - xem touchDeviceHeartbeat trong
     // db.js) - khong co me nao dang chay thi mat mang/mat dien khong can bao,
     // theo yeu cau: chi quan tam khi dang ap that su.
-    if (!device.batch_running) {await setDeviceStatus(env.DB,device.device_id,'offline');continue;}
-    const thresholdSeconds = Math.round(DEVICE_OFFLINE_THRESHOLD_MS / 1000);
-    await sendDeviceLifecycleAlarm(env, device, {
-      state: 'active',
-      message: `Mất kết nối trên ${thresholdSeconds} giây - kiểm tra nguồn điện hoặc Wi-Fi ngay.`,
-    });
-    await setDeviceStatus(env.DB,device.device_id,'offline');
+    await raiseDeviceOffline(env, device);
   }
 
   const recoveredDevices = await getRecoveredOfflineDevices(env.DB, staleBefore);
@@ -852,9 +890,19 @@ async function checkDeviceConnectivity(env) {
   }
 }
 
+// The cron fires every minute (the offline check and the held pushes need that); the table scans of the housekeeping run on the first minute of the hour.
+export function isHourTick(event) {
+  const at = Number(event && event.scheduledTime);
+  return !Number.isFinite(at) || new Date(at).getUTCMinutes() === 0;
+}
+
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil((async()=>{await checkDeviceConnectivity(env);await maintainAlarmDeliveries(env);})());
+    ctx.waitUntil((async()=>{
+      await checkDeviceConnectivity(env);
+      await maintainAlarmDeliveries(env);
+      if (isHourTick(event)) await purgeAlarmHistory(env);     // the scans that cost the size of a table run once an hour
+    })());
   },
   async fetch(request, env, ctx) {
     const url = new URL(request.url);

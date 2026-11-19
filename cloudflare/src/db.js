@@ -152,18 +152,20 @@ export async function getAlarmState(db, deviceId, alarmType) {
     .first();
 }
 
-export async function upsertAlarmState(db, { deviceId, alarmType, active, firstSentAt, lastSentAt, lastMessage }) {
+export async function upsertAlarmState(db, { deviceId, alarmType, active, firstSentAt, lastSentAt, lastMessage, resolveDue = 0, heldSeq = 0 }) {
   await db
     .prepare(
-      `INSERT INTO alarm_state (device_id, alarm_type, active, first_sent_at, last_sent_at, last_message)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      `INSERT INTO alarm_state (device_id, alarm_type, active, first_sent_at, last_sent_at, last_message, resolve_due, held_seq)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
        ON CONFLICT(device_id, alarm_type) DO UPDATE SET
          active = excluded.active,
          first_sent_at = COALESCE(alarm_state.first_sent_at, excluded.first_sent_at),
          last_sent_at = excluded.last_sent_at,
-         last_message = excluded.last_message`
+         last_message = excluded.last_message,
+         resolve_due = excluded.resolve_due,
+         held_seq = excluded.held_seq`
     )
-    .bind(deviceId, alarmType, active ? 1 : 0, firstSentAt, lastSentAt, lastMessage || '')
+    .bind(deviceId, alarmType, active ? 1 : 0, firstSentAt, lastSentAt, lastMessage || '', resolveDue, heldSeq)
     .run();
 }
 

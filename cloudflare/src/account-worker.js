@@ -1,5 +1,5 @@
 import physicalWorker from './reliability-wrapper.js';
-import legacy from './index.js';
+import legacy, { isHourTick } from './index.js';
 import { alarmStatusSnapshot } from './alarm-delivery.js';
 import { randomToken, verifyDeviceKey, timingSafeEqual, hashDeviceKey } from './auth.js';
 import { setDevicePinHash } from './db.js';
@@ -552,14 +552,28 @@ export default {
     return response;
   },
   async scheduled(event,env,ctx) {
-    await env.DB.batch([
-      env.DB.prepare('DELETE FROM google_login_challenges WHERE expires_at<?').bind(Date.now()),
-      // Push installation outlives the 24h Web login session. Explicit session
-      // revoke/logout already deletes subscriptions owned by that session; cron only
-      // sweeps historical revoked rows and must never remove a healthy endpoint just
-      // because the bearer session expired.
-      env.DB.prepare('DELETE FROM push_subscriptions WHERE user_session_id IN (SELECT id FROM user_sessions WHERE revoked_at IS NOT NULL)'),
-    ]);
+    // The housekeeping scans cost the size of their tables, so they run on the first minute of the hour, not on every minute of the cron.
+    // A failed housekeeping must never keep the offline check and the held pushes (physicalWorker.scheduled below) from running.
+    if (isHourTick(event)) try {
+      const now=Date.now();
+      await env.DB.batch([
+        env.DB.prepare('DELETE FROM google_login_challenges WHERE expires_at<?').bind(now),
+        // Push installation outlives the 24h Web login session. Explicit session
+        // revoke/logout already deletes subscriptions owned by that session; the housekeeping
+        // only sweeps historical revoked rows and must never remove a healthy endpoint just
+        // because the bearer session expired.
+        env.DB.prepare('DELETE FROM push_subscriptions WHERE user_session_id IN (SELECT id FROM user_sessions WHERE revoked_at IS NOT NULL)'),
+        // A subscription that cannot receive anything (its account is not a member of the machine any more, or is disabled) is dead weight
+        // that every later scan has to read: the same join that picks the recipients (getSubscriptionsForDevice) says who is alive.
+        env.DB.prepare(`DELETE FROM push_subscriptions WHERE NOT EXISTS (SELECT 1 FROM users u JOIN user_devices ud ON ud.user_sub=u.google_sub
+          WHERE u.google_sub=push_subscriptions.user_sub AND u.disabled=0 AND ud.device_id=push_subscriptions.device_id)`),
+        // Login sessions: a week after they ended (expired or revoked) and no subscription points at them any more.
+        env.DB.prepare(`DELETE FROM user_sessions WHERE (expires_at<?1 OR (revoked_at IS NOT NULL AND revoked_at<?1))
+          AND id NOT IN (SELECT user_session_id FROM push_subscriptions WHERE user_session_id IS NOT NULL)`).bind(now-7*86400000),
+      ]);
+      // The alarm history of the Web (alarm_log) is kept 90 days, trimmed once a day (03:00 UTC).
+      if (new Date(now).getUTCHours()===3) await env.DB.prepare('DELETE FROM alarm_log WHERE created_at<?').bind(now-90*86400000).run();
+    } catch (error) { console.error('[cron] housekeeping failed',String(error?.message || error)); }
     return physicalWorker.scheduled(event,env,ctx);
   },
 };

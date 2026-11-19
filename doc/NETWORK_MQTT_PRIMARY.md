@@ -43,7 +43,7 @@ PUBACK trễ **không** chuyển kênh; (3) HTTPS được chấp nhận: MQTT p
 
 **Beacon HTTPS khi MQTT hỏng kéo dài.** Heartbeat chạy trên MQTT; nếu broker/DO hỏng, Worker sẽ thấy `last_seen` cũ và (khi đang ấp) báo `DEVICE_OFFLINE` nghiêm trọng dù máy bình thường.
 Sau 90 s không có uplink MQTT nào được PUBACK **và transport bị xác nhận hỏng** (Down/Flapping/HalfOpen; Healthy, Probing, Recovering không bao giờ beacon), tick heartbeat 60 s gửi một `POST /api/device/heartbeat` nhỏ qua HTTPS — thực tế mỗi ~2 phút,
-dưới ngưỡng offline 180 s của Worker, cùng cổng TLS độc quyền, dừng ngay khi MQTT chuyển được lại.
+dưới ngưỡng im lặng 180 s mà broker dùng để báo mất kết nối (Worker chỉ còn là lưới dự phòng 15 phút), cùng cổng TLS độc quyền, dừng ngay khi MQTT chuyển được lại.
 
 ### Độc lập của đường HTTPS với broker Durable Object
 Kiểm tra: HTTPS fallback không đi qua DO (`/api/device/alarm|alarms` nằm trong Worker chính; xác thực bằng `device_key` băm riêng, khác mật khẩu MQTT; `event_id` + biên nhận `durable`
