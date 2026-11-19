@@ -207,6 +207,11 @@ export class MqttBrokerDO {
     const att = ws.deserializeAttachment() || {};
     this.decoders.delete(ws);
     if (att.pend > 0) await this._purgePending(att.clientId);
+    // The device's link is gone and no newer socket took its place: the offline watch starts counting from its last packet.
+    if (att.state === 'open' && att.role === 'device' && !this._openDeviceSocket(ws)) {
+      try { await this.uplink.deviceLost(att.lastRxMs || this._now()); await this._rescheduleAlarm(); }
+      catch (error) { console.error('[uplink] offline watch failed', String((error && error.message) || error)); }
+    }
     if (att.state === 'open' && att.lwt && !att.disconnected) {
       if (await this._deferDeviceWill(ws, att)) return;   // the reconnect grace owns the offline announcement
       const topic = att.lwt.topic;
@@ -474,6 +479,9 @@ export class MqttBrokerDO {
       }
     }
     ws.serializeAttachment(att);
+    if (resolved.role === 'device') {
+      try { await this.uplink.deviceBack(); } catch (error) { console.error('[uplink] offline watch reset failed', String((error && error.message) || error)); }
+    }
     ws.send(encodeConnack(ConnackCode.ACCEPTED, false));
   }
 
@@ -657,7 +665,7 @@ export class MqttBrokerDO {
   // versa. Each call is bounded (a few batches); retry timing lives in the rows (`nextAt`).
   async _drainUplink() {
     try { await this.uplink.maintain(); } catch (error) { console.error('[uplink] maintain failed', String((error && error.message) || error)); }
-    await Promise.all([this._drainAlarms(), this._drainHeartbeat()]);
+    await Promise.all([this._drainAlarms(), this._drainHeartbeat(), this._drainOffline()]);
     await this._publishUplinkStatus(false);
   }
 
@@ -686,6 +694,29 @@ export class MqttBrokerDO {
       }
     } finally {
       this._drainingAlarms = false;
+    }
+  }
+
+  // The device has been silent for OFFLINE_SILENCE_MS and has no open socket: tell the Worker once (it raises the critical "lost connection" alarm
+  // when a batch is running, exactly as its cron did, but from the moment the silence is long enough instead of up to a minute later).
+  async _drainOffline() {
+    if (this._drainingOffline) return;
+    this._drainingOffline = true;
+    try {
+      const off = await this.uplink.offlineDue();
+      if (!off) return;
+      if (this._openDeviceSocket(null)) { await this.uplink.deviceBack(); return; }   // it is back: its own heartbeat speaks for it
+      let ok = false;
+      try {
+        const hb = await this.storage.get('uq:hb');
+        const res = await this._postUplink(JSON.stringify({ device_id: this.deviceId, kind: 'offline', data: { last_rx_at: off.since, batch_running: Boolean(hb && hb.batch) } }));
+        if (res.ok) { const out = await res.json(); ok = Boolean(out && out.durable === true); }
+      } catch (error) {
+        console.error('[uplink] offline report failed', String((error && error.message) || error));
+      }
+      await this.uplink.offlineDone(ok);
+    } finally {
+      this._drainingOffline = false;
     }
   }
 

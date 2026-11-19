@@ -24,7 +24,9 @@ export const UQ = Object.freeze({
   JITTER: 0.2,
   THROTTLE_MIN_MS: 1000,
   THROTTLE_MAX_MS: 16000,
-  HEARTBEAT_FORWARD_MS: 30000,
+  HEARTBEAT_FORWARD_MS: 30000,         // the least time between two forwards of a heartbeat that has something to say (a batch flag that flips, a retry)
+  HEARTBEAT_REFRESH_MS: 10 * 60 * 1000, // a steady heartbeat is told to the Worker only this often (it is the backstop of the offline watch, not the watch)
+  OFFLINE_SILENCE_MS: 180 * 1000,      // a device silent this long (counted from the last packet it sent) is reported offline: what the Worker's cron used to decide
   REJECT_RING: 8,
   EVENT_ID_RE: /^[a-zA-Z0-9_-]{1,64}$/,
   TYPE_MAX: 64,
@@ -34,6 +36,7 @@ export const UQ = Object.freeze({
 const KEY_ENTRY = 'uq:e:';
 const KEY_SEQ = 'uq:seq';
 const KEY_HB = 'uq:hb';
+const KEY_OFF = 'uq:off';
 const KEY_STAT = 'uq:stat';
 const pad = (n) => String(n).padStart(10, '0');
 const UNFINISHED = new Set(['pending', 'retrying', 'throttled']);
@@ -117,10 +120,45 @@ export class UplinkQueue {
   async recordHeartbeat(data) {
     const now = this.now();
     const prior = (await this.storage.get(KEY_HB)) || { at: 0, fwdAt: 0, dirty: false, batch: false, fails: 0 };
+    const batch = Boolean(data && data.batch_running);
+    // Told to the Worker when it has something to say: the first heartbeat of a link, a batch flag that changed, or the refresh. A steady one only
+    // moves `at` (every write to D1 and every Worker request of an unchanged heartbeat was pure cost: the offline watch lives here, below).
+    const worth = prior.fresh === true || prior.batch !== batch || !prior.fwdAt || now - prior.fwdAt >= UQ.HEARTBEAT_REFRESH_MS;
     prior.at = now;
-    prior.dirty = true;
-    prior.batch = Boolean(data && data.batch_running);
+    if (worth) prior.dirty = true;
+    prior.batch = batch;
     await this.storage.put(KEY_HB, prior);
+  }
+
+  // ---- offline watch: event driven, durable in the DO storage -------------------------------------------------------------------------
+  // The device's socket is gone and no other one took its place: count OFFLINE_SILENCE_MS from the last packet the device sent. The device back
+  // (or any open device socket at the deadline) cancels it. One report per outage (`sent`), retried with the same ladder if the Worker is down.
+  async deviceLost(lastRxAt) {
+    const now = this.now();
+    const prior = await this.storage.get(KEY_OFF);
+    if (prior) return;
+    const since = Math.min(now, Number.isFinite(Number(lastRxAt)) && Number(lastRxAt) > 0 ? Number(lastRxAt) : now);
+    await this.storage.put(KEY_OFF, { since, due: since + UQ.OFFLINE_SILENCE_MS, sent: false, fails: 0 });
+  }
+
+  async deviceBack() {
+    await this.storage.delete(KEY_OFF);
+    const hb = await this.storage.get(KEY_HB);
+    if (hb && !hb.fresh) { hb.fresh = true; await this.storage.put(KEY_HB, hb); }   // the first heartbeat of the new link goes to the Worker
+  }
+
+  async offlineDue() {
+    const off = await this.storage.get(KEY_OFF);
+    if (!off || off.sent || this.now() < off.due) return null;
+    return off;
+  }
+
+  async offlineDone(ok) {
+    const off = await this.storage.get(KEY_OFF);
+    if (!off) return;
+    if (ok) off.sent = true;
+    else { off.fails = Math.min(255, (off.fails || 0) + 1); off.due = this.now() + this._backoff(off.fails - 1); }
+    await this.storage.put(KEY_OFF, off);
   }
 
   // Rows the Worker should get now: oldest first, same-type order preserved by the Worker's per-type skip rule, and a row
@@ -201,7 +239,7 @@ export class UplinkQueue {
     const now = this.now();
     const hb = await this.storage.get(KEY_HB);
     if (!hb) return;
-    if (ok) { hb.fwdAt = now; hb.fails = 0; hb.wait = 0; if (hb.at <= sentAt) hb.dirty = false; }
+    if (ok) { hb.fwdAt = now; hb.fails = 0; hb.wait = 0; if (hb.at <= sentAt) { hb.dirty = false; hb.fresh = false; } }
     else { hb.fwdAt = now; hb.fails = Math.min(255, (hb.fails || 0) + 1); hb.wait = this._backoff(hb.fails - 1); }
     await this.storage.put(KEY_HB, hb);
   }
@@ -238,6 +276,8 @@ export class UplinkQueue {
       const wait = hb.fails > 0 ? this._hbWait(hb) : UQ.HEARTBEAT_FORWARD_MS;
       take(Math.max(now, (hb.fwdAt || 0) + wait));
     }
+    const off = await this.storage.get(KEY_OFF);
+    if (off && !off.sent) take(Math.max(now, off.due));
     return at;
   }
 
