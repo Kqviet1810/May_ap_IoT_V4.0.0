@@ -225,6 +225,18 @@
     toast('Máy đang kết nối lại · lệnh sẽ được gửi ngay khi máy sẵn sàng');
     return true;
   }
+  // The machine reports ONE state, "stopped", for four different reasons (no batch, turning switched off in the settings, the lock of the last three days,
+  // the AUTO switch off); the Web already receives what it needs to say which one, so the tile no longer shows a bare "DỪNG".
+  // The lock is the machine's TURN_LOCKDOWN_DAYS = 3: turning stops when the elapsed time reaches (total days - 3), i.e. from day total - 2.
+  function turnStopReason(runtime, config) {
+    if (!runtime || !runtime.batchRunning) return 'chưa ấp';
+    if (config && config.turningEnabled === false) return 'đã tắt đảo';
+    const total = Number(config && config.totalIncubationDays), day = Number(runtime.currentDay);
+    if (total > 3 && day > total - 3) return 'khóa đảo 3 ngày cuối';
+    if (runtime.autoMode === false) return 'công tắc AUTO tắt';
+    return '';
+  }
+
   function releaseHeldCommand(device) {
     if (!heldCommand.action || heldCommand.deviceId !== device.id || !isDeviceOnline(device)) return;
     const action = heldCommand.action;
@@ -1664,9 +1676,10 @@
     // tiep (nextTurnMinutes > 0 - bang 0 nghia la dang khong lap lich, vd dao
     // tay hoac dang o nhanh test tat dao) - van gon 1 dong nhu cac o khac.
     const etaMinutes = Number(runtime.nextTurnMinutes) || 0;
+    const stopReason = turn === 0 ? turnStopReason(runtime, device.config) : '';
     outputTurn.textContent = (turn === 3 && etaMinutes > 0)
       ? `Đảo sau ${etaMinutes} phút`
-      : (turnMap[turn] || '—');
+      : (stopReason ? `DỪNG · ${stopReason}` : (turnMap[turn] || '—'));
     outputTurn.classList.toggle('on', turn === 1 || turn === 2);
     outputTurn.parentElement?.classList.toggle('on', turn === 1 || turn === 2);
 
@@ -1732,7 +1745,8 @@
     } else if (heaterActive) {
       setCurrentActivity(`Đang gia nhiệt ${numberVi(runtime.temperature)}°C`, `Công suất ${numberVi(runtime.heaterPower, 0)}%`, 'active');
     } else if (runtime.batchRunning) {
-      setCurrentActivity(`Đang giữ nhiệt ${numberVi(runtime.temperature)}°C`, `Còn ${runtime.nextTurnMinutes || 0} phút tới lần đảo`, 'active');
+      const why = turn === 0 ? turnStopReason(runtime, device.config) : '';
+      setCurrentActivity(`Đang giữ nhiệt ${numberVi(runtime.temperature)}°C`, why ? `Đảo trứng đang dừng: ${why}` : `Còn ${runtime.nextTurnMinutes || 0} phút tới lần đảo`, 'active');
     } else {
       setCurrentActivity('Sẵn sàng', runtime.machineState || 'Không có tác vụ đang chạy', 'idle');
     }

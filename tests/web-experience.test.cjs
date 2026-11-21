@@ -15,7 +15,7 @@ function browser(overrides = {}, initialStorage = {}) {
       buildConfig, validateTemperatureForm, validateSensorForm, validateVentForm,
       validateAdvancedForm, REQUIRED_CONFIG_KEYS, VENT_PROFILE_KEYS, createDevice,
 connectionStatus, pollServerAlerts, syncServerAlertPolling, serverConnectionDetail, renderServerAlarmBanner, setRealtimeStatus, SERVER_ALERT,
-      buildTechFields, techGateInfo, pmValues, PM_ITEMS, TECH_FIELDS, pmIngestLog, pmCsv, pidMon });
+      buildTechFields, techGateInfo, turnStopReason, pmValues, PM_ITEMS, TECH_FIELDS, pmIngestLog, pmCsv, pidMon });
   })();`);
   let now = 0, wall = Date.now(), timerId = 0;
   class BrowserDate extends Date { static now() { return wall; } }
@@ -426,4 +426,19 @@ test('Time: every page and the machine log show Vietnam time; the machine epoch 
   const real = new Date((epoch - 7 * 3600) * 1000);
   assert.equal(real.toISOString(), '2026-11-05T07:00:00.000Z');
   assert.equal(real.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Ho_Chi_Minh' }).replace(/\D/g, ''), '1400');
+});
+
+test('turning tile: a stopped machine says why (no batch, turning off, the lock of the last three days, AUTO switch off), a waiting one counts down', () => {
+  const h = browser();
+  const cfg = (extra = {}) => ({ turningEnabled: true, totalIncubationDays: 21, ...extra });
+  const run = (extra = {}) => ({ batchRunning: true, currentDay: 10, autoMode: true, ...extra });
+  assert.equal(h.turnStopReason({ batchRunning: false }, cfg()), 'chưa ấp');
+  assert.equal(h.turnStopReason(run(), cfg({ turningEnabled: false })), 'đã tắt đảo');
+  assert.equal(h.turnStopReason(run({ currentDay: 18 }), cfg()), '', 'day 18 of 21 still turns');
+  assert.equal(h.turnStopReason(run({ currentDay: 19 }), cfg()), 'khóa đảo 3 ngày cuối', 'from day 19 of 21 the machine locks turning');
+  assert.equal(h.turnStopReason(run({ currentDay: 21 }), cfg()), 'khóa đảo 3 ngày cuối');
+  assert.equal(h.turnStopReason(run({ currentDay: 17 }), cfg({ totalIncubationDays: 19 })), 'khóa đảo 3 ngày cuối', 'a 19 day batch locks from day 17');
+  assert.equal(h.turnStopReason(run({ autoMode: false }), cfg()), 'công tắc AUTO tắt');
+  assert.equal(h.turnStopReason(run({ autoMode: undefined }), cfg()), '', 'an older firmware without autoMode: no guess');
+  assert.equal(h.turnStopReason(run(), undefined), '', 'no config yet: no guess');
 });
