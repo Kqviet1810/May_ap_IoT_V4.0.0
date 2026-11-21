@@ -50,7 +50,7 @@
     'tempOscillationWindowSec', 'autotuneRelayPowerPercent', 'autotuneBandC',
     'manualTurnReanchorsSchedule'
   ]);
-  const CONFIG_KEYS = Object.freeze([...REQUIRED_CONFIG_KEYS, ...VENT_PROFILE_KEYS, 'adaptiveThermalBalanceEnabled']);
+  const CONFIG_KEYS = Object.freeze([...REQUIRED_CONFIG_KEYS, ...VENT_PROFILE_KEYS, 'adaptiveThermalBalanceEnabled', 'turnInLastDays']);
 
   // Vietnam time everywhere: the pages, the machine log and the exported log show the same wall clock whatever the time zone of the phone or the PC is.
   const VN_TZ = 'Asia/Ho_Chi_Minh';
@@ -225,6 +225,18 @@
     toast('Máy đang kết nối lại · lệnh sẽ được gửi ngay khi máy sẵn sàng');
     return true;
   }
+  // The machine reports ONE state, "stopped", for four different reasons (no batch, turning switched off in the settings, the lock of the last three days,
+  // the AUTO switch off); the Web already receives what it needs to say which one, so the tile no longer shows a bare "DỪNG".
+  // The lock is the machine's TURN_LOCKDOWN_DAYS = 3: turning stops when the elapsed time reaches (total days - 3), i.e. from day total - 2.
+  function turnStopReason(runtime, config) {
+    if (!runtime || !runtime.batchRunning) return 'chưa ấp';
+    if (config && config.turningEnabled === false) return 'đã tắt đảo';
+    const total = Number(config && config.totalIncubationDays), day = Number(runtime.currentDay);
+    if (total > 3 && day > total - 3 && !(config && config.turnInLastDays === true)) return 'khóa đảo 3 ngày cuối';   // an older firmware (no key) always locks
+    if (runtime.autoMode === false) return 'công tắc AUTO tắt';
+    return '';
+  }
+
   function releaseHeldCommand(device) {
     if (!heldCommand.action || heldCommand.deviceId !== device.id || !isDeviceOnline(device)) return;
     const action = heldCommand.action;
@@ -1664,9 +1676,10 @@
     // tiep (nextTurnMinutes > 0 - bang 0 nghia la dang khong lap lich, vd dao
     // tay hoac dang o nhanh test tat dao) - van gon 1 dong nhu cac o khac.
     const etaMinutes = Number(runtime.nextTurnMinutes) || 0;
+    const stopReason = turn === 0 ? turnStopReason(runtime, device.config) : '';
     outputTurn.textContent = (turn === 3 && etaMinutes > 0)
       ? `Đảo sau ${etaMinutes} phút`
-      : (turnMap[turn] || '—');
+      : (stopReason ? `DỪNG · ${stopReason}` : (turnMap[turn] || '—'));
     outputTurn.classList.toggle('on', turn === 1 || turn === 2);
     outputTurn.parentElement?.classList.toggle('on', turn === 1 || turn === 2);
 
@@ -1732,7 +1745,8 @@
     } else if (heaterActive) {
       setCurrentActivity(`Đang gia nhiệt ${numberVi(runtime.temperature)}°C`, `Công suất ${numberVi(runtime.heaterPower, 0)}%`, 'active');
     } else if (runtime.batchRunning) {
-      setCurrentActivity(`Đang giữ nhiệt ${numberVi(runtime.temperature)}°C`, `Còn ${runtime.nextTurnMinutes || 0} phút tới lần đảo`, 'active');
+      const why = turn === 0 ? turnStopReason(runtime, device.config) : '';
+      setCurrentActivity(`Đang giữ nhiệt ${numberVi(runtime.temperature)}°C`, why ? `Đảo trứng đang dừng: ${why}` : `Còn ${runtime.nextTurnMinutes || 0} phút tới lần đảo`, 'active');
     } else {
       setCurrentActivity('Sẵn sàng', runtime.machineState || 'Không có tác vụ đang chạy', 'idle');
     }
@@ -1787,6 +1801,11 @@
       ? `Tự động · mỗi ${$('turnInterval').value || '—'} phút`
       : 'Đang tắt đảo tự động';
     $('humidifierSummary').textContent = `Bật ≤${$('humidifierOnHumidity').value || '—'}% · tắt ≥${$('humidifierOffHumidity').value || '—'}%RH`;
+  }
+
+  // Firmware 3.1.3 and later report turnInLastDays; before it the machine always stopped turning in the last 3 days.
+  function supportsTurnLastDays(config) {
+    return Boolean(config && Object.hasOwn(config, 'turnInLastDays'));
   }
 
   function supportsVentProfile(config) {
@@ -1984,6 +2003,8 @@
     $('ventAutoOptions').hidden = !$('ventAutoEnabled').checked;
 
     check('turningForm', 'turningEnabled', config.turningEnabled);
+    check('turningForm', 'turnInLastDays', config.turnInLastDays !== false);
+    if ($('turnLastDaysLine')) $('turnLastDaysLine').hidden = !supportsTurnLastDays(config);
     check('turningForm', 'manualTurnReanchorsSchedule', config.manualTurnReanchorsSchedule);
     assign('turningForm', 'turnInterval', config.turnIntervalMin);
     assign('turningForm', 'limitAlarmTime', config.turnMaxRunSec);
@@ -2080,6 +2101,7 @@
       }
     } else if (group === 'turning') {
       config.turningEnabled = $('turningEnabled').checked;
+      if (supportsTurnLastDays(device.config)) config.turnInLastDays = $('turnInLastDays').checked;   // an older firmware has no such key and refuses a patch that carries it
       config.manualTurnReanchorsSchedule = $('manualTurnReanchorsSchedule').checked;
       config.turnIntervalMin = Number($('turnInterval').value);
       config.turnMaxRunSec = Number($('limitAlarmTime').value);
@@ -3568,7 +3590,7 @@
     // The first 17 columns keep their place; the diagnostics are appended (safety reading, learned hold, heater gain x1e5, transit time, the learning gain of the
     // hold observer [1 = the oven follows; raised while the error does not shrink], why the overheat fan started, the state of that line, door guard, transit time
     // measured, fan-budget tokens, ventReason, where kAir came from [0 prior, 1 typed by hand, 2 measured since power-up], whether the observer gain is raised,
-    // how many windows in a row the oven did not follow [0..7], where the starting hold came from [0 prior, 1 the one-time starting value of an update (0 % from 3.1.2), 2 restored], minutes of fan in the last 60 minutes).
+    // how many windows in a row the oven did not follow [0..7], where the starting hold came from [0 prior, 1 the one-time starting value of an update (17 % from 3.1.3), 2 restored], minutes of fan in the last 60 minutes).
     const head = 'time_utc,index,pv_c,sp_c,pred_c,request_pct,ssr_avg60_pct,phase,suspect,vent_fan,ssr_on,heat_master,batch,sensor_ok,v2_state,trust_pct,source,' +
       'safety_c,hold_pct,kair_e5,tau_s,obs_gain,vent_why,vent_line,door,identified,fan_tokens,vent_reason,kair_src,obs_boost,stalled_windows,hold_src,vent_min_60,time_vn';
     const cell = (v) => (typeof v === 'number' ? (Number.isFinite(v) ? String(v) : '') : String(v));

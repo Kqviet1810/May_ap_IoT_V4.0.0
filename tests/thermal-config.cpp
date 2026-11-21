@@ -107,6 +107,19 @@ int main(){
     PackedMachineConfigV1 p=packConfig(d);p.adaptiveThermalBalanceEnabled=1U;                  // an older record never wrote bit 4
     assert(unpackConfig(p).predictiveThermalEnabled);
     p.adaptiveThermalBalanceEnabled=17U;assert(!unpackConfig(p).predictiveThermalEnabled); }
+  { // "keep turning in the last 3 days" (3.1.3) lives in bit 1 of the turningEnabled byte, inverted: no schema change, an older record means "keep turning"
+    const MachineConfig d;assert(d.turningEnabled&&d.turnInLastDays);                           // the factory default is ON
+    PackedMachineConfigV1 p=packConfig(d);assert(p.turningEnabled==1U);                         // default: the byte an older firmware wrote
+    for(int turning=0;turning<2;++turning)for(int keep=0;keep<2;++keep){
+      MachineConfig c;c.turningEnabled=turning!=0;c.turnInLastDays=keep!=0;
+      const PackedMachineConfigV1 q=packConfig(c);const MachineConfig r=unpackConfig(q);
+      assert(r.turningEnabled==c.turningEnabled);
+      assert(r.turnInLastDays==(turning?c.turnInLastDays:true));                               // while turning is off the flag is not kept (the byte stays 0)
+      assert((q.turningEnabled!=0U)==c.turningEnabled);                                        // what every older firmware reads ("!= 0") never changes meaning
+    }
+    MachineConfig stop;stop.turnInLastDays=false;assert(packConfig(stop).turningEnabled==3U);
+    p.turningEnabled=1U;assert(unpackConfig(p).turningEnabled&&unpackConfig(p).turnInLastDays);   // an older record: turning on, keep turning
+    p.turningEnabled=0U;assert(!unpackConfig(p).turningEnabled&&unpackConfig(p).turnInLastDays); }
   { // a pre-existing record (byte 0/1) means "automatic"
     const MachineConfig d;assert(d.sensorResolutionMode==0U);
     PackedMachineConfigV1 p=packConfig(d);p.adaptiveThermalBalanceEnabled=1U;

@@ -52,10 +52,10 @@ test('all settings remain reachable exactly once in shorter groups', () => {
   // Thermal Control V2.0.0: the old controller's rows (15-17 Kp/Ki/Kd, 26-27 tune, 29 siren self-test, 51 balance, 54 Smart Thermal, 55 Predictive) stay in the
   // SETTINGS table (indexes and stored config keep their meaning) but no group lists them any more.
   const hidden = [15, 16, 17, 26, 27, 29, 51, 54, 55];
-  assert.equal(indexes.length, 29);
-  assert.equal(new Set(indexes).size, 29);
+  assert.equal(indexes.length, 30);
+  assert.equal(new Set(indexes).size, 30);
   assert.deepEqual([...indexes].sort((a, b) => a - b), [
-    ...Array.from({ length: 33 }, (_, i) => i).filter((i) => ![18, 33, 34, 35, 36, 37, 38, 39, 40, 41, ...hidden].includes(i)), 52, 53, 56,
+    ...Array.from({ length: 33 }, (_, i) => i).filter((i) => ![18, 33, 34, 35, 36, 37, 38, 39, 40, 41, ...hidden].includes(i)), 52, 53, 56, 57,   // 57 = "Dao 3 ngay cuoi" (3.1.3), appended last
   ]);
   assert.equal(groups.length, 9);
   assert.equal(groups.at(-1).name, 'HIEU CHUAN');
@@ -332,7 +332,7 @@ test('He so heater (kAir): an option row in NANG CAO > GIA NHIET stored in bits 
   assert.match(hmi, /ITEM_U8_OPTIONS\("He so heater", ovenGainMode, OPT_OVEN_GAIN, 8\)/);
   assert.match(hmi, /OPT_OVEN_GAIN\[\] = \{"TU DONG", "0\.6e-4", "0\.8e-4", "1\.0e-4", "1\.4e-4", "2\.0e-4", "3\.0e-4", "5\.0e-4"\}/);
   assert.match(hmi, /ovenGainMode > 7U\) cfg\.ovenGainMode = 0U/);
-  assert.match(hmi, /static_assert\(SETTING_COUNT == 57,/);
+  assert.match(hmi, /static_assert\(SETTING_COUNT == 58,/);
   // old rows keep their index: the new row is the LAST one
   assert.match(hmi, /ITEM_BOOL\("Nhiet du doan", predictiveThermalEnabled\),[\s\S]*ITEM_U8_OPTIONS\("He so heater"[\s\S]*\n\};/);
   const mc = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'machine_control.h'), 'utf8');

@@ -373,6 +373,7 @@ inline bool publishConfigReport(const MachineConfig &cfg, uint32_t revision) {
   c["totalIncubationDays"] = cfg.totalIncubationDays;
   c["circulationFanEnabled"] = cfg.circulationFanEnabled;
   c["turningEnabled"] = cfg.turningEnabled;
+  c["turnInLastDays"] = cfg.turnInLastDays;           // 3.1.3: keep turning in the last 3 days (an older firmware has no such key)
   c["manualTurnReanchorsSchedule"] = cfg.manualTurnReanchorsSchedule;
   c["sirenSelfTestEnabled"] = false;
   // Ten field khac firmware (autoResumeOnPowerLoss) vi web da dung ten nay
@@ -1165,7 +1166,7 @@ inline void handleConfigSetMessage(const JsonDocument &doc) {
     "lowTempAlarm", "manualTurnReanchorsSchedule", "adaptiveThermalBalanceEnabled", "maxHeaterPower", "nextDirection", "pidCycleSec",
     "powerRestoreDelaySec", "sensorTimeoutSec", "sirenSelfTestEnabled", "targetHumidity", "targetTemp",
     "tempHysteresis", "tempOffset", "tempOscillationCrossLimit", "tempOscillationWindowSec", "tempRateLimitC",
-    "tempRateWindowSec", "totalIncubationDays", "turnIntervalMin", "turnMaxRunSec", "turningEnabled",
+    "tempRateWindowSec", "totalIncubationDays", "turnIntervalMin", "turnMaxRunSec", "turningEnabled", "turnInLastDays",
     "ventOffTemp", "ventOnTemp", "ventScheduleCount", "ventScheduleDurationMin", "ventScheduleEnabled",
     "ventScheduleHour1", "ventScheduleHour2", "ventScheduleHour3", "ventScheduleHour4", "ventScheduleHour5",
     "ventScheduleHour6",
@@ -1234,6 +1235,7 @@ inline void handleConfigSetMessage(const JsonDocument &doc) {
   candidate.circulationFanEnabled =
       configObj["circulationFanEnabled"] | candidate.circulationFanEnabled;
   candidate.turningEnabled = configObj["turningEnabled"] | candidate.turningEnabled;
+  candidate.turnInLastDays = configObj["turnInLastDays"] | candidate.turnInLastDays;
   candidate.manualTurnReanchorsSchedule =
       configObj["manualTurnReanchorsSchedule"] | candidate.manualTurnReanchorsSchedule;
   candidate.autoResumeOnPowerLoss =
