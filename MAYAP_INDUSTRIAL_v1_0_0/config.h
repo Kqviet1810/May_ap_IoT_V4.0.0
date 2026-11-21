@@ -32,7 +32,7 @@
 // 1 khe, KHONG dung cho tinh nang cap nhat firmware cua du an nay).
 // ============================================================================
 
-constexpr char MAYAP_FIRMWARE_VERSION[] = "3.1.2";
+constexpr char MAYAP_FIRMWARE_VERSION[] = "3.1.3";
 #ifndef MAYAP_BUILD_REVISION
 #define MAYAP_BUILD_REVISION local
 #endif
@@ -665,7 +665,7 @@ constexpr uint32_t BATCH_OVERDUE_AUTO_STOP_GRACE_SEC = 12UL * 3600UL;
 constexpr uint32_t RESUME_RTC_WAIT_ALERT_MS = 300000UL; // 5 phut
 // Trend trong me: 5 phut/mau. Event quan trong duoc ghi ngay khi xay ra.
 constexpr uint32_t BATCH_LOG_SAMPLE_MS = 300000UL;
-// Mac dinh ngung dao trong 3 ngay cuoi truoc no. Ap dung theo tong so ngay me.
+// Ngung dao trong 3 ngay cuoi truoc no (khi MachineConfig::turnInLastDays tat). Ap dung theo tong so ngay me.
 constexpr uint8_t TURN_LOCKDOWN_DAYS = 3U;
 // Khi nguoi dung dung/huy me ma chua xoa duoc ban ghi EEPROM, may van dung
 // output ngay va thu lai theo chu ky huu han. Khong cho bat dau/phuc hoi me moi.
@@ -1100,6 +1100,9 @@ struct MachineConfig {
   uint8_t ventDutyDay19To21 = 70;
 
   bool turningEnabled = true;
+  // 3.1.3: keep turning in the last TURN_LOCKDOWN_DAYS days of the batch (on, the default) or stop there (off: the lock of 3.1.2 and before). Stored in
+  // bit 1 of the turningEnabled byte, inverted (bit 1 set = stop), so no schema changes and an older firmware that reads the byte as "!= 0" still turns.
+  bool turnInLastDays = true;
   uint16_t turnIntervalMin = 120;
   uint16_t turnMaxRunSec = 500;
   TurnDirection nextDirection = TurnDirection::Left;

@@ -51,3 +51,22 @@ test('3.1.2: the profile / scheduled vent goes through ONE hold rule; forced ven
   // the dangerous refusal stays: a circulation fan beside a hot heater is never switched off from the Web
   assert.match(control, /!circWanted && o\.circulationFan && \(o\.heaterSsr \|\| o\.heatMaster \|\| temperature_ > 38\.0f\)/);
 });
+
+test('3.1.3: "Dao trong 3 ngay cuoi" is one option on the machine, the HMI and the Web; the Web sends it only to a firmware that reports it', () => {
+  const bridge = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'transaction_bridge.h'), 'utf8');
+  const hmi = fs.readFileSync(path.join(root, 'MAYAP_INDUSTRIAL_v1_0_0', 'hmi.h'), 'utf8');
+  const web = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  assert.match(config, /bool turnInLastDays = true;/);                                         // default ON
+  assert.match(control, /if \(!batchRunning_ \|\| config_\.turnInLastDays \|\| TURN_LOCKDOWN_DAYS == 0U \|\|/);   // the lock applies only when the option is off
+  assert.match(control, /p\.turningEnabled = c\.turningEnabled \? static_cast<uint8_t>\(1U \| \(c\.turnInLastDays \? 0U : 2U\)\) : 0U;/);
+  assert.match(control, /c\.turnInLastDays = \(p\.turningEnabled & 2U\) == 0U;/);
+  assert.match(bridge, /c\["turnInLastDays"\] = cfg\.turnInLastDays;/);
+  assert.match(bridge, /"turningEnabled", "turnInLastDays",/);                                  // the patch whitelist
+  assert.match(bridge, /candidate\.turnInLastDays = configObj\["turnInLastDays"\] \| candidate\.turnInLastDays;/);
+  assert.match(hmi, /ITEM_BOOL\("Dao 3 ngay cuoi", turnInLastDays\)/);
+  assert.match(hmi, /offset == offsetof\(MachineConfig, turnInLastDays\)/);                      // editable while a batch runs, like the other turning options
+  assert.match(web, /if \(supportsTurnLastDays\(device\.config\)\) config\.turnInLastDays = \$\('turnInLastDays'\)\.checked;/);
+  assert.match(web, /'adaptiveThermalBalanceEnabled', 'turnInLastDays'\]/);
+  assert.match(html, /id="turnInLastDays"/);
+});

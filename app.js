@@ -50,7 +50,7 @@
     'tempOscillationWindowSec', 'autotuneRelayPowerPercent', 'autotuneBandC',
     'manualTurnReanchorsSchedule'
   ]);
-  const CONFIG_KEYS = Object.freeze([...REQUIRED_CONFIG_KEYS, ...VENT_PROFILE_KEYS, 'adaptiveThermalBalanceEnabled']);
+  const CONFIG_KEYS = Object.freeze([...REQUIRED_CONFIG_KEYS, ...VENT_PROFILE_KEYS, 'adaptiveThermalBalanceEnabled', 'turnInLastDays']);
 
   // Vietnam time everywhere: the pages, the machine log and the exported log show the same wall clock whatever the time zone of the phone or the PC is.
   const VN_TZ = 'Asia/Ho_Chi_Minh';
@@ -232,7 +232,7 @@
     if (!runtime || !runtime.batchRunning) return 'chưa ấp';
     if (config && config.turningEnabled === false) return 'đã tắt đảo';
     const total = Number(config && config.totalIncubationDays), day = Number(runtime.currentDay);
-    if (total > 3 && day > total - 3) return 'khóa đảo 3 ngày cuối';
+    if (total > 3 && day > total - 3 && !(config && config.turnInLastDays === true)) return 'khóa đảo 3 ngày cuối';   // an older firmware (no key) always locks
     if (runtime.autoMode === false) return 'công tắc AUTO tắt';
     return '';
   }
@@ -1803,6 +1803,11 @@
     $('humidifierSummary').textContent = `Bật ≤${$('humidifierOnHumidity').value || '—'}% · tắt ≥${$('humidifierOffHumidity').value || '—'}%RH`;
   }
 
+  // Firmware 3.1.3 and later report turnInLastDays; before it the machine always stopped turning in the last 3 days.
+  function supportsTurnLastDays(config) {
+    return Boolean(config && Object.hasOwn(config, 'turnInLastDays'));
+  }
+
   function supportsVentProfile(config) {
     return Boolean(config && VENT_PROFILE_KEYS.every((key) => Object.hasOwn(config, key)));
   }
@@ -1998,6 +2003,8 @@
     $('ventAutoOptions').hidden = !$('ventAutoEnabled').checked;
 
     check('turningForm', 'turningEnabled', config.turningEnabled);
+    check('turningForm', 'turnInLastDays', config.turnInLastDays !== false);
+    if ($('turnLastDaysLine')) $('turnLastDaysLine').hidden = !supportsTurnLastDays(config);
     check('turningForm', 'manualTurnReanchorsSchedule', config.manualTurnReanchorsSchedule);
     assign('turningForm', 'turnInterval', config.turnIntervalMin);
     assign('turningForm', 'limitAlarmTime', config.turnMaxRunSec);
@@ -2094,6 +2101,7 @@
       }
     } else if (group === 'turning') {
       config.turningEnabled = $('turningEnabled').checked;
+      if (supportsTurnLastDays(device.config)) config.turnInLastDays = $('turnInLastDays').checked;   // an older firmware has no such key and refuses a patch that carries it
       config.manualTurnReanchorsSchedule = $('manualTurnReanchorsSchedule').checked;
       config.turnIntervalMin = Number($('turnInterval').value);
       config.turnMaxRunSec = Number($('limitAlarmTime').value);

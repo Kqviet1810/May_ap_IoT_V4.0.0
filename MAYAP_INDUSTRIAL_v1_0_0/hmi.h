@@ -590,18 +590,20 @@ const SettingItem SETTINGS[] = {
   // Thermal Predictive V1 (NANG CAO > PID/GIA NHIET): default ON; read at the start of a batch; acts only with "Tu can bang nhiet" ON.
   ITEM_BOOL("Nhiet du doan", predictiveThermalEnabled),                         // 55
   // Heater gain of the oven (NANG CAO > GIA NHIET): AUTO = the prior until a climb measures it; a value = typed by hand, the starting value (nothing is kept across a restart).
-  ITEM_U8_OPTIONS("He so heater", ovenGainMode, OPT_OVEN_GAIN, 8)               // 56
+  ITEM_U8_OPTIONS("He so heater", ovenGainMode, OPT_OVEN_GAIN, 8),              // 56
+  // CAI DAT CHUNG > DAO TRUNG: keep turning in the last 3 days of the batch (ON, the default) or stop there (OFF). Appended last so every index keeps its meaning.
+  ITEM_BOOL("Dao 3 ngay cuoi", turnInLastDays)                                  // 57
 };
 
 constexpr uint8_t SETTING_COUNT = sizeof(SETTINGS) / sizeof(SETTINGS[0]);
-static_assert(SETTING_COUNT == 57, "Bang SETTINGS phai co 57 thong so");
+static_assert(SETTING_COUNT == 58, "Bang SETTINGS phai co 58 thong so");
 
 // Thermal Control V2.0.0: the old controller's rows (Kp/Ki/Kd 15-17, tune 26-27, balance 51, Smart Thermal 54, Predictive 55) stay in
 // SETTINGS so every index and the stored config keep their meaning, but no menu group lists them.
 const uint8_t GROUP_SETTING_INDEXES[] = {
   0,1,2,3,                             // Cai dat me
   4,5,6,8,                             // Nhiet do (nguong van hanh; Bu nhiet do da chuyen sang HIEU CHUAN)
-  11,12,13,28,                         // Dao trung
+  11,12,13,28,57,                      // Dao trung (57: dao trong 3 ngay cuoi)
   14,                                  // He thong: Che do (online/offline)
   19, 56,                              // GIA NHIET: tran cong suat; he so heater (NANG CAO)
   20,21,22,23,24,25,                   // Bao ve nhiet      (NANG CAO)
@@ -619,20 +621,20 @@ const SettingGroup GROUPS[] = {
   {"CAI DAT ME", 0, 4},
   // Nguong quat hut da duoc tach sang nhom QUAT HUT.
   {"NHIET DO", 4, 4},
-  {"DAO TRUNG", 8, 4},
+  {"DAO TRUNG", 8, 5},
   // Doi ten tu "KET NOI" thanh "HE THONG": nhom nay tu lau da khong chi con
   // la cai dat mang - gom ca ma QR, dat lai PIN, cap nhat firmware... nen
   // "He thong" mo ta dung hon la cai dat chung cua may.
-  {"HE THONG", 12, 1},
-  {"GIA NHIET", 13, 2},
-  {"BAO VE NHIET", 15, 6},
-  {"QUAT HUT", 21, 2},
-  {"TAO AM", 23, 2},
-  {"HIEU CHUAN", 25, 4}
+  {"HE THONG", 13, 1},
+  {"GIA NHIET", 14, 2},
+  {"BAO VE NHIET", 16, 6},
+  {"QUAT HUT", 22, 2},
+  {"TAO AM", 24, 2},
+  {"HIEU CHUAN", 26, 4}
 };
 constexpr uint8_t GROUP_COUNT = sizeof(GROUPS) / sizeof(GROUPS[0]);
 static_assert(GROUP_COUNT == 9, "Bang GROUPS phai co 9 nhom");
-static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) == 29U,
+static_assert(sizeof(GROUP_SETTING_INDEXES) / sizeof(GROUP_SETTING_INDEXES[0]) == 30U,
               "Sai so luong setting hien trong menu chinh");
 
 // Dong phu (khong phai setting gia tri) duoc gan them vao cuoi mot so nhom.
@@ -1280,6 +1282,7 @@ bool settingLockedDuringBatch(uint8_t settingIndex) {
       offset == offsetof(MachineConfig, ventProfileLevel) ||
       offset == offsetof(MachineConfig, ventOffTemp) ||
       offset == offsetof(MachineConfig, turningEnabled) ||
+      offset == offsetof(MachineConfig, turnInLastDays) ||
       offset == offsetof(MachineConfig, turnIntervalMin) ||
       offset == offsetof(MachineConfig, manualTurnReanchorsSchedule) ||
       offset == offsetof(MachineConfig, connectivityMode)) {

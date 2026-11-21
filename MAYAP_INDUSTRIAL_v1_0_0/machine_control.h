@@ -1883,7 +1883,9 @@ inline PackedMachineConfigV1 packConfig(const MachineConfig &c) {
       static_cast<int>(lroundf(c.targetHumidity)), 30, 90));
   p.ventOnTemp = c.ventOnTemp;
   p.ventOffTemp = c.ventOffTemp;
-  p.turningEnabled = c.turningEnabled ? 1U : 0U;
+  // bit 0 = turning on; bit 1 = "stop in the last days" (turnInLastDays off), kept only while turning is on, so a firmware that reads the byte as "!= 0"
+  // (every one before 3.1.3) never sees turning switched on by a stop flag alone.
+  p.turningEnabled = c.turningEnabled ? static_cast<uint8_t>(1U | (c.turnInLastDays ? 0U : 2U)) : 0U;
   p.turnIntervalMin = c.turnIntervalMin;
   p.turnMaxRunSec = c.turnMaxRunSec;
   p.nextDirection = static_cast<uint8_t>(c.nextDirection);
@@ -1953,7 +1955,8 @@ inline MachineConfig unpackConfig(const PackedMachineConfigV1 &p) {
   c.circulationFanEnabled = true;
   c.ventOnTemp = p.ventOnTemp;
   c.ventOffTemp = p.ventOffTemp;
-  c.turningEnabled = p.turningEnabled != 0U;
+  c.turningEnabled = (p.turningEnabled & 1U) != 0U;
+  c.turnInLastDays = (p.turningEnabled & 2U) == 0U;
   c.turnIntervalMin = p.turnIntervalMin;
   c.turnMaxRunSec = p.turnMaxRunSec;
   c.nextDirection = static_cast<TurnDirection>(p.nextDirection);
@@ -6193,7 +6196,7 @@ class MachineController {
 
   // ----------------------------- Turning -------------------------------------
   bool turningLockdownActive(uint32_t now) const {
-    if (!batchRunning_ || TURN_LOCKDOWN_DAYS == 0U ||
+    if (!batchRunning_ || config_.turnInLastDays || TURN_LOCKDOWN_DAYS == 0U ||
         config_.totalIncubationDays <= TURN_LOCKDOWN_DAYS) return false;
     const uint32_t stopAfterSec =
         static_cast<uint32_t>(config_.totalIncubationDays - TURN_LOCKDOWN_DAYS) * 86400UL;

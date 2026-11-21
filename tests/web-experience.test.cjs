@@ -438,6 +438,8 @@ test('turning tile: a stopped machine says why (no batch, turning off, the lock 
   assert.equal(h.turnStopReason(run({ currentDay: 19 }), cfg()), 'khóa đảo 3 ngày cuối', 'from day 19 of 21 the machine locks turning');
   assert.equal(h.turnStopReason(run({ currentDay: 21 }), cfg()), 'khóa đảo 3 ngày cuối');
   assert.equal(h.turnStopReason(run({ currentDay: 17 }), cfg({ totalIncubationDays: 19 })), 'khóa đảo 3 ngày cuối', 'a 19 day batch locks from day 17');
+  assert.equal(h.turnStopReason(run({ currentDay: 20 }), cfg({ turnInLastDays: true })), '', 'firmware 3.1.3 with the option on keeps turning to the end');
+  assert.equal(h.turnStopReason(run({ currentDay: 20 }), cfg({ turnInLastDays: false })), 'khóa đảo 3 ngày cuối', 'the option off stops turning in the last 3 days');
   assert.equal(h.turnStopReason(run({ autoMode: false }), cfg()), 'công tắc AUTO tắt');
   assert.equal(h.turnStopReason(run({ autoMode: undefined }), cfg()), '', 'an older firmware without autoMode: no guess');
   assert.equal(h.turnStopReason(run(), undefined), '', 'no config yet: no guess');

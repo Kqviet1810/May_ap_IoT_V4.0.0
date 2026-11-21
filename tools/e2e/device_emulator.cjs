@@ -20,7 +20,7 @@ const CONFIG_DEFAULTS = {
   ventScheduleHour2: 10, ventScheduleHour3: 14, ventScheduleHour4: 18, ventScheduleHour5: 22,
   ventScheduleHour6: 2, tempOffset: 0, humidityOffset: 0, pidCycleSec: 2, humidityAlarmDelaySec: 300,
   turnIntervalMin: 120, turnMaxRunSec: 30, powerRestoreDelaySec: 10, sensorTimeoutSec: 15,
-  maxHeaterPower: 100, totalIncubationDays: 21, circulationFanEnabled: true, turningEnabled: true,
+  maxHeaterPower: 100, totalIncubationDays: 21, circulationFanEnabled: true, turningEnabled: true, turnInLastDays: true,
   autoResumeAfterPower: true, allowHeatWithoutBatch: false, alarmEnabled: true,
   lightAfterBatchAlarmEnabled: false, highTempAlarmWithoutBatch: true, controlMode: 1, nextDirection: 0,
   heaterStuckMinRiseC: 0.5, heaterStuckDurationSec: 600, tempRateLimitC: 2, tempRateWindowSec: 60,

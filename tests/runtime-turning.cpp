@@ -22,7 +22,7 @@ struct Controller {
  struct { InputState value; const InputState& state() const { return value; } } inputs_;
  struct { bool inhibit=false; bool turningInhibited() const { return inhibit; } template<class... T> void set(T...) {} template<class... T> bool acknowledge(T...) { return true; } } faults_;
  struct { struct State { bool heaterSsr=false; } value; State state() const { return value; } } outputs_;
- struct { bool turningEnabled=true,manualTurnReanchorsSchedule=false; uint16_t turnIntervalMin=120,turnMaxRunSec=30,totalIncubationDays=21; TurnDirection nextDirection=TurnDirection::Right; } config_;
+ struct { bool turningEnabled=true,turnInLastDays=true,manualTurnReanchorsSchedule=false; uint16_t turnIntervalMin=120,turnMaxRunSec=30,totalIncubationDays=21; TurnDirection nextDirection=TurnDirection::Right; } config_;
  struct { template<class... T> void push(T...) {} } eventLog_;
  struct { bool setTurnFaultStreak(unsigned) { return true; } bool setTurnMechanicalCheckRequired(bool) { return true; } } safetyJournal_;
  bool batchRunning_=true,needHome_=true,previousAutoMode_=true,testModeActive_=false,turnFaultLatched_=false,
@@ -84,10 +84,18 @@ int main() {
   if(fault==1) blocked.sensorUsable_=false;
   if(fault==2) blocked.highTemperatureActive_=true;
   if(fault==3) blocked.emergencyActive_=true;
-  if(fault==4) blocked.batchElapsed=18*86400;
+  if(fault==4) { blocked.batchElapsed=18*86400; blocked.config_.turnInLastDays=false; }   // the lock of the last 3 days, when the owner chose it
   blocked.updateTurning(5000); blocked.updateTurning(5001);
   assert(blocked.turnPhase_==TurnPhase::Idle);
  }
+ // The last 3 days (3.1.3): with turnInLastDays on (the default) the machine keeps turning to the end; off, it stops there; the lock never
+ // applies before day total - 2, and never to a batch that is not running.
+ { Controller keep; keep.rtc_.now+=121*60; keep.batchElapsed=18*86400; assert(!keep.turningLockdownActive(5000));
+   keep.updateTurning(5000); keep.updateTurning(5001); assert(keep.turnPhase_!=TurnPhase::Idle);
+   Controller lock; lock.config_.turnInLastDays=false; lock.rtc_.now+=121*60; lock.batchElapsed=18*86400; assert(lock.turningLockdownActive(5000));
+   lock.updateTurning(5000); lock.updateTurning(5001); assert(lock.turnPhase_==TurnPhase::Idle);
+   lock.batchElapsed=18*86400-1; assert(!lock.turningLockdownActive(5000));
+   lock.batchElapsed=18*86400; lock.batchRunning_=false; assert(!lock.turningLockdownActive(5000)); }
  // Signed deadline arithmetic across millis wrap; epoch is unaffected.
  Controller wrap; wrap.rtc_.now+=119*60; wrap.updateTurning(0xFFFF8000U);
  const uint32_t due=uint32_t(0xFFFF8000U+60000U);
